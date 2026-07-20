@@ -45,8 +45,12 @@ agent:
   retry_delay_sec: 5    # seconds to wait between retries
 ```
 
-One failure that's never worth retrying — the agent binary itself missing from PATH — skips
-retries and fails immediately.
+One failure that's never worth retrying automatically — the agent binary itself missing from
+PATH — skips the usual retry-with-delay loop. If pi-batch is attached to an interactive terminal,
+it instead asks you to confirm you've installed the binary before retrying (still bounded by the
+same `agent.max_retries` budget); it never runs an install command itself (no fabricated
+per-vendor `npm`/`pip`/etc guesses — you install it manually). In any non-interactive context (CI,
+piped output, redirected stdin) it still fails immediately, with zero behavior change.
 
 Once a task exhausts its retries, downstream work stops instead of piling up more failures
 against a still-down agent/network:

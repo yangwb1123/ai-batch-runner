@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -163,6 +164,35 @@ class TaskResult:
     retryable: bool = True  # False for failures a retry can't fix (e.g. agent binary missing)
 
 
+_install_prompt_lock = threading.Lock()
+_install_declined: set[str] = set()
+
+
+def _confirm_install(bin_name: str) -> bool:
+    """Ask an interactive user whether they've installed the missing
+    agent binary and want to retry. Always returns False immediately in
+    non-interactive contexts (CI, piped, no tty, or even a closed stdin --
+    isatty() itself can raise there) so automated runs never hang or crash
+    on stdin. Never fabricates or runs an install command -- the human
+    installs it manually; this only gates the retry."""
+    try:
+        if not sys.stdin.isatty():
+            return False
+        with _install_prompt_lock:
+            if bin_name in _install_declined:
+                return False
+            reply = input(
+                f"'{bin_name}' not found in PATH. Install it, then press Enter to retry "
+                f"(or type 'n' to give up): "
+            ).strip().lower()
+            if reply in ("n", "no"):
+                _install_declined.add(bin_name)
+                return False
+            return True
+    except Exception:
+        return False
+
+
 def _read_stream(stream, prefix: str, collector: list) -> None:
     """Read lines from *stream*, print them (with prefix), and collect."""
     try:
@@ -276,6 +306,9 @@ def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = F
             return result
 
         if not result.retryable:
+            if attempt < max_attempts and _confirm_install(cfg.AGENT_BIN):
+                log.info("Retrying after install confirmation  [output=%s]", task.output or "(stdout)")
+                continue
             log.error("NOT RETRYING (non-transient failure)  [output=%s]", task.output or "(stdout)")
             break
 
