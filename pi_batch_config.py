@@ -39,6 +39,8 @@ AGENT_BIN = _AGENT_CFG.get("bin", "pi")
 AGENT_DEFAULT_MODEL = _AGENT_CFG.get("default_model", "")
 AGENT_DEFAULT_TIMEOUT = _AGENT_CFG.get("default_timeout", 300)
 AGENT_DEFAULT_WORKERS = _AGENT_CFG.get("default_workers", 4)
+AGENT_MAX_RETRIES = _AGENT_CFG.get("max_retries", 3)
+AGENT_RETRY_DELAY = _AGENT_CFG.get("retry_delay_sec", 5)
 COMMIT_PREFIX_DEFAULT = _BATCH_CFG.get("commit", {}).get("prefix", "[pi-batch]")
 
 

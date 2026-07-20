@@ -33,6 +33,29 @@ python pi-batch.py tasks.yaml --agent-bin codex  --mode serial
 No code changes needed to retarget a different agent CLI — only `pi_batch_config.py` reads
 `pi-batch.yaml`; the rest of the engine is agent-agnostic.
 
+## Retry & failure handling
+
+Every task retries on failure (non-zero exit, timeout, or any other agent/subprocess error —
+covers a flaky network too) up to `agent.max_retries` times, waiting `agent.retry_delay_sec`
+between attempts:
+
+```yaml
+agent:
+  max_retries: 3        # retries on agent error / timeout / network failure before giving up
+  retry_delay_sec: 5    # seconds to wait between retries
+```
+
+One failure that's never worth retrying — the agent binary itself missing from PATH — skips
+retries and fails immediately.
+
+Once a task exhausts its retries, downstream work stops instead of piling up more failures
+against a still-down agent/network:
+
+- **serial / `--from-dir`**: remaining tasks in the batch are skipped.
+- **parallel**: already-running tasks finish, but not-yet-started ones in the same batch are
+  cancelled.
+- **`--pipeline`**: remaining stages are skipped once any task in a stage fails after retries.
+
 ## Quick start
 
 ```bash

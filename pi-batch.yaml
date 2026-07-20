@@ -11,6 +11,8 @@ agent:
   default_model: ""     # empty = the agent's own default
   default_timeout: 300  # seconds, per task
   default_workers: 4    # parallel mode default worker count
+  max_retries: 3        # retries on agent error / timeout / network failure before giving up
+  retry_delay_sec: 5    # seconds to wait between retries
 
 commit:
   prefix: "[pi-batch]"

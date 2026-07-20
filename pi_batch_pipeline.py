@@ -389,4 +389,9 @@ def run_pipeline(pipeline: Pipeline, model_override: str = "", dry_run: bool = F
         results = execute_stage(stage, stage_outputs, model_override, reuse)
         all_results.extend(results)
 
+        if any(not r.success for r in results):
+            log.error("PIPELINE STOPPED: stage '%s' had a task fail after retries; skipping remaining stages",
+                       stage.name)
+            break
+
     return all_results

@@ -160,6 +160,7 @@ class TaskResult:
     stderr: str = ""
     elapsed: float = 0.0
     returncode: int = -1
+    retryable: bool = True  # False for failures a retry can't fix (e.g. agent binary missing)
 
 
 def _read_stream(stream, prefix: str, collector: list) -> None:
@@ -242,7 +243,7 @@ def _spawn_and_collect(cmd: list[str], workdir: str, env: dict, prefix: str, tas
 
     except FileNotFoundError:
         log.error("'%s' not found in PATH. Is it installed? (configure agent.bin in pi-batch.yaml)", cfg.AGENT_BIN)
-        return TaskResult(task=task, success=False, stderr=f"{cfg.AGENT_BIN} not found in PATH")
+        return TaskResult(task=task, success=False, stderr=f"{cfg.AGENT_BIN} not found in PATH", retryable=False)
 
     except Exception as e:
         elapsed = time.monotonic() - start
@@ -251,21 +252,43 @@ def _spawn_and_collect(cmd: list[str], workdir: str, env: dict, prefix: str, tas
 
 
 def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = False) -> TaskResult:
-    """Execute one pi task, streaming output in real-time, and return the result."""
+    """Execute one pi task, streaming output in real-time, retrying on
+    failure (agent error, timeout, network hiccup) up to
+    cfg.AGENT_MAX_RETRIES times, and return the final result."""
     cmd = task.to_cmd()
     workdir = task.workdir()
-    start = time.monotonic()
-
     prefix = f"[task-{task_index}] " if parallel and total > 1 else ""
-
     brief = " ".join(cmd[:4]) + ("..." if len(cmd) > 4 else "")
-    log.info(">>  %s  [model=%s]  [timeout=%ss]  [dir=%s]",
-             brief, task.model or "default", task.timeout, workdir)
 
     env = os.environ.copy()
     env.update(task.env)
 
-    return _spawn_and_collect(cmd, workdir, env, prefix, task, start)
+    max_attempts = cfg.AGENT_MAX_RETRIES + 1
+    result: Optional[TaskResult] = None
+    for attempt in range(1, max_attempts + 1):
+        start = time.monotonic()
+        attempt_suffix = f"  [attempt {attempt}/{max_attempts}]" if max_attempts > 1 else ""
+        log.info(">>  %s  [model=%s]  [timeout=%ss]  [dir=%s]%s",
+                 brief, task.model or "default", task.timeout, workdir, attempt_suffix)
+
+        result = _spawn_and_collect(cmd, workdir, env, prefix, task, start)
+        if result.success:
+            return result
+
+        if not result.retryable:
+            log.error("NOT RETRYING (non-transient failure)  [output=%s]", task.output or "(stdout)")
+            break
+
+        if attempt < max_attempts:
+            log.warning("RETRY %d/%d  [output=%s]  (waiting %ss)",
+                        attempt, cfg.AGENT_MAX_RETRIES, task.output or "(stdout)", cfg.AGENT_RETRY_DELAY)
+            time.sleep(cfg.AGENT_RETRY_DELAY)
+            continue
+
+        break
+
+    log.error("GIVE UP after %d attempt(s)  [output=%s]", attempt, task.output or "(stdout)")
+    return result
 
 
 def save_result(task: Task, result: TaskResult) -> None:
@@ -293,7 +316,11 @@ def save_result(task: Task, result: TaskResult) -> None:
 
 # -- serial / parallel dispatch ---------------------------------------
 def run_serial(tasks: list[Task]) -> list[TaskResult]:
-    """Execute tasks one by one with real-time output streaming."""
+    """Execute tasks one by one with real-time output streaming.
+
+    Stops before running the next task once one exhausts its retries,
+    rather than piling up more failures against a down agent/network.
+    """
     results = []
     total = len(tasks)
     for i, task in enumerate(tasks, 1):
@@ -301,15 +328,27 @@ def run_serial(tasks: list[Task]) -> list[TaskResult]:
         result = run_task(task, task_index=i, total=total, parallel=False)
         save_result(task, result)
         results.append(result)
+        if not result.success:
+            skipped = total - i
+            if skipped:
+                log.error("STOPPING: task %d/%d failed after retries; skipping remaining %d task(s)",
+                           i, total, skipped)
+            break
     return results
 
 
 def run_parallel(tasks: list[Task], workers: int = cfg.AGENT_DEFAULT_WORKERS) -> list[TaskResult]:
-    """Execute tasks concurrently with a thread pool and real-time output."""
+    """Execute tasks concurrently with a thread pool and real-time output.
+
+    Once one task exhausts its retries, not-yet-started tasks are
+    cancelled (already-running ones still finish -- there's no clean way
+    to abort a spawned subprocess mid-stream here).
+    """
     total = len(tasks)
     log.info("PARALLEL x%d  (%d tasks)", workers, total)
 
     results: list[TaskResult] = []
+    stopping = False
     with ThreadPoolExecutor(max_workers=workers) as pool:
         # Pass task_index so parallel output lines are prefixed
         fut_map = {pool.submit(run_task, t, i, total, True): t for i, t in enumerate(tasks, 1)}
@@ -319,5 +358,11 @@ def run_parallel(tasks: list[Task], workers: int = cfg.AGENT_DEFAULT_WORKERS) ->
             save_result(task, result)
             results.append(result)
             log.info("PROGRESS: %d/%d done", i, total)
+
+            if not result.success and not stopping:
+                stopping = True
+                cancelled = sum(1 for f in fut_map if f is not fut and f.cancel())
+                log.error("STOPPING: a task failed after retries; cancelled %d not-yet-started task(s)",
+                           cancelled)
 
     return results
