@@ -1,0 +1,66 @@
+# Declarative config for the checks/ engineering harness (cli.py + checks/).
+#
+# Modeled on snaplink's engineering.yaml: this file is the ONLY thing that
+# should differ between projects that reuse this harness. Copy cli.py +
+# checks/ + this file into another Python project, edit the values below,
+# and the filesize/complexity/root-policy/style gates apply unchanged.
+#
+# The gates intentionally exempt the upstream-synced engine files
+# (pi-batch.py, ai/run-review.py) — they are kept byte-identical with
+# snaplink/ai-dev (see README provenance), so quality rules apply to the
+# code we author here: cli.py, checks/, and anything new.
+
+project:
+  name: ai-batch-runner
+  language: python
+
+filesize:
+  max_lines: 500
+  ignore_patterns:
+    - "pi-batch.py"       # upstream-synced monolith (snaplink/ai-dev)
+    - "ai/run-review.py"  # upstream-synced runner
+    - "tests/"            # regression suite files
+    - "checks/test_"      # harness self-tests
+    - ".git/"
+  # Temporary debt list. Shrinks over time, must never be expanded.
+  exemptions: []
+
+complexity:
+  max_cyclomatic: 15
+  max_cognitive: 20
+  ignore_patterns:
+    - "pi-batch.py"
+    - "ai/run-review.py"
+    - "tests/"
+    - "checks/test_"
+    - ".git/"
+
+root_policy:
+  # Root directory must stay a thin launcher layer: config + entry points
+  # only. Business code lives in subdirectories (checks/, ai/, tests/, ...).
+  max_files: 15
+  allowed_files:
+    - README.md
+    - LICENSE
+    - AGENTS.md
+    - CLAUDE.md
+    - Makefile
+    - cli.py
+    - pyproject.toml
+    - engineering.yaml
+    - .gitignore
+    - .editorconfig
+    - pi-batch.py
+    - pi-batch.yaml
+    - git-auto-commit.sh
+  banned_patterns:
+    - "*_test.py"   # tests belong in tests/ or checks/
+
+style:
+  max_line_length: 100
+  ignore_patterns:
+    - "pi-batch.py"
+    - "ai/run-review.py"
+    - "tests/"
+    - "checks/test_"
+    - ".git/"

@@ -138,11 +138,32 @@ validators are shared with `pi-batch.py` via `pi-batch.yaml`.
 ## Testing
 
 ```bash
-python -m pytest tests/ -q     # 77 tests: config resolution, failure detection,
-                               # retries/rounds, sessions, validation gates, aggregate,
-                               # meta stages (ad-hoc roles, concurrency), from_prompt,
-                               # run-review chaining
+make ci                       # full gate set: gates + self-test + regression suite
+python -m pytest tests/ -q    # 77 tests: config resolution, failure detection,
+                              # retries/rounds, sessions, validation gates, aggregate,
+                              # meta stages (ad-hoc roles, concurrency), from_prompt,
+                              # run-review chaining
 ```
+
+## Quality gates (modeled on snaplink's engineering harness)
+
+The repo enforces the same discipline snaplink uses (`cli.py` + `checks/` +
+`engineering.yaml` + `make ci`), adapted to Python with zero third-party
+dependencies:
+
+- **filesize** (500 lines/file), **complexity** (cyclomatic 15 / cognitive 20 per
+  function, ast-based), **root policy** (root dir stays a thin launcher layer),
+  **style** (trailing whitespace/tabs/final newline) — all declaratively
+  configured in `engineering.yaml`
+- The upstream-synced engine files (`pi-batch.py`, `ai/run-review.py`) are exempt
+  via `ignore_patterns`; the gates bind on code authored here
+- `make self-test` verifies the harness itself (34 unittest cases); `make test`
+  runs the 77-case regression suite; `make coverage` reports check coverage
+- Git hooks in `.githooks/` (enable: `git config core.hooksPath .githooks`):
+  pre-commit gates staged files, pre-push runs the full harness
+- CI: `.github/workflows/ci.yml` runs G1-G4 + self-test + regression + coverage
+
+See `docs/CHECKS_REGISTRY.md` for the full registry.
 
 ## Known open issues (carried over from the reference)
 
@@ -151,5 +172,4 @@ python -m pytest tests/ -q     # 77 tests: config resolution, failure detection,
 - missing PyYAML degrades a structured `tasks.yaml` to one giant raw-text prompt silently
 - `_git_commit_stage` / single-batch git commit don't check `git commit`'s exit code
 - `git-auto-commit.sh` runs `git add -A` with no secret-file exclusions or protected-branch check
-- PyYAML is a real, currently-undeclared dependency
-- no `pyproject.toml`, no license chosen yet
+- no license chosen yet

@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""pre-commit hook: gate staged Python files through the checks harness.
+
+Mirrors snaplink's .githooks/pre-commit (filesize + format on staged
+files), adapted to Python: staged .py files must pass the file-size and
+style gates. Upstream-synced files (pi-batch.py, ai/run-review.py) and
+tests/ are exempt via engineering.yaml — no divergence from the reference.
+"""
+import subprocess
+import sys
+from pathlib import Path
+
+
+def main() -> int:
+    r = subprocess.run(
+        ["git", "diff", "--cached", "--name-only", "--diff-filter=ACM"],
+        capture_output=True, text=True,
+    )
+    staged = [f for f in r.stdout.strip().split("\n") if f.endswith(".py")]
+    if not staged:
+        return 0
+    for f in staged:
+        if not Path(f).exists():
+            continue
+        r2 = subprocess.run(
+            [sys.executable, "checks/filesize.py", f], capture_output=True, text=True
+        )
+        if "FAIL" in r2.stdout:
+            print(f"pre-commit FAILED: {f} exceeds the line budget\n{r2.stdout}")
+            return 1
+        r3 = subprocess.run(
+            [sys.executable, "checks/style.py", f], capture_output=True, text=True
+        )
+        if "FAIL" in r3.stdout:
+            print(f"pre-commit FAILED: {f} has style violations\n{r3.stdout}")
+            return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

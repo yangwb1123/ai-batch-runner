@@ -1,0 +1,18 @@
+[project]
+name = "ai-batch-runner"
+version = "0.1.0"
+description = "Serial / parallel / pipeline batch executor for any CLI-based coding agent (pi, claude, codex, gemini, opencode, ...)"
+requires-python = ">=3.9"
+dependencies = [
+    "PyYAML>=6.0",  # required by --pipeline / tasks.yaml modes (also used by checks/)
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",      # regression suite in tests/ (77 cases)
+    "pytest-cov>=5.0",  # make coverage
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "checks"]
+addopts = "-q"
