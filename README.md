@@ -9,12 +9,19 @@ Gemini CLI, OpenCode, or anything else that accepts:
 ```
 
 and it will run one prompt, a batch of prompts (serial or parallel), or a multi-stage pipeline
-against it, with per-task output capture, timeouts, and optional auto git-commit after each stage.
+against it, with per-task output capture, engineering validation gates, session reuse,
+exponential-backoff retries, and optional auto git-commit after each stage.
+
+> **Provenance**: this tree is a sync of `snaplink/ai-dev` (the living monorepo copy), carried
+> over as-is including its monolith `pi-batch.py` and regression test suite. The earlier
+> 4-file split (`pi_batch_config.py` / `pi_batch_task.py` / `pi_batch_pipeline.py`) was
+> superseded by the reference's single-file version and removed. `tests/` (68 cases) is the
+> authoritative behavior spec.
 
 ## Switching agents
 
 The agent binary is a config value, not a hardcoded dependency — edit `agent.bin` in
-`pi-batch.yaml`, or pass `--agent-bin` on the command line, to switch between agents per run:
+`pi-batch.yaml`, or pass `--agent-bin` on the command line:
 
 ```yaml
 # pi-batch.yaml
@@ -30,36 +37,6 @@ python pi-batch.py tasks.yaml --agent-bin claude --mode parallel --workers 4
 python pi-batch.py tasks.yaml --agent-bin codex  --mode serial
 ```
 
-No code changes needed to retarget a different agent CLI — only `pi_batch_config.py` reads
-`pi-batch.yaml`; the rest of the engine is agent-agnostic.
-
-## Retry & failure handling
-
-Every task retries on failure (non-zero exit, timeout, or any other agent/subprocess error —
-covers a flaky network too) up to `agent.max_retries` times, waiting `agent.retry_delay_sec`
-between attempts:
-
-```yaml
-agent:
-  max_retries: 3        # retries on agent error / timeout / network failure before giving up
-  retry_delay_sec: 5    # seconds to wait between retries
-```
-
-One failure that's never worth retrying automatically — the agent binary itself missing from
-PATH — skips the usual retry-with-delay loop. If pi-batch is attached to an interactive terminal,
-it instead asks you to confirm you've installed the binary before retrying (still bounded by the
-same `agent.max_retries` budget); it never runs an install command itself (no fabricated
-per-vendor `npm`/`pip`/etc guesses — you install it manually). In any non-interactive context (CI,
-piped output, redirected stdin) it still fails immediately, with zero behavior change.
-
-Once a task exhausts its retries, downstream work stops instead of piling up more failures
-against a still-down agent/network:
-
-- **serial / `--from-dir`**: remaining tasks in the batch are skipped.
-- **parallel**: already-running tasks finish, but not-yet-started ones in the same batch are
-  cancelled.
-- **`--pipeline`**: remaining stages are skipped once any task in a stage fails after retries.
-
 ## Quick start
 
 ```bash
@@ -71,6 +48,9 @@ python pi-batch.py tasks.yaml --mode parallel --workers 4
 
 # Multi-stage pipeline (chained roles, e.g. architect -> tech-lead -> implementer -> qa -> security)
 python pi-batch.py --pipeline pipelines/pipeline-code-impl.yaml
+
+# 24x7 loop: rerun failed tasks until everything passes
+python pi-batch.py tasks.yaml --max-rounds 0 --round-delay 60
 ```
 
 Example `tasks.yaml`:
@@ -88,31 +68,82 @@ tasks:
     cwd: /path/to/project
 ```
 
+## Feature map
+
+- **Task loading**: YAML / JSON / plain-text task files, `--from-dir` (one task per `.md`),
+  stdin, inline `-p`. `@file.md` references in prompts are inlined automatically.
+- **Execution**: serial or parallel (`--workers`), real-time streamed output, per-task
+  `cwd`/`timeout`/`env`, summary report, `--dry-run`.
+- **Failure detection**: provider/CLI error signatures (quota, rate limit, auth, billing,
+  network/DNS/TLS) are matched against agent output — a non-zero exit, empty output, or such a
+  reply marks the task failed and **never saves** the artifact.
+- **Retries**: `--retries N` with exponential backoff (`--retry-delay`, `--retry-backoff`);
+  rate-limit/network failures wait at least 30s so quota windows clear.
+- **Rounds (24x7)**: `--max-rounds N` reruns the batch each round (0 = loop forever until all
+  pass), `--round-delay` rest between rounds, `--log-file` appends run logs for supervision.
+  `--reuse` skips tasks whose outputs already exist so rounds rerun only failures.
+- **Sessions**: `--session-mode new|shared|per-stage` with `--session-name`; pi-style
+  `agent.session_flags` in `pi-batch.yaml` (start/continue), overridable per agent CLI.
+- **Validation gates**: `--validate NAME[,NAME...]` (registry in `pi-batch.yaml` `validators:`)
+  or raw `--validate-cmd`; `{output}`/`{cwd}` placeholders; AND semantics; a failing gate
+  deletes the temp artifact and marks the task failed (retried/regenerated); per-task
+  `validate` and per-stage `validate_cmd` override/disable the CLI gate.
+- **Pipelines**: chained stages via `from_dir` or `from_outputs`; template placeholders
+  `{input_content}` / `{input_stem}` / `{input_path}`; `aggregate: true` merges all upstream
+  outputs into one combined prompt per template (`input_stem` = `combined`); post-stage shell
+  commands (`commands_parallel`) act as a **stage failure gate**; per-stage/per-pipeline
+  `git_commit`; failed stages are reported and stop downstream stages.
+- **Meta stages** (`meta: true`): dynamic role orchestration — the agent picks which role
+  templates from `role_dir` still add value, they run against the aggregated evidence, their
+  deliverables fold back in, and the loop repeats until the orchestrator says done or
+  `max_iterations` is reached. Orphaned role names (incl. path traversal) are refused.
+- **Git**: per-stage auto commit, single-batch commit, `--commit-prefix`, plus standalone
+  `git-auto-commit.sh`.
+
 ## Layout
 
 ```
-pi-batch.py              CLI entry point
-pi_batch_config.py        config (pi-batch.yaml) + logging
-pi_batch_task.py          Task model, serial/parallel engine, checkpoint-less resume via --reuse
-pi_batch_pipeline.py      --pipeline mode: chained named stages, from_dir / from_outputs
-pi-batch.yaml             agent.bin + defaults (edit this to point at your agent CLI)
-prompts/                  18 reference role-prompt templates (architect, tech-lead, qa-lead, ...)
-pipelines/                example pipeline configs (code-impl, full-sdlc, generic example)
-docs/                     git-auto-commit usage guides, role summary
-git-auto-commit.sh        interactive standalone commit helper (separate from pipeline git_commit)
+pi-batch.py              CLI entry point + engine (config, tasks, pipeline, meta stages)
+pi-batch.yaml            agent.bin, session_flags, validators registry, commit prefix
+prompts/                 18 reference role-prompt templates (architect, tech-lead, qa-lead, ...)
+pipelines/               example pipeline configs (code-impl, full-sdlc, generic example)
+ai/                      AI-SDLC review framework: run-review.py + sdlc.yaml + 10 stage
+                         prompts + shared prompt fragments (prompts-shared/)
+examples/                pipeline examples, SDLC case study, snaplink proposals
+docs/                    usage guides incl. RUNNING_247.md (24x7 operation)
+tests/                   68 regression tests (pytest): engine + run-review + CLI end-to-end
+git-auto-commit.sh       interactive standalone commit helper (separate from pipeline git_commit)
 ```
 
-## Provenance / known state
+## AI-SDLC review framework (`ai/`)
 
-Extracted from a larger monorepo where it lived at `ai-dev/`. Carried over as-is, including
-known open issues not yet fixed here:
+`ai/run-review.py` fills the 10-stage SDLC review templates (product discovery → architecture
+→ security/RFC → distributed → implementation → performance → production readiness → sprint
+planning → post-sprint review → CTO Go/No-Go) from a context YAML or CLI variables and invokes
+the agent per stage, chaining outputs forward:
 
-- `Task.output_path()` doesn't respect `task.cwd` for relative `output` paths (`pi_batch_task.py`)
-- subprocess timeout can effectively double under `_stream_and_wait` (`pi_batch_task.py`)
-- missing PyYAML degrades a structured `tasks.yaml` to one giant raw-text prompt silently (`pi_batch_task.py`)
-- `_git_commit_stage` / `_git_commit_single_stage` don't check `git commit`'s exit code (`pi_batch_pipeline.py`, `pi-batch.py`)
+```bash
+python ai/run-review.py --stage 01 --context ai/examples/oidc-logout-context.yaml --dry-run
+python ai/run-review.py --all --context ai/examples/oidc-logout-context.yaml
+```
+
+Stage names/variables are declarative in `ai/sdlc.yaml`; agent binary, session flags and
+validators are shared with `pi-batch.py` via `pi-batch.yaml`.
+
+## Testing
+
+```bash
+python -m pytest tests/ -q     # 68 tests: config resolution, failure detection,
+                               # retries/rounds, sessions, validation gates, aggregate,
+                               # meta stages, run-review chaining
+```
+
+## Known open issues (carried over from the reference)
+
+- `Task.output_path()` doesn't respect `task.cwd` for relative `output` paths
+- subprocess timeout can effectively double under `_stream_and_wait`
+- missing PyYAML degrades a structured `tasks.yaml` to one giant raw-text prompt silently
+- `_git_commit_stage` / single-batch git commit don't check `git commit`'s exit code
 - `git-auto-commit.sh` runs `git add -A` with no secret-file exclusions or protected-branch check
-- no `pyproject.toml` (PyYAML is a real, currently-undeclared dependency for `--pipeline`/`tasks.yaml` mode)
-- zero test coverage
-
-No license chosen yet.
+- PyYAML is a real, currently-undeclared dependency
+- no `pyproject.toml`, no license chosen yet

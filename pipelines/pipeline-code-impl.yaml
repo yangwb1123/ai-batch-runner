@@ -1,9 +1,11 @@
-# 代码实现 Pipeline - 简化版
+# 代码实现 Pipeline - 聚合模式
 #
-# 使用场景：快速实现代码任务
+# 各 from_outputs 阶段启用 aggregate: true：下游角色一次性看到上游全部输出
+# （架构师 + Tech Lead 方案合并给实现任务），避免笛卡尔扇出和对同一工作树的
+# 重复/冲突修改。执行前先用 --dry-run 检查；实现类任务不要在生产分支直接运行。
 #
 # 使用方法：
-#   python3 ai-dev/pi-batch.py --pipeline ai-dev/pipelines/pipeline-code-impl.yaml --mode parallel -w 3
+#   python3 ai-dev/pi-batch.py --pipeline ai-dev/pipelines/pipeline-code-impl.yaml --dry-run
 
 stages:
   # ═══════════════════════════════════════════════════════════
@@ -14,7 +16,7 @@ stages:
   - name: requirement-analysis
     from_dir: docs/requirements
     mode: serial
-    git_commit: true
+    git_commit: false
 
   # ═══════════════════════════════════════════════════════════
   # 阶段 1：技术方案设计
@@ -23,6 +25,7 @@ stages:
   # ═══════════════════════════════════════════════════════════
   - name: technical-design
     from_outputs: requirement-analysis
+    aggregate: true
     tasks:
       - role: architect
         prompt_template: ai-dev/prompts/architect.md
@@ -38,7 +41,7 @@ stages:
 
     mode: parallel
     workers: 2
-    git_commit: true
+    git_commit: false
 
   # ═══════════════════════════════════════════════════════════
   # 阶段 2：代码实现
@@ -48,6 +51,7 @@ stages:
   # ═══════════════════════════════════════════════════════════
   - name: code-implementation
     from_outputs: technical-design
+    aggregate: true
     tasks:
       - role: implementer
         prompt_template: ai-dev/prompts/code-implementer.md
@@ -56,7 +60,7 @@ stages:
         timeout: 1200 # 代码实现需要更长时间
 
     mode: serial
-    git_commit: true
+    git_commit: false
 
   # ═══════════════════════════════════════════════════════════
   # 阶段 3：代码审查
@@ -66,6 +70,7 @@ stages:
   # ═══════════════════════════════════════════════════════════
   - name: code-review
     from_outputs: code-implementation
+    aggregate: true
     tasks:
       - role: reviewer
         prompt_template: ai-dev/prompts/staff_engineer.md
@@ -81,7 +86,7 @@ stages:
 
     mode: parallel
     workers: 2
-    git_commit: true
+    git_commit: false
 
   # ═══════════════════════════════════════════════════════════
   # 阶段 4：测试编写
@@ -91,6 +96,7 @@ stages:
   # ═══════════════════════════════════════════════════════════
   - name: test-writing
     from_outputs: code-review
+    aggregate: true
     tasks:
       - role: qa-engineer
         prompt_template: ai-dev/prompts/qa_lead.md
@@ -99,7 +105,7 @@ stages:
         timeout: 600
 
     mode: serial
-    git_commit: true
+    git_commit: false
 
   # ═══════════════════════════════════════════════════════════
   # 阶段 5：最终审查
@@ -109,6 +115,7 @@ stages:
   # ═══════════════════════════════════════════════════════════
   - name: final-review
     from_outputs: test-writing
+    aggregate: true
     tasks:
       - role: tech-lead
         prompt_template: ai-dev/prompts/tech_lead.md
@@ -117,4 +124,4 @@ stages:
         timeout: 600
 
     mode: serial
-    git_commit: true
+    git_commit: false

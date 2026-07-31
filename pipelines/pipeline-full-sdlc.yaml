@@ -1,14 +1,11 @@
-# 完整 SDLC Pipeline - 10 阶段审查流程
+# 完整 SDLC Pipeline - 聚合模式
 #
-# 使用方法：
-#   python3 ai-dev/pi-batch.py --pipeline ai-dev/pipelines/pipeline-full-sdlc.yaml --mode parallel -w 4
-#
-# 说明：
-#   这个 pipeline 实现了完整的 AI-SDLC 流程，包含 10 个阶段
-#   每个阶段使用适当的角色组合进行审查
-#   支持并行执行以提高效率
+# runner 现已支持 aggregate: true：每个下游角色模板把上游全部输出合并为一份
+# 综合提示词（{input_stem} 固定为 combined），不再做笛卡尔扇出，reviewer 可以
+# 看到全部上游证据。本图仍是长时运行实验：执行前先用 --dry-run 检查；生成的
+# 审查默认不提交（git_commit: false），结论需人工验证后提升到维护文档。
 
-git_commit: true # 全局设置，所有阶段默认自动 git commit
+git_commit: false # 生成审查默认不提交；审核后可显式传 --git-commit
 
 stages:
   # ═══════════════════════════════════════════════════════════
@@ -26,6 +23,7 @@ stages:
   # ═══════════════════════════════════════════════════════════
   - name: stage-1-architecture
     from_outputs: stage-0-discovery
+    aggregate: true
     tasks:
       - role: architect
         prompt_template: ai-dev/prompts/architect.md
@@ -47,6 +45,7 @@ stages:
   # ═══════════════════════════════════════════════════════════
   - name: stage-2-security
     from_outputs: stage-1-architecture
+    aggregate: true
     tasks:
       - role: security
         prompt_template: ai-dev/prompts/security_engineer.md
@@ -68,6 +67,7 @@ stages:
   # ═══════════════════════════════════════════════════════════
   - name: stage-3-distributed
     from_outputs: stage-2-security
+    aggregate: true
     tasks:
       - role: distributed
         prompt_template: ai-dev/prompts/distributed_engineer.md
@@ -89,6 +89,7 @@ stages:
   # ═══════════════════════════════════════════════════════════
   - name: stage-4-implementation
     from_outputs: stage-3-distributed
+    aggregate: true
     tasks:
       - role: staff
         prompt_template: ai-dev/prompts/staff_engineer.md
@@ -110,6 +111,7 @@ stages:
   # ═══════════════════════════════════════════════════════════
   - name: stage-5-performance
     from_outputs: stage-4-implementation
+    aggregate: true
     tasks:
       - role: performance
         prompt_template: ai-dev/prompts/performance_engineer.md
@@ -125,6 +127,7 @@ stages:
   # ═══════════════════════════════════════════════════════════
   - name: stage-6-production-ready
     from_outputs: stage-5-performance
+    aggregate: true
     tasks:
       - role: sre
         prompt_template: ai-dev/prompts/sre_engineer.md
@@ -156,6 +159,7 @@ stages:
   # ═══════════════════════════════════════════════════════════
   - name: stage-7-sprint-planning
     from_outputs: stage-6-production-ready
+    aggregate: true
     tasks:
       - role: pm
         prompt_template: ai-dev/prompts/pm.md
@@ -182,6 +186,7 @@ stages:
   # ═══════════════════════════════════════════════════════════
   - name: stage-8-sprint-review
     from_outputs: stage-7-sprint-planning
+    aggregate: true
     tasks:
       - role: staff
         prompt_template: ai-dev/prompts/staff_engineer.md
@@ -208,6 +213,7 @@ stages:
   # ═══════════════════════════════════════════════════════════
   - name: stage-9-cto-decision
     from_outputs: stage-8-sprint-review
+    aggregate: true
     tasks:
       - role: cto
         prompt_template: ai-dev/prompts/cto.md
