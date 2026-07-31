@@ -62,6 +62,19 @@ repository's executable tests and does not replace them.
   validation for that task/stage, so analysis-only tasks (e.g. "propose
   three new feature points") that produce no code skip the gate while code
   generation tasks keep it. Precedence: task > stage > CLI > none.
+- Dynamic role orchestration (self-optimization): a pipeline stage with
+  `meta: true` asks the agent which review roles the current deliverables
+  still need, executes each chosen role against the aggregated inputs, folds
+  the role deliverables back into the evidence, and iterates until the
+  orchestrator reports no more roles or `max_iterations` is reached. Roles
+  are discovered at run time: the orchestrator may pick a name from
+  `role_dir` (predefined template) or define an ad-hoc role
+  `{"role": ..., "task": ...}` whose task description plus the current
+  context becomes the reviewer prompt — no template required. Chosen roles
+  run concurrently, each in its own agent session; role names are sanitized
+  for output paths and template lookups are confined to `role_dir` (path
+  traversal rejected). See `ai-dev/examples/meta-review-pipeline.yaml` for a
+  project-agnostic case.
 - 24x7 operation: `--retries` (serial mode) retries failed tasks with
   exponential backoff (`--retry-delay`/`--retry-backoff`; rate-limit and
   network failures wait at least 30s), `--min-interval` throttles successful

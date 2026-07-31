@@ -158,6 +158,53 @@ A stage or task without any configuration simply inherits the CLI default
 (no validation when `--validate-cmd` is absent), so the common case of
 "analysis batches never validate, code batches opt in" needs no boilerplate.
 
+## Self-optimizing role orchestration (meta stages)
+
+For analyzing arbitrary projects and ideas, a pipeline stage with `meta: true`
+discovers its review roles at run time instead of fixing them in YAML. The
+starting point can be a one-sentence prompt (no input files needed):
+
+```yaml
+stages:
+  - name: kickoff
+    from_prompt: "Analyze the idea: offline-first sync for the todo app."  # one sentence
+    output: docs/reviews/kickoff.md
+
+  - name: review
+    from_outputs: kickoff
+    meta: true                       # orchestrator picks the roles
+    role_dir: ai-dev/prompts         # point at the target project's role templates
+    output_dir: docs/reviews
+    max_iterations: 3
+```
+
+`from_prompt` is a full stage type: it runs as a single task, honors
+`--reuse`/validation/sessions, and its output feeds downstream `from_outputs`
+stages. `from_dir` remains available when the input is a directory of
+documents.
+
+Each iteration:
+
+1. the orchestrator agent reads the current deliverables and `Available roles`
+   from `role_dir`, and replies with a JSON plan: role names (e.g.
+   `["security_engineer", "qa_lead"]`) and/or ad-hoc role objects
+   (`{"role": "perf_reviewer", "task": "Analyze performance bottlenecks"}`),
+   or `[]` when done;
+2. every chosen role runs **concurrently, each in its own agent session**:
+   named roles load their `role_dir` template, ad-hoc roles use their task
+   description plus the current deliverables as context (no template
+   needed);
+3. the deliverables fold back into the evidence, so the next orchestrator
+   round sees what previous roles concluded;
+4. the loop stops when the orchestrator says `[]` or `max_iterations` is
+   reached.
+
+The orchestrator output is untrusted input: named roles must resolve to `.md`
+files inside `role_dir` (path traversal rejected) and ad-hoc role names are
+sanitized for output paths. `role_dir` may be absent — ad-hoc roles alone are
+enough. All other machinery (retries, `--reuse`, rounds, validation,
+sessions) applies to meta stages too.
+
 ## One session, many steps
 
 By default every call starts a fresh agent session. When later steps should

@@ -15,7 +15,7 @@ exponential-backoff retries, and optional auto git-commit after each stage.
 > **Provenance**: this tree is a sync of `snaplink/ai-dev` (the living monorepo copy), carried
 > over as-is including its monolith `pi-batch.py` and regression test suite. The earlier
 > 4-file split (`pi_batch_config.py` / `pi_batch_task.py` / `pi_batch_pipeline.py`) was
-> superseded by the reference's single-file version and removed. `tests/` (68 cases) is the
+> superseded by the reference's single-file version and removed. `tests/` (77 cases) is the
 > authoritative behavior spec.
 
 ## Switching agents
@@ -88,15 +88,18 @@ tasks:
   or raw `--validate-cmd`; `{output}`/`{cwd}` placeholders; AND semantics; a failing gate
   deletes the temp artifact and marks the task failed (retried/regenerated); per-task
   `validate` and per-stage `validate_cmd` override/disable the CLI gate.
-- **Pipelines**: chained stages via `from_dir` or `from_outputs`; template placeholders
-  `{input_content}` / `{input_stem}` / `{input_path}`; `aggregate: true` merges all upstream
-  outputs into one combined prompt per template (`input_stem` = `combined`); post-stage shell
-  commands (`commands_parallel`) act as a **stage failure gate**; per-stage/per-pipeline
-  `git_commit`; failed stages are reported and stop downstream stages.
-- **Meta stages** (`meta: true`): dynamic role orchestration — the agent picks which role
-  templates from `role_dir` still add value, they run against the aggregated evidence, their
-  deliverables fold back in, and the loop repeats until the orchestrator says done or
-  `max_iterations` is reached. Orphaned role names (incl. path traversal) are refused.
+- **Pipelines**: chained stages via `from_prompt` (one-sentence starting point, no input file
+  needed), `from_dir`, or `from_outputs`; template placeholders `{input_content}` /
+  `{input_stem}` / `{input_path}`; `aggregate: true` merges all upstream outputs into one
+  combined prompt per template (`input_stem` = `combined`); post-stage shell commands
+  (`commands_parallel`) act as a **stage failure gate**; per-stage/per-pipeline `git_commit`;
+  failed stages are reported and stop downstream stages.
+- **Meta stages** (`meta: true`): dynamic role orchestration — the agent picks which roles
+  still add value (either templates from `role_dir` or **ad-hoc roles** defined inline as
+  `{"role": ..., "task": ...}` objects), the chosen roles run **concurrently** (each in its
+  own agent session) against the aggregated evidence, their deliverables fold back in, and
+  the loop repeats until the orchestrator says done or `max_iterations` is reached. Role
+  names are sanitized and non-template names (incl. path traversal) are refused.
 - **Git**: per-stage auto commit, single-batch commit, `--commit-prefix`, plus standalone
   `git-auto-commit.sh`.
 
@@ -105,13 +108,15 @@ tasks:
 ```
 pi-batch.py              CLI entry point + engine (config, tasks, pipeline, meta stages)
 pi-batch.yaml            agent.bin, session_flags, validators registry, commit prefix
-prompts/                 18 reference role-prompt templates (architect, tech-lead, qa-lead, ...)
+AGENTS.md                agent-facing guide to the whole ai-dev toolkit (Chinese)
+prompts/                 19 reference role-prompt templates (architect, tech-lead, qa-lead, ...)
 pipelines/               example pipeline configs (code-impl, full-sdlc, generic example)
 ai/                      AI-SDLC review framework: run-review.py + sdlc.yaml + 10 stage
                          prompts + shared prompt fragments (prompts-shared/)
-examples/                pipeline examples, SDLC case study, snaplink proposals
+examples/                pipeline examples incl. meta-review-pipeline.yaml (dynamic role
+                         orchestration), SDLC case study, snaplink proposals
 docs/                    usage guides incl. RUNNING_247.md (24x7 operation)
-tests/                   68 regression tests (pytest): engine + run-review + CLI end-to-end
+tests/                   77 regression tests (pytest): engine + run-review + CLI end-to-end
 git-auto-commit.sh       interactive standalone commit helper (separate from pipeline git_commit)
 ```
 
@@ -133,9 +138,10 @@ validators are shared with `pi-batch.py` via `pi-batch.yaml`.
 ## Testing
 
 ```bash
-python -m pytest tests/ -q     # 68 tests: config resolution, failure detection,
+python -m pytest tests/ -q     # 77 tests: config resolution, failure detection,
                                # retries/rounds, sessions, validation gates, aggregate,
-                               # meta stages, run-review chaining
+                               # meta stages (ad-hoc roles, concurrency), from_prompt,
+                               # run-review chaining
 ```
 
 ## Known open issues (carried over from the reference)

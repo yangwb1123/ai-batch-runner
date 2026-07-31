@@ -901,6 +901,239 @@ def test_meta_stage_requires_output_dir(tmp_path, fake_agent):
     assert results == []
 
 
+def test_stage_from_prompt(tmp_path, fake_agent):
+    """A one-sentence starting prompt runs as a task and feeds downstream."""
+    mod = load_batch()
+    mod.AGENT_BIN = str(fake_agent)
+    output = tmp_path / "kickoff.md"
+    stage = mod.Stage(name="kickoff", from_prompt="Analyze the idea: offline-first sync.", output=str(output))
+    results, ok = mod.execute_stage(stage, {})
+    assert ok is True
+    assert len(results) == 1
+    assert output.exists()
+    assert results[0].task.output == str(output)
+
+
+def test_stage_from_prompt_requires_output(tmp_path, fake_agent):
+    mod = load_batch()
+    mod.AGENT_BIN = str(fake_agent)
+    stage = mod.Stage(name="kickoff", from_prompt="Analyze something.")
+    results, ok = mod.execute_stage(stage, {})
+    assert ok is False
+    assert results == []
+
+
+def test_stage_from_prompt_reuse(tmp_path, fake_agent):
+    """--reuse skips a from_prompt task whose output already exists and keeps
+    the path visible to downstream stages."""
+    mod = load_batch()
+    mod.AGENT_BIN = str(fake_agent)
+    output = tmp_path / "kickoff.md"
+    output.write_text("existing", encoding="utf-8")
+    stage = mod.Stage(name="kickoff", from_prompt="Analyze something.", output=str(output))
+    stage_outputs = {}
+    results, ok = mod.execute_stage(stage, stage_outputs, reuse=True)
+    assert ok is True
+    assert results == []
+    assert stage_outputs["kickoff"] == [str(output)]
+
+
+def test_pipeline_from_prompt_to_meta(tmp_path):
+    """End to end: a one-sentence prompt kickstarts a meta stage that
+    discovers roles and folds their deliverables back."""
+    mod = load_batch()
+    counter = tmp_path / "counter"
+    counter.touch()
+    agent = tmp_path / "meta-agent.sh"
+    agent.write_text(
+        "#!/bin/sh\n"
+        "if echo \"$2\" | grep -q 'Available roles'; then\n"
+        f"  n=$(wc -l < {counter})\n"
+        f"  echo x >> {counter}\n"
+        "  if [ \"$n\" -le 0 ]; then echo '[\"security_engineer\"]'; else echo '[]'; fi\n"
+        "else\n"
+        "  echo '## Kickoff analysis'\n"
+        "fi\n"
+    )
+    agent.chmod(0o755)
+    mod.AGENT_BIN = str(agent)
+    roles = tmp_path / "roles"
+    roles.mkdir()
+    (roles / "security_engineer.md").write_text("# Security\n{input_content}\n", encoding="utf-8")
+
+    kickoff = tmp_path / "kickoff.md"
+    out_dir = tmp_path / "reviews"
+    pipeline = mod.Pipeline(stages=[
+        mod.Stage(name="kickoff", from_prompt="Analyze the idea: offline-first sync.", output=str(kickoff)),
+        mod.Stage(name="review", from_outputs="kickoff", meta=True, role_dir=str(roles),
+                  output_dir=str(out_dir), max_iterations=3),
+    ])
+    results, failed = mod.run_pipeline(pipeline)
+    assert failed == []
+    assert len(results) == 2  # kickoff task + one discovered role task
+    assert (out_dir / "security_engineer.md").exists()
+
+
+def test_stage_from_prompt_validate(tmp_path, fake_agent):
+    """A stage-level validate_cmd applies to from_prompt tasks."""
+    mod = load_batch()
+    mod.AGENT_BIN = str(fake_agent)
+    output = tmp_path / "kickoff.md"
+    stage = mod.Stage(name="kickoff", from_prompt="Analyze something.", output=str(output), validate_cmd="exit 1")
+    results, ok = mod.execute_stage(stage, {})
+    assert ok is False
+    assert not output.exists()
+
+
+def test_meta_stage_ad_hoc_role(tmp_path):
+    """The orchestrator can define an ad-hoc role with its own task, no
+    role_dir template needed; the task description plus the current context
+    becomes the reviewer prompt."""
+    mod = load_batch()
+    counter = tmp_path / "counter"
+    counter.touch()
+    args_log = tmp_path / "args.log"
+    agent = tmp_path / "adhoc-agent.sh"
+    agent.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' \"$2\" >> {args_log}\n"
+        "if echo \"$2\" | grep -q 'Available roles'; then\n"
+        f"  n=$(wc -l < {counter})\n"
+        f"  echo x >> {counter}\n"
+        "  if [ \"$n\" -le 0 ]; then\n"
+        "    echo '[{\"role\": \"perf_reviewer\", \"task\": \"Analyze performance bottlenecks\"}]'\n"
+        "  else\n"
+        "    echo '[]'\n"
+        "  fi\n"
+        "else\n"
+        "  echo '## Perf review deliverable'\n"
+        "fi\n"
+    )
+    agent.chmod(0o755)
+    mod.AGENT_BIN = str(agent)
+    inputs = tmp_path / "in"
+    inputs.mkdir()
+    idea = inputs / "idea.md"
+    idea.write_text("idea content", encoding="utf-8")
+    out_dir = tmp_path / "reviews"
+    # role_dir points at a non-existent directory: ad-hoc roles must still run
+    stage = mod.Stage(name="review", from_outputs="req", meta=True,
+                      role_dir=str(tmp_path / "no-roles"), output_dir=str(out_dir), max_iterations=3)
+    results, ok = mod.execute_stage(stage, {"req": [str(idea)]})
+    assert ok is True
+    assert len(results) == 1
+    assert (out_dir / "perf_reviewer.md").exists()
+    calls = args_log.read_text(encoding="utf-8").split("--- idea ---")
+    # the ad-hoc reviewer prompt carries its assignment plus the context
+    assert "Analyze performance bottlenecks" in calls[1]
+    assert "Context (current deliverables)" in calls[1]
+
+
+def test_meta_stage_mixed_roles(tmp_path):
+    """Named roles (role_dir template) and ad-hoc roles run together."""
+    mod = load_batch()
+    counter = tmp_path / "counter"
+    counter.touch()
+    agent = tmp_path / "mixed-agent.sh"
+    agent.write_text(
+        "#!/bin/sh\n"
+        "if echo \"$2\" | grep -q 'Available roles'; then\n"
+        f"  n=$(wc -l < {counter})\n"
+        f"  echo x >> {counter}\n"
+        "  if [ \"$n\" -le 0 ]; then\n"
+        "    echo '[\"security_engineer\", {\"role\": \"ux_reviewer\", \"task\": \"Review the user journey\"}]'\n"
+        "  else\n"
+        "    echo '[]'\n"
+        "  fi\n"
+        "else\n"
+        "  echo '## Deliverable'\n"
+        "fi\n"
+    )
+    agent.chmod(0o755)
+    mod.AGENT_BIN = str(agent)
+    inputs = tmp_path / "in"
+    inputs.mkdir()
+    idea = inputs / "idea.md"
+    idea.write_text("idea content", encoding="utf-8")
+    roles = tmp_path / "roles"
+    roles.mkdir()
+    (roles / "security_engineer.md").write_text("# Security\n{input_content}\n", encoding="utf-8")
+    out_dir = tmp_path / "reviews"
+    stage = mod.Stage(name="review", from_outputs="req", meta=True, role_dir=str(roles),
+                      output_dir=str(out_dir), max_iterations=3)
+    results, ok = mod.execute_stage(stage, {"req": [str(idea)]})
+    assert ok is True
+    assert len(results) == 2
+    assert (out_dir / "security_engineer.md").exists()
+    assert (out_dir / "ux_reviewer.md").exists()
+
+
+def test_meta_stage_role_name_sanitized(tmp_path):
+    """Ad-hoc role names are sanitized for output file paths."""
+    mod = load_batch()
+    counter = tmp_path / "counter"
+    counter.touch()
+    agent = tmp_path / "weird-agent.sh"
+    agent.write_text(
+        "#!/bin/sh\n"
+        "if echo \"$2\" | grep -q 'Available roles'; then\n"
+        f"  n=$(wc -l < {counter})\n"
+        f"  echo x >> {counter}\n"
+        "  if [ \"$n\" -le 0 ]; then echo '[{\"role\": \"perf reviewer!\", \"task\": \"t\"}]'; else echo '[]'; fi\n"
+        "else\n"
+        "  echo '## Deliverable'\n"
+        "fi\n"
+    )
+    agent.chmod(0o755)
+    mod.AGENT_BIN = str(agent)
+    inputs = tmp_path / "in"
+    inputs.mkdir()
+    idea = inputs / "idea.md"
+    idea.write_text("idea content", encoding="utf-8")
+    out_dir = tmp_path / "reviews"
+    stage = mod.Stage(name="review", from_outputs="req", meta=True, role_dir=str(tmp_path / "no-roles"),
+                      output_dir=str(out_dir), max_iterations=3)
+    results, ok = mod.execute_stage(stage, {"req": [str(idea)]})
+    assert ok is True
+    assert (out_dir / "perf_reviewer_.md").exists()
+
+
+def test_meta_stage_concurrent_ad_hoc_roles(tmp_path):
+    """Multiple ad-hoc roles run concurrently, each in its own session."""
+    mod = load_batch()
+    counter = tmp_path / "counter"
+    counter.touch()
+    agent = tmp_path / "two-agent.sh"
+    agent.write_text(
+        "#!/bin/sh\n"
+        "if echo \"$2\" | grep -q 'Available roles'; then\n"
+        f"  n=$(wc -l < {counter})\n"
+        f"  echo x >> {counter}\n"
+        "  if [ \"$n\" -le 0 ]; then\n"
+        "    echo '[{\"role\": \"perf_reviewer\", \"task\": \"t1\"}, {\"role\": \"ux_reviewer\", \"task\": \"t2\"}]'\n"
+        "  else\n"
+        "    echo '[]'\n"
+        "  fi\n"
+        "else\n"
+        "  echo '## Deliverable'\n"
+        "fi\n"
+    )
+    agent.chmod(0o755)
+    mod.AGENT_BIN = str(agent)
+    inputs = tmp_path / "in"
+    inputs.mkdir()
+    idea = inputs / "idea.md"
+    idea.write_text("idea content", encoding="utf-8")
+    out_dir = tmp_path / "reviews"
+    stage = mod.Stage(name="review", from_outputs="req", meta=True, role_dir=str(tmp_path / "no-roles"),
+                      output_dir=str(out_dir), max_iterations=3)
+    results, ok = mod.execute_stage(stage, {"req": [str(idea)]})
+    assert ok is True
+    assert len(results) == 2
+    assert (out_dir / "perf_reviewer.md").exists()
+    assert (out_dir / "ux_reviewer.md").exists()
+
+
 def test_pipeline_reports_failed_stage(tmp_path, fake_agent):
     mod = load_batch()
     mod.AGENT_BIN = str(fake_agent)
