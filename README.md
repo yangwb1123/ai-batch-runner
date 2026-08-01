@@ -13,10 +13,15 @@ against it, with per-task output capture, engineering validation gates, session 
 exponential-backoff retries, and optional auto git-commit after each stage.
 
 > **Provenance**: this tree is a sync of `snaplink/ai-dev` (the living monorepo copy), carried
-> over as-is including its monolith `pi-batch.py` and regression test suite. The earlier
-> 4-file split (`pi_batch_config.py` / `pi_batch_task.py` / `pi_batch_pipeline.py`) was
-> superseded by the reference's single-file version and removed. `tests/` (77 cases) is the
-> authoritative behavior spec.
+> over as-is including its regression test suite. The engine now lives in the `pbatch/`
+> package with `pi-batch.py` as a thin entry shim (the reference's current layout; the
+> earlier 4-file split and the 1389-line monolith were both superseded). `tests/` (91 cases)
+> is the authoritative behavior spec.
+>
+> **Local adaptations** (everything else stays byte-identical): `pi-batch.yaml`
+> `validators.pyquality` points at `{cwd}/quality.py` (reference used an `ai-dev/` prefix
+> from snaplink's repo layout); `AGENTS.md` carries a top note mapping `ai-dev/`-prefixed
+> commands to this repo's root layout.
 
 ## Switching agents
 
@@ -100,23 +105,32 @@ tasks:
   own agent session) against the aggregated evidence, their deliverables fold back in, and
   the loop repeats until the orchestrator says done or `max_iterations` is reached. Role
   names are sanitized and non-template names (incl. path traversal) are refused.
+- **Gate stages** (`gate: true`): a stage whose deliverables must contain a `VERDICT: PASS`
+  line — anything else (FAIL, missing verdict) fails closed and halts the pipeline.
+- **Decision log** (`decision_log:` pipeline key or `--decision-log FILE`): one structured
+  record per finished stage — status, extracted decision points (markdown headings) and
+  evidence, gate verdicts.
+- **Archiving** (`archive_dir:` pipeline key or `--archive-dir DIR`): after a fully
+  successful run, deliverables move into a timestamped archive subdirectory so the worktree
+  stays clean; failed runs never archive.
 - **Git**: per-stage auto commit, single-batch commit, `--commit-prefix`, plus standalone
   `git-auto-commit.sh`.
 
 ## Layout
 
 ```
-pi-batch.py              CLI entry point + engine (config, tasks, pipeline, meta stages)
+pi-batch.py              thin entry shim (re-exports the pbatch package)
+pbatch/                  engine package: config.py, models.py, runner.py, pipeline.py, cli.py
 pi-batch.yaml            agent.bin, session_flags, validators registry, commit prefix
-AGENTS.md                agent-facing guide to the whole ai-dev toolkit (Chinese)
+AGENTS.md                agent-facing guide to the whole toolkit (Chinese; local adapt note)
+quality.py               upstream-synced org scanner (func lines, complexity, dup bodies)
 prompts/                 19 reference role-prompt templates (architect, tech-lead, qa-lead, ...)
 pipelines/               example pipeline configs (code-impl, full-sdlc, generic example)
 ai/                      AI-SDLC review framework: run-review.py + sdlc.yaml + 10 stage
                          prompts + shared prompt fragments (prompts-shared/)
-examples/                pipeline examples incl. meta-review-pipeline.yaml (dynamic role
-                         orchestration), SDLC case study, snaplink proposals
+examples/                pipeline examples incl. meta-review-pipeline.yaml + quickstarts
 docs/                    usage guides incl. RUNNING_247.md (24x7 operation)
-tests/                   77 regression tests (pytest): engine + run-review + CLI end-to-end
+tests/                   91 regression tests (pytest): engine + run-review + CLI end-to-end
 git-auto-commit.sh       interactive standalone commit helper (separate from pipeline git_commit)
 ```
 
@@ -139,10 +153,10 @@ validators are shared with `pi-batch.py` via `pi-batch.yaml`.
 
 ```bash
 make ci                       # full gate set: gates + self-test + regression suite
-python -m pytest tests/ -q    # 77 tests: config resolution, failure detection,
+python -m pytest tests/ -q    # 91 tests: config resolution, failure detection,
                               # retries/rounds, sessions, validation gates, aggregate,
                               # meta stages (ad-hoc roles, concurrency), from_prompt,
-                              # run-review chaining
+                              # gate verdicts, decision logs, archiving, run-review chaining
 ```
 
 ## Quality gates (modeled on snaplink's engineering harness)

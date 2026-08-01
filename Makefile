@@ -28,6 +28,9 @@ check-style: ## Whitespace hygiene (trailing space, tabs, final newline).
 self-test: ## Harness integrity: the gates' own unit tests (zero-dep unittest).
 	python cli.py check-test
 
+quality: ## Upstream-synced org scanner (quality.py): func lines, complexity, dup bodies.
+	python quality.py .
+
 harness: check self-test ## pre-push gate (snaplink naming).
 
 # -- test / coverage (need dev extras) --------------------------------
@@ -38,7 +41,7 @@ coverage: ## Coverage report for tests/ + checks/. Requires pytest-cov.
 	python -m pytest --cov=checks --cov=cli --cov-report=term-missing tests/ checks/
 
 # -- aggregate ---------------------------------------------------------
-ci: check self-test test ## Full CI gate set: gates + self-test + regression suite.
+ci: check self-test test quality ## Full CI gate set: gates + self-test + regression + org scanner.
 
 .PHONY: help check check-filesize check-complexity check-root check-style \
-        self-test harness test coverage ci
+        self-test quality harness test coverage ci

@@ -17,7 +17,8 @@ project:
 filesize:
   max_lines: 500
   ignore_patterns:
-    - "pi-batch.py"       # upstream-synced monolith (snaplink/ai-dev)
+    - "pbatch/pipeline.py"  # upstream-synced (853 lines, within reference's 1000 budget)
+    - "pi-batch.py"       # upstream-synced entry shim
     - "ai/run-review.py"  # upstream-synced runner
     - "tests/"            # regression suite files
     - "checks/test_"      # harness self-tests
@@ -29,6 +30,7 @@ complexity:
   max_cyclomatic: 15
   max_cognitive: 20
   ignore_patterns:
+    - "pbatch/"           # upstream-synced; reference quality.py (its own budgets) is green
     - "pi-batch.py"
     - "ai/run-review.py"
     - "tests/"
@@ -53,12 +55,14 @@ root_policy:
     - pi-batch.py
     - pi-batch.yaml
     - git-auto-commit.sh
+    - quality.py           # upstream-synced org-quality scanner (validators.pyquality)
   banned_patterns:
     - "*_test.py"   # tests belong in tests/ or checks/
 
 style:
   max_line_length: 100
   ignore_patterns:
+    - "pbatch/"           # upstream-synced (incl. reference's own trailing whitespace)
     - "pi-batch.py"
     - "ai/run-review.py"
     - "tests/"
