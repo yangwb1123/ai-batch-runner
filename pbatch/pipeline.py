@@ -287,7 +287,7 @@ def _run_meta_iteration(stage: Stage, combined: str, role_names: list, model_ove
             if not result.success:
                 iteration_ok = False
             if result.task.output:
-                role_outputs.append(result.task.output)
+                role_outputs.append(str(result.task.output_path()))
                 # fold the role deliverable back into the evidence for
                 # the next orchestrator round (self-optimization loop)
                 out_path = Path(result.task.output)
@@ -373,7 +373,11 @@ def _stage_from_dir_tasks(stage: Stage, reuse: bool, model_override: str, timeou
     for fpath in sorted(dir_path.glob(f"*{stage.suffix}")):
         if fpath.name.endswith(stage.output_suffix):
             continue
-        out_path = fpath.parent / (fpath.stem + stage.output_suffix)
+        # Local fix (self-iteration round 2, F1): resolve the output path
+        # absolutely here. The task's cwd is the input dir, so a relative
+        # output would be double-prefixed by output_path()'s cwd-aware
+        # resolution (docs/inputs/docs/inputs/...).
+        out_path = (fpath.parent / (fpath.stem + stage.output_suffix)).resolve()
         if reuse and out_path.exists():
             log.info("REUSE: %s (output exists: %s)", fpath.name, out_path.name)
             reused.append(str(out_path))
@@ -525,8 +529,11 @@ def _execute_stage_tasks(stage: Stage, tasks: list, reused_outputs: list, stage_
                              validate_cmd=stage_validate)
     outputs = list(reused_outputs)
     for r in results:
+        # Local fix (self-iteration round 2, P0-1): propagate the RESOLVED
+        # path (output_path() honors task.cwd). Raw strings would make
+        # git add/combine/archive operate on process-cwd-relative paths.
         if r.success and r.task.output:
-            outputs.append(r.task.output)
+            outputs.append(str(r.task.output_path()))
     return results, outputs
 
 
@@ -614,7 +621,7 @@ def _git_commit_stage(stage: Stage, outputs: list) -> bool:
     return True
 
 
-_GATE_VERDICT_RE = re.compile(r"VERDICT\s*:\s*(PASS|FAIL|REJECT)", re.IGNORECASE)
+_GATE_VERDICT_RE = re.compile(r"^\s*VERDICT\s*:\s*(PASS|FAIL|REJECT)\b", re.IGNORECASE | re.MULTILINE)
 
 
 def _archive_outputs(outputs: list, archive_dir: str, label: str) -> list:
@@ -857,9 +864,11 @@ def load_tasks_from_dir(directory: str, suffix: str = ".md") -> list[Task]:
             continue
         prompt = fpath.read_text(encoding="utf-8")
         out_name = fpath.stem + ".out.md"
+        # Local fix (self-iteration round 2, F1): absolute output path —
+        # cwd is the input dir, so relative outputs would double-prefix.
         tasks.append(Task(
             prompt=prompt,
-            output=str(basedir / out_name),
+            output=str((basedir / out_name).resolve()),
             cwd=str(basedir),
         ))
         log.info("loaded task from %s -> %s", fpath.name, out_name)

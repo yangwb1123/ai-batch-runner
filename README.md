@@ -36,9 +36,30 @@ exponential-backoff retries, and optional auto git-commit after each stage.
 > - `git-auto-commit.sh`: protected-branch guard + sensitive-file exclusions
 > - tests: `tests/test_local_fixes.py` (10 cases); config-resolution tests run with a
 >   clean env (`PBATCH_SCRIPT_DIR` can no longer hijack them)
+>
+> **Local fixes** (self-iteration round 2):
+> - F1: `from_dir` constructors emit absolute output paths — the round-1 cwd-aware
+>   `output_path()` otherwise double-prefixed them (`docs/inputs/docs/inputs/...`)
+> - P0-1: stage outputs, meta role outputs and single-batch git-commit inputs now
+>   propagate **resolved** paths (`output_path()`), so git add / `_combine_outputs` /
+>   archiving / decision logs can no longer operate on decoy process-cwd files
+> - F2: `run_task` and `ai/run-review.py::_run_agent` kill the child process group on
+>   ANY abnormal exit (Ctrl-C/SIGTERM included) — no more orphaned agents
+> - F3/F14: validator `{output}`/`{cwd}` substitutions are shell-quoted; temp files use
+>   unique mkstemp names; validators run in their own process group with a killable
+>   timeout (`_run_validator`)
+> - F5: task log lines show the prompt truncated to 80 chars (prompt content no longer
+>   shipped verbatim by `--log-file`)
+> - F9: stdin is consumed once before the round loop — `--max-rounds` no longer dies
+>   with "Provide a prompt" on round 2+ for stdin batches
+> - F12: gate verdict regex is line-anchored (`^\s*VERDICT\s*:`) — prose mentions no
+>   longer unlock a gate
+> - `.coverage` tolerated by root-policy and gitignored; Makefile/docs test counts
+>   refreshed (110)
+> - tests: 9 more cases in `tests/test_local_fixes.py` (19 total)
 >   
-> These pbatch/ edits will need re-applying after the next upstream sync (they are the
-> only divergence from snaplink/ai-dev).
+> These pbatch/ + ai/ edits will need re-applying after the next upstream sync (they are
+> the only divergence from snaplink/ai-dev).
 
 ## Switching agents
 

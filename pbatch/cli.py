@@ -159,6 +159,14 @@ def _run_rounds(args, pipeline: Optional[Pipeline], session_name: str, cli_valid
             round_failed = _run_pipeline_round(args, pipeline, session_name, cli_validate,
                                                timeout_override, reuse_outputs=args.reuse and not args.force)
         else:
+            # Local fix (self-iteration round 2, F9): stdin is consumed ONCE
+            # before the round loop; later rounds reuse the loaded tasks
+            # instead of re-reading an exhausted stdin (EOF -> empty -> the
+            # "Provide a prompt" fatal error on round 2+).
+            if stdin_tasks is None and not (args.from_dir or args.prompt or args.source):
+                stdin = sys.stdin.read().strip()
+                if stdin:
+                    stdin_tasks = [Task(prompt=stdin)]
             round_failed = _run_batch_round(args, stdin_tasks, session_name, cli_validate,
                                             max_rounds, round_no)
 
@@ -345,7 +353,8 @@ def _finalize_batch_round(args, results: list, round_failed: bool) -> None:
 
     # Git commit for single-batch modes (per round)
     if args.git_commit and not args.no_git_commit:
-        outputs = [r.task.output for r in results if r.success and r.task.output]
+        # Local fix (self-iteration round 2, P0-1): resolved paths only.
+        outputs = [str(r.task.output_path()) for r in results if r.success and r.task.output]
         _git_commit_single_batch(args, outputs)
 
     # Rolling re-analysis produces many artifacts; archive them once a

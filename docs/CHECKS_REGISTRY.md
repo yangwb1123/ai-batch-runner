@@ -22,7 +22,7 @@
 | G4 style | `make check-style` | 行宽 100（警告） | 行尾空白、tab 缩进、缺末尾换行、非 utf-8 为硬失败 |
 | G5 quality | `make quality` | 函数 50 行 / 圈复杂度 15 / 文件 1000 行 / 重复函数体 | 参考版自带扫描器 `quality.py`（纯 stdlib），经 `pi-batch.yaml` 注册为 `validators.pyquality` |
 | H0 self-test | `make self-test` | — | 门禁自身单测（34 例，unittest 零依赖） |
-| T0 regression | `make test` | — | 引擎回归套件（77 例，pytest，需 dev extras） |
+| T0 regression | `make test` | — | 引擎回归套件（101+ 例，pytest，需 dev extras） |
 | T1 coverage | `make coverage` | — | checks/ + cli.py 覆盖率报告（需 pytest-cov） |
 
 ## 使用

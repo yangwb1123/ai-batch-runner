@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -93,53 +95,75 @@ def agent_failure_reason(returncode: int, output: str) -> str:
     return ""
 
 
+def _prompt_brief(task: Task, cmd: list) -> str:
+    """One-line log summary with the prompt truncated (prompt content is
+    sensitive and may be shipped by --log-file)."""
+    brief_prompt = " ".join(task.prompt.split())[:80]
+    if len(brief_prompt) == 80:
+        return f"{cmd[0]} -p {brief_prompt}..."
+    return f"{cmd[0]} -p {brief_prompt}"
+
+
+def _kill_group(proc: Optional[subprocess.Popen]) -> None:
+    """Kill the whole child process group, tolerating an already-dead
+    process (used by timeout and abnormal-exit paths)."""
+    if proc is None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        try:
+            proc.kill()
+        except Exception:
+            pass  # process already gone
+
+
+def _spawn_agent(cmd: list, workdir: str, env: dict) -> subprocess.Popen:
+    """Spawn the agent in its own process group so the whole child tree
+    can be killed on timeout or interrupt."""
+    return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, cwd=workdir, env=env, start_new_session=True)
+
+
 def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = False, session_flags: Optional[list] = None) -> TaskResult:
-    """Execute one pi task, streaming output in real-time, and return the result.
-    session_flags (e.g. --session-id for a shared session) are appended to
-    the agent command when provided."""
+    """Execute one pi task, streaming output in real-time, and return the
+    result. session_flags (e.g. --session-id for a shared session) are
+    appended to the agent command when provided."""
     cmd = task.to_cmd(session_flags=session_flags)
     workdir = task.workdir()
     start = time.monotonic()
-
-    # Build a prefix for output lines
     prefix = f"[task-{task_index}] " if (parallel and total > 1) else ""
 
-    brief = " ".join(cmd[:4]) + ("..." if len(cmd) > 4 else "")
     log.info(">>  %s  [model=%s]  [timeout=%ss]  [dir=%s]",
-             brief, task.model or "default", task.timeout, workdir)
-
+             _prompt_brief(task, cmd), task.model or "default", task.timeout, workdir)
     env = os.environ.copy()
     env.update(task.env)
 
+    proc = None
+    completed = False
     try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=workdir,
-            env=env,
-            start_new_session=True,  # own process group so the whole child tree can be killed on timeout
-        )
-
-        # Read stdout and stderr concurrently via threads, then wait on a
-        # hard deadline (kills the process group when task.timeout elapses).
+        proc = _spawn_agent(cmd, workdir, env)
+        # Read stdout/stderr via threads, wait on a hard deadline (kills
+        # the process group when task.timeout elapses).
         stdout_lines, stderr_lines = _stream_proc(proc, prefix, start, task.timeout)
-
-        elapsed = time.monotonic() - start
-        return _result_from_proc(task, proc, stdout_lines, stderr_lines, elapsed)
-
+        completed = True
+        return _result_from_proc(task, proc, stdout_lines, stderr_lines, time.monotonic() - start)
     except subprocess.TimeoutExpired:
         return _timeout_result(task, proc, start)
-
     except FileNotFoundError:
         log.error("'%s' not found in PATH. Is it installed? (configure agent.bin in pi-batch.yaml)", config.AGENT_BIN)
         return TaskResult(task=task, success=False, stderr=f"{config.AGENT_BIN} not found in PATH", reason="agent binary not found")
-
     except Exception as e:
         elapsed = time.monotonic() - start
         log.error("ERROR  [%.1fs]  [%s]", elapsed, e)
         return TaskResult(task=task, success=False, stderr=str(e), elapsed=elapsed, reason=str(e))
+    finally:
+        # Local fix (self-iteration round 2, F2): on ANY abnormal exit
+        # (incl. KeyboardInterrupt, a BaseException bypassing the handlers
+        # above), kill the child process group so no agent is orphaned
+        # after Ctrl-C; normal completion already took care of the process.
+        if proc is not None and not completed:
+            _kill_group(proc)
 
 
 def save_result(task: Task, result: TaskResult) -> None:
@@ -179,6 +203,26 @@ def _retry_wait(result: TaskResult, attempt: int, retry_delay: float, backoff: f
     return wait
 
 
+def _run_validator(cmd: str, cwd: str) -> Optional[subprocess.Popen]:
+    """Run one validator command in its own process group with a 600s hard
+    deadline; a hung validator tree is killed. Returns the finished Popen
+    (None on timeout/crash)."""
+    try:
+        proc = subprocess.Popen(cmd, shell=True, cwd=cwd,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, start_new_session=True)
+        try:
+            stdout, stderr = proc.communicate(timeout=600)
+            proc.stdout, proc.stderr = stdout, stderr
+        except subprocess.TimeoutExpired:
+            _kill_group(proc)
+            proc.communicate()
+            return None
+    except Exception:
+        return None
+    return proc
+
+
 def _save_validated(task: Task, result: TaskResult, validate_cmd: str) -> bool:
     """Save a successful result through the engineering gates. The output is
     written to a temp file, every resolved validator command must exit 0
@@ -198,16 +242,19 @@ def _save_validated(task: Task, result: TaskResult, validate_cmd: str) -> bool:
         # no file target: nothing to validate against, print as usual
         save_result(task, result)
         return True
-    tmp = out_path.with_name(out_path.name + ".tmp")
+    # Local fix (self-iteration round 2, F14): unique temp name (no fixed
+    # .tmp suffix a local observer could pre-create as a symlink).
+    fd, tmp_name = tempfile.mkstemp(prefix=out_path.name + ".", suffix=".tmp", dir=str(out_path.parent))
+    os.close(fd)
+    tmp = Path(tmp_name)
     tmp.parent.mkdir(parents=True, exist_ok=True)
     tmp.write_text(result.stdout, encoding="utf-8")
+    # Local fix (self-iteration round 2, F3): shell-escape {output}/{cwd}
+    # substitutions so paths with spaces/quotes cannot inject commands.
     for raw in commands:
-        cmd = raw.replace("{output}", str(tmp)).replace("{cwd}", task.workdir())
+        cmd = raw.replace("{output}", shlex.quote(str(tmp))).replace("{cwd}", shlex.quote(task.workdir()))
         log.info("VALIDATE: %s", cmd)
-        try:
-            proc = subprocess.run(cmd, shell=True, cwd=task.workdir(), capture_output=True, text=True, timeout=600)
-        except subprocess.TimeoutExpired:
-            proc = None
+        proc = _run_validator(cmd, task.workdir())
         if proc is not None and proc.returncode == 0:
             continue
         tmp.unlink(missing_ok=True)
@@ -246,10 +293,7 @@ def _result_from_proc(task: Task, proc: subprocess.Popen, stdout_lines: list, st
 def _timeout_result(task: Task, proc: subprocess.Popen, start: float) -> TaskResult:
     """Kill the whole process group (the direct child may have spawned
     helpers that keep pipes open) and return a timed-out result."""
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        proc.kill()
+    _kill_group(proc)
     elapsed = time.monotonic() - start
     log.error("TIMEOUT  [%.1fs]  [limit=%ss]", elapsed, task.timeout)
     return TaskResult(

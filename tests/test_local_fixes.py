@@ -31,6 +31,7 @@ def load_batch():
     import pbatch
     import pbatch.cli
     import pbatch.pipeline
+    import pbatch.runner
     return pbatch
 
 
@@ -164,3 +165,176 @@ class TestMissingPyYaml:
         tasks = mod.load_tasks(str(prompt))
         assert len(tasks) == 1
         assert tasks[0].prompt == "just a prompt"
+
+
+# -- Round 2 (self-iteration round 2) fixes -------------------------------
+
+
+class TestFromDirNoDoublePrefix:
+    """F1: from_dir constructors must not double-prefix relative outputs
+    now that output_path() resolves against task.cwd."""
+
+    def test_load_tasks_from_dir_outputs_absolute(self, tmp_path, monkeypatch):
+        mod = load_batch()
+        inputs = tmp_path / "docs" / "inputs"
+        inputs.mkdir(parents=True)
+        (inputs / "a.md").write_text("x", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        tasks = mod.load_tasks_from_dir(str(inputs))
+        assert len(tasks) == 1
+        assert tasks[0].output_path() == (inputs / "a.out.md").resolve()
+
+    def test_stage_from_dir_relative_dir_no_double_prefix(self, tmp_path, monkeypatch):
+        mod = load_batch()
+        inputs = tmp_path / "inputs"
+        inputs.mkdir()
+        (inputs / "a.md").write_text("x", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        stage = mod.Stage(name="s0", from_dir=str(inputs))
+        tasks, _ = mod.pipeline._stage_from_dir_tasks(stage, reuse=False, model_override="", timeout_override=0)
+        assert len(tasks) == 1
+        assert tasks[0].output_path() == (inputs / "a.out.md").resolve()
+        assert not str(tasks[0].output_path()).endswith("inputs/inputs/a.out.md")
+
+
+class TestResolvedPathsPropagate:
+    """P0-1: stage outputs, meta role outputs and batch git-commit inputs
+    must be resolved paths (output_path()), never raw strings."""
+
+    def test_execute_stage_outputs_are_resolved(self, tmp_path, monkeypatch):
+        mod = load_batch()
+        agent = tmp_path / "agent.sh"
+        agent.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+        agent.chmod(0o755)
+        mod.config.AGENT_BIN = str(agent)
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        task = mod.Task(prompt="p", output="out.md", cwd=str(workdir))
+        results, outputs = mod.pipeline._execute_stage_tasks(
+            mod.Stage(name="s0"), [task], [], "", "new", "", "")
+        assert results[0].success
+        assert outputs == [str((workdir / "out.md").resolve())]
+
+    def test_meta_role_outputs_are_resolved(self, tmp_path, monkeypatch):
+        mod = load_batch()
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        (out_dir / "qa_lead.md").write_text("Role: {input_content}", encoding="utf-8")
+        idea = tmp_path / "idea.md"
+        idea.write_text("idea", encoding="utf-8")
+        # one agent for both roles: orchestrator picks qa_lead once, then []
+        counter = tmp_path / "counter"
+        counter.write_text("0", encoding="utf-8")
+        agent = tmp_path / "agent.sh"
+        agent.write_text(
+            "#!/bin/sh\n"
+            "if echo \"$2\" | grep -q 'Available roles'; then\n"
+            f"  n=$(cat {counter}); echo $((n+1)) > {counter}\n"
+            "  if [ \"$n\" = \"0\" ]; then echo '[\"qa_lead\"]'; else echo '[]'; fi\n"
+            "else\n"
+            "  echo '## deliverable'\n"
+            "fi\n",
+            encoding="utf-8")
+        agent.chmod(0o755)
+        mod.config.AGENT_BIN = str(agent)
+        stage = mod.Stage(name="review", from_outputs="req", meta=True,
+                          role_dir=str(out_dir), output_dir=str(out_dir), max_iterations=2)
+        results, ok = mod.pipeline._run_meta_stage(stage, {"req": [str(idea)]}, "", 0, "")
+        assert ok
+        assert len(results) == 1
+        for r in results:
+            assert r.task.output == str(r.task.output_path())
+        assert (out_dir / "qa_lead.md").exists()
+
+
+class TestKeyboardInterruptKillsChild:
+    """F2: Ctrl-C must not orphan the agent process group."""
+
+    def test_sigint_kills_process_group(self, tmp_path, monkeypatch):
+        mod = load_batch()
+        pidfile = tmp_path / "child.pid"
+        agent = tmp_path / "sleeper.sh"
+        agent.write_text(f"#!/bin/sh\necho $$ > {pidfile}\nsleep 300\n", encoding="utf-8")
+        agent.chmod(0o755)
+        mod.config.AGENT_BIN = str(agent)
+
+        def _raise_interrupt(*a, **kw):
+            # wait until the child is actually up (pidfile written), then
+            # simulate Ctrl-C while the child process group is alive
+            import time as _time
+            for _ in range(400):
+                if pidfile.exists():
+                    break
+                _time.sleep(0.05)
+            raise KeyboardInterrupt()
+
+        monkeypatch.setattr(mod.runner, "_stream_proc", _raise_interrupt)
+        task = mod.Task(prompt="p", output=str(tmp_path / "o.md"))
+        import pytest as _pytest
+        with _pytest.raises(KeyboardInterrupt):
+            mod.run_task(task)
+        # the child must be dead now (finally killed the group)
+        child_pid = int(pidfile.read_text(encoding="utf-8").strip())
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            return  # fully reaped: definitely dead
+        # zombie (killed, not yet reaped by the parent) also proves the
+        # group was killed; a live sleeping child would fail this
+        state = Path(f"/proc/{child_pid}/stat").read_text(encoding="utf-8").split()[2]
+        assert state == "Z", f"child process group still alive (state {state})"
+
+
+class TestGateVerdictAnchored:
+    """F12: VERDICT must anchor at line start; prose mentions must not pass."""
+
+    def test_prose_mention_does_not_count(self, tmp_path):
+        mod = load_batch()
+        f = tmp_path / "gate.md"
+        f.write_text("The review says VERDICT: PASS somewhere in prose\n", encoding="utf-8")
+        assert mod.pipeline._gate_verdict([str(f)]) is None
+
+    def test_line_start_verdict_counts(self, tmp_path):
+        mod = load_batch()
+        f = tmp_path / "gate.md"
+        f.write_text("## Review\nVERDICT: PASS - all good\n", encoding="utf-8")
+        assert mod.pipeline._gate_verdict([str(f)]) == "PASS"
+
+
+class TestValidatorShellEscape:
+    """F3/F14: {output} substitution is shell-quoted; paths with spaces work."""
+
+    def test_output_with_spaces_passes_unquoted_template(self, tmp_path):
+        mod = load_batch()
+        agent = tmp_path / "agent.sh"
+        agent.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+        agent.chmod(0o755)
+        mod.config.AGENT_BIN = str(agent)
+        spaced = tmp_path / "dir with spaces"
+        spaced.mkdir()
+        output = spaced / "o.md"
+        results = mod.run_serial([mod.Task(prompt="x", output=str(output))],
+                                 validate_cmd='test -f {output}')
+        assert results[0].success is True
+        assert output.exists()
+
+
+class TestStdinReusedAcrossRounds:
+    """F9: stdin is consumed once; later rounds reuse the loaded tasks."""
+
+    def test_stdin_rounds_do_not_exit(self, tmp_path):
+        counter = tmp_path / "counter"
+        agent = tmp_path / "flaky.sh"
+        agent.write_text(
+            "#!/bin/sh\n"
+            f"echo x >> {counter}\n"
+            f"if [ $(wc -l < {counter}) -le 1 ]; then echo 'Error: rate_limit_error'; "
+            "else echo 'OK'; fi\n",
+            encoding="utf-8")
+        agent.chmod(0o755)
+        result = subprocess.run(
+            [sys.executable, str(PI_BATCH), "--agent-bin", str(agent),
+             "--mode", "serial", "--max-rounds", "2", "--round-delay", "0"],
+            input="analyze this\n", text=True, capture_output=True, timeout=120)
+        assert result.returncode == 0, result.stderr
+        assert counter.read_text(encoding="utf-8").count("x") == 2  # round1 fail + round2 pass

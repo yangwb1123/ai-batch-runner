@@ -488,35 +488,51 @@ def _run_agent(cmd: list, cwd: str, timeout: int) -> tuple[int, list[str]]:
     thread while the main thread enforces the deadline; a hung agent (e.g.
     offline machine) must not block the runner forever. Returns (returncode,
     lines); returncode is -1 on timeout."""
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        cwd=cwd,
-        start_new_session=True,  # own process group so the whole child tree can be killed on timeout
-    )
-    assert proc.stdout is not None
-
-    lines: list[str] = []
-
-    def _read():
-        for line in proc.stdout:
-            print(line, end="", flush=True)
-            lines.append(line)
-
-    reader = threading.Thread(target=_read, daemon=True)
-    reader.start()
+    # Local fix (self-iteration round 2, F2): on ANY abnormal exit (incl.
+    # KeyboardInterrupt/SIGTERM) the child process group must be killed so
+    # no agent is orphaned; previously only the timeout path killed it.
+    proc = None
+    completed = False
     try:
-        rc = proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        # Kill the whole group: the direct child may have spawned helpers
-        # (e.g. a shell running sleep) that keep the pipe open.
-        os.killpg(proc.pid, signal.SIGKILL)
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            cwd=cwd,
+            start_new_session=True,  # own process group so the whole child tree can be killed on timeout
+        )
+        assert proc.stdout is not None
+
+        lines: list[str] = []
+
+        def _read():
+            for line in proc.stdout:
+                print(line, end="", flush=True)
+                lines.append(line)
+
+        reader = threading.Thread(target=_read, daemon=True)
+        reader.start()
+        try:
+            rc = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # Kill the whole group: the direct child may have spawned helpers
+            # (e.g. a shell running sleep) that keep the pipe open.
+            os.killpg(proc.pid, signal.SIGKILL)
+            reader.join(timeout=5)
+            return -1, lines
         reader.join(timeout=5)
-        return -1, lines
-    reader.join(timeout=5)
-    return rc, lines
+        completed = True
+        return rc, lines
+    finally:
+        if proc is not None and not completed:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                try:
+                    proc.kill()
+                except Exception:
+                    pass  # process already gone
 
 
 def _run_validators(stage: str, out_file, output: str, commands: list, cwd: str) -> int:

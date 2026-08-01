@@ -22,22 +22,29 @@ stages:
 
       Layout: pbatch/ engine package (config.py, models.py, runner.py, pipeline.py,
       cli.py) behind a thin pi-batch.py shim; 19 role prompt templates in prompts/;
-      AI-SDLC review framework in ai/ (run-review.py + sdlc.yaml); engineering-gates
-      harness we authored locally: checks/ (filesize, ast-based complexity, root
-      policy, style), cli.py, Makefile (make ci), engineering.yaml, .githooks/,
-      .github/workflows/ci.yml; upstream-synced quality.py scanner; 91 pytest cases
-      in tests/.
+      AI-SDLC review framework in ai/; locally authored engineering-gates harness:
+      checks/ (filesize, ast-based complexity, root policy, style), cli.py, Makefile
+      (make ci), engineering.yaml, .githooks/, .github/workflows/ci.yml;
+      upstream-synced quality.py scanner; tests/ has 91 upstream + 10 local
+      regression cases (tests/test_local_fixes.py).
 
-      Current quality state: make ci fully green (gates + harness self-tests + 91
-      regression tests). Known open issues (README): Task.output_path() ignores
-      task.cwd for relative outputs; subprocess timeout can effectively double in
-      _stream_and_wait; missing PyYAML silently degrades tasks.yaml to one raw-text
-      prompt; git-commit exit codes unchecked; git-auto-commit.sh has no secret-file
-      exclusions; no license chosen.
+      Self-iteration round 1 already fixed (see git log fa8a14e and README local
+      fixes): output_path() honoring task.cwd, git-commit exit-code checks,
+      PyYAML-missing fail-loud in load_tasks, atomic save_result, git-auto-commit.sh
+      protected-branch + sensitive-file guards, test env hygiene. All verified:
+      make ci green, 101 tests green under both clean and PBATCH_SCRIPT_DIR-preset
+      env, quality.py --strict pbatch/ OK.
 
-      Summarize the architecture, the strengths, and the most valuable improvement
-      directions with evidence, prioritizing fixes for the known issues over new
-      features.
+      Remaining known issues: no LICENSE chosen (needs upstream compatibility
+      check); no pyproject license field; a few Medium gaps from round 1 review:
+      zero tests for run_parallel, stage commands/commands_parallel, --min-interval,
+      --log-file, _retry_wait 30s floor, killpg timeout path; ~20 CLI E2E subprocess
+      tests invisible to make coverage.
+
+      This is round 2: verify the round-1 fixes are real (with evidence, not just
+      reading the commit), find NEW issues the previous review missed, and prioritize
+      concrete improvements. Summarize architecture health and the top actionable
+      findings.
     output: docs/reviews/kickoff.md
     mode: serial
 
