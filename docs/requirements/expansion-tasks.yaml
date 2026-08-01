@@ -1,0 +1,52 @@
+# 5 份独立扩展方向分析（等价于 shell 循环 5 次，但可并行/可续跑）
+# 注意：prompt 限定阅读范围，避免 agent 全仓扫描导致 context 超限
+tasks:
+  - prompt: |
+      基于目前已经实现的功能，请你以资深架构师/产品经理的角度，帮我思考这个项目
+      还有哪些可以扩展的核心功能点、边界情况（Edge cases）处理或性能优化点。
+      要求：为控制上下文，只阅读 README.md、AGENTS.md 以及 pbatch/ 目录下
+      config.py、models.py、runner.py、pipeline.py、cli.py 每个文件的前 40 行，
+      不扫描 docs/、tests/、prompts/、examples/ 目录。不要编写任何代码。
+      列出 3-5 个高价值的扩展方向，并说明为什么需要它们。
+    output: docs/requirements/expansion-1.md
+    timeout: 900
+
+  - prompt: |
+      基于目前已经实现的功能，请你以资深架构师/产品经理的角度，帮我思考这个项目
+      还有哪些可以扩展的核心功能点、边界情况（Edge cases）处理或性能优化点。
+      要求：为控制上下文，只阅读 README.md、AGENTS.md 以及 pbatch/ 目录下
+      config.py、models.py、runner.py、pipeline.py、cli.py 每个文件的前 40 行，
+      不扫描 docs/、tests/、prompts/、examples/ 目录。不要编写任何代码。
+      列出 3-5 个高价值的扩展方向，并说明为什么需要它们。
+    output: docs/requirements/expansion-2.md
+    timeout: 900
+
+  - prompt: |
+      基于目前已经实现的功能，请你以资深架构师/产品经理的角度，帮我思考这个项目
+      还有哪些可以扩展的核心功能点、边界情况（Edge cases）处理或性能优化点。
+      要求：为控制上下文，只阅读 README.md、AGENTS.md 以及 pbatch/ 目录下
+      config.py、models.py、runner.py、pipeline.py、cli.py 每个文件的前 40 行，
+      不扫描 docs/、tests/、prompts/、examples/ 目录。不要编写任何代码。
+      列出 3-5 个高价值的扩展方向，并说明为什么需要它们。
+    output: docs/requirements/expansion-3.md
+    timeout: 900
+
+  - prompt: |
+      基于目前已经实现的功能，请你以资深架构师/产品经理的角度，帮我思考这个项目
+      还有哪些可以扩展的核心功能点、边界情况（Edge cases）处理或性能优化点。
+      要求：为控制上下文，只阅读 README.md、AGENTS.md 以及 pbatch/ 目录下
+      config.py、models.py、runner.py、pipeline.py、cli.py 每个文件的前 40 行，
+      不扫描 docs/、tests/、prompts/、examples/ 目录。不要编写任何代码。
+      列出 3-5 个高价值的扩展方向，并说明为什么需要它们。
+    output: docs/requirements/expansion-4.md
+    timeout: 900
+
+  - prompt: |
+      基于目前已经实现的功能，请你以资深架构师/产品经理的角度，帮我思考这个项目
+      还有哪些可以扩展的核心功能点、边界情况（Edge cases）处理或性能优化点。
+      要求：为控制上下文，只阅读 README.md、AGENTS.md 以及 pbatch/ 目录下
+      config.py、models.py、runner.py、pipeline.py、cli.py 每个文件的前 40 行，
+      不扫描 docs/、tests/、prompts/、examples/ 目录。不要编写任何代码。
+      列出 3-5 个高价值的扩展方向，并说明为什么需要它们。
+    output: docs/requirements/expansion-5.md
+    timeout: 900

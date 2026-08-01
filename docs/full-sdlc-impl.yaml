@@ -1,0 +1,99 @@
+# 完整 SDLC 实现流水线 — 从需求到最终决策（full 流程）
+#
+# 输入：docs/requirements/ 下的扩展方向分析（expansion-1..5.md，上一轮批量产出）
+# 流程：需求理解 → 需求合成 → 架构设计 → 代码实现 → 代码审查 → 测试编写 → 最终审查
+# 输出：docs/results/（方案/实现/审查/测试/决策文档），供后续人工或 agent 落地代码
+#
+# 运行（从仓库根）：
+#   python3 pi-batch.py docs/full-sdlc-impl.yaml --session-mode per-stage \
+#     --session-name full-sdlc --log-file logs/full-sdlc.log
+#
+# 说明：
+#   - aggregate: true 让每个角色一次看到上游全部产出（合并多份输入为一份证据）
+#   - 阶段间 from_outputs 串联；--reuse 断点续跑
+#   - 实现阶段产出实现方案（含关键代码片段），最终审查给出 Go/No-Go 与实施清单
+
+git_commit: false
+
+stages:
+  # ── 阶段 1：需求理解（逐份分析输入）──
+  - name: requirement-analysis
+    from_dir: docs/requirements
+    mode: serial
+
+  # ── 阶段 2：需求合成（PM 聚合 5 份分析，输出统一需求规格）──
+  - name: requirement-synthesis
+    from_outputs: requirement-analysis
+    aggregate: true
+    tasks:
+      - role: pm
+        prompt_template: prompts/pm.md
+        output: docs/results/{input_stem}.requirements.md
+        timeout: 900
+    mode: serial
+
+  # ── 阶段 3：架构设计（Architect + Tech Lead 并行）──
+  - name: technical-design
+    from_outputs: requirement-synthesis
+    tasks:
+      - role: architect
+        prompt_template: prompts/architect.md
+        output: docs/results/{input_stem}.arch.md
+        timeout: 900
+
+      - role: tech-lead
+        prompt_template: prompts/tech_lead.md
+        output: docs/results/{input_stem}.impl-plan.md
+        timeout: 900
+
+    mode: parallel
+    workers: 2
+
+  # ── 阶段 4：代码实现（聚合架构方案 + 实现计划，产出实现方案）──
+  - name: code-implementation
+    from_outputs: technical-design
+    aggregate: true
+    tasks:
+      - role: implementer
+        prompt_template: prompts/code-implementer.md
+        output: docs/results/{input_stem}.code.md
+        timeout: 1200
+    mode: serial
+
+  # ── 阶段 5：代码审查（Staff + Security 并行）──
+  - name: code-review
+    from_outputs: code-implementation
+    tasks:
+      - role: reviewer
+        prompt_template: prompts/staff_engineer.md
+        output: docs/results/{input_stem}.review.md
+        timeout: 900
+
+      - role: security-reviewer
+        prompt_template: prompts/security_engineer.md
+        output: docs/results/{input_stem}.security-review.md
+        timeout: 900
+
+    mode: parallel
+    workers: 2
+
+  # ── 阶段 6：测试编写（聚合审查意见）──
+  - name: test-writing
+    from_outputs: code-review
+    aggregate: true
+    tasks:
+      - role: qa-engineer
+        prompt_template: prompts/qa_lead.md
+        output: docs/results/{input_stem}.tests.md
+        timeout: 900
+    mode: serial
+
+  # ── 阶段 7：最终审查（Tech Lead 决策：Go/No-Go + 实施清单）──
+  - name: final-review
+    from_outputs: test-writing
+    tasks:
+      - role: tech-lead
+        prompt_template: prompts/tech_lead.md
+        output: docs/results/{input_stem}.final.md
+        timeout: 900
+    mode: serial

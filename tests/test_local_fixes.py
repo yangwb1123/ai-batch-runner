@@ -319,6 +319,33 @@ class TestValidatorShellEscape:
         assert output.exists()
 
 
+class TestSaveResultHardening:
+    """T0.1 (full-SDLC pipeline): save_result refuses symlink targets and
+    writes via a unique mkstemp temp file (no fixed .tmp name)."""
+
+    def test_symlink_output_refused(self, tmp_path):
+        mod = load_batch()
+        victim = tmp_path / "victim.md"
+        victim.write_text("do not overwrite", encoding="utf-8")
+        link = tmp_path / "out.md"
+        link.symlink_to(victim)
+        task = mod.Task(prompt="p", output=str(link))
+        result = mod.TaskResult(task=task, success=True, stdout="new content")
+        mod.save_result(task, result)
+        assert victim.read_text(encoding="utf-8") == "do not overwrite"
+        assert not link.exists() or link.is_symlink()  # target untouched
+
+    def test_no_fixed_tmp_left_behind(self, tmp_path):
+        mod = load_batch()
+        out = tmp_path / "o.md"
+        task = mod.Task(prompt="p", output=str(out))
+        result = mod.TaskResult(task=task, success=True, stdout="x")
+        mod.save_result(task, result)
+        assert out.exists()
+        leftovers = [p for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
+        assert leftovers == []
+
+
 class TestStdinReusedAcrossRounds:
     """F9: stdin is consumed once; later rounds reuse the loaded tasks."""
 

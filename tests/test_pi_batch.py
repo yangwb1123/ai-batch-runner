@@ -774,6 +774,91 @@ def test_validate_multiple_and_semantics(tmp_path, fake_agent):
     assert not output2.exists()
 
 
+def test_run_validation_success():
+    """run_validation reports a clean pass with exit code and output."""
+    mod = load_batch()
+    v = mod.run_validation("echo hello", os.getcwd())
+    assert v.ok is True
+    assert v.exit_code == 0
+    assert v.timed_out is False
+    assert "hello" in v.stdout
+
+
+def test_run_validation_failure_returns_exit_and_stderr_tail():
+    """A failing validator returns its exit code and captured stderr (the
+    failure signature surfaced to retry/decision logic)."""
+    mod = load_batch()
+    v = mod.run_validation("echo boom >&2; exit 7", os.getcwd())
+    assert v.ok is False
+    assert v.exit_code == 7
+    assert "boom" in v.stderr
+    assert v.timed_out is False
+
+
+def test_run_validation_spawn_crash_fails_closed():
+    """A validator that cannot spawn fails closed with the error text in
+    stderr instead of raising."""
+    mod = load_batch()
+    v = mod.run_validation("true", "/nonexistent-dir-" + str(os.getpid()))
+    assert v.ok is False
+    assert v.exit_code == -1
+    assert v.stderr  # exception text is captured
+
+
+def test_run_validation_timeout_kills_group():
+    """A hung validator is killed at the hard deadline and reported as
+    timed out, not as a normal failure."""
+    mod = load_batch()
+    v = mod.run_validation("sleep 30", os.getcwd(), timeout=1)
+    assert v.ok is False
+    assert v.timed_out is True
+    assert v.exit_code == -1
+
+
+def test_revalidate_existing_passes_and_trivial_no_validators(tmp_path):
+    """An existing non-empty artifact passes revalidation; no validators
+    (empty or None gate) make it trivially reusable."""
+    mod = load_batch()
+    out = tmp_path / "o.md"
+    out.write_text("content", encoding="utf-8")
+    assert mod.revalidate_existing(out, "true") is True
+    assert mod.revalidate_existing(out, "") is True
+    assert mod.revalidate_existing(out, None) is True
+
+
+def test_revalidate_existing_fails_and_uses_output_placeholder(tmp_path):
+    """A failing gate rejects the artifact; {output} points at the existing
+    artifact so gates can inspect it in place."""
+    mod = load_batch()
+    out = tmp_path / "o.md"
+    out.write_text("content", encoding="utf-8")
+    assert mod.revalidate_existing(out, "exit 1") is False
+    assert mod.revalidate_existing(out, 'test -f "{output}"') is True
+    assert mod.revalidate_existing(out, 'test "$(cat {output})" = content') is True
+
+
+def test_revalidate_existing_missing_or_empty_fails_closed(tmp_path):
+    """Missing and empty artifacts are never reusable: fail closed so a
+    stale or zero-byte output is regenerated instead of promoted."""
+    mod = load_batch()
+    assert mod.revalidate_existing(tmp_path / "missing.md", "true") is False
+    empty = tmp_path / "empty.md"
+    empty.write_text("", encoding="utf-8")
+    assert mod.revalidate_existing(empty, "true") is False
+
+
+def test_validate_failure_keeps_zero_artifact_with_refactored_executor(tmp_path, fake_agent):
+    """_save_validated on the refactored executor keeps the no-artifact
+    contract: a failing gate deletes the temp file and leaves nothing."""
+    mod = load_batch()
+    mod.config.AGENT_BIN = str(fake_agent)
+    output = tmp_path / "o.md"
+    results = mod.run_serial([mod.Task(prompt="x", output=str(output))], validate_cmd="echo gate-rejected >&2; exit 3")
+    assert results[0].success is False
+    assert not output.exists()
+    assert not list(tmp_path.glob("o.md*"))  # no temp residue either
+
+
 def test_cli_validate_named_gofmt(tmp_path):
     """CLI --validate gofmt gates generated Go code end to end."""
     bad = tmp_path / "bad-agent.sh"

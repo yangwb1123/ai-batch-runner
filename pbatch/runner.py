@@ -13,7 +13,7 @@ import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from . import config
 from .config import AGENT_BIN, AGENT_DEFAULT_WORKERS, _resolve_validators, _session_flags, log
@@ -183,9 +183,19 @@ def save_result(task: Task, result: TaskResult) -> None:
         return
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    # Local fix (self-iteration round 1): atomic write also on the plain
-    # (no-validator) path, symmetric with _save_validated's tmp+rename.
-    tmp = out_path.with_name(out_path.name + ".tmp")
+    # T0.1 (full-SDLC pipeline): refuse symlink targets (a symlinked output
+    # path could redirect the write elsewhere) and use a unique mkstemp
+    # name, mirroring _save_validated's F14 hardening. Note: probe the
+    # UNRESOLVED path — output_path() resolves symlinks away.
+    probe = Path(task.output)
+    if not probe.is_absolute():
+        probe = Path(task.workdir()) / probe
+    if probe.is_symlink():
+        log.error("NOT SAVED %s: output path is a symlink (refusing to follow)", out_path)
+        return
+    fd, tmp_name = tempfile.mkstemp(prefix=out_path.name + ".", suffix=".tmp", dir=str(out_path.parent))
+    os.close(fd)
+    tmp = Path(tmp_name)
     tmp.write_text(result.stdout, encoding="utf-8")
     tmp.rename(out_path)
     log.info("WROTE %s  (%d bytes)", out_path, len(result.stdout))
@@ -203,24 +213,37 @@ def _retry_wait(result: TaskResult, attempt: int, retry_delay: float, backoff: f
     return wait
 
 
-def _run_validator(cmd: str, cwd: str) -> Optional[subprocess.Popen]:
-    """Run one validator command in its own process group with a 600s hard
-    deadline; a hung validator tree is killed. Returns the finished Popen
-    (None on timeout/crash)."""
+class ValidationResult(NamedTuple):
+    """Outcome of one validator command execution. ok is True only when the
+    command finished within the hard deadline and exited 0; exit_code is -1
+    for timeout/crash (timed_out distinguishes the two)."""
+    ok: bool
+    exit_code: int
+    stdout: str
+    stderr: str
+    timed_out: bool
+
+
+def run_validation(cmd: str, cwd: str, timeout: float = 600) -> ValidationResult:
+    """Run one validator command in its own process group with a hard
+    deadline; a hung validator tree is killed. Captures the exit code and
+    full stdout/stderr so callers can surface the failure signature (the
+    basis for retry feedback and reuse revalidation). A spawn crash returns
+    a failed result with the exception text in stderr."""
     try:
         proc = subprocess.Popen(cmd, shell=True, cwd=cwd,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, start_new_session=True)
-        try:
-            stdout, stderr = proc.communicate(timeout=600)
-            proc.stdout, proc.stderr = stdout, stderr
-        except subprocess.TimeoutExpired:
-            _kill_group(proc)
-            proc.communicate()
-            return None
-    except Exception:
-        return None
-    return proc
+    except Exception as e:
+        return ValidationResult(ok=False, exit_code=-1, stdout="", stderr=str(e), timed_out=False)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_group(proc)
+        proc.communicate()
+        return ValidationResult(ok=False, exit_code=-1, stdout="", stderr="", timed_out=True)
+    return ValidationResult(ok=proc.returncode == 0, exit_code=proc.returncode,
+                            stdout=stdout, stderr=stderr, timed_out=False)
 
 
 def _save_validated(task: Task, result: TaskResult, validate_cmd: str) -> bool:
@@ -254,20 +277,54 @@ def _save_validated(task: Task, result: TaskResult, validate_cmd: str) -> bool:
     for raw in commands:
         cmd = raw.replace("{output}", shlex.quote(str(tmp))).replace("{cwd}", shlex.quote(task.workdir()))
         log.info("VALIDATE: %s", cmd)
-        proc = _run_validator(cmd, task.workdir())
-        if proc is not None and proc.returncode == 0:
+        v = run_validation(cmd, task.workdir())
+        if v.ok:
             continue
         tmp.unlink(missing_ok=True)
         log.warning("VALIDATION FAILED%s: %s; output NOT saved",
-                    f" (exit={proc.returncode})" if proc is not None else " (timeout)", cmd)
-        if proc is not None:
-            for line in (proc.stdout or "").strip().splitlines()[-10:]:
-                log.warning("  | %s", line)
-            for line in (proc.stderr or "").strip().splitlines()[-10:]:
-                log.warning("  | %s", line)
+                    " (timeout)" if v.timed_out else f" (exit={v.exit_code})", cmd)
+        for line in (v.stdout or "").strip().splitlines()[-10:]:
+            log.warning("  | %s", line)
+        for line in (v.stderr or "").strip().splitlines()[-10:]:
+            log.warning("  | %s", line)
         return False
     tmp.rename(out_path)
     log.info("WROTE %s (validated)", out_path)
+    return True
+
+
+def revalidate_existing(path: Path, validate_cmd: Optional[str], workdir: str = "") -> bool:
+    """Re-run the effective validators against an already-written artifact
+    (the reuse path: a previously generated output is promoted only while it
+    still passes every gate). Missing or empty artifacts fail closed; no
+    validators apply -> trivially reusable. Returns True when the artifact
+    passes all gates."""
+    if not path.is_file():
+        return False
+    try:
+        empty = path.stat().st_size == 0
+    except OSError:
+        return False  # vanished between is_file and stat: fail closed
+    if empty:
+        return False
+    commands = _resolve_validators(validate_cmd)
+    if not commands:
+        return True
+    wd = workdir or os.getcwd()
+    for raw in commands:
+        cmd = raw.replace("{output}", shlex.quote(str(path))).replace("{cwd}", shlex.quote(wd))
+        log.info("REVALIDATE: %s", cmd)
+        v = run_validation(cmd, wd)
+        if v.ok:
+            continue
+        log.warning("REVALIDATION FAILED%s: %s; %s NOT reusable",
+                    " (timeout)" if v.timed_out else f" (exit={v.exit_code})", cmd, path)
+        for line in (v.stdout or "").strip().splitlines()[-10:]:
+            log.warning("  | %s", line)
+        for line in (v.stderr or "").strip().splitlines()[-10:]:
+            log.warning("  | %s", line)
+        return False
+    log.info("REVALIDATED %s", path)
     return True
 
 

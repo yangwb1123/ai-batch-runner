@@ -121,6 +121,16 @@ once per stage; `--validate-cmd` runs per artifact and should stay light
 `--max-rounds`, a generated artifact that fails validation is regenerated
 automatically until it passes or the budget is exhausted.
 
+Validator execution is centralized in `pbatch/runner.run_validation()`: each
+command runs in its own process group with a 600s hard deadline (a hung
+validator tree is killed), and the exit code plus captured stdout/stderr are
+returned as a structured result (ok / exit_code / stdout / stderr /
+timed_out) instead of being lost in the log stream. The same executor backs
+`revalidate_existing()`, which re-runs the effective gates against an
+already-written artifact (missing or empty artifacts fail closed) — the
+building block for keeping `--reuse` from promoting outputs that no longer
+pass their gates.
+
 ## Validation is optional per stage
 
 Not every flow generates code. An analysis task ("analyze the project and

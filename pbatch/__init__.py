@@ -8,8 +8,9 @@ from .config import (AGENT_BIN, AGENT_DEFAULT_MODEL, AGENT_DEFAULT_TIMEOUT,
                      AGENT_DEFAULT_WORKERS, COMMIT_PREFIX_DEFAULT, VALIDATORS,
                      log, yaml)
 from .models import Pipeline, Stage, Task, TaskResult
-from .runner import (agent_failure_reason, print_summary, run_parallel,
-                     run_serial, run_task, save_result)
+from .runner import (ValidationResult, agent_failure_reason, print_summary,
+                     revalidate_existing, run_parallel, run_serial, run_task,
+                     run_validation, save_result)
 from .config import _session_flags
 from .pipeline import _archive_outputs
 from .runner import _resolve_validators
@@ -22,7 +23,8 @@ __all__ = [
     "AGENT_DEFAULT_WORKERS", "COMMIT_PREFIX_DEFAULT", "VALIDATORS", "log", "yaml",
     "Pipeline", "Stage", "Task", "TaskResult",
     "agent_failure_reason", "print_summary", "run_parallel", "run_serial",
-    "run_task", "save_result", "execute_stage", "load_pipeline", "load_tasks",
+    "run_task", "save_result", "run_validation", "revalidate_existing",
+    "ValidationResult", "execute_stage", "load_pipeline", "load_tasks",
     "load_tasks_from_dir", "run_pipeline", "build_parser", "main",
     "_session_flags", "_archive_outputs", "_resolve_validators",
 ]
