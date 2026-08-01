@@ -308,6 +308,31 @@ def _run_batch_round(args, stdin_tasks, session_name: str, cli_validate: str, ma
     return round_failed
 
 
+def _git_commit_single_batch(args, outputs: list) -> None:
+    """Best-effort git commit for a single-batch round; failures are logged
+    with the real exit codes (never silently reported as success)."""
+    if not outputs:
+        return
+    try:
+        if subprocess.run(["git", "rev-parse", "--git-dir"],
+                          capture_output=True, timeout=5).returncode != 0:
+            log.warning("Not a git repository, skipping git commit")
+            return
+        add = subprocess.run(["git", "add"] + outputs,
+                             capture_output=True, text=True, timeout=10)
+        msg = "%s Single batch: %d tasks" % (args.commit_prefix, len(outputs))
+        commit = subprocess.run(["git", "commit", "-m", msg],
+                                capture_output=True, text=True, timeout=10)
+        if add.returncode != 0 or commit.returncode != 0:
+            detail = (add.stderr or "") + (commit.stderr or "")
+            log.warning("git commit failed (add=%d, commit=%d): %s",
+                        add.returncode, commit.returncode, detail.strip()[:500])
+        else:
+            log.info("GIT COMMIT: %s (files: %d)", msg, len(outputs))
+    except Exception as e:
+        log.warning("Git commit skipped: %s", e)
+
+
 def _finalize_batch_round(args, results: list, round_failed: bool) -> None:
     """Decision log, git commit, and archive for a finished single-batch
     round (archive only when the round fully succeeded)."""
@@ -321,18 +346,7 @@ def _finalize_batch_round(args, results: list, round_failed: bool) -> None:
     # Git commit for single-batch modes (per round)
     if args.git_commit and not args.no_git_commit:
         outputs = [r.task.output for r in results if r.success and r.task.output]
-        if outputs:
-            try:
-                subprocess.run(["git", "rev-parse", "--git-dir"],
-                               capture_output=True, timeout=5)
-                subprocess.run(["git", "add"] + outputs,
-                               capture_output=True, timeout=10)
-                msg = "%s Single batch: %d tasks" % (args.commit_prefix, len(outputs))
-                subprocess.run(["git", "commit", "-m", msg],
-                               capture_output=True, timeout=10)
-                log.info("GIT COMMIT: %s (files: %d)", msg, len(outputs))
-            except Exception as e:
-                log.warning("Git commit skipped: %s", e)
+        _git_commit_single_batch(args, outputs)
 
     # Rolling re-analysis produces many artifacts; archive them once a
     # round fully succeeded so the worktree stays clean.
@@ -347,7 +361,9 @@ def _filter_reused(tasks: list, reuse: bool) -> list:
     round reruns only the failures."""
     if not reuse:
         return tasks
-    kept = [t for t in tasks if not (t.output and Path(t.output).exists())]
+    # Local fix (self-iteration round 1): reuse must honor task.cwd too,
+    # via output_path(), not a bare process-cwd-relative Path.
+    kept = [t for t in tasks if not (t.output and t.output_path().exists())]
     skipped = len(tasks) - len(kept)
     if skipped:
         log.info("Reuse: %d task(s) already have outputs, skipped", skipped)

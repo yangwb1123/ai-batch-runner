@@ -22,6 +22,23 @@ exponential-backoff retries, and optional auto git-commit after each stage.
 > `validators.pyquality` points at `{cwd}/quality.py` (reference used an `ai-dev/` prefix
 > from snaplink's repo layout); `AGENTS.md` carries a top note mapping `ai-dev/`-prefixed
 > commands to this repo's root layout.
+>
+> **Local fixes** (self-iteration round 1, driven by the meta-review pipeline in
+> `docs/self-iteration.yaml` — see `docs/reviews/`):
+> - `Task.output_path()` resolves relative outputs against `task.cwd` (was: process cwd);
+>   `_filter_reused` follows suit (`pbatch/models.py`, `pbatch/cli.py`)
+> - `_git_commit_stage` and single-batch git commit check exit codes and log real failures
+>   (`pbatch/pipeline.py`, `pbatch/cli.py`)
+> - `load_tasks` fails loud when PyYAML is missing for a `.yaml`/`tasks:` file
+>   (`pbatch/pipeline.py`)
+> - `save_result` writes atomically (tmp+rename) on the no-validator path too
+>   (`pbatch/runner.py`)
+> - `git-auto-commit.sh`: protected-branch guard + sensitive-file exclusions
+> - tests: `tests/test_local_fixes.py` (10 cases); config-resolution tests run with a
+>   clean env (`PBATCH_SCRIPT_DIR` can no longer hijack them)
+>   
+> These pbatch/ edits will need re-applying after the next upstream sync (they are the
+> only divergence from snaplink/ai-dev).
 
 ## Switching agents
 
@@ -179,11 +196,12 @@ dependencies:
 
 See `docs/CHECKS_REGISTRY.md` for the full registry.
 
-## Known open issues (carried over from the reference)
+## Known open issues
 
-- `Task.output_path()` doesn't respect `task.cwd` for relative `output` paths
-- subprocess timeout can effectively double under `_stream_and_wait`
-- missing PyYAML degrades a structured `tasks.yaml` to one giant raw-text prompt silently
-- `_git_commit_stage` / single-batch git commit don't check `git commit`'s exit code
-- `git-auto-commit.sh` runs `git add -A` with no secret-file exclusions or protected-branch check
-- no license chosen yet
+- no license chosen yet (needs compatibility check against the upstream snaplink/ai-dev
+  license before picking; `engineering.yaml` already allows a root `LICENSE` file)
+
+Resolved by self-iteration round 1 (see Local fixes above): `output_path()` ignoring
+`task.cwd`, git-commit exit codes unchecked, PyYAML silent degradation, the stale
+"timeout can double" README item (already fixed upstream via `_stream_proc`'s shared
+deadline), missing `pyproject.toml`, and the unguarded `git add -A`.

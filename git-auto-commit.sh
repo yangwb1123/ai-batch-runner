@@ -20,6 +20,14 @@ if ! git rev-parse --git-dir > /dev/null 2>&1; then
     exit 1
 fi
 
+# 受保护分支检查（本地修复：拒绝直接在 main/master 上提交）
+BRANCH=$(git branch --show-current 2>/dev/null)
+if [[ "$BRANCH" == "main" || "$BRANCH" == "master" ]] && [[ -z "$ALLOW_PROTECTED_BRANCH" ]]; then
+    echo -e "${RED}错误: 当前在受保护分支 '$BRANCH' 上。${NC}"
+    echo -e "${YELLOW}请先切到功能分支，或设置 ALLOW_PROTECTED_BRANCH=1 强制提交${NC}"
+    exit 1
+fi
+
 # 检查是否有未提交的更改
 if [[ -z $(git status -s) ]]; then
     echo -e "${GREEN}✓ 没有需要提交的更改${NC}"
@@ -69,9 +77,23 @@ if [[ ! $REPLY =~ ^[Yy]$ ]]; then
     exit 0
 fi
 
-# 执行提交
+# 执行提交（本地修复：排除敏感文件，防密钥/日志误入库）
 echo -e "${BLUE}正在添加文件...${NC}"
-git add -A
+SENSITIVE_PATTERNS=(".env*" "*.key" "*.pem" "*.p12" "*.jks" "*.p8" "*id_rsa*" "*id_ed25519*" "*.log" "logs/" "docs/reviews/")
+GITADD_ARGS=(-A -- .)
+for pat in "${SENSITIVE_PATTERNS[@]}"; do
+    GITADD_ARGS+=(":(exclude)${pat}")
+done
+git add "${GITADD_ARGS[@]}"
+
+# 二次校验：暂存区若仍含敏感模式则中止
+STAGED=$(git diff --cached --name-only)
+for pat in "${SENSITIVE_PATTERNS[@]}"; do
+    if echo "$STAGED" | grep -qE "${pat//\*/.*}"; then
+        echo -e "${RED}✗ 暂存区包含敏感文件(匹配 $pat)，已中止提交${NC}"
+        exit 1
+    fi
+done
 
 echo -e "${BLUE}正在提交...${NC}"
 git commit -m "$COMMIT_MSG"

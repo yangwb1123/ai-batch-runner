@@ -597,8 +597,16 @@ def _git_commit_stage(stage: Stage, outputs: list) -> bool:
         if subprocess.run(["git", "rev-parse", "--git-dir"], capture_output=True, text=True, timeout=10).returncode != 0:
             log.warning("Not a git repository, skipping git commit")
             return False
-        subprocess.run(["git", "add"] + outputs, capture_output=True, timeout=10)
-        subprocess.run(["git", "commit", "-m", commit_msg], capture_output=True, timeout=10)
+        add = subprocess.run(["git", "add"] + outputs, capture_output=True, text=True, timeout=10)
+        if add.returncode != 0:
+            log.warning("git add failed (exit=%d): %s", add.returncode,
+                        (add.stderr or "").strip()[:500])
+            return False
+        commit = subprocess.run(["git", "commit", "-m", commit_msg], capture_output=True, text=True, timeout=10)
+        if commit.returncode != 0:
+            log.warning("git commit failed (exit=%d): %s", commit.returncode,
+                        (commit.stderr or "").strip()[:500])
+            return False
         log.info("GIT COMMIT: %s (files: %d)", commit_msg, len(outputs))
     except Exception as e:
         log.warning("Git commit failed: %s", e)
@@ -793,7 +801,13 @@ def load_tasks(source: str) -> list[Task]:
     raw = path.read_text(encoding="utf-8")
 
     # YAML
-    if yaml and (source.endswith((".yaml", ".yml")) or raw.lstrip().startswith("tasks:")):
+    if source.endswith((".yaml", ".yml")) or raw.lstrip().startswith("tasks:"):
+        if not yaml:
+            # Local fix (self-iteration round 1): a structured task file must
+            # not silently degrade into one giant raw-text prompt; fail loud
+            # and consistent with load_pipeline's PyYAML gate.
+            log.error("Task file '%s' requires PyYAML. Run: pip install pyyaml", source)
+            sys.exit(1)
         try:
             data = yaml.safe_load(raw)
         except Exception as e:

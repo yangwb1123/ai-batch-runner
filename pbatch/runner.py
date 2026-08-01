@@ -159,7 +159,11 @@ def save_result(task: Task, result: TaskResult) -> None:
         return
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(result.stdout, encoding="utf-8")
+    # Local fix (self-iteration round 1): atomic write also on the plain
+    # (no-validator) path, symmetric with _save_validated's tmp+rename.
+    tmp = out_path.with_name(out_path.name + ".tmp")
+    tmp.write_text(result.stdout, encoding="utf-8")
+    tmp.rename(out_path)
     log.info("WROTE %s  (%d bytes)", out_path, len(result.stdout))
 
 

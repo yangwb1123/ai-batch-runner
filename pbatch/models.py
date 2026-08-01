@@ -114,7 +114,19 @@ class Task:
         return self.cwd or os.getcwd()
 
     def output_path(self) -> Optional[Path]:
-        return Path(self.output).resolve() if self.output else None
+        """Resolve the output path. Relative outputs resolve against the
+        task's cwd (where the agent actually runs), not the process cwd.
+
+        Local fix (self-iteration round 1): previously resolved against the
+        process cwd, silently writing deliverables to the wrong directory
+        whenever task.cwd was set.
+        """
+        if not self.output:
+            return None
+        p = Path(self.output)
+        if not p.is_absolute():
+            p = Path(self.cwd or os.getcwd()) / p
+        return p.resolve()
 
     def resolve_prompt(self, base_dir: str = "") -> str:
         """Resolve @file references in the prompt to file contents.

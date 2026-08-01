@@ -9,6 +9,7 @@ The runner is loaded through importlib because its filename contains dashes.
 """
 
 import importlib.util
+import os
 import shutil
 import subprocess
 import sys
@@ -54,8 +55,12 @@ def _run_import(cwd, script_path):
         "spec.loader.exec_module(m)\n"
         "print(m.AGENT_BIN, m.AGENT_DEFAULT_WORKERS)\n" % str(script_path)
     )
+    # Local fix (self-iteration round 1): run with a clean env so a preset
+    # PBATCH_SCRIPT_DIR cannot hijack config resolution inside the test.
+    env = {k: v for k, v in os.environ.items() if k != "PBATCH_SCRIPT_DIR"}
     return subprocess.run(
-        [sys.executable, "-c", code], cwd=str(cwd), capture_output=True, text=True, timeout=60
+        [sys.executable, "-c", code], cwd=str(cwd), capture_output=True, text=True, timeout=60,
+        env=env,
     )
 
 

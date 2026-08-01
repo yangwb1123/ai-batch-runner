@@ -1,0 +1,52 @@
+# 自我迭代流水线 — ai-batch-runner 自审查（dogfooding）
+#
+# 用本工具自身的 meta 编排能力分析本项目：一句话起点（from_prompt）→
+# 编排者动态挑选审查角色（prompts/ 模板）→ 角色交付物折回证据 → 再问，
+# 直到编排者认为无需更多角色。
+#
+# 运行（从仓库根）：
+#   python3 pi-batch.py docs/self-iteration.yaml --log-file logs/self-iterate.log
+#
+# 产出：docs/reviews/ 下的 kickoff + 各角色审查交付物；审查结论用于
+# 下一轮代码迭代（实施高价值改进后再跑一轮验证收敛）。
+
+git_commit: false
+
+stages:
+  # ── 阶段 1：起点输入 ──
+  # 一句话描述本项目现状，让编排者有足够的上下文
+  - name: kickoff
+    from_prompt: |
+      Analyze the ai-batch-runner project in this repository (a Python batch/pipeline
+      executor for CLI coding agents, kept in sync with snaplink/ai-dev).
+
+      Layout: pbatch/ engine package (config.py, models.py, runner.py, pipeline.py,
+      cli.py) behind a thin pi-batch.py shim; 19 role prompt templates in prompts/;
+      AI-SDLC review framework in ai/ (run-review.py + sdlc.yaml); engineering-gates
+      harness we authored locally: checks/ (filesize, ast-based complexity, root
+      policy, style), cli.py, Makefile (make ci), engineering.yaml, .githooks/,
+      .github/workflows/ci.yml; upstream-synced quality.py scanner; 91 pytest cases
+      in tests/.
+
+      Current quality state: make ci fully green (gates + harness self-tests + 91
+      regression tests). Known open issues (README): Task.output_path() ignores
+      task.cwd for relative outputs; subprocess timeout can effectively double in
+      _stream_and_wait; missing PyYAML silently degrades tasks.yaml to one raw-text
+      prompt; git-commit exit codes unchecked; git-auto-commit.sh has no secret-file
+      exclusions; no license chosen.
+
+      Summarize the architecture, the strengths, and the most valuable improvement
+      directions with evidence, prioritizing fixes for the known issues over new
+      features.
+    output: docs/reviews/kickoff.md
+    mode: serial
+
+  # ── 阶段 2：动态角色审查（meta 编排）──
+  # 编排者分析 kickoff → 挑角色（prompts/ 模板或 ad-hoc）→ 执行 → 折回 → 再问
+  - name: review
+    from_outputs: kickoff
+    meta: true
+    role_dir: prompts
+    output_dir: docs/reviews
+    max_iterations: 3
+    mode: serial

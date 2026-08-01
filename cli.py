@@ -67,7 +67,8 @@ def _check_style() -> int:
 
 def cmd_check_test() -> int:
     """Harness integrity: the gates must verify themselves (zero-dep unittest)."""
-    return run(sys.executable, "-m", "unittest", "discover", "-s", "checks", "-p", "test_*.py").returncode
+    cmd = [sys.executable, "-m", "unittest", "discover", "-s", "checks", "-p", "test_*.py"]
+    return run(*cmd).returncode
 
 
 def cmd_harness() -> int:
