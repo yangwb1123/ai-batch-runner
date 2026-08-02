@@ -378,3 +378,11 @@ validator exit signature.
   run stops with exit 3 and a budget_cap event — the cap wins over
   `--max-rounds 0`. Exit codes: 0 success, 1 max rounds, 3 budget cap,
   4 stall/circuit stop, 5 lock held, 130 interrupt.
+
+## Hetero routing (T11)
+
+Pipeline task definitions may set `provider` / `thinking` / `tools` /
+`exclude_tools` (reaching the agent argv like single-batch tasks do);
+stages may set `model` / `provider` for their orchestrator and role tasks
+(meta stages); CLI `--provider` overrides everything. Precedence:
+CLI > task > stage > config default (D6).

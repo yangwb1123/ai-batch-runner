@@ -103,6 +103,8 @@ def _add_batch_args(p: argparse.ArgumentParser) -> None:
                         "set agent.bin in pi-batch.yaml to change the default)")
     p.add_argument("--model", default="",
                    help="default model override for all tasks")
+    p.add_argument("--provider", default="",
+                   help="default provider override for all tasks (CLI > task > stage > config)")
     p.add_argument("--timeout", type=int, default=0,
                    help="default timeout override for all tasks (seconds)")
     p.add_argument("--retries", type=int, default=0,
@@ -148,6 +150,11 @@ def main() -> None:
 
     pipeline = _setup_pipeline(args)
     timeout_override = args.timeout if "--timeout" in sys.argv else 0
+    # T11: CLI --provider wins over stage-level providers (precedence D6:
+    # CLI > task > stage > config default).
+    if args.provider:
+        for stage in pipeline.stages:
+            stage.provider = args.provider
 
     session_name = _derive_session_name(args)
     _validate_session_flags(args)
@@ -349,6 +356,9 @@ def _apply_task_overrides(args, tasks) -> None:
     if args.model:
         for t in tasks:
             t.model = args.model
+    if args.provider:
+        for t in tasks:
+            t.provider = args.provider
     if args.timeout:
         for t in tasks:
             t.timeout = args.timeout

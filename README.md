@@ -85,6 +85,13 @@ exponential-backoff retries, and optional auto git-commit after each stage.
 > - T8 budgets: `--budget-max` (per run) + `--daily-budget` (UTC state
 >   file); cap wins over `--max-rounds 0`, exit 3
 > - tests: 3 more cases (45 total in `tests/test_local_fixes.py`)
+>
+> **Local fixes** (hardening, T11/T13 per `docs/IMPLEMENTATION_PLAN_7x24_GOVERNANCE.md`):
+> - T11 hetero-routing: pipeline task defs pass provider/thinking/tools/
+>   exclude_tools to the agent argv; stage-level model/provider for meta
+>   stages; `--provider` CLI override (CLI > task > stage > default)
+> - T13: SIGINT orphan test hardened with a pid/go handshake (no start race)
+> - tests: 3 more cases (48 total in `tests/test_local_fixes.py`)
 >   
 > These pbatch/ + ai/ edits will need re-applying after the next upstream sync (they are
 > the only divergence from snaplink/ai-dev).

@@ -254,8 +254,15 @@ class TestKeyboardInterruptKillsChild:
     def test_sigint_kills_process_group(self, tmp_path, monkeypatch):
         mod = load_batch()
         pidfile = tmp_path / "child.pid"
+        gofile = tmp_path / "go"
         agent = tmp_path / "sleeper.sh"
-        agent.write_text(f"#!/bin/sh\necho $$ > {pidfile}\nsleep 300\n", encoding="utf-8")
+        # T13: handshake — the child writes its pid, waits for the go file,
+        # then sleeps; the test only raises Ctrl-C after the child is up,
+        # removing the start-race that made this test flaky.
+        agent.write_text(
+            f"#!/bin/sh\necho $$ > {pidfile}\n"
+            f"while [ ! -f {gofile} ]; do sleep 0.02; done\n"
+            "sleep 300\n", encoding="utf-8")
         agent.chmod(0o755)
         mod.config.AGENT_BIN = str(agent)
 
@@ -263,10 +270,12 @@ class TestKeyboardInterruptKillsChild:
             # wait until the child is actually up (pidfile written), then
             # simulate Ctrl-C while the child process group is alive
             import time as _time
-            for _ in range(400):
+            for _ in range(500):
                 if pidfile.exists():
+                    gofile.write_text("1", encoding="utf-8")
+                    _time.sleep(0.1)  # let the child enter the sleep
                     break
-                _time.sleep(0.05)
+                _time.sleep(0.02)
             raise KeyboardInterrupt()
 
         monkeypatch.setattr(mod.runner, "_stream_proc", _raise_interrupt)
@@ -692,6 +701,86 @@ class TestMeteringBudget:
         assert metering2.budget_spent_today() == 2
         metering.DAILY_BUDGET = 0
         metering.INVOCATIONS = 0
+
+
+class TestHeteroRouting:
+    """T11 (7x24 governance): provider/thinking/tools reach the agent argv
+    from pipeline task defs, stage config, and the CLI (CLI > task > stage)."""
+
+    def test_pipeline_task_def_routing_fields(self, tmp_path):
+        mod = load_batch()
+        args_log = tmp_path / "args.log"
+        agent = tmp_path / "record-agent.sh"
+        agent.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$@\" >> {args_log}\necho ok\n", encoding="utf-8")
+        agent.chmod(0o755)
+        mod.config.AGENT_BIN = str(agent)
+        inputs = tmp_path / "in"
+        inputs.mkdir()
+        (inputs / "t.md").write_text("prompt", encoding="utf-8")
+        template = tmp_path / "role.md"
+        template.write_text("Role: {input_content}", encoding="utf-8")
+        stage = mod.Stage(
+            name="s1", from_outputs="s0",
+            tasks=[{"prompt_template": str(template),
+                    "output": str(tmp_path / "{input_stem}.out.md"),
+                    "provider": "p-task", "thinking": "high",
+                    "tools": "read,edit", "exclude_tools": "bash"}])
+        results, ok = mod.execute_stage(stage, {"s0": [str(inputs / "t.md")]})
+        assert ok and results[0].success
+        lines = args_log.read_text(encoding="utf-8").splitlines()
+        assert "--provider" in lines and "p-task" in lines
+        assert "--thinking" in lines and "high" in lines
+        assert "--tools" in lines and "read,edit" in lines
+        assert "--exclude-tools" in lines and "bash" in lines
+
+    def test_stage_provider_applies_to_meta_role_tasks(self, tmp_path):
+        mod = load_batch()
+        args_log = tmp_path / "args.log"
+        agent = tmp_path / "record-agent.sh"
+        agent.write_text(
+            "#!/bin/sh\n"
+            f"printf '%s\\n' \"$@\" >> {args_log}\n"
+            "if echo \"$2\" | grep -q 'Available roles'; then echo '[\"qa_lead\"]'; else echo '## role'; fi\n",
+            encoding="utf-8")
+        agent.chmod(0o755)
+        mod.config.AGENT_BIN = str(agent)
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        (out_dir / "qa_lead.md").write_text("Role", encoding="utf-8")
+        idea = tmp_path / "idea.md"
+        idea.write_text("idea", encoding="utf-8")
+        stage = mod.Stage(name="review", from_outputs="req", meta=True, provider="p-stage",
+                          role_dir=str(out_dir), output_dir=str(out_dir), max_iterations=2)
+        results, ok = mod.pipeline._run_meta_stage(stage, {"req": [str(idea)]}, "", 0, "")
+        assert ok
+        lines = args_log.read_text(encoding="utf-8").splitlines()
+        # both the orchestrator call and the role task carry the stage provider
+        assert lines.count("--provider") == 2
+        assert lines.count("p-stage") == 2
+
+    def test_cli_provider_overrides_stage(self, tmp_path):
+        """CLI --provider wins over a stage-level provider (precedence D6)."""
+        args_log = tmp_path / "args.log"
+        agent = tmp_path / "record-agent.sh"
+        agent.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$@\" >> {args_log}\necho ok\n", encoding="utf-8")
+        agent.chmod(0o755)
+        inputs = tmp_path / "in"
+        inputs.mkdir()
+        (inputs / "t.md").write_text("p", encoding="utf-8")
+        pipeline = tmp_path / "p.yaml"
+        pipeline.write_text(
+            "git_commit: false\n"
+            "stages:\n"
+            f"  - name: s0\n    from_dir: {inputs}\n    provider: p-stage\n",
+            encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, str(PI_BATCH), str(pipeline),
+             "--agent-bin", str(agent), "--provider", "p-cli"],
+            capture_output=True, text=True, timeout=120)
+        assert result.returncode == 0, result.stderr
+        lines = args_log.read_text(encoding="utf-8").splitlines()
+        assert "p-cli" in lines
+        assert "p-stage" not in lines
 
 
 class TestStdinReusedAcrossRounds:

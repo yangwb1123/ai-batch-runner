@@ -53,6 +53,8 @@ def _parse_stage_def(s: dict, global_git_commit: bool) -> Stage:
     unknown keys simply do not exist on the dataclass)."""
     return Stage(
         name=s.get("name", ""),
+        model=s.get("model", ""),
+        provider=s.get("provider", ""),
         from_dir=s.get("from_dir", ""),
         from_outputs=s.get("from_outputs", ""),
         suffix=s.get("suffix", ".md"),
@@ -101,6 +103,10 @@ def _task_from_def(task_def: dict, prompt: str, output_path: str, model_override
         prompt=prompt,
         output=output_path,
         model=task_def.get("model", ""),
+        provider=task_def.get("provider", ""),
+        thinking=task_def.get("thinking", ""),
+        tools=task_def.get("tools", ""),
+        exclude_tools=task_def.get("exclude_tools", ""),
         cwd=task_def.get("cwd", ""),
         timeout=task_def.get("timeout", AGENT_DEFAULT_TIMEOUT),
     )
@@ -308,6 +314,8 @@ def _build_meta_prompt_task(stage: Stage, role_names: list, combined: str, model
     meta_prompt = meta_prompt.replace("{roles}", ", ".join(role_names) or "(none - define ad-hoc roles)")
     meta_prompt = meta_prompt.replace("{input_content}", combined)
     task = Task(prompt=meta_prompt)
+    task.model = stage.model or task.model
+    task.provider = stage.provider or task.provider
     if model_override:
         task.model = model_override
     if timeout_override:
@@ -387,6 +395,8 @@ def _stage_from_dir_tasks(stage: Stage, reuse: bool, model_override: str, timeou
             reused.append(str(out_path))
             continue
         task = Task(prompt=fpath.read_text(encoding="utf-8"), output=str(out_path), cwd=str(fpath.parent))
+        task.model = stage.model or task.model
+        task.provider = stage.provider or task.provider
         if model_override:
             task.model = model_override
         if timeout_override:

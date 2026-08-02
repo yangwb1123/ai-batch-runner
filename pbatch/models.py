@@ -16,6 +16,8 @@ from .config import AGENT_DEFAULT_MODEL, AGENT_DEFAULT_TIMEOUT, AGENT_DEFAULT_WO
 class Stage:
     """One stage in a pipeline."""
     name: str
+    model: str = ""      # T11: model for the stage's orchestrator/role tasks
+    provider: str = ""   # T11: provider override for the stage
     from_dir: str = ""
     from_outputs: str = ""  # name of previous stage
     suffix: str = ".md"
