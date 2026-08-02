@@ -77,10 +77,17 @@ COMMIT_PREFIX_DEFAULT = _BATCH_CFG.get("commit", {}).get("prefix", "[pi-batch]")
 LOG_MAX_BYTES = _BATCH_CFG.get("logging", {}).get("max_bytes", 5 * 1024 * 1024)
 LOG_BACKUP_COUNT = _BATCH_CFG.get("logging", {}).get("backups", 3)
 
+# T10 (7x24 governance): rotate (fork) the shared session past this size.
+SESSION_MAX_BYTES = _BATCH_CFG.get("session", {}).get("max_bytes", 2 * 1024 * 1024)
+
+# T12e (governance): reject agent outputs above this size (default 2MB).
+OUTPUT_MAX_BYTES = _BATCH_CFG.get("output", {}).get("max_bytes", 2 * 1024 * 1024)
+
 
 _DEFAULT_SESSION_FLAGS = {
     "start": ["--session-id", "{session}", "--name", "{name}"],
     "continue": ["--session-id", "{session}"],
+    "fork": ["--fork", "{session}"],
 }
 
 

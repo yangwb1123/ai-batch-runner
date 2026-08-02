@@ -92,6 +92,19 @@ exponential-backoff retries, and optional auto git-commit after each stage.
 >   stages; `--provider` CLI override (CLI > task > stage > default)
 > - T13: SIGINT orphan test hardened with a pid/go handshake (no start race)
 > - tests: 3 more cases (48 total in `tests/test_local_fixes.py`)
+>
+> **Local fixes** (governance close-out, T9/T10/T12 per plan):
+> - T9 fingerprint reuse 2.0: `--reuse-fingerprint` + sidecar
+>   (`<output>.meta.json`, sha256 of inputs/gate/routing); input change
+>   regenerates; wired through all six reuse sites + single-batch
+> - T10 session rotation: `--session-max-bytes` watermark forks the shared
+>   session via pi's `--fork`; compaction warnings (`pbatch/session.py`)
+> - T12 governance: validator JSON status (pass/warn/fail), bare
+>   `VERDICT: PASS` fails closed, `<evidence>` fences in combined inputs,
+>   output byte cap (2MB), `secretscan` validator registry entry
+> - tests: 18 more cases (66 total in `tests/test_local_fixes.py`);
+>   upstream gate/evidence fixtures updated for the new fail-closed and
+>   fence semantics
 >   
 > These pbatch/ + ai/ edits will need re-applying after the next upstream sync (they are
 > the only divergence from snaplink/ai-dev).

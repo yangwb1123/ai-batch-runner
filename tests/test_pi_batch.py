@@ -1116,7 +1116,7 @@ def test_meta_stage_ad_hoc_role(tmp_path):
     assert ok is True
     assert len(results) == 1
     assert (out_dir / "perf_reviewer.md").exists()
-    calls = args_log.read_text(encoding="utf-8").split("--- idea ---")
+    calls = args_log.read_text(encoding="utf-8").split('<evidence source="idea">')
     # the ad-hoc reviewer prompt carries its assignment plus the context
     assert "Analyze performance bottlenecks" in calls[1]
     assert "Context (current deliverables)" in calls[1]
@@ -1463,7 +1463,7 @@ def test_archive_outputs_pipeline_after_gate_pass(tmp_path):
     inputs.mkdir()
     (inputs / "idea.md").write_text("idea", encoding="utf-8")
     agent = tmp_path / "agent.sh"
-    agent.write_text("#!/bin/sh\necho '## D\nVERDICT: PASS'\n", encoding="utf-8")
+    agent.write_text("#!/bin/sh\necho '## D\nVERDICT: PASS - approved'\n", encoding="utf-8")
     agent.chmod(0o755)
     pipeline = tmp_path / "p.yaml"
     pipeline.write_text(

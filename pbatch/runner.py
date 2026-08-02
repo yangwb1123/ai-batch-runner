@@ -3,6 +3,7 @@ signatures, retries, validation gates, and summaries."""
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -20,6 +21,7 @@ from . import config
 from .config import AGENT_BIN, AGENT_DEFAULT_WORKERS, _resolve_validators, _session_flags, log
 from .models import Task, TaskResult
 from .metering import budget_allows, budget_consume, record_event
+from .session import fork_flags, has_compaction, session_size_bytes
 from .triage import clear_marker, task_key, write_marker
 
 def _read_stream(stream, prefix: str, collector: list) -> None:
@@ -107,6 +109,13 @@ def _budget_gate(task: Task, key: str, workdir: str) -> None:
         clear_marker(key, workdir)
         raise SystemExit(3)
     budget_consume()
+
+
+def session_file_path(cwd: str, session_name: str) -> Optional[str]:
+    """Active pi session file for a shared/per-stage session (T10)."""
+    from .session import session_file
+    f = session_file(cwd, session_name)
+    return str(f) if f else None
 
 
 def _prompt_brief(task: Task, cmd: list) -> str:
@@ -204,6 +213,11 @@ def save_result(task: Task, result: TaskResult) -> None:
     if not result.success:
         log.error("NOT SAVED %s: task failed (exit=%d, %.1fs)", out_path, result.returncode, result.elapsed)
         return
+    # T12e: oversized outputs are rejected, not written (runaway agents
+    # must not fill the disk).
+    if len(result.stdout.encode("utf-8")) > config.OUTPUT_MAX_BYTES:
+        log.error("NOT SAVED %s: output exceeds %d bytes (T12e cap)", out_path, config.OUTPUT_MAX_BYTES)
+        return
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     # T0.1 (full-SDLC pipeline): refuse symlink targets (a symlinked output
@@ -272,7 +286,9 @@ def run_validation(cmd: str, cwd: str, timeout: float = 600) -> ValidationResult
 def _apply_gate_commands(tmp: Path, task: Task, commands: list, result: TaskResult) -> bool:
     """Run every gate command against the temp artifact (AND semantics);
     a failure deletes the artifact, records the outcome on the result
-    (T2 feedback fields) and returns False."""
+    (T2 feedback fields) and returns False. T12a: a validator may reply
+    with a JSON status line -- {"status":"warn"} is allowed with a
+    warning, {"status":"fail"} rejects regardless of exit code."""
     for raw in commands:
         cmd = raw.replace("{output}", shlex.quote(str(tmp))).replace("{cwd}", shlex.quote(task.workdir()))
         log.info("VALIDATE: %s", cmd)
@@ -280,6 +296,13 @@ def _apply_gate_commands(tmp: Path, task: Task, commands: list, result: TaskResu
         result.validation_ok = v.ok
         result.validation_exit = v.exit_code
         result.validation_stderr = _cap_feedback(v.stderr or "")
+        if v.ok and _json_status(v.stdout) == "warn":
+            log.warning("VALIDATE WARN: %s (output saved with warning)", cmd)
+            continue
+        if v.ok and _json_status(v.stdout) == "fail":
+            tmp.unlink(missing_ok=True)
+            log.warning("VALIDATION FAILED (JSON status=fail): %s; output NOT saved", cmd)
+            return False
         if v.ok:
             continue
         tmp.unlink(missing_ok=True)
@@ -328,6 +351,23 @@ def _save_validated(task: Task, result: TaskResult, validate_cmd: str) -> bool:
     tmp.rename(out_path)
     log.info("WROTE %s (validated)", out_path)
     return True
+
+
+def _json_status(stdout: str) -> str:
+    """T12a: extract a validator's JSON status ({"status": "pass|warn|fail"});
+    empty when the output carries no JSON status line."""
+    for line in (stdout or "").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            data = json.loads(line)
+        except ValueError:
+            continue
+        status = str(data.get("status", "")).lower()
+        if status in ("pass", "warn", "fail"):
+            return status
+    return ""
 
 
 def _cap_feedback(text: str, max_chars: int = 4000, max_lines: int = 40) -> str:
@@ -444,6 +484,21 @@ def _stream_proc(proc: subprocess.Popen, prefix: str, start: float, timeout: int
     return stdout_lines, stderr_lines
 
 
+def _rotation_flags(session_id: str, session_name: str) -> list:
+    """T10: continue flags, or fork flags past the session size watermark
+    (compaction entries are warned about)."""
+    flags = _session_flags("continue", session_id, session_name)
+    cwd = os.getcwd()
+    if has_compaction(cwd, session_name):
+        log.warning("SESSION: compaction entry in %s (context was shrunk by pi)", session_name)
+    sfile = session_file_path(cwd, session_name)
+    if sfile and session_size_bytes(cwd, session_name) > config.SESSION_MAX_BYTES:
+        log.warning("SESSION ROTATION: %s exceeds %d bytes; forking",
+                    sfile, config.SESSION_MAX_BYTES)
+        return fork_flags(str(sfile))
+    return flags
+
+
 def _run_with_gate(task: Task, validate_cmd: str, index: int, total: int,
                     session_flags: Optional[list] = None, parallel: bool = False) -> TaskResult:
     """Run one task and push its result through the engineering gate;
@@ -483,7 +538,7 @@ def run_serial(tasks: list[Task], retries: int = 0, retry_delay: float = 10.0, b
                 flags = _session_flags("start", session_id, session_name)
                 session_active = True
             else:
-                flags = _session_flags("continue", session_id, session_name)
+                flags = _rotation_flags(session_id, session_name)
         result = _run_with_gate(task, validate_cmd, i, total, flags)
         attempt = 0
         retry_task = task

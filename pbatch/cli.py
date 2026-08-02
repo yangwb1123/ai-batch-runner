@@ -17,7 +17,7 @@ from typing import Optional
 from . import config
 from .config import (AGENT_BIN, AGENT_DEFAULT_WORKERS, COMMIT_PREFIX_DEFAULT, log, yaml)
 from .models import Pipeline, Task
-from .reuse import reuse_decision
+from .reuse import (reuse_decision, reuse_fingerprint, sidecar_path, write_sidecar)
 from .lock import acquire_lock, release_lock
 from .triage import (STALL_EXIT_CODE, Circuit, StallDetector, env_signature,
                      residue_markers, task_key)
@@ -55,6 +55,8 @@ def _add_runtime_args(p: argparse.ArgumentParser) -> None:
                    help="reuse existing .out.md files (skip regeneration)")
     p.add_argument("--reuse-legacy", action="store_true",
                    help="existence-only reuse check (skip validators; escape hatch for T1 freshness revalidation)")
+    p.add_argument("--reuse-fingerprint", action="store_true",
+                   help="T9: reuse only when the artifact's sidecar input-fingerprint matches (input change -> regenerate)")
     p.add_argument("--force", action="store_true",
                    help="force regeneration, overwrite existing .out.md (default)")
     p.add_argument("--git-commit", action="store_true",
@@ -75,6 +77,8 @@ def _add_runtime_args(p: argparse.ArgumentParser) -> None:
                    help="Move completed deliverables into DIR/<label>-<timestamp>/ after a fully successful run (keeps the worktree clean; git history retains everything)")
     p.add_argument("--session-mode", choices=["new", "shared", "per-stage"], default="new",
                    help="Session reuse: new = fresh session per call (default), shared = one session for the whole batch/pipeline, per-stage = one session per pipeline stage")
+    p.add_argument("--session-max-bytes", type=int, default=config.SESSION_MAX_BYTES,
+                   help=f"T10: fork the shared session past this size (default: {config.SESSION_MAX_BYTES})")
     p.add_argument("--session-name", default="",
                    help="Reproducible session base name (default: task source file stem); shared sessions continue across runs")
     p.add_argument("--validate", default="",
@@ -124,15 +128,10 @@ def _add_batch_args(p: argparse.ArgumentParser) -> None:
 def main() -> None:
     args = build_parser().parse_args()
     config.AGENT_BIN = args.agent_bin
+    if args.session_max_bytes != config.SESSION_MAX_BYTES:
+        config.SESSION_MAX_BYTES = args.session_max_bytes
 
-    # T7/T8: metering + budget wiring (module-level, read by run_task).
-    from . import metering
-    metering.EVENTS_FILE = args.events_file
-    metering.WEBHOOK_URL = args.webhook
-    metering.BUDGET_MAX = args.budget_max
-    metering.DAILY_BUDGET = args.daily_budget
-    metering._DAILY_STATE = args.daily_state or str(Path(".pi-batch") / "daily-budget.json")
-
+    _wire_metering(args)
     _auto_detect_pipeline(args)
 
     # Append run log to FILE for 24x7 supervision; T3 (7x24 governance):
@@ -168,6 +167,8 @@ def main() -> None:
     except KeyboardInterrupt:
         log.warning("\nInterrupted by user. Rerun with --reuse to continue later.")
         sys.exit(130)
+    finally:
+        release_lock(lock_path)
 
 
 def _validate_session_flags(args) -> None:
@@ -265,6 +266,16 @@ def _add_metering_args(p) -> None:
                    help="T8: cap agent invocations per UTC day (0 = unlimited); state in --daily-state file")
     p.add_argument("--daily-state", default="",
                    help="T8: daily budget counter state file (default: .pi-batch/daily-budget.json)")
+
+
+def _wire_metering(args) -> None:
+    """T7/T8: metering + budget wiring (module-level, read by run_task)."""
+    from . import metering
+    metering.EVENTS_FILE = args.events_file
+    metering.WEBHOOK_URL = args.webhook
+    metering.BUDGET_MAX = args.budget_max
+    metering.DAILY_BUDGET = args.daily_budget
+    metering._DAILY_STATE = args.daily_state or str(Path(".pi-batch") / "daily-budget.json")
 
 
 def _auto_detect_pipeline(args) -> None:
@@ -373,7 +384,7 @@ def _run_pipeline_round(args, pipeline: Pipeline, session_name: str, cli_validat
     all_results, failed_stages = run_pipeline(pipeline, model_override=args.model, reuse=reuse_outputs, timeout_override=timeout_override,
                                               session_mode=args.session_mode, session_name=session_name, validate_cmd=cli_validate,
                                               decision_log=args.decision_log, archive_dir=args.archive_dir,
-                                              reuse_legacy=args.reuse_legacy)
+                                              reuse_legacy=args.reuse_legacy, fingerprint_mode=args.reuse_fingerprint)
     print_summary(all_results)
     if failed_stages or any(not r.success for r in all_results):
         log.error("Failed stages: %s", ", ".join(failed_stages) if failed_stages else "(task failures)")
@@ -393,15 +404,9 @@ def _run_batch_round(args, stdin_tasks, session_name: str, cli_validate: str, ma
         log.error("No tasks to execute: a YAML source must contain a 'tasks' list (pipelines use 'stages' and are auto-detected)")
         sys.exit(1)
 
-    # T5: circuit-isolated tasks are dropped from this round (poison task
-    # must not burn quota forever).
-    if circuit is not None and circuit.isolated:
-        before = len(tasks)
-        tasks = [t for t in tasks if circuit.allowed(task_key(t))]
-        if len(tasks) < before:
-            log.warning("CIRCUIT: dropped %d isolated task(s) from round %d", before - len(tasks), round_no)
-
-    tasks = _filter_reused(tasks, args.reuse and not args.force, cli_validate, args.reuse_legacy)
+    tasks = _drop_isolated(tasks, circuit, round_no)
+    tasks = _filter_reused(tasks, args.reuse and not args.force, cli_validate, args.reuse_legacy,
+                           args.reuse_fingerprint)
     if not tasks:
         log.info("All tasks already have outputs; nothing to run")
         return False, set()
@@ -412,10 +417,13 @@ def _run_batch_round(args, stdin_tasks, session_name: str, cli_validate: str, ma
 
     results, round_failed = _execute_batch(tasks, args, session_name, cli_validate)
     _finalize_batch_round(args, results, round_failed)
+    if args.reuse_fingerprint:
+        _write_sidecars(args, tasks, results, cli_validate)
     failed_keys = {task_key(r.task) for r in results if not r.success}
-    for r in results:
-        if not r.success and circuit is not None:
-            circuit.register_failure(task_key(r.task), r.reason or "")
+    if circuit is not None:
+        for r in results:
+            if not r.success:
+                circuit.register_failure(task_key(r.task), r.reason or "")
     # T5: identical validator stderr across >=2 tasks = environment-class
     # failure (broken gate, not per-task); halt instead of retrying.
     if round_failed and env_signature(results):
@@ -423,6 +431,26 @@ def _run_batch_round(args, stdin_tasks, session_name: str, cli_validate: str, ma
                   "stopping loop (exit %d)", STALL_EXIT_CODE)
         sys.exit(STALL_EXIT_CODE)
     return round_failed, failed_keys
+
+
+def _drop_isolated(tasks: list, circuit: Circuit, round_no: int) -> list:
+    """T5: circuit-isolated tasks are dropped from this round (a poison
+    task must not burn quota forever)."""
+    if circuit is None or not circuit.isolated:
+        return tasks
+    before = len(tasks)
+    kept = [t for t in tasks if circuit.allowed(task_key(t))]
+    if len(kept) < before:
+        log.warning("CIRCUIT: dropped %d isolated task(s) from round %d", before - len(kept), round_no)
+    return kept
+
+
+def _write_sidecars(args, tasks: list, results: list, cli_validate: str) -> None:
+    """T9: persist input fingerprints for successful artifacts."""
+    for t, r in zip(tasks, results):
+        if r.success and t.output:
+            eff = t.validate if t.validate is not None else cli_validate
+            write_sidecar(str(t.output_path()), t.prompt, eff, t.model, t.provider)
 
 
 def _git_commit_single_batch(args, outputs: list) -> None:
@@ -474,7 +502,8 @@ def _finalize_batch_round(args, results: list, round_failed: bool) -> None:
 
 
 
-def _filter_reused(tasks: list, reuse: bool, validate_cmd: str = "", reuse_legacy: bool = False) -> list:
+def _filter_reused(tasks: list, reuse: bool, validate_cmd: str = "", reuse_legacy: bool = False,
+                   fingerprint_mode: bool = False) -> list:
     """Drop tasks whose output already exists when reuse is on, so a later
     round reruns only the failures. T1: a task is reused only when its
     artifact passes reuse_decision (exists, non-empty, not a symlink, and
@@ -488,7 +517,8 @@ def _filter_reused(tasks: list, reuse: bool, validate_cmd: str = "", reuse_legac
             kept.append(t)
             continue
         effective = t.validate if t.validate is not None else validate_cmd
-        if reuse_decision(str(t.output_path()), effective, t.workdir(), reuse_legacy):
+        fp = reuse_fingerprint(t, effective) if fingerprint_mode else None
+        if reuse_decision(str(t.output_path()), effective, t.workdir(), reuse_legacy, fp):
             continue  # reused
         kept.append(t)
     skipped = len(tasks) - len(kept)

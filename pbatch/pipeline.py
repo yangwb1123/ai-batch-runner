@@ -18,6 +18,7 @@ from typing import Optional
 from . import config
 from .config import AGENT_DEFAULT_TIMEOUT, AGENT_DEFAULT_WORKERS, log, yaml
 from .models import Pipeline, Stage, Task
+from .reuse import fingerprint as reuse_fp
 from .reuse import reuse_decision
 from .runner import _save_validated, print_summary, run_parallel, run_serial, run_task
 
@@ -96,6 +97,14 @@ def _task_prompt(task_def: dict, input_content: str, input_stem: str, input_path
                  .replace("{input_path}", input_path))
 
 
+def _expected_fp(prompt: str, out: str, validate_cmd: str, model: str, provider: str, fp_mode: bool) -> Optional[str]:
+    """T9: fingerprint for a reuse candidate when --reuse-fingerprint is on
+    (None otherwise); a mismatch regenerates the artifact."""
+    if not fp_mode:
+        return None
+    return reuse_fp(prompt, out, validate_cmd or "", model, provider)
+
+
 def _task_from_def(task_def: dict, prompt: str, output_path: str, model_override: str = "", timeout_override: int = 0) -> Task:
     """Build a task from a pipeline template definition, applying CLI-level
     model and timeout overrides on top of per-task values."""
@@ -118,19 +127,23 @@ def _task_from_def(task_def: dict, prompt: str, output_path: str, model_override
 
 
 def _combine_outputs(prev_outputs: list) -> str:
-    """Concatenate upstream artifacts into one evidence block."""
+    """Concatenate upstream artifacts into one evidence block (T12d: fenced
+    as untrusted evidence so downstream roles treat it as claims to verify,
+    not ground truth)."""
     parts = []
     for out_path_str in prev_outputs:
         out_path = Path(out_path_str)
         if not out_path.exists():
             log.warning("Output file not found: %s", out_path)
             continue
-        parts.append("--- %s ---\n%s" % (out_path.stem, out_path.read_text(encoding="utf-8")))
+        parts.append("<evidence source=\"%s\">\n%s\n</evidence>" %
+                     (out_path.stem, out_path.read_text(encoding="utf-8")))
     return "\n\n".join(parts)
 
 
 def _aggregate_tasks(stage: Stage, prev_outputs: list, model_override: str = "", timeout_override: int = 0, reuse: bool = False,
-                     validate_cmd: str = "", reuse_legacy: bool = False) -> tuple[list[Task], list[str]]:
+                     validate_cmd: str = "", reuse_legacy: bool = False,
+                     fingerprint_mode: bool = False) -> tuple[list[Task], list[str]]:
     """Combine every upstream artifact into one prompt per task template so
     downstream roles see all evidence (input_stem becomes 'combined') instead
     of fanning each artifact into an independent task.
@@ -151,7 +164,8 @@ def _aggregate_tasks(stage: Stage, prev_outputs: list, model_override: str = "",
         if not prompt:
             continue
         output_path = task_def.get("output", "").replace("{input_stem}", "combined")
-        if reuse and output_path and reuse_decision(output_path, validate_cmd, legacy=reuse_legacy):
+        fp = _expected_fp(prompt, output_path, validate_cmd, stage.model, stage.provider, fingerprint_mode)
+        if reuse and output_path and reuse_decision(output_path, validate_cmd, legacy=reuse_legacy, expected_fp=fp):
             log.info("REUSE: %s (reused+validated)", output_path)
             reused.append(output_path)
             continue
@@ -354,13 +368,15 @@ def _build_role_tasks(stage: Stage, roles: list, combined: str, model_override: 
 
 
 def _stage_from_prompt_tasks(stage: Stage, reuse: bool, model_override: str, timeout_override: int,
-                             validate_cmd: str = "", reuse_legacy: bool = False) -> tuple[list[Task], list[str]]:
+                             validate_cmd: str = "", reuse_legacy: bool = False,
+                             fingerprint_mode: bool = False) -> tuple[list[Task], list[str]]:
     """One-sentence starting point: a single task whose output feeds
     downstream from_outputs stages (no input file needed)."""
     if not stage.output:
         log.error("Stage '%s': from_prompt requires output", stage.name)
         return [], []
-    if reuse and reuse_decision(stage.output, validate_cmd, legacy=reuse_legacy):
+    fp = _expected_fp(stage.from_prompt, stage.output, validate_cmd, stage.model, stage.provider, fingerprint_mode)
+    if reuse and reuse_decision(stage.output, validate_cmd, legacy=reuse_legacy, expected_fp=fp):
         log.info("REUSE: %s (reused+validated)", stage.output)
         return [], [stage.output]
     task = Task(prompt=stage.from_prompt, output=stage.output)
@@ -373,7 +389,8 @@ def _stage_from_prompt_tasks(stage: Stage, reuse: bool, model_override: str, tim
 
 
 def _stage_from_dir_tasks(stage: Stage, reuse: bool, model_override: str, timeout_override: int,
-                          validate_cmd: str = "", reuse_legacy: bool = False) -> tuple[list[Task], list[str]]:
+                          validate_cmd: str = "", reuse_legacy: bool = False,
+                          fingerprint_mode: bool = False) -> tuple[list[Task], list[str]]:
     """Read .md files from a directory; one task per file, output next to
     the input with the stage's output suffix."""
     dir_path = Path(stage.from_dir)
@@ -390,11 +407,13 @@ def _stage_from_dir_tasks(stage: Stage, reuse: bool, model_override: str, timeou
         # output would be double-prefixed by output_path()'s cwd-aware
         # resolution (docs/inputs/docs/inputs/...).
         out_path = (fpath.parent / (fpath.stem + stage.output_suffix)).resolve()
-        if reuse and reuse_decision(str(out_path), validate_cmd, str(fpath.parent), reuse_legacy):
+        prompt = fpath.read_text(encoding="utf-8")
+        fp = _expected_fp(prompt, str(out_path), validate_cmd, stage.model, stage.provider, fingerprint_mode)
+        if reuse and reuse_decision(str(out_path), validate_cmd, str(fpath.parent), reuse_legacy, fp):
             log.info("REUSE: %s (reused+validated)", out_path.name)
             reused.append(str(out_path))
             continue
-        task = Task(prompt=fpath.read_text(encoding="utf-8"), output=str(out_path), cwd=str(fpath.parent))
+        task = Task(prompt=prompt, output=str(out_path), cwd=str(fpath.parent))
         task.model = stage.model or task.model
         task.provider = stage.provider or task.provider
         if model_override:
@@ -407,7 +426,8 @@ def _stage_from_dir_tasks(stage: Stage, reuse: bool, model_override: str, timeou
 
 
 def _stage_from_outputs_tasks(stage: Stage, stage_outputs: dict, reuse: bool, model_override: str, timeout_override: int,
-                              validate_cmd: str = "", reuse_legacy: bool = False) -> tuple[list[Task], list[str]]:
+                              validate_cmd: str = "", reuse_legacy: bool = False,
+                              fingerprint_mode: bool = False) -> tuple[list[Task], list[str]]:
     """Tasks fed by the previous stage's artifacts: one combined task per
     template (aggregate) or one task per artifact per template."""
     if stage.from_outputs not in stage_outputs:
@@ -421,7 +441,7 @@ def _stage_from_outputs_tasks(stage: Stage, stage_outputs: dict, reuse: bool, mo
         # template so downstream roles see all evidence, instead of
         # fanning each artifact into independent (and conflicting) tasks.
         agg_tasks, agg_reused = _aggregate_tasks(stage, prev_outputs, model_override, timeout_override, reuse,
-                                                 validate_cmd, reuse_legacy)
+                                                 validate_cmd, reuse_legacy, fingerprint_mode)
         return agg_tasks, agg_reused
     for out_path_str in prev_outputs:
         out_path = Path(out_path_str)
@@ -437,7 +457,8 @@ def _stage_from_outputs_tasks(stage: Stage, stage_outputs: dict, reuse: bool, mo
             if not prompt:
                 continue
             output_path = task_def.get("output", "").replace("{input_stem}", input_stem)
-            if reuse and output_path and reuse_decision(output_path, validate_cmd, legacy=reuse_legacy):
+            fp = _expected_fp(prompt, output_path, validate_cmd, stage.model, stage.provider, fingerprint_mode)
+            if reuse and output_path and reuse_decision(output_path, validate_cmd, legacy=reuse_legacy, expected_fp=fp):
                 log.info("REUSE: %s (reused+validated)", output_path)
                 reused.append(output_path)
                 continue
@@ -449,7 +470,7 @@ def _stage_from_outputs_tasks(stage: Stage, stage_outputs: dict, reuse: bool, mo
 
 def execute_stage(stage: Stage, stage_outputs: dict[str, list[str]], model_override: str = "", reuse: bool = False, timeout_override: int = 0,
                   session_mode: str = "new", session_name: str = "", validate_cmd: str = "",
-                  reuse_legacy: bool = False) -> tuple[list[TaskResult], bool]:
+                  reuse_legacy: bool = False, fingerprint_mode: bool = False) -> tuple[list[TaskResult], bool]:
     """Execute one stage and return (task_results, stage_ok). stage_ok is
     False when any task or configured post-stage command failed, so command
     hooks act as a failure gate for the pipeline."""
@@ -461,7 +482,7 @@ def execute_stage(stage: Stage, stage_outputs: dict[str, list[str]], model_overr
     stage_validate = stage.validate_cmd if stage.validate_cmd is not None else validate_cmd
 
     tasks, reused_outputs, early = _build_stage_tasks(stage, stage_outputs, reuse, model_override, timeout_override,
-                                                      stage_validate, reuse_legacy)
+                                                      stage_validate, reuse_legacy, fingerprint_mode)
     if early is not None:
         return early
 
@@ -517,7 +538,8 @@ def _log_stage_header(stage: Stage, reuse: bool) -> None:
 
 
 def _build_stage_tasks(stage: Stage, stage_outputs: dict, reuse: bool, model_override: str, timeout_override: int,
-                       validate_cmd: str, reuse_legacy: bool = False) -> tuple[list, list, Optional[tuple]]:
+                       validate_cmd: str, reuse_legacy: bool = False,
+                       fingerprint_mode: bool = False) -> tuple[list, list, Optional[tuple]]:
     """Build the stage's task list from its input source (from_prompt,
     from_dir, or from_outputs). Returns (tasks, reused, early_result);
     early_result is not None when the stage must stop immediately."""
@@ -529,14 +551,16 @@ def _build_stage_tasks(stage: Stage, stage_outputs: dict, reuse: bool, model_ove
         return [], [], _run_meta_stage(stage, stage_outputs, model_override, timeout_override, validate_cmd)
 
     if stage.from_prompt:
-        tasks, reused_outputs = _stage_from_prompt_tasks(stage, reuse, model_override, timeout_override, validate_cmd, reuse_legacy)
+        tasks, reused_outputs = _stage_from_prompt_tasks(stage, reuse, model_override, timeout_override,
+                                                         validate_cmd, reuse_legacy, fingerprint_mode)
         if not tasks and not reused_outputs:
             return [], [], ([], False)
     elif stage.from_dir:
-        tasks, reused_outputs = _stage_from_dir_tasks(stage, reuse, model_override, timeout_override, validate_cmd, reuse_legacy)
+        tasks, reused_outputs = _stage_from_dir_tasks(stage, reuse, model_override, timeout_override,
+                                                      validate_cmd, reuse_legacy, fingerprint_mode)
     elif stage.from_outputs:
         tasks, reused_outputs = _stage_from_outputs_tasks(stage, stage_outputs, reuse, model_override, timeout_override,
-                                                          validate_cmd, reuse_legacy)
+                                                          validate_cmd, reuse_legacy, fingerprint_mode)
         if stage.from_outputs not in stage_outputs and not tasks:
             return [], [], ([], False)
     else:
@@ -676,16 +700,27 @@ def _archive_outputs(outputs: list, archive_dir: str, label: str) -> list:
 
 def _gate_verdict(output_paths: list) -> Optional[str]:
     """Read a gate stage's deliverables and return its verdict
-    (PASS/FAIL/REJECT) or None when no VERDICT: line is present. The
-    verdict is untrusted text from the agent, so an absent verdict is a
-    FAIL (fail closed): a gate without an explicit pass does not unlock."""
+    (PASS/FAIL/REJECT) or None when no usable VERDICT: line is present.
+    T12b: a bare "VERDICT: PASS" with no reason fails closed (a verdict
+    must justify itself); the verdict text is untrusted, so any other
+    absence is a FAIL too."""
     for p in output_paths:
         path = Path(p)
         if not path.exists():
             continue
-        m = _GATE_VERDICT_RE.search(path.read_text(encoding="utf-8"))
-        if m:
-            return m.group(1).upper()
+        text = path.read_text(encoding="utf-8")
+        m = _GATE_VERDICT_RE.search(text)
+        if not m:
+            continue
+        # the reason is the text between the match end and the line end
+        line_end = text.find("\n", m.end())
+        if line_end == -1:
+            line_end = len(text)
+        rest = text[m.end():line_end].strip()
+        if not rest:
+            log.warning("GATE: %s has a bare VERDICT with no reason; failing closed", path)
+            continue
+        return m.group(1).upper()
     return None
 
 
@@ -738,7 +773,7 @@ def _append_decision_log(path: str, stage_name: str, results: list, stage_ok: bo
 
 def run_pipeline(pipeline: Pipeline, model_override: str = "", dry_run: bool = False, reuse: bool = False, timeout_override: int = 0,
                  session_mode: str = "new", session_name: str = "", validate_cmd: str = "", decision_log: str = "", archive_dir: str = "",
-                 reuse_legacy: bool = False) -> tuple[list[TaskResult], list[str]]:
+                 reuse_legacy: bool = False, fingerprint_mode: bool = False) -> tuple[list[TaskResult], list[str]]:
     """Execute all stages sequentially; returns (all task results, names of
     stages that failed tasks or commands). Gates halt the pipeline, decision
     logs record every stage, and completed runs archive their deliverables."""
@@ -761,7 +796,7 @@ def run_pipeline(pipeline: Pipeline, model_override: str = "", dry_run: bool = F
             continue
 
         results, stage_ok = execute_stage(stage, stage_outputs, model_override, reuse, timeout_override,
-                                          session_mode, session_name, validate_cmd, reuse_legacy)
+                                          session_mode, session_name, validate_cmd, reuse_legacy, fingerprint_mode)
         all_results.extend(results)
         if not stage_ok:
             failed_stages.append(stage.name)

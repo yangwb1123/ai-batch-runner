@@ -386,3 +386,22 @@ Pipeline task definitions may set `provider` / `thinking` / `tools` /
 stages may set `model` / `provider` for their orchestrator and role tasks
 (meta stages); CLI `--provider` overrides everything. Precedence:
 CLI > task > stage > config default (D6).
+
+## Reuse fingerprints, session rotation, governance (T9, T10, T12)
+
+- **Fingerprint reuse 2.0** (T9): `--reuse-fingerprint` adds a sidecar
+  (`<output>.meta.json`, format v1) with sha256(inputs + gate spec +
+  routing). Reuse requires exists AND non-empty AND non-symlink AND sidecar
+  fingerprint match AND validators still passing; input change -> stale
+  artifact + sidecar deleted and regenerated. Old `--reuse` semantics
+  unchanged.
+- **Session rotation** (T10): past `--session-max-bytes` (default 2MB), a
+  shared/per-stage session is forked via `--fork <session-file>` instead of
+  growing an unbounded context; pi compaction entries are warned about.
+- **Governance batch** (T12): validators may reply with a JSON status line
+  (`{"status":"warn"}` allows with warning, `{"status":"fail"}` rejects);
+  a bare `VERDICT: PASS` with no reason fails closed (12b); combined
+  evidence is fenced as `<evidence source="...">` (12d); outputs over
+  `OUTPUT_MAX_BYTES` (default 2MB) are rejected, not written (12e);
+  `--validate secretscan` greps artifacts for likely secrets (12f,
+  registry hook).

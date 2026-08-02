@@ -783,6 +783,217 @@ class TestHeteroRouting:
         assert "p-stage" not in lines
 
 
+class TestFingerprintReuse:
+    """T9 (7x24 governance): input-fingerprint reuse 2.0 (sidecar)."""
+
+    def test_fingerprint_changes_with_input(self):
+        import pbatch.reuse as reuse
+        fp1 = reuse.fingerprint("prompt A", "/tmp/o.md", "true", "m1", "")
+        fp2 = reuse.fingerprint("prompt B", "/tmp/o.md", "true", "m1", "")
+        assert fp1 != fp2
+        assert reuse.fingerprint("p", "/tmp/o.md", "true", "m1", "") == \
+            reuse.fingerprint("p", "/tmp/o.md", "true", "m1", "")
+
+    def test_sidecar_mismatch_regenerates(self, tmp_path):
+        mod = load_batch()
+        out = tmp_path / "o.md"
+        out.write_text("artifact", encoding="utf-8")
+        # no sidecar yet: fingerprint mode must regenerate
+        assert mod.reuse_decision(str(out), "", str(tmp_path), expected_fp="abc") is False
+        assert not out.exists()
+
+    def test_sidecar_match_reuses(self, tmp_path):
+        mod = load_batch()
+        out = tmp_path / "o.md"
+        out.write_text("artifact", encoding="utf-8")
+        mod.write_sidecar(str(out), "prompt", "true", "m", "")
+        fp = mod.fingerprint("prompt", str(out), "true", "m", "")
+        assert mod.reuse_decision(str(out), "true", str(tmp_path), expected_fp=fp) is True
+
+    def test_input_change_regenerates(self, tmp_path):
+        mod = load_batch()
+        out = tmp_path / "o.md"
+        out.write_text("artifact", encoding="utf-8")
+        mod.write_sidecar(str(out), "old prompt", "true", "m", "")
+        fp = mod.fingerprint("new prompt", str(out), "true", "m", "")
+        assert mod.reuse_decision(str(out), "true", str(tmp_path), expected_fp=fp) is False
+        assert not out.exists()  # stale artifact deleted
+
+    def test_cli_reuse_fingerprint_e2e(self, tmp_path):
+        """--reuse-fingerprint: unchanged input reuses, changed input
+        regenerates (agent called again)."""
+        counter = tmp_path / "counter"
+        agent = tmp_path / "counting.sh"
+        agent.write_text(f"#!/bin/sh\necho x >> {counter}\necho \"$2\"\n", encoding="utf-8")
+        agent.chmod(0o755)
+        inputs = tmp_path / "in"
+        inputs.mkdir()
+        (inputs / "t.md").write_text("prompt v1", encoding="utf-8")
+        base = [sys.executable, str(PI_BATCH), "--from-dir", str(inputs),
+                "--agent-bin", str(agent), "--mode", "serial",
+                "--reuse", "--reuse-fingerprint"]
+        first = subprocess.run(base, capture_output=True, text=True, timeout=120)
+        assert first.returncode == 0, first.stderr
+        calls = counter.read_text(encoding="utf-8").count("x")
+        assert calls == 1
+        assert (inputs / "t.out.md").exists()
+        assert (inputs / "t.out.md.meta.json").exists()  # sidecar written
+        # unchanged input: reused, agent not called again
+        again = subprocess.run(base, capture_output=True, text=True, timeout=120)
+        assert again.returncode == 0, again.stderr
+        assert counter.read_text(encoding="utf-8").count("x") == calls
+        # changed input: fingerprint mismatch -> regenerated
+        (inputs / "t.md").write_text("prompt v2", encoding="utf-8")
+        changed = subprocess.run(base, capture_output=True, text=True, timeout=120)
+        assert changed.returncode == 0, changed.stderr
+        assert counter.read_text(encoding="utf-8").count("x") == calls + 1
+
+
+class TestSessionRotation:
+    """T10 (7x24 governance): session fork at the size watermark."""
+
+    def _fake_session(self, tmp_path, cwd, name, size_kb=1, with_compaction=False):
+        import pbatch.session as session
+        workdir_key = "--" + cwd.replace("/", "-") + "--"
+        d = tmp_path / workdir_key
+        d.mkdir(parents=True, exist_ok=True)
+        lines = []
+        if with_compaction:
+            lines.append('{"type": "compaction", "id": "c1"}')
+        lines.append('{"type": "session", "id": "%s"}' % name)
+        f = d / f"2026-08-02T00-00-00-000Z_{name}.jsonl"
+        f.write_text("\n".join(lines) + "\n" + ("x" * size_kb * 1024), encoding="utf-8")
+        session.SESSIONS_DIR = tmp_path  # test-injectable
+        return f
+
+    def test_session_file_discovery_and_size(self, tmp_path):
+        import pbatch.session as session
+        self._fake_session(tmp_path, "/work", "sess1", size_kb=3)
+        f = session.session_file("/work", "sess1")
+        assert f is not None and f.name.endswith("_sess1.jsonl")
+        assert session.session_size_bytes("/work", "sess1") > 3000
+        assert session.session_size_bytes("/work", "missing") == 0
+
+    def test_compaction_detection(self, tmp_path):
+        import pbatch.session as session
+        self._fake_session(tmp_path, "/work", "s1", with_compaction=True)
+        assert session.has_compaction("/work", "s1") is True
+        self._fake_session(tmp_path, "/work2", "s2")
+        assert session.has_compaction("/work2", "s2") is False
+
+    def test_fork_flags_use_pi_contract(self):
+        import pbatch.session as session
+        flags = session.fork_flags("/tmp/s.jsonl")
+        assert flags == ["--fork", "/tmp/s.jsonl"]
+
+    def test_shared_serial_rotates_at_watermark(self, tmp_path, monkeypatch):
+        """Past the watermark, the second call forks instead of continuing."""
+        mod = load_batch()
+        args_log = tmp_path / "args.log"
+        agent = tmp_path / "record-agent.sh"
+        agent.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$@\" >> {args_log}\necho ok\n", encoding="utf-8")
+        agent.chmod(0o755)
+        mod.config.AGENT_BIN = str(agent)
+        # fake session file over the watermark
+        import pbatch.session as session
+        workdir_key = "--" + tmp_path.as_posix().replace("/", "-") + "--"
+        d = tmp_path / workdir_key
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"2026-08-02T00-00-00-000Z_rot.jsonl").write_text("x" * 3000, encoding="utf-8")
+        session.SESSIONS_DIR = tmp_path
+        monkeypatch.setattr(mod.config, "SESSION_MAX_BYTES", 1024)
+        monkeypatch.chdir(tmp_path)
+        tasks = [mod.Task(prompt="p1", output=str(tmp_path / "1.md")),
+                 mod.Task(prompt="p2", output=str(tmp_path / "2.md"))]
+        results = mod.run_serial(tasks, session_mode="shared", session_id="rot", session_name="rot")
+        assert all(r.success for r in results)
+        lines = args_log.read_text(encoding="utf-8").splitlines()
+        assert "--session-id" in lines  # first call started the session
+        assert "--fork" in lines        # second call rotated
+        # first call must NOT fork
+        assert lines.index("--session-id") < lines.index("--fork")
+
+
+class TestGovernanceBatch:
+    """T12 (7x24 governance): validator JSON protocol, gate reason,
+    evidence fences, output caps, secretscan registry."""
+
+    def test_validator_json_status_warn_allows(self, tmp_path):
+        mod = load_batch()
+        agent = tmp_path / "agent.sh"
+        agent.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+        agent.chmod(0o755)
+        mod.config.AGENT_BIN = str(agent)
+        out = tmp_path / "o.md"
+        results = mod.run_serial([mod.Task(prompt="x", output=str(out))],
+                                 validate_cmd='echo \'{"status": "warn"}\'')
+        assert results[0].success is True  # warn allows, output saved
+        assert out.exists()
+
+    def test_validator_json_status_fail_rejects(self, tmp_path):
+        mod = load_batch()
+        agent = tmp_path / "agent.sh"
+        agent.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+        agent.chmod(0o755)
+        mod.config.AGENT_BIN = str(agent)
+        out = tmp_path / "o.md"
+        results = mod.run_serial([mod.Task(prompt="x", output=str(out))],
+                                 validate_cmd='echo \'{"status": "fail"}\'')
+        assert results[0].success is False
+        assert not out.exists()
+
+    def test_bare_verdict_fails_closed(self, tmp_path):
+        """12b: VERDICT: PASS without a reason does not unlock a gate."""
+        mod = load_batch()
+        f = tmp_path / "gate.md"
+        f.write_text("VERDICT: PASS\n", encoding="utf-8")
+        assert mod.pipeline._gate_verdict([str(f)]) is None
+        f2 = tmp_path / "gate2.md"
+        f2.write_text("VERDICT: PASS - reviewed and approved\n", encoding="utf-8")
+        assert mod.pipeline._gate_verdict([str(f2)]) == "PASS"
+
+    def test_evidence_fences_in_combine(self, tmp_path):
+        """12d: combined evidence is fenced as untrusted."""
+        mod = load_batch()
+        a = tmp_path / "a.md"
+        a.write_text("claim", encoding="utf-8")
+        combined = mod.pipeline._combine_outputs([str(a)])
+        assert f'<evidence source="{a.stem}">' in combined
+        assert "</evidence>" in combined
+
+    def test_output_byte_cap_rejects(self, tmp_path, monkeypatch):
+        """12e: oversized agent output is rejected, not written."""
+        mod = load_batch()
+        agent = tmp_path / "big-agent.sh"
+        agent.write_text("#!/bin/sh\nhead -c 3000 /dev/zero | tr '\\0' 'x'\n", encoding="utf-8")
+        agent.chmod(0o755)
+        mod.config.AGENT_BIN = str(agent)
+        monkeypatch.setattr(mod.config, "OUTPUT_MAX_BYTES", 1024)
+        out = tmp_path / "o.md"
+        task = mod.Task(prompt="x", output=str(out))
+        result = mod.run_task(task)
+        assert result.success is True  # agent exit 0
+        mod.save_result(task, result)
+        assert not out.exists()  # cap rejected the write
+
+    def test_secretscan_registry_entry(self):
+        mod = load_batch()
+        assert "secretscan" in mod.config.VALIDATORS
+        assert "grep" in mod.config.VALIDATORS["secretscan"]
+
+    def test_secretscan_validator_blocks_secret(self, tmp_path):
+        """12f: --validate secretscan rejects artifacts with likely secrets."""
+        mod = load_batch()
+        agent = tmp_path / "agent.sh"
+        agent.write_text("#!/bin/sh\necho 'api_key = sk-abcdef1234567890xyz\n'", encoding="utf-8")
+        agent.chmod(0o755)
+        mod.config.AGENT_BIN = str(agent)
+        out = tmp_path / "o.md"
+        results = mod.run_serial([mod.Task(prompt="x", output=str(out))], validate_cmd="secretscan")
+        assert results[0].success is False
+        assert not out.exists()
+
+
 class TestStdinReusedAcrossRounds:
     """F9: stdin is consumed once; later rounds reuse the loaded tasks."""
 
