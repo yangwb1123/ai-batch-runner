@@ -159,3 +159,9 @@ class TaskResult:
     elapsed: float = 0.0
     returncode: int = -1
     reason: str = ""
+    # T2 (full-SDLC pipeline): additive validator-outcome fields, populated
+    # when the engineering gate ran against the artifact. Empty/None defaults
+    # keep every existing serializer and consumer compatible.
+    validation_ok: Optional[bool] = None
+    validation_exit: int = 0
+    validation_stderr: str = ""

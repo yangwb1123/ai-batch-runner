@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import NamedTuple, Optional
@@ -246,6 +247,32 @@ def run_validation(cmd: str, cwd: str, timeout: float = 600) -> ValidationResult
                             stdout=stdout, stderr=stderr, timed_out=False)
 
 
+def _apply_gate_commands(tmp: Path, task: Task, commands: list, result: TaskResult) -> bool:
+    """Run every gate command against the temp artifact (AND semantics);
+    a failure deletes the artifact, records the outcome on the result
+    (T2 feedback fields) and returns False."""
+    for raw in commands:
+        cmd = raw.replace("{output}", shlex.quote(str(tmp))).replace("{cwd}", shlex.quote(task.workdir()))
+        log.info("VALIDATE: %s", cmd)
+        v = run_validation(cmd, task.workdir())
+        result.validation_ok = v.ok
+        result.validation_exit = v.exit_code
+        result.validation_stderr = _cap_feedback(v.stderr or "")
+        if v.ok:
+            continue
+        tmp.unlink(missing_ok=True)
+        log.warning("VALIDATION FAILED%s: %s; output NOT saved",
+                    " (timeout)" if v.timed_out else f" (exit={v.exit_code})", cmd)
+        for line in (v.stdout or "").strip().splitlines()[-10:]:
+            log.warning("  | %s", line)
+        for line in (v.stderr or "").strip().splitlines()[-10:]:
+            log.warning("  | %s", line)
+        return False
+    result.validation_ok = True
+    result.validation_exit = 0
+    return True
+
+
 def _save_validated(task: Task, result: TaskResult, validate_cmd: str) -> bool:
     """Save a successful result through the engineering gates. The output is
     written to a temp file, every resolved validator command must exit 0
@@ -274,23 +301,35 @@ def _save_validated(task: Task, result: TaskResult, validate_cmd: str) -> bool:
     tmp.write_text(result.stdout, encoding="utf-8")
     # Local fix (self-iteration round 2, F3): shell-escape {output}/{cwd}
     # substitutions so paths with spaces/quotes cannot inject commands.
-    for raw in commands:
-        cmd = raw.replace("{output}", shlex.quote(str(tmp))).replace("{cwd}", shlex.quote(task.workdir()))
-        log.info("VALIDATE: %s", cmd)
-        v = run_validation(cmd, task.workdir())
-        if v.ok:
-            continue
-        tmp.unlink(missing_ok=True)
-        log.warning("VALIDATION FAILED%s: %s; output NOT saved",
-                    " (timeout)" if v.timed_out else f" (exit={v.exit_code})", cmd)
-        for line in (v.stdout or "").strip().splitlines()[-10:]:
-            log.warning("  | %s", line)
-        for line in (v.stderr or "").strip().splitlines()[-10:]:
-            log.warning("  | %s", line)
+    if not _apply_gate_commands(tmp, task, commands, result):
         return False
     tmp.rename(out_path)
     log.info("WROTE %s (validated)", out_path)
     return True
+
+
+def _cap_feedback(text: str, max_chars: int = 4000, max_lines: int = 40) -> str:
+    """Cap validator stderr for retry feedback (decision D4): 4000 chars /
+    40 lines, keeping the head of the output (where CLI banners land)."""
+    lines = text.splitlines()[:max_lines]
+    capped = "\n".join(lines)[:max_chars]
+    if len(text) > len(capped):
+        capped += "\n... (truncated)"
+    return capped
+
+
+def _retry_task_with_feedback(task: Task, result: TaskResult) -> Task:
+    """T2: build the retry task with the previous validator failure appended
+    to the prompt so the agent can fix the gate problem directly (the
+    feedback is capped per decision D4)."""
+    if not result.validation_stderr:
+        return task
+    feedback = (
+        f"\n\n[validator feedback from previous attempt]\n"
+        f"exit={result.validation_exit}\n"
+        f"{result.validation_stderr}"
+    )
+    return replace(task, prompt=task.prompt + feedback)
 
 
 def revalidate_existing(path: Path, validate_cmd: Optional[str], workdir: str = "") -> bool:
@@ -300,6 +339,11 @@ def revalidate_existing(path: Path, validate_cmd: Optional[str], workdir: str = 
     validators apply -> trivially reusable. Returns True when the artifact
     passes all gates."""
     if not path.is_file():
+        return False
+    # T0.1 (full-SDLC pipeline): a symlink artifact must never be validated
+    # through (the gate could execute against the victim) — fail closed.
+    if path.is_symlink():
+        log.warning("REVALIDATE: %s is a symlink; failing closed", path)
         return False
     try:
         empty = path.stat().st_size == 0
@@ -378,6 +422,19 @@ def _stream_proc(proc: subprocess.Popen, prefix: str, start: float, timeout: int
     return stdout_lines, stderr_lines
 
 
+def _run_with_gate(task: Task, validate_cmd: str, index: int, total: int,
+                    session_flags: Optional[list] = None, parallel: bool = False) -> TaskResult:
+    """Run one task and push its result through the engineering gate;
+    a gate rejection marks the task failed with the exit signature."""
+    result = run_task(task, task_index=index, total=total, parallel=parallel, session_flags=session_flags)
+    if result.success:
+        result.success = _save_validated(task, result, task.validate if task.validate is not None else validate_cmd)
+        if not result.success:
+            result.reason = (f"validation failed (exit={result.validation_exit})"
+                             if result.validation_exit else "validation failed")
+    return result
+
+
 def run_serial(tasks: list[Task], retries: int = 0, retry_delay: float = 10.0, backoff: float = 2.0, min_interval: float = 0.0,
                session_mode: str = "new", session_id: str = "", session_name: str = "", validate_cmd: str = "") -> list[TaskResult]:
     """Execute tasks one by one with real-time output streaming. Failed tasks
@@ -405,25 +462,22 @@ def run_serial(tasks: list[Task], retries: int = 0, retry_delay: float = 10.0, b
                 session_active = True
             else:
                 flags = _session_flags("continue", session_id, session_name)
-        result = run_task(task, task_index=i, total=total, parallel=False, session_flags=flags)
-        if result.success:
-            result.success = _save_validated(task, result, task.validate if task.validate is not None else validate_cmd)
-            if not result.success:
-                result.reason = "validation failed"
+        result = _run_with_gate(task, validate_cmd, i, total, flags)
         attempt = 0
+        retry_task = task
         while not result.success and attempt < retries:
             attempt += 1
             wait = _retry_wait(result, attempt, retry_delay, backoff)
             log.warning("RETRY %d/%d for task [%d/%d] in %.0fs (reason: %s)",
                         attempt, retries, i, total, wait, result.reason or f"exit {result.returncode}")
             time.sleep(wait)
+            # T2: a validator rejection feeds its capped stderr back into the
+            # retry prompt so the agent can fix the gate problem directly.
+            if result.validation_stderr:
+                retry_task = _retry_task_with_feedback(task, result)
             # retries stay inside the same session
             retry_flags = _session_flags("continue", session_id, session_name) if session_mode != "new" else None
-            result = run_task(task, task_index=i, total=total, parallel=False, session_flags=retry_flags)
-            if result.success:
-                result.success = _save_validated(task, result, task.validate if task.validate is not None else validate_cmd)
-                if not result.success:
-                    result.reason = "validation failed"
+            result = _run_with_gate(retry_task, validate_cmd, i, total, retry_flags)
         results.append(result)
         if result.success and min_interval > 0:
             time.sleep(min_interval)
@@ -439,12 +493,7 @@ def run_parallel(tasks: list[Task], workers: int = 0, validate_cmd: str = "") ->
     log.info("PARALLEL x%d  (%d tasks)", workers, total)
 
     def _run_one(task: Task, index: int) -> TaskResult:
-        result = run_task(task, task_index=index, total=total, parallel=True)
-        if result.success:
-            result.success = _save_validated(task, result, task.validate if task.validate is not None else validate_cmd)
-            if not result.success:
-                result.reason = "validation failed"
-        return result
+        return _run_with_gate(task, validate_cmd, index, total, parallel=True)
 
     results: list[TaskResult] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -480,5 +529,7 @@ def print_summary(results: list[TaskResult]) -> None:
     for r in results:
         icon = "PASS" if r.success else "FAIL"
         brief = r.task.prompt[:60].replace("\n", " ")
-        print("  %s  [%6.1fs] %s..." % (icon, r.elapsed, brief))
+        # T2: surface the validator failure signature in the summary line.
+        sig = f"  [val exit={r.validation_exit}]" if (not r.success and r.validation_exit) else ""
+        print("  %s  [%6.1fs]%s %s..." % (icon, r.elapsed, sig, brief))
     print("=" * 56)

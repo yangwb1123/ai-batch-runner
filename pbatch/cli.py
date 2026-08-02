@@ -16,6 +16,7 @@ from typing import Optional
 from . import config
 from .config import (AGENT_BIN, AGENT_DEFAULT_WORKERS, COMMIT_PREFIX_DEFAULT, log, yaml)
 from .models import Pipeline, Task
+from .reuse import reuse_decision
 from .pipeline import (_append_decision_log, _archive_outputs, load_pipeline,
                        load_tasks, load_tasks_from_dir, run_pipeline)
 from .runner import print_summary, run_parallel, run_serial
@@ -48,6 +49,8 @@ def _add_runtime_args(p: argparse.ArgumentParser) -> None:
                    help="run a multi-stage pipeline from YAML file")
     p.add_argument("--reuse", action="store_true",
                    help="reuse existing .out.md files (skip regeneration)")
+    p.add_argument("--reuse-legacy", action="store_true",
+                   help="existence-only reuse check (skip validators; escape hatch for T1 freshness revalidation)")
     p.add_argument("--force", action="store_true",
                    help="force regeneration, overwrite existing .out.md (default)")
     p.add_argument("--git-commit", action="store_true",
@@ -283,7 +286,8 @@ def _run_pipeline_round(args, pipeline: Pipeline, session_name: str, cli_validat
         return False
     all_results, failed_stages = run_pipeline(pipeline, model_override=args.model, reuse=reuse_outputs, timeout_override=timeout_override,
                                               session_mode=args.session_mode, session_name=session_name, validate_cmd=cli_validate,
-                                              decision_log=args.decision_log, archive_dir=args.archive_dir)
+                                              decision_log=args.decision_log, archive_dir=args.archive_dir,
+                                              reuse_legacy=args.reuse_legacy)
     print_summary(all_results)
     if failed_stages or any(not r.success for r in all_results):
         log.error("Failed stages: %s", ", ".join(failed_stages) if failed_stages else "(task failures)")
@@ -302,7 +306,7 @@ def _run_batch_round(args, stdin_tasks, session_name: str, cli_validate: str, ma
         log.error("No tasks to execute: a YAML source must contain a 'tasks' list (pipelines use 'stages' and are auto-detected)")
         sys.exit(1)
 
-    tasks = _filter_reused(tasks, args.reuse and not args.force)
+    tasks = _filter_reused(tasks, args.reuse and not args.force, cli_validate, args.reuse_legacy)
     if not tasks:
         log.info("All tasks already have outputs; nothing to run")
         return False
@@ -365,17 +369,26 @@ def _finalize_batch_round(args, results: list, round_failed: bool) -> None:
 
 
 
-def _filter_reused(tasks: list, reuse: bool) -> list:
+def _filter_reused(tasks: list, reuse: bool, validate_cmd: str = "", reuse_legacy: bool = False) -> list:
     """Drop tasks whose output already exists when reuse is on, so a later
-    round reruns only the failures."""
+    round reruns only the failures. T1: a task is reused only when its
+    artifact passes reuse_decision (exists, non-empty, not a symlink, and
+    every effective validator still passes); stale artifacts are deleted so
+    the round regenerates them. --reuse-legacy restores existence-only."""
     if not reuse:
         return tasks
-    # Local fix (self-iteration round 1): reuse must honor task.cwd too,
-    # via output_path(), not a bare process-cwd-relative Path.
-    kept = [t for t in tasks if not (t.output and t.output_path().exists())]
+    kept = []
+    for t in tasks:
+        if not t.output:
+            kept.append(t)
+            continue
+        effective = t.validate if t.validate is not None else validate_cmd
+        if reuse_decision(str(t.output_path()), effective, t.workdir(), reuse_legacy):
+            continue  # reused
+        kept.append(t)
     skipped = len(tasks) - len(kept)
     if skipped:
-        log.info("Reuse: %d task(s) already have outputs, skipped", skipped)
+        log.info("Reuse: %d task(s) reused+validated, skipped", skipped)
     return kept
 
 

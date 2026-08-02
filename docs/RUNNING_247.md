@@ -331,3 +331,18 @@ restarting the service.
 - Budget guardrails: `--min-interval` throttles serial batches, `--workers`
   caps parallel fan-out, and `--retries`/`--max-rounds` bound how many times
   a failing task is re-attempted before the run reports failure.
+
+## Reuse freshness revalidation (T1)
+
+`--reuse` no longer trusts existence alone: every artifact is reusable only
+when it exists, is non-empty, is not a symlink, and (when validators are
+configured) still passes every effective gate (`pbatch/reuse.py::reuse_decision`).
+A stale artifact is deleted so the round regenerates it; `--reuse-legacy`
+restores the old existence-only skip. The same contract backs all six reuse
+sites (single-batch `_filter_reused`, from_prompt/from_dir/from_outputs/
+aggregate builders, and the fully-reused stage short-circuit).
+
+Validator rejections now flow back into retries (T2): the capped stderr
+(4000 chars / 40 lines) and exit code are appended to the retry prompt, so
+the agent can fix the gate problem directly; the summary line shows the
+validator exit signature.

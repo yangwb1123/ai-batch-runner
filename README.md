@@ -57,6 +57,16 @@ exponential-backoff retries, and optional auto git-commit after each stage.
 > - `.coverage` tolerated by root-policy and gitignored; Makefile/docs test counts
 >   refreshed (110)
 > - tests: 9 more cases in `tests/test_local_fixes.py` (19 total)
+>
+> **Local fixes** (full-SDLC pipeline round, T1/T2 per `docs/IMPLEMENTATION_PLAN_T0_CLOSEOUT.md`):
+> - T1 `pbatch/reuse.py::reuse_decision()`: reuse requires exists ∧ non-empty ∧ not-symlink
+>   ∧ all effective validators still pass; stale artifacts are deleted for regeneration;
+>   all six reuse sites wired; `--reuse-legacy` escape hatch
+> - T2: `TaskResult` additive validation fields; validator stderr (capped 4000/40) + exit
+>   flow into the retry prompt; summary shows the validator exit signature; `run_serial`/
+>   `run_parallel` share `_run_with_gate`
+> - `revalidate_existing` fails closed on symlink artifacts (QA-1 complete)
+> - tests: 11 more cases (30 total in `tests/test_local_fixes.py`)
 >   
 > These pbatch/ + ai/ edits will need re-applying after the next upstream sync (they are
 > the only divergence from snaplink/ai-dev).

@@ -18,6 +18,7 @@ filesize:
   max_lines: 500
   ignore_patterns:
     - "pbatch/pipeline.py"  # upstream-synced (853 lines, within reference's 1000 budget)
+    - "pbatch/runner.py"    # upstream-synced + local fixes (535 lines, within 1000 budget)
     - "pi-batch.py"       # upstream-synced entry shim
     - "ai/run-review.py"  # upstream-synced runner
     - "tests/"            # regression suite files

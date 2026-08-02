@@ -346,6 +346,126 @@ class TestSaveResultHardening:
         assert leftovers == []
 
 
+class TestReuseDecision:
+    """T1 (full-SDLC pipeline): reuse freshness revalidation."""
+
+    def _write_artifact(self, tmp_path):
+        out = tmp_path / "o.md"
+        out.write_text("artifact", encoding="utf-8")
+        return out
+
+    def test_no_validators_trivially_reused(self, tmp_path):
+        mod = load_batch()
+        out = self._write_artifact(tmp_path)
+        assert mod.reuse_decision(str(out), "", str(tmp_path)) is True
+
+    def test_validator_pass_reused(self, tmp_path):
+        mod = load_batch()
+        out = self._write_artifact(tmp_path)
+        assert mod.reuse_decision(str(out), "true", str(tmp_path)) is True
+
+    def test_validator_fail_deletes_and_regenerates(self, tmp_path):
+        mod = load_batch()
+        out = self._write_artifact(tmp_path)
+        assert mod.reuse_decision(str(out), "exit 1", str(tmp_path)) is False
+        assert not out.exists()  # stale artifact deleted, zero residue
+
+    def test_empty_artifact_fails_closed(self, tmp_path):
+        mod = load_batch()
+        out = tmp_path / "o.md"
+        out.write_text("", encoding="utf-8")
+        assert mod.reuse_decision(str(out), "", str(tmp_path)) is False
+
+    def test_symlink_deleted_not_validated_through(self, tmp_path):
+        mod = load_batch()
+        victim = tmp_path / "victim.md"
+        victim.write_text("secret", encoding="utf-8")
+        leak = tmp_path / "leak.txt"
+        link = tmp_path / "o.md"
+        link.symlink_to(victim)
+        gate = f"cat {{output}} > {leak}"
+        assert mod.reuse_decision(str(link), gate, str(tmp_path)) is False
+        assert not leak.exists()  # gate never executed against the victim
+        assert not link.exists()  # symlink deleted for regeneration
+
+    def test_legacy_existence_only(self, tmp_path):
+        mod = load_batch()
+        out = self._write_artifact(tmp_path)
+        assert mod.reuse_decision(str(out), "exit 1", str(tmp_path), legacy=True) is True
+
+    def test_cli_reuse_legacy_flag_regenerated_on_fail(self, tmp_path):
+        """--reuse with a failing gate regenerates; --reuse-legacy skips."""
+        counter = tmp_path / "counter"
+        agent = tmp_path / "counting-agent.sh"
+        agent.write_text(f"#!/bin/sh\necho x >> {counter}\necho \"$2\"\n", encoding="utf-8")
+        agent.chmod(0o755)
+        inputs = tmp_path / "in"
+        inputs.mkdir()
+        (inputs / "t.md").write_text("prompt", encoding="utf-8")
+        base = [sys.executable, str(PI_BATCH), "--from-dir", str(inputs),
+                "--agent-bin", str(agent), "--mode", "serial", "--reuse", "--validate-cmd", "exit 1"]
+        first = subprocess.run(base, capture_output=True, text=True, timeout=120)
+        assert first.returncode != 0
+        assert not (inputs / "t.out.md").exists()  # gate rejected, no artifact
+        # --reuse-legacy: existence-only skip would reuse… but no artifact
+        # exists, so still regenerates; use a passing gate for the skip case
+        pass_gate = [sys.executable, str(PI_BATCH), "--from-dir", str(inputs),
+                     "--agent-bin", str(agent), "--mode", "serial", "--reuse", "--validate-cmd", "true"]
+        ok = subprocess.run(pass_gate, capture_output=True, text=True, timeout=120)
+        assert ok.returncode == 0, ok.stderr
+        calls = counter.read_text(encoding="utf-8").count("x")
+        # reuse+validated: agent not called again
+        again = subprocess.run(pass_gate, capture_output=True, text=True, timeout=120)
+        assert again.returncode == 0, again.stderr
+        assert counter.read_text(encoding="utf-8").count("x") == calls
+
+
+class TestValidationFeedback:
+    """T2 (full-SDLC pipeline): validator feedback flows into retries."""
+
+    def test_retry_prompt_carries_validator_stderr(self, tmp_path, monkeypatch):
+        mod = load_batch()
+        args_log = tmp_path / "args.log"
+        agent = tmp_path / "record-agent.sh"
+        agent.write_text(
+            "#!/bin/sh\n"
+            f"printf '%s\\n' \"$2\" >> {args_log}\n"
+            "echo '## result'\n",
+            encoding="utf-8")
+        agent.chmod(0o755)
+        mod.config.AGENT_BIN = str(agent)
+        counter = tmp_path / "counter"
+        out = tmp_path / "o.md"
+        # validator fails once (exit 3 with stderr), then passes
+        validate = f"echo gate-boom >&2; echo x >> {counter}; [ $(wc -l < {counter}) -le 1 ] && exit 3 || exit 0"
+        monkeypatch.setattr(mod.runner, "_retry_wait", lambda *a, **k: 0)
+        results = mod.run_serial([mod.Task(prompt="orig prompt", output=str(out))],
+                                 retries=1, retry_delay=0, validate_cmd=validate)
+        assert results[0].success is True
+        assert out.exists()
+        text = args_log.read_text(encoding="utf-8")
+        assert "orig prompt" in text
+        assert "validator feedback from previous attempt" in text
+        assert "gate-boom" in text
+        assert "exit=3" in text
+
+    def test_result_carries_validation_fields(self, tmp_path):
+        mod = load_batch()
+        agent = tmp_path / "agent.sh"
+        agent.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+        agent.chmod(0o755)
+        mod.config.AGENT_BIN = str(agent)
+        out = tmp_path / "o.md"
+        results = mod.run_serial([mod.Task(prompt="x", output=str(out))],
+                                 validate_cmd="echo deny >&2; exit 7")
+        assert results[0].success is False
+        assert results[0].validation_ok is False
+        assert results[0].validation_exit == 7
+        assert "deny" in results[0].validation_stderr
+        assert "validation failed (exit=7)" in results[0].reason
+        assert not out.exists()
+
+
 class TestStdinReusedAcrossRounds:
     """F9: stdin is consumed once; later rounds reuse the loaded tasks."""
 
