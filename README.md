@@ -217,7 +217,10 @@ prompts/                 19 reference role-prompt templates (architect, tech-lea
 pipelines/               example pipeline configs (code-impl, full-sdlc, generic example)
 ai/                      AI-SDLC review framework: run-review.py + sdlc.yaml + 10 stage
                          prompts + shared prompt fragments (prompts-shared/)
-examples/                pipeline examples incl. meta-review-pipeline.yaml + quickstarts
+examples/                pipeline examples incl. meta-review-pipeline.yaml, quickstarts,
+                         full-sdlc-implement.yaml (real implementation w/ build gates)
+scripts/                 upstream one-command flows: rolling-analysis.sh, full-flow.sh,
+                         full-auto.sh (module-by-module SDLC automation), paths adapted
 docs/                    usage guides incl. RUNNING_247.md (24x7 operation)
 tests/                   91 regression tests (pytest): engine + run-review + CLI end-to-end
 git-auto-commit.sh       interactive standalone commit helper (separate from pipeline git_commit)

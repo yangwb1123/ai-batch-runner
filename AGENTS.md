@@ -5,7 +5,8 @@
 > `python ai-dev/pi-batch.py` → `python pi-batch.py`、`ai-dev/prompts` →
 > `prompts`；`make ai-dev-test` → `make ci`（工程门禁见
 > `docs/CHECKS_REGISTRY.md`）；`pi-batch.yaml` 的 `validators.pyquality`
-> 路径已适配为 `python {cwd}/quality.py {cwd}`。其余内容与上游同步。
+> 路径已适配为 `python {cwd}/quality.py {cwd}`；`scripts/` 已适配为仓库根路径。
+> 其余内容与上游同步。
 
 `ai-dev/` 是 Snaplink 仓库内的可选 AI 编排框架：用 CLI agent（pi，可换成
 claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想法、按角色产出
@@ -207,6 +208,21 @@ python ai-dev/quality.py --strict ai-dev/ # 严格模式（含文件行数预算
 - `pi-batch.yaml` 的 `validators.pyquality` 已注册，可在流水线阶段当
   工程门禁使用；重构 ai-dev 自身时用它对标验收（当前全树严格模式达标）
 
+### 2.11 特性与流程环节映射（整套流程 = 全部特性）
+
+| 流程环节 | 使用的特性 |
+|---|---|
+| 发现问题 | 滚动分析脚本（会话延续/决策日志/归档/节流）或 meta 编排 |
+| 需求分析 | `from_prompt` 一句话起点 |
+| 阶段串联 | `from_outputs` + `aggregate`（上游全部产出合并为一份证据） |
+| 交叉对抗 | meta 动态角色：命名/ad-hoc、并发独立会话、证据折叠 |
+| 阶段目标确认 | `gate` 裁决门：VERDICT PASS/FAIL，fail closed 阻断 |
+| 真实实现 | agent 直接改仓库代码（`full-sdlc-implement.yaml`），`validate: build` 工程门禁 |
+| 验收 | 第二个 gate（QA 核对验收标准覆盖） |
+| 决策记录 | `decision_log`（每阶段思考点+理由+证据，追加式） |
+| 完成即处理 | `git_commit`（每阶段）+ `archive_dir`（全成功后归档） |
+| 韧性 | 失败签名拒绝落盘、`--reuse` 断点续跑、`--retries`、7×24 轮循环 |
+
 ## 3. 命令速查
 
 ```bash
@@ -217,6 +233,25 @@ python ai-dev/pi-batch.py ai-dev/examples/meta-review-pipeline.yaml
 #          → git 提交 → 归档 → 决策日志
 python ai-dev/pi-batch.py ai-dev/examples/quickstart-full-sdlc.yaml \
   --log-file logs/full-sdlc.log
+
+# 全流程真实实现版：同一闭环，但 implement 阶段 agent 直接修改仓库代码
+# （go build/vet 门禁 + QA 验收门把关），建议先 --dry-run 预览再跑
+python ai-dev/pi-batch.py ai-dev/examples/full-sdlc-implement.yaml \
+  --log-file logs/full-impl.log
+
+# 一体式入口：滚动分析发现方向 → 选择方向 → 自动跑完整 SDLC（含真实实现）
+#   full-flow.sh [轮数] [间隔秒] [方向]
+# 交互模式：不给方向参数，展示候选后输入；非交互：直接传方向
+bash ai-dev/scripts/full-flow.sh 3 300            # 3 轮分析 + 交互选方向
+bash ai-dev/scripts/full-flow.sh 3 300 "设备信任"  # 3 轮分析 + 直接实现该方向
+
+# 全自动：按项目架构模块逐个分析 → 自动提取每个方向 → 每个方向跑完整实现
+#   full-auto.sh [--modules m1,m2] [--max-directions N] [--dry-run]
+# 默认扫描 domains/interfaces/infrastructure/platform/protocols/shared 全部
+# 模块；gate FAIL 等失败记录到 SUMMARY 并继续下一项，无人值守
+bash ai-dev/scripts/full-auto.sh --dry-run                     # 先看计划
+bash ai-dev/scripts/full-auto.sh --max-directions 3            # 全模块自动跑
+bash ai-dev/scripts/full-auto.sh --modules "domains/mfa"       # 限定模块
 
 # MFA 子系统分析（一句话起点 + 动态角色审查）
 python ai-dev/pi-batch.py ai-dev/examples/quickstart-snaplink-analysis.yaml
