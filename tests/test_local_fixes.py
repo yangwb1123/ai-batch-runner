@@ -994,6 +994,102 @@ class TestGovernanceBatch:
         assert not out.exists()
 
 
+class TestApprovalStage:
+    """T12c (D5): human-in-the-loop approval points."""
+
+    def test_approve_file_unlocks(self, tmp_path, monkeypatch):
+        mod = load_batch()
+        agent = tmp_path / "agent.sh"
+        agent.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+        agent.chmod(0o755)
+        mod.config.AGENT_BIN = str(agent)
+        inputs = tmp_path / "in"
+        inputs.mkdir()
+        (inputs / "t.md").write_text("p", encoding="utf-8")
+        approve = tmp_path / "approved"
+        approve.write_text("yes", encoding="utf-8")
+        stage = mod.Stage(name="s0", from_dir=str(inputs), approval=True)
+        results, ok = mod.execute_stage(stage, {}, approval_file=str(approve))
+        assert ok is True
+        assert (inputs / "t.out.md").exists()
+
+    def test_no_approval_fails_closed(self, tmp_path, monkeypatch):
+        """Non-interactive stdin without approve file/env halts the stage."""
+        mod = load_batch()
+        agent = tmp_path / "agent.sh"
+        agent.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+        agent.chmod(0o755)
+        mod.config.AGENT_BIN = str(agent)
+        inputs = tmp_path / "in"
+        inputs.mkdir()
+        (inputs / "t.md").write_text("p", encoding="utf-8")
+        monkeypatch.delenv("PBATCH_APPROVE", raising=False)
+        stage = mod.Stage(name="s0", from_dir=str(inputs), approval=True)
+        results, ok = mod.execute_stage(stage, {}, approval_file="")
+        assert ok is False  # deliverables exist but the pipeline halts
+        assert (inputs / "t.out.md").exists()
+
+    def test_env_approve_unlocks(self, tmp_path, monkeypatch):
+        mod = load_batch()
+        agent = tmp_path / "agent.sh"
+        agent.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+        agent.chmod(0o755)
+        mod.config.AGENT_BIN = str(agent)
+        inputs = tmp_path / "in"
+        inputs.mkdir()
+        (inputs / "t.md").write_text("p", encoding="utf-8")
+        monkeypatch.setenv("PBATCH_APPROVE", "1")
+        stage = mod.Stage(name="s0", from_dir=str(inputs), approval=True)
+        results, ok = mod.execute_stage(stage, {})
+        assert ok is True
+
+    def test_cli_approval_blocked_without_gate(self, tmp_path):
+        """E2E: approval stage without approve file stops the pipeline."""
+        agent = tmp_path / "agent.sh"
+        agent.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+        agent.chmod(0o755)
+        inputs = tmp_path / "in"
+        inputs.mkdir()
+        (inputs / "t.md").write_text("p", encoding="utf-8")
+        pipeline = tmp_path / "p.yaml"
+        pipeline.write_text(
+            "git_commit: false\n"
+            "stages:\n"
+            f"  - name: s0\n    from_dir: {inputs}\n    approval: true\n",
+            encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, str(PI_BATCH), str(pipeline), "--agent-bin", str(agent)],
+            capture_output=True, text=True, timeout=120, cwd=str(tmp_path),
+            env={**os.environ, "PBATCH_APPROVE": ""})
+        assert result.returncode != 0
+        assert "APPROVAL" in result.stderr
+        assert (inputs / "t.out.md").exists()  # deliverables preserved
+
+    def test_cli_approval_unlocked_e2e(self, tmp_path):
+        """E2E: --approve-file unlocks the approval stage."""
+        agent = tmp_path / "agent.sh"
+        agent.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+        agent.chmod(0o755)
+        approve = tmp_path / "approved"
+        approve.write_text("yes", encoding="utf-8")
+        inputs = tmp_path / "in"
+        inputs.mkdir()
+        (inputs / "t.md").write_text("p", encoding="utf-8")
+        pipeline = tmp_path / "p.yaml"
+        pipeline.write_text(
+            "git_commit: false\n"
+            "stages:\n"
+            f"  - name: s0\n    from_dir: {inputs}\n    approval: true\n",
+            encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, str(PI_BATCH), str(pipeline), "--agent-bin", str(agent),
+             "--approve-file", str(approve)],
+            capture_output=True, text=True, timeout=120, cwd=str(tmp_path),
+            env={**os.environ, "PBATCH_APPROVE": ""})
+        assert result.returncode == 0, result.stderr
+        assert "APPROVAL: stage 's0' approved" in result.stderr
+
+
 class TestStdinReusedAcrossRounds:
     """F9: stdin is consumed once; later rounds reuse the loaded tasks."""
 

@@ -105,6 +105,9 @@ exponential-backoff retries, and optional auto git-commit after each stage.
 > - tests: 18 more cases (66 total in `tests/test_local_fixes.py`);
 >   upstream gate/evidence fixtures updated for the new fail-closed and
 >   fence semantics
+> - T12c approval stages (decision D5): `approval: true` pauses the
+>   pipeline at a human gate — PBATCH_APPROVE=1 env / `--approve-file` /
+>   interactive TTY, fail-closed otherwise (5 tests; 71 local total)
 >   
 > These pbatch/ + ai/ edits will need re-applying after the next upstream sync (they are
 > the only divergence from snaplink/ai-dev).

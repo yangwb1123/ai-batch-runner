@@ -70,6 +70,7 @@ def _parse_stage_def(s: dict, global_git_commit: bool) -> Stage:
         output_dir=s.get("output_dir", ""),
         max_iterations=s.get("max_iterations", 3),
         gate=s.get("gate", False),
+        approval=s.get("approval", False),
         from_prompt=s.get("from_prompt", ""),
         output=s.get("output", ""),
         tasks=s.get("tasks", []),
@@ -470,7 +471,8 @@ def _stage_from_outputs_tasks(stage: Stage, stage_outputs: dict, reuse: bool, mo
 
 def execute_stage(stage: Stage, stage_outputs: dict[str, list[str]], model_override: str = "", reuse: bool = False, timeout_override: int = 0,
                   session_mode: str = "new", session_name: str = "", validate_cmd: str = "",
-                  reuse_legacy: bool = False, fingerprint_mode: bool = False) -> tuple[list[TaskResult], bool]:
+                  reuse_legacy: bool = False, fingerprint_mode: bool = False,
+                  approval_file: str = "") -> tuple[list[TaskResult], bool]:
     """Execute one stage and return (task_results, stage_ok). stage_ok is
     False when any task or configured post-stage command failed, so command
     hooks act as a failure gate for the pipeline."""
@@ -501,12 +503,15 @@ def execute_stage(stage: Stage, stage_outputs: dict[str, list[str]], model_overr
     results, outputs = _execute_stage_tasks(stage, tasks, reused_outputs, stage_validate,
                                             session_mode, session_name, stage_session_id)
     stage_outputs[stage.name] = outputs
-
-    log.info("")
-    log.info("Stage '%s' completed: %d/%d tasks succeeded",
-             stage.name, len(outputs), len(tasks))
+    _log_stage_completion(stage, len(outputs), len(tasks))
 
     stage_ok = all(r.success for r in results)
+
+    # T12c (D5): a human approval point pauses the pipeline after the
+    # stage's deliverables exist (env / approve-file / TTY channels).
+    if stage_ok and stage.approval and not _check_approval(stage, outputs, approval_file):
+        log.error("APPROVAL: stage '%s' not approved; pipeline halts", stage.name)
+        stage_ok = False
 
     if not _run_stage_commands(stage):
         stage_ok = False
@@ -514,6 +519,42 @@ def execute_stage(stage: Stage, stage_outputs: dict[str, list[str]], model_overr
     _git_commit_stage(stage, outputs)  # failures are advisory, not a stage failure
 
     return results, stage_ok
+
+
+def _log_stage_completion(stage: Stage, done: int, total_tasks: int) -> None:
+    log.info("")
+    log.info("Stage '%s' completed: %d/%d tasks succeeded", stage.name, done, total_tasks)
+
+
+def _check_approval(stage: Stage, outputs: list, approval_file: str) -> bool:
+    """T12c (D5): human-in-the-loop gate. Channels, in order:
+    PBATCH_APPROVE=1 env -> approved; --approve-file exists -> approved;
+    interactive y/n on a real TTY; anything else fails closed."""
+    import os as _os
+    if _os.environ.get("PBATCH_APPROVE", "").lower() in ("1", "true", "yes"):
+        log.info("APPROVAL: stage '%s' approved via PBATCH_APPROVE env", stage.name)
+        return True
+    if approval_file and Path(approval_file).exists():
+        log.info("APPROVAL: stage '%s' approved via %s", stage.name, approval_file)
+        return True
+    log.info("APPROVAL: stage '%s' deliverables: %s", stage.name, ", ".join(outputs))
+    try:
+        if not sys.stdin.isatty():
+            log.warning("APPROVAL: stage '%s' needs human approval but stdin is not a TTY "
+                        "(use --approve-file or PBATCH_APPROVE=1)", stage.name)
+            return False
+        reply = input(f"Approve stage '{stage.name}' outputs? (y/n): ").strip().lower()
+        return reply in ("y", "yes")
+    except Exception:
+        return False
+
+
+def _log_pipeline_start(pipeline: Pipeline, reuse: bool) -> None:
+    log.info("")
+    log.info("=" * 60)
+    log.info("PIPELINE START (%d stages)", len(pipeline.stages))
+    log.info("Mode: %s", "REUSE existing outputs" if reuse else "FORCE regeneration")
+    log.info("=" * 60)
 
 
 def _empty_stage_result(stage: Stage, stage_outputs: dict, reused_outputs: list) -> tuple[list, bool]:
@@ -773,7 +814,8 @@ def _append_decision_log(path: str, stage_name: str, results: list, stage_ok: bo
 
 def run_pipeline(pipeline: Pipeline, model_override: str = "", dry_run: bool = False, reuse: bool = False, timeout_override: int = 0,
                  session_mode: str = "new", session_name: str = "", validate_cmd: str = "", decision_log: str = "", archive_dir: str = "",
-                 reuse_legacy: bool = False, fingerprint_mode: bool = False) -> tuple[list[TaskResult], list[str]]:
+                 reuse_legacy: bool = False, fingerprint_mode: bool = False,
+                 approval_file: str = "") -> tuple[list[TaskResult], list[str]]:
     """Execute all stages sequentially; returns (all task results, names of
     stages that failed tasks or commands). Gates halt the pipeline, decision
     logs record every stage, and completed runs archive their deliverables."""
@@ -781,14 +823,7 @@ def run_pipeline(pipeline: Pipeline, model_override: str = "", dry_run: bool = F
     failed_stages: list[str] = []
     stage_outputs: dict[str, list[str]] = {}  # stage_name -> [output_file_paths]
     
-    log.info("")
-    log.info("=" * 60)
-    log.info("PIPELINE START (%d stages)", len(pipeline.stages))
-    if reuse:
-        log.info("Mode: REUSE existing outputs")
-    else:
-        log.info("Mode: FORCE regeneration")
-    log.info("=" * 60)
+    _log_pipeline_start(pipeline, reuse)
     
     for stage in pipeline.stages:
         if dry_run:
@@ -796,7 +831,8 @@ def run_pipeline(pipeline: Pipeline, model_override: str = "", dry_run: bool = F
             continue
 
         results, stage_ok = execute_stage(stage, stage_outputs, model_override, reuse, timeout_override,
-                                          session_mode, session_name, validate_cmd, reuse_legacy, fingerprint_mode)
+                                          session_mode, session_name, validate_cmd, reuse_legacy,
+                                          fingerprint_mode, approval_file)
         all_results.extend(results)
         if not stage_ok:
             failed_stages.append(stage.name)

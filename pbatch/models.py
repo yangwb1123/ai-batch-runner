@@ -32,6 +32,7 @@ class Stage:
     output_dir: str = ""  # where role deliverables are written (required for meta stages)
     max_iterations: int = 3  # orchestrator -> roles -> fold -> re-ask loop limit
     gate: bool = False  # verdict gate: output must contain VERDICT: PASS/FAIL/REJECT; FAIL/REJECT blocks later stages
+    approval: bool = False  # T12c: human approval point after the stage (D5)
     from_prompt: str = ""  # one-sentence starting prompt instead of from_dir files
     output: str = ""  # output file for the from_prompt task (required with from_prompt)
     tasks: list = field(default_factory=list)

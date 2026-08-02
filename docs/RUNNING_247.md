@@ -405,3 +405,12 @@ CLI > task > stage > config default (D6).
   `OUTPUT_MAX_BYTES` (default 2MB) are rejected, not written (12e);
   `--validate secretscan` greps artifacts for likely secrets (12f,
   registry hook).
+
+## Approval stages (T12c, decision D5)
+
+`approval: true` on a stage turns it into a human-in-the-loop point: after
+its deliverables exist the pipeline pauses until approved. Channels, in
+order: `PBATCH_APPROVE=1` env, `--approve-file FILE` (exists = approved,
+CI-friendly), or an interactive y/n on a real TTY. Anything else fails
+closed (the stage reports unapproved and the pipeline halts; deliverables
+are preserved for review).

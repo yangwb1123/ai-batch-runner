@@ -187,3 +187,10 @@ D4 feedback cap, proposal 4000 chars/40 lines (before T2) · D5 `approval: true`
 semantics (before T12c) · D6 routing precedence, proposal CLI > task > stage >
 default (before T11) · D7 secretscan hook vs built-in scanner, proposal hook
 (before T12f).
+
+## Completion status (2026-08-02)
+
+T0-T13 implemented and merged; 12c (approval stages) landed with decision
+D5 self-decided (env PBATCH_APPROVE=1 / --approve-file / interactive TTY,
+fail-closed otherwise). Final gate: make ci green — 169 tests (66 local
+regressions), 34 harness self-tests, quality --strict OK, both env states.

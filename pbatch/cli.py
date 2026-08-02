@@ -87,6 +87,8 @@ def _add_runtime_args(p: argparse.ArgumentParser) -> None:
                    help="Engineering gate run against every agent result BEFORE its output is saved (e.g. 'go build ./... && go vet ./...', 'python cli.py check'); {output} and {cwd} placeholders are substituted. Non-zero exit rejects the result and leaves no file")
     p.add_argument("--no-lock", action="store_true",
                    help="skip the single-instance lock (T4 escape hatch)")
+    p.add_argument("--approve-file", default="",
+                   help="T12c: file whose existence approves approval: true stages (CI-friendly)")
     p.add_argument("--circuit-max", type=int, default=5,
                    help="T5: isolate a task after this many consecutive failures (default: 5)")
     p.add_argument("--stall-rounds", type=int, default=6,
@@ -384,7 +386,8 @@ def _run_pipeline_round(args, pipeline: Pipeline, session_name: str, cli_validat
     all_results, failed_stages = run_pipeline(pipeline, model_override=args.model, reuse=reuse_outputs, timeout_override=timeout_override,
                                               session_mode=args.session_mode, session_name=session_name, validate_cmd=cli_validate,
                                               decision_log=args.decision_log, archive_dir=args.archive_dir,
-                                              reuse_legacy=args.reuse_legacy, fingerprint_mode=args.reuse_fingerprint)
+                                              reuse_legacy=args.reuse_legacy, fingerprint_mode=args.reuse_fingerprint,
+                                              approval_file=args.approve_file)
     print_summary(all_results)
     if failed_stages or any(not r.success for r in all_results):
         log.error("Failed stages: %s", ", ".join(failed_stages) if failed_stages else "(task failures)")
