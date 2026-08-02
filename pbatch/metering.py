@@ -8,13 +8,17 @@ stall_stop) with the per-call usage diff read from the pi session file
 events non-blockingly (5s timeout, failures logged only).
 
 Budget: --budget-max N caps agent invocations per run (exit 3); a stale
-session or a webhook outage never breaks the runner.
+session or a webhook outage never breaks the runner. Check + consume are
+serialized on a process-wide lock and the daily counter is written
+atomically, so parallel workers cannot overshoot the cap or lose daily
+counter updates (round-4 findings M2 / DS-2 / DS-4).
 """
 
 from __future__ import annotations
 
 import json
 import os
+import tempfile
 import threading
 import urllib.request
 from datetime import datetime, timezone
@@ -22,6 +26,7 @@ from pathlib import Path
 from typing import Optional
 
 from .config import log
+from .session import SESSIONS_DIR, workdir_key
 
 # module-level config, set by cli.main() from CLI flags
 EVENTS_FILE: str = ""
@@ -32,14 +37,18 @@ DAILY_BUDGET: int = 0        # 0 = unlimited
 _DAILY_STATE: str = ""       # path of the daily counter state file
 BUDGET_EXIT_CODE = 3
 
+# serializes check-then-act on the run/daily counters across worker threads
+_BUDGET_LOCK = threading.Lock()
+
 
 def _session_usage(cwd: str, session_name: str) -> Optional[dict]:
-    """Read the newest pi session file for *session_name* under the workdir
-    and return the summed usage of its assistant messages, or None when no
-    usable session exists (degradation, never crash)."""
-    sessions_dir = Path.home() / ".pi" / "agent" / "sessions"
-    workdir_key = "--" + cwd.replace("/", "-") + "--"
-    d = sessions_dir / workdir_key
+    """Sum the usage of every matching session file for *session_name*
+    under the workdir and return the summed usage of their assistant
+    messages, or None when no usable session exists (degradation, never
+    crash). Summing the whole name family (not just the newest file) keeps
+    the meter correct after a T10 fork/rotation, which starts a new file
+    for the same session name."""
+    d = SESSIONS_DIR / workdir_key(cwd)
     if not d.is_dir():
         return None
     try:
@@ -49,23 +58,24 @@ def _session_usage(cwd: str, session_name: str) -> Optional[dict]:
     if not candidates:
         return None
     total = None
-    try:
-        with open(candidates[-1], encoding="utf-8") as f:
-            for line in f:
-                try:
-                    msg = (json.loads(line).get("message") or {})
-                except ValueError:
-                    continue
-                usage = msg.get("usage")
-                if not isinstance(usage, dict):
-                    continue
-                if total is None:
-                    total = {}
-                for k, v in usage.items():
-                    if isinstance(v, (int, float)):
-                        total[k] = total.get(k, 0) + v
-    except OSError:
-        return None
+    for candidate in candidates:
+        try:
+            with open(candidate, encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        msg = (json.loads(line).get("message") or {})
+                    except ValueError:
+                        continue
+                    usage = msg.get("usage")
+                    if not isinstance(usage, dict):
+                        continue
+                    if total is None:
+                        total = {}
+                    for k, v in usage.items():
+                        if isinstance(v, (int, float)):
+                            total[k] = total.get(k, 0) + v
+        except OSError:
+            return None
     return total
 
 
@@ -109,8 +119,11 @@ def _post_webhook(line: str) -> None:
     threading.Thread(target=_send, daemon=True).start()
 
 
-def budget_spent_today() -> int:
-    """Invocations already spent today (UTC), from the daily state file."""
+def _read_daily_count() -> int:
+    """Invocations already spent today (UTC), from the daily state file.
+    A missing or corrupt state file reads as 0 (fail-open): the budget is
+    a cost control, not a security boundary — documented as such in
+    docs/RUNNING_247.md (round-4 finding L8)."""
     if not _DAILY_STATE:
         return 0
     try:
@@ -122,32 +135,68 @@ def budget_spent_today() -> int:
     return int(data.get("count", 0))
 
 
+def budget_spent_today() -> int:
+    """Invocations already spent today (UTC), from the daily state file."""
+    return _read_daily_count()
+
+
 def _save_daily(count: int) -> None:
+    """Persist the daily counter atomically (temp + rename): a crash
+    mid-write must not corrupt the state file (round-4 finding DS-2)."""
     if not _DAILY_STATE:
         return
     try:
-        Path(_DAILY_STATE).parent.mkdir(parents=True, exist_ok=True)
-        Path(_DAILY_STATE).write_text(json.dumps({
-            "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-            "count": count,
-        }), encoding="utf-8")
+        p = Path(_DAILY_STATE)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(prefix=p.name + ".", suffix=".tmp", dir=str(p.parent))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump({
+                    "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                    "count": count,
+                }, f)
+            os.replace(tmp_name, str(p))
+        except BaseException:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
     except OSError:
         pass
 
 
 def budget_allows() -> bool:
-    """True when an invocation may start (run budget + daily budget)."""
+    """True when an invocation may start (run budget + daily budget).
+    Thread-safe against concurrent budget_consume calls (parallel mode)."""
+    with _BUDGET_LOCK:
+        if BUDGET_MAX and INVOCATIONS >= BUDGET_MAX:
+            return False
+        if DAILY_BUDGET and _read_daily_count() >= DAILY_BUDGET:
+            return False
+        return True
+
+
+def budget_try_consume() -> bool:
+    """Atomically check the caps and count one invocation; False when a
+    cap is reached (nothing consumed). Serializing check+consume closes the
+    parallel-mode race where N workers all passed budget_allows() before
+    any of them consumed (round-4 finding M2/DS-4)."""
     global INVOCATIONS
-    if BUDGET_MAX and INVOCATIONS >= BUDGET_MAX:
-        return False
-    if DAILY_BUDGET and budget_spent_today() >= DAILY_BUDGET:
-        return False
-    return True
+    with _BUDGET_LOCK:
+        if BUDGET_MAX and INVOCATIONS >= BUDGET_MAX:
+            return False
+        if DAILY_BUDGET and _read_daily_count() >= DAILY_BUDGET:
+            return False
+        INVOCATIONS += 1
+        if DAILY_BUDGET:
+            _save_daily(_read_daily_count() + 1)
+        return True
 
 
 def budget_consume() -> None:
-    """Count one invocation (run budget and daily budget)."""
-    global INVOCATIONS
-    INVOCATIONS += 1
-    if DAILY_BUDGET:
-        _save_daily(budget_spent_today() + 1)
+    """Count one invocation (run budget and daily budget). The daily
+    read-modify-write is serialized and persisted atomically so concurrent
+    workers cannot lose updates (round-4 probe: 4 concurrent consumes ->
+    persisted count 2)."""
+    budget_try_consume()

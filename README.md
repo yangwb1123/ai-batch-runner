@@ -15,7 +15,7 @@ exponential-backoff retries, and optional auto git-commit after each stage.
 > **Provenance**: this tree is a sync of `snaplink/ai-dev` (the living monorepo copy), carried
 > over as-is including its regression test suite. The engine now lives in the `pbatch/`
 > package with `pi-batch.py` as a thin entry shim (the reference's current layout; the
-> earlier 4-file split and the 1389-line monolith were both superseded). `tests/` (91 cases)
+> earlier 4-file split and the 1389-line monolith were both superseded). `tests/` (169 cases)
 > is the authoritative behavior spec.
 >
 > **Local adaptations** (everything else stays byte-identical): `pi-batch.yaml`
@@ -222,7 +222,7 @@ examples/                pipeline examples incl. meta-review-pipeline.yaml, quic
 scripts/                 upstream one-command flows: rolling-analysis.sh, full-flow.sh,
                          full-auto.sh (module-by-module SDLC automation), paths adapted
 docs/                    usage guides incl. RUNNING_247.md (24x7 operation)
-tests/                   91 regression tests (pytest): engine + run-review + CLI end-to-end
+tests/                   169 regression tests (pytest): engine + run-review + CLI end-to-end
 git-auto-commit.sh       interactive standalone commit helper (separate from pipeline git_commit)
 ```
 
@@ -245,7 +245,7 @@ validators are shared with `pi-batch.py` via `pi-batch.yaml`.
 
 ```bash
 make ci                       # full gate set: gates + self-test + regression suite
-python -m pytest tests/ -q    # 91 tests: config resolution, failure detection,
+python -m pytest tests/ -q    # 169 tests: config resolution, failure detection,
                               # retries/rounds, sessions, validation gates, aggregate,
                               # meta stages (ad-hoc roles, concurrency), from_prompt,
                               # gate verdicts, decision logs, archiving, run-review chaining

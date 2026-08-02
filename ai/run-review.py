@@ -42,9 +42,11 @@ Context YAML format:
 import argparse
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 from pathlib import Path
 from typing import Optional
@@ -431,6 +433,22 @@ def agent_failure_reason(returncode: int, output: str) -> str:
     return ""
 
 
+def _print_stage_banner(stage: str, out_file) -> None:
+    print(f"\n{'='*60}", flush=True)
+    print(f"  Stage {stage}: {STAGES[stage]}", flush=True)
+    print(f"  Output: {out_file}", flush=True)
+    print(f"{'='*60}\n", flush=True)
+
+
+def _refuse_symlink_output(stage: str, out_file) -> bool:
+    """M4 (round-4): refuse a pre-planted symlink on the no-validator path
+    too — writing through it would overwrite the victim with
+    agent-controlled bytes (mirrors runner.py's F14 probe)."""
+    if out_file.is_symlink():
+        print(f"\nStage {stage} REJECTED: output path {out_file} is a symlink (refusing to follow); output NOT saved", file=sys.stderr, flush=True)
+        return True
+    return False
+
 def run_stage(stage: str, prompt: str, args, session_flags: Optional[list] = None) -> int:
     """Invoke the agent and persist only validated output. Output streams to
     the terminal while running; stage-NN.out.md is written only when the
@@ -448,10 +466,7 @@ def run_stage(stage: str, prompt: str, args, session_flags: Optional[list] = Non
     if session_flags:
         cmd.extend(session_flags)
 
-    print(f"\n{'='*60}", flush=True)
-    print(f"  Stage {stage}: {STAGES[stage]}", flush=True)
-    print(f"  Output: {out_file}", flush=True)
-    print(f"{'='*60}\n", flush=True)
+    _print_stage_banner(stage, out_file)
 
     try:
         rc, output = _run_agent(cmd, args.repo or os.getcwd(), getattr(args, "timeout", 0) or 600)
@@ -478,9 +493,13 @@ def run_stage(stage: str, prompt: str, args, session_flags: Optional[list] = Non
     if commands:
         return _run_validators(stage, out_file, output, commands, args.repo or os.getcwd())
 
+    # No-validator path: still refuse a pre-planted symlink (M4).
+    if _refuse_symlink_output(stage, out_file):
+        return 1
     out_file.write_text(output, encoding="utf-8")
     print(f"\nWROTE: {out_file}", flush=True)
     return 0
+
 
 
 def _run_agent(cmd: list, cwd: str, timeout: int) -> tuple[int, list[str]]:
@@ -538,11 +557,21 @@ def _run_agent(cmd: list, cwd: str, timeout: int) -> tuple[int, list[str]]:
 def _run_validators(stage: str, out_file, output: str, commands: list, cwd: str) -> int:
     """Run every resolved validator against a temp copy of the output
     (AND semantics); atomically rename on success, delete on failure so a
-    result that fails the project checks never lands as a review file."""
-    tmp_file = out_file.with_name(out_file.name + ".tmp")
+    result that fails the project checks never lands as a review file.
+    Round-4 hardening (M4): mkstemp temp name (a fixed '.tmp' suffix could
+    be pre-planted as a symlink), {output}/{cwd} shell-quoted (paths with
+    spaces/quotes must not inject commands), and a symlink probe on the
+    output path before the rename."""
+    out_path = Path(out_file)
+    if out_path.is_symlink():
+        print(f"\nStage {stage} REJECTED: output path {out_file} is a symlink (refusing to follow); output NOT saved", file=sys.stderr, flush=True)
+        return 1
+    fd, tmp_name = tempfile.mkstemp(prefix=out_path.name + ".", suffix=".tmp", dir=str(out_path.parent))
+    os.close(fd)
+    tmp_file = Path(tmp_name)
     tmp_file.write_text(output, encoding="utf-8")
     for raw in commands:
-        cmd = raw.replace("{output}", str(tmp_file)).replace("{cwd}", cwd)
+        cmd = raw.replace("{output}", shlex.quote(str(tmp_file))).replace("{cwd}", shlex.quote(cwd))
         try:
             vproc = subprocess.run(cmd, shell=True, cwd=cwd,
                                    capture_output=True, text=True, timeout=600)

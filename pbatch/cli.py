@@ -8,6 +8,7 @@ import logging
 import logging.handlers
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -18,7 +19,7 @@ from . import config
 from .config import (AGENT_BIN, AGENT_DEFAULT_WORKERS, COMMIT_PREFIX_DEFAULT, log, yaml)
 from .models import Pipeline, Task
 from .reuse import (reuse_decision, reuse_fingerprint, sidecar_path, write_sidecar)
-from .lock import acquire_lock, release_lock
+from .lock import LOCK_EXIT_CODE, acquire_lock, release_lock, verify_held
 from .triage import (STALL_EXIT_CODE, Circuit, StallDetector, env_signature,
                      residue_markers, task_key)
 from .pipeline import (_append_decision_log, _archive_outputs, load_pipeline,
@@ -127,11 +128,21 @@ def _add_batch_args(p: argparse.ArgumentParser) -> None:
                    help="Seconds to wait between rounds (default: 60)")
 
 
+def _sigterm(signum, frame):
+    """S1 (SRE round-4 finding): SIGTERM (systemd stop, operator kill)
+    behaves like Ctrl-C — children are killed, the lock released, exit
+    130 — instead of stranding agent process groups and the lock."""
+    log.warning("\nSIGTERM received; stopping children and releasing the lock (exit 130)")
+    raise KeyboardInterrupt()
+
+
 def main() -> None:
     args = build_parser().parse_args()
     config.AGENT_BIN = args.agent_bin
     if args.session_max_bytes != config.SESSION_MAX_BYTES:
         config.SESSION_MAX_BYTES = args.session_max_bytes
+
+    signal.signal(signal.SIGTERM, _sigterm)
 
     _wire_metering(args)
     _auto_detect_pipeline(args)
@@ -165,7 +176,7 @@ def main() -> None:
     cli_validate = ",".join(x for x in (args.validate, args.validate_cmd) if x)
 
     try:
-        _run_rounds(args, pipeline, session_name, cli_validate, timeout_override)
+        _run_rounds(args, pipeline, session_name, cli_validate, timeout_override, lock_path)
     except KeyboardInterrupt:
         log.warning("\nInterrupted by user. Rerun with --reuse to continue later.")
         sys.exit(130)
@@ -184,16 +195,45 @@ def _validate_session_flags(args) -> None:
         sys.exit(1)
 
 
-def _run_rounds(args, pipeline: Optional[Pipeline], session_name: str, cli_validate: str, timeout_override: int) -> None:
+def _verify_round_lock(lock_path: Optional[Path]) -> None:
+    """T4 (round-4 DS-1): re-verify the instance lock between rounds — a
+    lock that vanished (unlinked by a concurrent breaker) means the
+    single-instance guarantee is gone; continue would be split-brain."""
+    if lock_path and not verify_held(lock_path):
+        log.error("LOCK LOST: %s is no longer held by this instance (removed by another process?); "
+                  "stopping to avoid split-brain (exit %d)", lock_path, LOCK_EXIT_CODE)
+        sys.exit(LOCK_EXIT_CODE)
+
+
+def _warn_round_residue(pipeline: Optional[Pipeline]) -> None:
+    """T5: warn about residue markers left by a killed run. Markers are
+    written under each task's cwd, so cwd-aware tasks' orphans are scanned
+    in their own dirs too (round-4 L6)."""
+    if pipeline is not None:
+        dirs = [os.getcwd()] + [s.from_dir for s in pipeline.stages if s.from_dir]
+        _warn_residue_markers(dirs)
+    else:
+        _warn_residue_markers()
+
+
+def _run_rounds(args, pipeline: Optional[Pipeline], session_name: str, cli_validate: str, timeout_override: int,
+                lock_path: Optional[Path] = None) -> None:
     """The 24x7 round loop: rerun only the tasks/stages that failed or were
     rejected each round; --max-rounds 0 loops forever with --round-delay
     rest between rounds so quota and rate-limit windows can clear.
 
     T5 (7x24 governance): circuit isolation, stall detection, residue
     markers and environment-class halts keep an unattended run from
-    burning quota against a broken provider or poisoned task set."""
+    burning quota against a broken provider or poisoned task set.
+    """
     max_rounds = args.max_rounds
-    stdin_tasks = None  # stdin is consumed once; later rounds reuse it
+    # F9: stdin is consumed ONCE before the round loop; later rounds reuse
+    # the loaded tasks (an exhausted stdin must not kill round 2+).
+    stdin_tasks = None
+    if pipeline is None and not (args.from_dir or args.prompt or args.source):
+        stdin = sys.stdin.read().strip()
+        if stdin:
+            stdin_tasks = [Task(prompt=stdin)]
     round_no = 0
     circuit = Circuit(max_failures=args.circuit_max)
     stall = StallDetector(k=args.stall_rounds)
@@ -204,28 +244,15 @@ def _run_rounds(args, pipeline: Optional[Pipeline], session_name: str, cli_valid
         log.info("ROUND %d of %s", round_no, "unlimited" if max_rounds == 0 else max_rounds)
         log.info("=" * 60)
 
-        _warn_residue_markers()
-
-        if pipeline is not None:
-            round_failed = _run_pipeline_round(args, pipeline, session_name, cli_validate,
-                                               timeout_override, reuse_outputs=args.reuse and not args.force)
-        else:
-            # Local fix (self-iteration round 2, F9): stdin is consumed ONCE
-            # before the round loop; later rounds reuse the loaded tasks
-            # instead of re-reading an exhausted stdin (EOF -> empty -> the
-            # "Provide a prompt" fatal error on round 2+).
-            if stdin_tasks is None and not (args.from_dir or args.prompt or args.source):
-                stdin = sys.stdin.read().strip()
-                if stdin:
-                    stdin_tasks = [Task(prompt=stdin)]
-            round_failed, failed_keys = _run_batch_round(args, stdin_tasks, session_name, cli_validate,
-                                                         max_rounds, round_no, circuit)
+        _verify_round_lock(lock_path)
+        _warn_round_residue(pipeline)
+        round_failed, failed_keys = _execute_round(args, pipeline, stdin_tasks, session_name,
+                                                   cli_validate, timeout_override, circuit, round_no)
 
         if not round_failed:
             log.info("All tasks passed in round %d", round_no)
             return
-        if max_rounds > 0 and round_no >= max_rounds:
-            log.error("Max rounds (%d) reached with tasks still failing; rerun with --reuse to continue later", max_rounds)
+        if _govern_round(max_rounds, round_no, pipeline, circuit, failed_keys):
             sys.exit(1)
         if _circuit_all_stopped(circuit, failed_keys):
             sys.exit(STALL_EXIT_CODE)
@@ -236,11 +263,38 @@ def _run_rounds(args, pipeline: Optional[Pipeline], session_name: str, cli_valid
         time.sleep(args.round_delay)
 
 
-def _warn_residue_markers() -> None:
+def _govern_round(max_rounds: int, round_no: int, pipeline, circuit: Circuit, failed_keys: set) -> bool:
+    """T5: round-bound governance — max-rounds exhaustion and pipeline
+    circuit feeding; True when the loop must exit."""
+    if max_rounds > 0 and round_no >= max_rounds:
+        log.error("Max rounds (%d) reached with tasks still failing; rerun with --reuse to continue later", max_rounds)
+        return True
+    if pipeline is not None:
+        # a poison stage must not spin the loop forever (round-4 P0-1)
+        for key in failed_keys:
+            circuit.register_failure(key, "pipeline round failure")
+    return False
+
+
+def _execute_round(args, pipeline: Optional[Pipeline], stdin_tasks, session_name: str, cli_validate: str,
+                   timeout_override: int, circuit: Circuit, round_no: int) -> tuple[bool, set]:
+    """Run one round (pipeline or single-batch) and return
+    (round_failed, failed_keys) for the T5 governance checks."""
+    if pipeline is not None:
+        return _run_pipeline_round(args, pipeline, session_name, cli_validate,
+                                   timeout_override, reuse_outputs=args.reuse and not args.force)
+    return _run_batch_round(args, stdin_tasks, session_name, cli_validate,
+                            args.max_rounds, round_no, circuit)
+
+
+def _warn_residue_markers(dirs: Optional[list] = None) -> None:
     """T5: start markers surviving a previous (killed) run are warned about;
-    the current round regenerates them instead of trusting them silently."""
-    for r in residue_markers():
-        log.warning("RESIDUE: stale start marker %s (previous run was killed); regenerating", r.name)
+    the current round regenerates them instead of trusting them silently.
+    Markers are written under the TASK cwd, so cwd-aware tasks' orphans must
+    be scanned in their own dirs, not just the process cwd (round-4 L6)."""
+    for d in dict.fromkeys(dirs or [os.getcwd()]):
+        for r in residue_markers(d):
+            log.warning("RESIDUE: stale start marker %s in %s (previous run was killed); regenerating", r.name, d)
 
 
 def _circuit_all_stopped(circuit: Circuit, failed_keys: set) -> bool:
@@ -378,11 +432,16 @@ def _apply_task_overrides(args, tasks) -> None:
 
 
 def _run_pipeline_round(args, pipeline: Pipeline, session_name: str, cli_validate: str,
-                        timeout_override: int, reuse_outputs: bool) -> bool:
-    """One round of pipeline mode; True when the round failed."""
+                        timeout_override: int, reuse_outputs: bool) -> tuple[bool, set]:
+    """One round of pipeline mode; returns (round_failed, failed_keys).
+    failed_keys drives the T5 circuit/stall governance in the 24x7 loop:
+    failed task keys plus a synthetic 'stage:<name>' key for stages that
+    failed without a failed task (e.g. a gate verdict FAIL). Previously the
+    pipeline branch crashed with UnboundLocalError and never fed the
+    circuit (round-4 finding P0-1/H4/DS-10)."""
     if args.dry_run:
         run_pipeline(pipeline, model_override=args.model, dry_run=True, reuse=reuse_outputs)
-        return False
+        return False, set()
     all_results, failed_stages = run_pipeline(pipeline, model_override=args.model, reuse=reuse_outputs, timeout_override=timeout_override,
                                               session_mode=args.session_mode, session_name=session_name, validate_cmd=cli_validate,
                                               decision_log=args.decision_log, archive_dir=args.archive_dir,
@@ -390,9 +449,12 @@ def _run_pipeline_round(args, pipeline: Pipeline, session_name: str, cli_validat
                                               approval_file=args.approve_file)
     print_summary(all_results)
     if failed_stages or any(not r.success for r in all_results):
+        failed_keys = {task_key(r.task) for r in all_results if not r.success}
+        for s in failed_stages:
+            failed_keys.add("stage:" + s)
         log.error("Failed stages: %s", ", ".join(failed_stages) if failed_stages else "(task failures)")
-        return True
-    return False
+        return True, failed_keys
+    return False, set()
 
 
 def _run_batch_round(args, stdin_tasks, session_name: str, cli_validate: str, max_rounds: int, round_no: int,
@@ -402,6 +464,11 @@ def _run_batch_round(args, stdin_tasks, session_name: str, cli_validate: str, ma
     Returns True when the round failed (caller may loop again)."""
     tasks = _load_batch_tasks(args, stdin_tasks)
     _apply_task_overrides(args, tasks)
+
+    # T5: residue markers are written under each task's cwd; orphan markers
+    # from a killed run must be warned about there too (round-4 finding L6).
+    for d in {t.workdir() for t in tasks if t.cwd}:
+        _warn_residue_markers([d])
 
     if not tasks:
         log.error("No tasks to execute: a YAML source must contain a 'tasks' list (pipelines use 'stages' and are auto-detected)")

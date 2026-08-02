@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -20,19 +21,56 @@ from typing import NamedTuple, Optional
 from . import config
 from .config import AGENT_BIN, AGENT_DEFAULT_WORKERS, _resolve_validators, _session_flags, log
 from .models import Task, TaskResult
-from .metering import budget_allows, budget_consume, record_event
+from .metering import budget_allows, budget_try_consume, record_event
 from .session import fork_flags, has_compaction, session_size_bytes
 from .triage import clear_marker, task_key, write_marker
 
-def _read_stream(stream, prefix: str, collector: list) -> None:
-    """Read lines from *stream*, print them (with prefix), and collect."""
+# registry of live agent subprocesses (parallel mode: a budget cap must be
+# able to kill in-flight agents so the executor shutdown is prompt)
+_ACTIVE_PROCS: set = set()
+_ACTIVE_LOCK = threading.Lock()
+
+
+def _register_proc(proc: subprocess.Popen) -> None:
+    with _ACTIVE_LOCK:
+        _ACTIVE_PROCS.add(proc)
+
+
+def _unregister_proc(proc: subprocess.Popen) -> None:
+    with _ACTIVE_LOCK:
+        _ACTIVE_PROCS.discard(proc)
+
+
+def kill_active_procs() -> None:
+    """Kill every currently-running agent process group (T8 parallel cap:
+    in-flight agents must not keep the runner waiting after the cap)."""
+    with _ACTIVE_LOCK:
+        procs = list(_ACTIVE_PROCS)
+    for proc in procs:
+        _kill_group(proc)
+
+
+def _read_stream(stream, prefix: str, collector: list, cap: int = 0, overflow: Optional[list] = None) -> None:
+    """Read lines from *stream*, print them (with prefix), and collect.
+    Collection is capped at *cap* bytes (T12e): a misbehaving agent must
+    not OOM the runner before the post-hoc size check; overflow is recorded
+    so the caller can reject the result. The stream is still drained (a
+    blocked pipe would hang the agent), only collection stops."""
+    total = 0
     try:
         for line in iter(stream.readline, ""):
             if prefix:
                 print(f"{prefix}{line}", end="", flush=True)
             else:
                 print(line, end="", flush=True)
-            collector.append(line)
+            if cap > 0:
+                total += len(line.encode("utf-8", errors="replace"))
+                if total <= cap:
+                    collector.append(line)
+                elif overflow is not None:
+                    overflow[0] = True
+            else:
+                collector.append(line)
     except ValueError:
         # stream closed
         pass
@@ -100,15 +138,17 @@ def agent_failure_reason(returncode: int, output: str) -> str:
     return ""
 
 
-def _budget_gate(task: Task, key: str, workdir: str) -> None:
+def _budget_gate(task: Task, key: str, workdir: str, session_name: str = "") -> None:
     """T8: the budget cap wins over everything — a capped run stops before
-    spawning, never after burning quota (exit 3, budget_cap event)."""
-    if not budget_allows():
+    spawning, never after burning quota (exit 3, budget_cap event).
+    budget_try_consume is atomic, so parallel workers cannot overshoot the
+    cap (round-4 finding M2/DS-4)."""
+    if not budget_try_consume():
         log.error("BUDGET: invocation limit reached; stopping (exit 3)")
-        record_event("budget_cap", task.prompt, "invocation limit", workdir, "")
+        record_event("budget_cap", task.prompt, "invocation limit", workdir, session_name)
         clear_marker(key, workdir)
         raise SystemExit(3)
-    budget_consume()
+
 
 
 def session_file_path(cwd: str, session_name: str) -> Optional[str]:
@@ -148,54 +188,84 @@ def _spawn_agent(cmd: list, workdir: str, env: dict) -> subprocess.Popen:
                             text=True, cwd=workdir, env=env, start_new_session=True)
 
 
-def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = False, session_flags: Optional[list] = None) -> TaskResult:
+def _agent_not_found(task: Task) -> TaskResult:
+    """The agent binary is missing from PATH: a permanent, non-retryable
+    failure (never saved as an artifact)."""
+    log.error("'%s' not found in PATH. Is it installed? (configure agent.bin in pi-batch.yaml)", config.AGENT_BIN)
+    return TaskResult(task=task, success=False, stderr=f"{config.AGENT_BIN} not found in PATH",
+                      reason="agent binary not found")
+
+
+def _overflow_result(task: Task, proc, stdout_lines: list, stderr_lines: list, start: float) -> TaskResult:
+    """T12e: reject a result whose collected stdout exceeded the byte cap.
+    The cap is enforced DURING collection (a runaway agent must not OOM the
+    runner before the post-hoc size check — round-4 finding L9)."""
+    log.error("REJECTED: agent output exceeds %d bytes (T12e cap)", config.OUTPUT_MAX_BYTES)
+    return TaskResult(
+        task=task, success=False, stdout="".join(stdout_lines), stderr="".join(stderr_lines),
+        elapsed=time.monotonic() - start, returncode=proc.returncode,
+        reason=f"agent output exceeds {config.OUTPUT_MAX_BYTES} bytes (T12e cap)",
+    )
+
+
+def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = False, session_flags: Optional[list] = None, session_name: str = "") -> TaskResult:
     """Execute one pi task, streaming output in real-time, and return the
-    result. session_flags (e.g. --session-id for a shared session) are
-    appended to the agent command when provided."""
+    result. session_name is threaded into metering events so T7 usage
+    extraction can find the session file (round-4 P0-2/L4)."""
     cmd = task.to_cmd(session_flags=session_flags)
     workdir = task.workdir()
     start = time.monotonic()
     prefix = f"[task-{task_index}] " if (parallel and total > 1) else ""
-
     log.info(">>  %s  [model=%s]  [timeout=%ss]  [dir=%s]",
              _prompt_brief(task, cmd), task.model or "default", task.timeout, workdir)
     env = os.environ.copy()
     env.update(task.env)
-
-    # T5 (7x24 governance): residue marker — a surviving marker after this
-    # call means the process group was killed mid-run.
+    # T5: residue marker — a surviving marker after this call means the
+    # process group was killed mid-run.
     key = task_key(task)
     write_marker(key, workdir)
     proc = None
     completed = False
-    _budget_gate(task, key, workdir)
+    _budget_gate(task, key, workdir, session_name)
     try:
         proc = _spawn_agent(cmd, workdir, env)
-        # Read stdout/stderr via threads, wait on a hard deadline (kills
-        # the process group when task.timeout elapses).
-        stdout_lines, stderr_lines = _stream_proc(proc, prefix, start, task.timeout)
+        _register_proc(proc)
+        stdout_lines, stderr_lines, overflow = _stream_proc(proc, prefix, start, task.timeout)
         completed = True
+        if overflow[0]:
+            return _overflow_result(task, proc, stdout_lines, stderr_lines, start)
         result = _result_from_proc(task, proc, stdout_lines, stderr_lines, time.monotonic() - start)
         record_event("task_finish" if result.success else "task_fail",
-                     task.prompt, result.reason, workdir, "")
+                     task.prompt, result.reason, workdir, session_name)
         return result
     except subprocess.TimeoutExpired:
         return _timeout_result(task, proc, start)
     except FileNotFoundError:
-        log.error("'%s' not found in PATH. Is it installed? (configure agent.bin in pi-batch.yaml)", config.AGENT_BIN)
-        return TaskResult(task=task, success=False, stderr=f"{config.AGENT_BIN} not found in PATH", reason="agent binary not found")
+        return _agent_not_found(task)
     except Exception as e:
         elapsed = time.monotonic() - start
         log.error("ERROR  [%.1fs]  [%s]", elapsed, e)
         return TaskResult(task=task, success=False, stderr=str(e), elapsed=elapsed, reason=str(e))
     finally:
-        # Local fix (self-iteration round 2, F2): on ANY abnormal exit
-        # (incl. KeyboardInterrupt, a BaseException bypassing the handlers
-        # above), kill the child process group so no agent is orphaned
-        # after Ctrl-C; normal completion already took care of the process.
+        # F2: on ANY abnormal exit (incl. KeyboardInterrupt, a BaseException
+        # bypassing the handlers above), kill the child process group so no
+        # agent is orphaned after Ctrl-C; normal completion already took
+        # care of the process.
         if proc is not None and not completed:
             _kill_group(proc)
+        if proc is not None:
+            _unregister_proc(proc)
         clear_marker(key, workdir)
+
+
+def _output_path_is_symlink(task: Task) -> bool:
+    """T0.1: probe the UNRESOLVED output path — output_path() resolves
+    symlinks away, which would hide a link planted at the output location
+    and redirect the write to its target (round-4 finding H1)."""
+    probe = Path(task.output)
+    if not probe.is_absolute():
+        probe = Path(task.workdir()) / probe
+    return probe.is_symlink()
 
 
 def save_result(task: Task, result: TaskResult) -> None:
@@ -224,10 +294,7 @@ def save_result(task: Task, result: TaskResult) -> None:
     # path could redirect the write elsewhere) and use a unique mkstemp
     # name, mirroring _save_validated's F14 hardening. Note: probe the
     # UNRESOLVED path — output_path() resolves symlinks away.
-    probe = Path(task.output)
-    if not probe.is_absolute():
-        probe = Path(task.workdir()) / probe
-    if probe.is_symlink():
+    if _output_path_is_symlink(task):
         log.error("NOT SAVED %s: output path is a symlink (refusing to follow)", out_path)
         return
     fd, tmp_name = tempfile.mkstemp(prefix=out_path.name + ".", suffix=".tmp", dir=str(out_path.parent))
@@ -337,6 +404,14 @@ def _save_validated(task: Task, result: TaskResult, validate_cmd: str) -> bool:
         # no file target: nothing to validate against, print as usual
         save_result(task, result)
         return True
+    # T0.1 (round-4 finding H1): the symlink probe must guard the validator
+    # path too — _save_validated is used whenever any validator is
+    # configured (the recommended config), and without the probe a planted
+    # symlink redirects tmp.rename() to its target (arbitrary file
+    # overwrite with agent-controlled bytes).
+    if _output_path_is_symlink(task):
+        log.error("NOT SAVED %s: output path is a symlink (refusing to follow)", out_path)
+        return False
     # Local fix (self-iteration round 2, F14): unique temp name (no fixed
     # .tmp suffix a local observer could pre-create as a symlink).
     fd, tmp_name = tempfile.mkstemp(prefix=out_path.name + ".", suffix=".tmp", dir=str(out_path.parent))
@@ -422,6 +497,16 @@ def revalidate_existing(path: Path, validate_cmd: Optional[str], workdir: str = 
         log.info("REVALIDATE: %s", cmd)
         v = run_validation(cmd, wd)
         if v.ok:
+            # T12a: the JSON status protocol applies on the reuse path too —
+            # an exit-0 validator reporting {"status":"fail"} must not
+            # promote the artifact when the fresh-save path would reject it
+            # (round-4 finding M3/P2-4).
+            status = _json_status(v.stdout)
+            if status == "fail":
+                log.warning("REVALIDATION FAILED (JSON status=fail): %s; %s NOT reusable", cmd, path)
+                return False
+            if status == "warn":
+                log.warning("REVALIDATE WARN: %s (artifact reusable with warning)", cmd)
             continue
         log.warning("REVALIDATION FAILED%s: %s; %s NOT reusable",
                     " (timeout)" if v.timed_out else f" (exit={v.exit_code})", cmd, path)
@@ -465,15 +550,19 @@ def _timeout_result(task: Task, proc: subprocess.Popen, start: float) -> TaskRes
     )
 
 
-def _stream_proc(proc: subprocess.Popen, prefix: str, start: float, timeout: int) -> tuple[list[str], list[str]]:
+def _stream_proc(proc: subprocess.Popen, prefix: str, start: float, timeout: int) -> tuple[list[str], list[str], list]:
     """Drain stdout/stderr concurrently via daemon threads, then wait on a
     hard deadline. Thread joins only drain pipes and must not extend the
     window, so each join/wait gets the remaining budget (they return early
-    when the agent exits). Raises TimeoutExpired when the deadline hits."""
+    when the agent exits). Raises TimeoutExpired when the deadline hits.
+    Returns (stdout_lines, stderr_lines, overflow): overflow[0] is True
+    when stdout collection exceeded the T12e cap (the result must be
+    rejected; collection stops but the pipe is still drained)."""
     from threading import Thread
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
-    tout = Thread(target=_read_stream, args=(proc.stdout, prefix, stdout_lines), daemon=True)
+    overflow: list = [False]
+    tout = Thread(target=_read_stream, args=(proc.stdout, prefix, stdout_lines, config.OUTPUT_MAX_BYTES, overflow), daemon=True)
     terr = Thread(target=_read_stream, args=(proc.stderr, prefix, stderr_lines), daemon=True)
     tout.start()
     terr.start()
@@ -481,14 +570,16 @@ def _stream_proc(proc: subprocess.Popen, prefix: str, start: float, timeout: int
     tout.join(timeout=max(0, deadline - time.monotonic()))
     terr.join(timeout=max(0, deadline - time.monotonic()))
     proc.wait(timeout=max(0.1, deadline - time.monotonic()))
-    return stdout_lines, stderr_lines
+    return stdout_lines, stderr_lines, overflow
 
 
-def _rotation_flags(session_id: str, session_name: str) -> list:
+def _rotation_flags(session_id: str, session_name: str, workdir: str = "") -> list:
     """T10: continue flags, or fork flags past the session size watermark
-    (compaction entries are warned about)."""
+    (compaction entries are warned about). Session lookups use the TASK's
+    workdir (sessions live under the task's cwd, not the process cwd —
+    round-4 finding P3/L6)."""
     flags = _session_flags("continue", session_id, session_name)
-    cwd = os.getcwd()
+    cwd = workdir or os.getcwd()
     if has_compaction(cwd, session_name):
         log.warning("SESSION: compaction entry in %s (context was shrunk by pi)", session_name)
     sfile = session_file_path(cwd, session_name)
@@ -500,10 +591,12 @@ def _rotation_flags(session_id: str, session_name: str) -> list:
 
 
 def _run_with_gate(task: Task, validate_cmd: str, index: int, total: int,
-                    session_flags: Optional[list] = None, parallel: bool = False) -> TaskResult:
+                    session_flags: Optional[list] = None, parallel: bool = False,
+                    session_name: str = "") -> TaskResult:
     """Run one task and push its result through the engineering gate;
     a gate rejection marks the task failed with the exit signature."""
-    result = run_task(task, task_index=index, total=total, parallel=parallel, session_flags=session_flags)
+    result = run_task(task, task_index=index, total=total, parallel=parallel, session_flags=session_flags,
+                      session_name=session_name)
     if result.success:
         result.success = _save_validated(task, result, task.validate if task.validate is not None else validate_cmd)
         if not result.success:
@@ -538,8 +631,8 @@ def run_serial(tasks: list[Task], retries: int = 0, retry_delay: float = 10.0, b
                 flags = _session_flags("start", session_id, session_name)
                 session_active = True
             else:
-                flags = _rotation_flags(session_id, session_name)
-        result = _run_with_gate(task, validate_cmd, i, total, flags)
+                flags = _rotation_flags(session_id, session_name, task.workdir())
+        result = _run_with_gate(task, validate_cmd, i, total, flags, session_name=session_name)
         attempt = 0
         retry_task = task
         while not result.success and attempt < retries:
@@ -554,7 +647,7 @@ def run_serial(tasks: list[Task], retries: int = 0, retry_delay: float = 10.0, b
                 retry_task = _retry_task_with_feedback(task, result)
             # retries stay inside the same session
             retry_flags = _session_flags("continue", session_id, session_name) if session_mode != "new" else None
-            result = _run_with_gate(retry_task, validate_cmd, i, total, retry_flags)
+            result = _run_with_gate(retry_task, validate_cmd, i, total, retry_flags, session_name=session_name)
         results.append(result)
         if result.success and min_interval > 0:
             time.sleep(min_interval)
@@ -565,23 +658,51 @@ def run_parallel(tasks: list[Task], workers: int = 0, validate_cmd: str = "") ->
     workers = workers or config.AGENT_DEFAULT_WORKERS
     """Execute tasks concurrently with a thread pool and real-time output.
     Each result passes the engineering validation gate before its output file
-    is committed; a non-zero validation exit leaves no artifact."""
+    is committed; a non-zero validation exit leaves no artifact.
+
+    T8: the budget cap is enforced BEFORE submitting (pre-check) and in each
+    worker (atomic consume); when the cap trips, in-flight agent groups are
+    killed so the runner exits 3 promptly instead of waiting up to the task
+    timeout x workers (round-4 finding P1-1/M2/DS-4)."""
     total = len(tasks)
     log.info("PARALLEL x%d  (%d tasks)", workers, total)
+    capped = False
 
-    def _run_one(task: Task, index: int) -> TaskResult:
-        return _run_with_gate(task, validate_cmd, index, total, parallel=True)
+    def _run_one(task: Task, index: int) -> Optional[TaskResult]:
+        try:
+            return _run_with_gate(task, validate_cmd, index, total, parallel=True)
+        except SystemExit as e:
+            # T8: the budget cap raises SystemExit(3) inside a worker thread;
+            # the executor captures it into the future instead of exiting, so
+            # translate it into a None marker the main loop understands.
+            if e.code == 3:
+                return None
+            raise
 
     results: list[TaskResult] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        # Pass task_index so parallel output lines are prefixed
-        fut_map = {pool.submit(_run_one, t, i): t for i, t in enumerate(tasks, 1)}
-        for i, fut in enumerate(as_completed(fut_map), 1):
-            task = fut_map[fut]
+        fut_map = {}
+        for i, t in enumerate(tasks, 1):
+            if not budget_allows():
+                capped = True
+                log.error("BUDGET: invocation limit reached; stopping (exit 3)")
+                break
+            # Pass task_index so parallel output lines are prefixed
+            fut_map[pool.submit(_run_one, t, i)] = t
+        for fut in as_completed(fut_map):
             result = fut.result()
-            results.append(result)
-            log.info("PROGRESS: %d/%d done", i, total)
+            if result is None:
+                capped = True
+                log.error("BUDGET: invocation limit reached; stopping (exit 3)")
+            else:
+                results.append(result)
+                log.info("PROGRESS: %d/%d done", len(results), total)
+            if capped:
+                # stop in-flight agents NOW so executor shutdown is prompt
+                kill_active_procs()
 
+    if capped:
+        raise SystemExit(3)
     return results
 
 

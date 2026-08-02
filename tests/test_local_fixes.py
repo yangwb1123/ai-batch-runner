@@ -240,7 +240,7 @@ class TestResolvedPathsPropagate:
         mod.config.AGENT_BIN = str(agent)
         stage = mod.Stage(name="review", from_outputs="req", meta=True,
                           role_dir=str(out_dir), output_dir=str(out_dir), max_iterations=2)
-        results, ok = mod.pipeline._run_meta_stage(stage, {"req": [str(idea)]}, "", 0, "")
+        results, ok = mod.pipeline.run_meta_stage(stage, {"req": [str(idea)]}, "", 0, "")
         assert ok
         assert len(results) == 1
         for r in results:
@@ -751,7 +751,7 @@ class TestHeteroRouting:
         idea.write_text("idea", encoding="utf-8")
         stage = mod.Stage(name="review", from_outputs="req", meta=True, provider="p-stage",
                           role_dir=str(out_dir), output_dir=str(out_dir), max_iterations=2)
-        results, ok = mod.pipeline._run_meta_stage(stage, {"req": [str(idea)]}, "", 0, "")
+        results, ok = mod.pipeline.run_meta_stage(stage, {"req": [str(idea)]}, "", 0, "")
         assert ok
         lines = args_log.read_text(encoding="utf-8").splitlines()
         # both the orchestrator call and the role task carry the stage provider
@@ -854,8 +854,7 @@ class TestSessionRotation:
 
     def _fake_session(self, tmp_path, cwd, name, size_kb=1, with_compaction=False):
         import pbatch.session as session
-        workdir_key = "--" + cwd.replace("/", "-") + "--"
-        d = tmp_path / workdir_key
+        d = tmp_path / session.workdir_key(cwd)
         d.mkdir(parents=True, exist_ok=True)
         lines = []
         if with_compaction:
@@ -896,8 +895,7 @@ class TestSessionRotation:
         mod.config.AGENT_BIN = str(agent)
         # fake session file over the watermark
         import pbatch.session as session
-        workdir_key = "--" + tmp_path.as_posix().replace("/", "-") + "--"
-        d = tmp_path / workdir_key
+        d = tmp_path / session.workdir_key(tmp_path.as_posix())
         d.mkdir(parents=True, exist_ok=True)
         (d / f"2026-08-02T00-00-00-000Z_rot.jsonl").write_text("x" * 3000, encoding="utf-8")
         session.SESSIONS_DIR = tmp_path
@@ -957,12 +955,13 @@ class TestGovernanceBatch:
         mod = load_batch()
         a = tmp_path / "a.md"
         a.write_text("claim", encoding="utf-8")
-        combined = mod.pipeline._combine_outputs([str(a)])
+        combined = mod.pipeline.combine_outputs([str(a)])
         assert f'<evidence source="{a.stem}">' in combined
         assert "</evidence>" in combined
 
     def test_output_byte_cap_rejects(self, tmp_path, monkeypatch):
-        """12e: oversized agent output is rejected, not written."""
+        """12e: oversized agent output is rejected during collection (no
+        OOM before the check), never written."""
         mod = load_batch()
         agent = tmp_path / "big-agent.sh"
         agent.write_text("#!/bin/sh\nhead -c 3000 /dev/zero | tr '\\0' 'x'\n", encoding="utf-8")
@@ -972,9 +971,10 @@ class TestGovernanceBatch:
         out = tmp_path / "o.md"
         task = mod.Task(prompt="x", output=str(out))
         result = mod.run_task(task)
-        assert result.success is True  # agent exit 0
+        assert result.success is False
+        assert "exceeds" in result.reason
         mod.save_result(task, result)
-        assert not out.exists()  # cap rejected the write
+        assert not out.exists()  # rejected, nothing written
 
     def test_secretscan_registry_entry(self):
         mod = load_batch()

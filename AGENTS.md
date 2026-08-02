@@ -31,7 +31,7 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `prompts/` | 19 个专家角色模板（architect、security_engineer、qa_lead…） |
 | `pipelines/` | SDLC 角色图与代码实现流水线（设计图） |
 | `examples/` | 5 个可用案例：提案工作流、SDLC 角色流水线、通用 meta 分析、MFA 分析、完整闭环 |
-| `tests/` | 91 个回归测试（`make ai-dev-test`） |
+| `tests/` | 169 个回归测试（`make ci`） |
 | `docs/` | 机制文档（`RUNNING_247.md`、`AUTOMATION_WORKFLOW_SUMMARY.md` 等） |
 | `pi-batch.yaml` | 声明式配置：agent 二进制、会话标志、6 个验证器（含 `pyquality`） |
 
@@ -286,7 +286,7 @@ python ai-dev/quality.py --strict ai-dev/
 ## 4. 测试与门禁
 
 ```bash
-make ai-dev-test            # 91 个回归测试（pi-batch 66 + run-review 20 + quality 5）
+make ci                     # 169 个回归测试（上游 98 + 本地 71）+ 34 harness 自测
 python -m pytest checks/    # 仓库工程门禁自测（147+ 个）
 python ai-dev/quality.py --strict ai-dev/   # 组织质量门禁（当前全绿）
 ```

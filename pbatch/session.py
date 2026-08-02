@@ -19,10 +19,19 @@ from typing import Optional
 SESSIONS_DIR = Path.home() / ".pi" / "agent" / "sessions"
 
 
+def workdir_key(cwd: str) -> str:
+    """pi's session-dir key for a workdir: the absolute path with its
+    leading '/' stripped and remaining '/' -> '-', wrapped in '--'. pi
+    writes `--home-u1-project--` for /home/u1/project; dashing the leading
+    slash too produces `---home-u1-project--`, which never matches a real
+    pi session tree (round-4 finding P0-2)."""
+    path = (cwd or os.getcwd()).lstrip("/")
+    return "--" + path.replace("/", "-") + "--"
+
+
 def session_file(cwd: str, session_name: str) -> Optional[Path]:
     """Newest session file for *session_name* under *cwd*'s session dir."""
-    workdir_key = "--" + (cwd or os.getcwd()).replace("/", "-") + "--"
-    d = SESSIONS_DIR / workdir_key
+    d = SESSIONS_DIR / workdir_key(cwd)
     if not d.is_dir():
         return None
     try:
