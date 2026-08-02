@@ -363,3 +363,18 @@ validator exit signature.
   is regenerated), and environment-class halt (identical validator stderr
   across >=2 tasks stops the loop). Exit codes: 0 success, 1 max rounds,
   3 budget cap (T8), 4 stall/circuit stop, 5 lock held, 130 interrupt.
+
+## Cost governance (T6-T8)
+
+- **Metering** (T7): `--events-file FILE` appends JSONL events
+  (task_finish / task_fail / budget_cap) with per-call usage read from the
+  pi session file (`message.usage` JSON pointers, spike-validated in
+  `docs/spike-pi-session.md`); a missing/unparseable session degrades to
+  `usage: null`, never a crash. `--webhook URL` POSTs the same events
+  non-blockingly (5s timeout, failures logged only).
+- **Budgets** (T8): `--budget-max N` caps agent invocations per run;
+  `--daily-budget N` caps per UTC day (state file
+  `.pi-batch/daily-budget.json`, `--daily-state` overrides). On cap the
+  run stops with exit 3 and a budget_cap event — the cap wins over
+  `--max-rounds 0`. Exit codes: 0 success, 1 max rounds, 3 budget cap,
+  4 stall/circuit stop, 5 lock held, 130 interrupt.

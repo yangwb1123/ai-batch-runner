@@ -75,6 +75,16 @@ exponential-backoff retries, and optional auto git-commit after each stage.
 >   stall detection (`--stall-rounds`, exit 4), residue markers
 >   (`.pi-batch/state/`), environment-class halt (shared validator stderr)
 > - tests: 12 more cases (42 total in `tests/test_local_fixes.py`)
+>
+> **Local fixes** (cost governance, T6-T8 per `docs/IMPLEMENTATION_PLAN_7x24_GOVERNANCE.md`):
+> - T6 spike verified pi session files (`~/.pi/agent/sessions/--<cwd>--/`,
+>   `message.usage` JSON pointers) — report in `docs/spike-pi-session.md`
+> - T7 `pbatch/metering.py`: `--events-file` JSONL events (task_finish/
+>   task_fail/budget_cap) with per-call session usage diff; `--webhook`
+>   non-blocking delivery; usage:null degradation
+> - T8 budgets: `--budget-max` (per run) + `--daily-budget` (UTC state
+>   file); cap wins over `--max-rounds 0`, exit 3
+> - tests: 3 more cases (45 total in `tests/test_local_fixes.py`)
 >   
 > These pbatch/ + ai/ edits will need re-applying after the next upstream sync (they are
 > the only divergence from snaplink/ai-dev).

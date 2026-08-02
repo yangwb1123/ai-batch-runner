@@ -19,6 +19,7 @@ from typing import NamedTuple, Optional
 from . import config
 from .config import AGENT_BIN, AGENT_DEFAULT_WORKERS, _resolve_validators, _session_flags, log
 from .models import Task, TaskResult
+from .metering import budget_allows, budget_consume, record_event
 from .triage import clear_marker, task_key, write_marker
 
 def _read_stream(stream, prefix: str, collector: list) -> None:
@@ -97,6 +98,17 @@ def agent_failure_reason(returncode: int, output: str) -> str:
     return ""
 
 
+def _budget_gate(task: Task, key: str, workdir: str) -> None:
+    """T8: the budget cap wins over everything — a capped run stops before
+    spawning, never after burning quota (exit 3, budget_cap event)."""
+    if not budget_allows():
+        log.error("BUDGET: invocation limit reached; stopping (exit 3)")
+        record_event("budget_cap", task.prompt, "invocation limit", workdir, "")
+        clear_marker(key, workdir)
+        raise SystemExit(3)
+    budget_consume()
+
+
 def _prompt_brief(task: Task, cmd: list) -> str:
     """One-line log summary with the prompt truncated (prompt content is
     sensitive and may be shipped by --log-file)."""
@@ -147,13 +159,17 @@ def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = F
     write_marker(key, workdir)
     proc = None
     completed = False
+    _budget_gate(task, key, workdir)
     try:
         proc = _spawn_agent(cmd, workdir, env)
         # Read stdout/stderr via threads, wait on a hard deadline (kills
         # the process group when task.timeout elapses).
         stdout_lines, stderr_lines = _stream_proc(proc, prefix, start, task.timeout)
         completed = True
-        return _result_from_proc(task, proc, stdout_lines, stderr_lines, time.monotonic() - start)
+        result = _result_from_proc(task, proc, stdout_lines, stderr_lines, time.monotonic() - start)
+        record_event("task_finish" if result.success else "task_fail",
+                     task.prompt, result.reason, workdir, "")
+        return result
     except subprocess.TimeoutExpired:
         return _timeout_result(task, proc, start)
     except FileNotFoundError:

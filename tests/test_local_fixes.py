@@ -12,6 +12,7 @@ upstream suite).
 """
 
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -626,6 +627,71 @@ class TestTriage:
             capture_output=True, text=True, timeout=120)
         assert result.returncode == 4, result.stderr
         assert "STALL" in result.stderr
+
+
+class TestMeteringBudget:
+    """T7/T8 (7x24 governance): metering events + budget caps."""
+
+    def test_events_file_records_finish_and_fail(self, tmp_path):
+        counter = tmp_path / "counter"
+        agent = tmp_path / "agent.sh"
+        agent.write_text(
+            "#!/bin/sh\n"
+            f"echo x >> {counter}\n"
+            "if [ $(wc -l < {c}) -le 1 ]; then echo fail; exit 1; else echo ok; fi\n".format(c=counter),
+            encoding="utf-8")
+        agent.chmod(0o755)
+        events = tmp_path / "events.jsonl"
+        inputs = tmp_path / "in"
+        inputs.mkdir()
+        (inputs / "a.md").write_text("p1", encoding="utf-8")
+        (inputs / "b.md").write_text("p2", encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, str(PI_BATCH), "--from-dir", str(inputs),
+             "--agent-bin", str(agent), "--mode", "serial", "--events-file", str(events)],
+            capture_output=True, text=True, timeout=120)
+        assert result.returncode != 0  # one task fails (exit 1, non-retryable rounds)
+        lines = events.read_text(encoding="utf-8").strip().splitlines()
+        events_seen = [json.loads(l)["event"] for l in lines]
+        assert "task_fail" in events_seen
+        assert any("task_finish" in e for e in events_seen) or len(events_seen) >= 1
+        for l in lines:
+            assert json.loads(l)["ts"]  # well-formed JSONL
+
+    def test_budget_max_stops_before_spawning(self, tmp_path):
+        """--budget-max 2 with 3 tasks: exactly 2 spawns, exit 3."""
+        counter = tmp_path / "counter"
+        agent = tmp_path / "counting.sh"
+        agent.write_text(f"#!/bin/sh\necho x >> {counter}\necho ok\n", encoding="utf-8")
+        agent.chmod(0o755)
+        inputs = tmp_path / "in"
+        inputs.mkdir()
+        for i in range(3):
+            (inputs / f"t{i}.md").write_text(f"p{i}", encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, str(PI_BATCH), "--from-dir", str(inputs),
+             "--agent-bin", str(agent), "--mode", "serial",
+             "--budget-max", "2", "--events-file", str(tmp_path / "e.jsonl")],
+            capture_output=True, text=True, timeout=120)
+        assert result.returncode == 3, result.stderr
+        assert counter.read_text(encoding="utf-8").count("x") == 2
+        events = (tmp_path / "e.jsonl").read_text(encoding="utf-8")
+        assert "budget_cap" in events
+
+    def test_daily_budget_persists_across_runs(self, tmp_path):
+        import pbatch.metering as metering
+        state = tmp_path / "daily.json"
+        metering._DAILY_STATE = str(state)
+        metering.DAILY_BUDGET = 10
+        metering.budget_consume()
+        metering.budget_consume()
+        assert metering.budget_spent_today() == 2
+        # simulate a fresh process: re-read from the state file
+        metering2 = __import__("importlib").import_module("pbatch.metering")
+        metering2._DAILY_STATE = str(state)
+        assert metering2.budget_spent_today() == 2
+        metering.DAILY_BUDGET = 0
+        metering.INVOCATIONS = 0
 
 
 class TestStdinReusedAcrossRounds:

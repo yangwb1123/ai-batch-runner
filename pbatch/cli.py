@@ -87,6 +87,7 @@ def _add_runtime_args(p: argparse.ArgumentParser) -> None:
                    help="T5: isolate a task after this many consecutive failures (default: 5)")
     p.add_argument("--stall-rounds", type=int, default=6,
                    help="T5: stop the loop (exit 4) after this many rounds without progress (default: 6)")
+    _add_metering_args(p)
     p.add_argument("--dry-run", action="store_true",
                    help="print task list without executing")
     return p
@@ -121,6 +122,14 @@ def _add_batch_args(p: argparse.ArgumentParser) -> None:
 def main() -> None:
     args = build_parser().parse_args()
     config.AGENT_BIN = args.agent_bin
+
+    # T7/T8: metering + budget wiring (module-level, read by run_task).
+    from . import metering
+    metering.EVENTS_FILE = args.events_file
+    metering.WEBHOOK_URL = args.webhook
+    metering.BUDGET_MAX = args.budget_max
+    metering.DAILY_BUDGET = args.daily_budget
+    metering._DAILY_STATE = args.daily_state or str(Path(".pi-batch") / "daily-budget.json")
 
     _auto_detect_pipeline(args)
 
@@ -235,6 +244,20 @@ def _circuit_all_stopped(circuit: Circuit, failed_keys: set) -> bool:
         log.error("All failing tasks are isolated; stopping (exit %d)", STALL_EXIT_CODE)
         return True
     return False
+
+
+def _add_metering_args(p) -> None:
+    """T7/T8: metering events, webhook, and invocation budgets."""
+    p.add_argument("--events-file", default="",
+                   help="T7: append JSONL metering events (task_finish/task_fail/gate_reject/budget_cap/stall_stop)")
+    p.add_argument("--webhook", default="",
+                   help="T7: POST each metering event to URL (non-blocking, 5s timeout, failures logged only)")
+    p.add_argument("--budget-max", type=int, default=0,
+                   help="T8: cap agent invocations per run (0 = unlimited); on cap stop with exit 3")
+    p.add_argument("--daily-budget", type=int, default=0,
+                   help="T8: cap agent invocations per UTC day (0 = unlimited); state in --daily-state file")
+    p.add_argument("--daily-state", default="",
+                   help="T8: daily budget counter state file (default: .pi-batch/daily-budget.json)")
 
 
 def _auto_detect_pipeline(args) -> None:
