@@ -346,3 +346,20 @@ Validator rejections now flow back into retries (T2): the capped stderr
 (4000 chars / 40 lines) and exit code are appended to the retry prompt, so
 the agent can fix the gate problem directly; the summary line shows the
 validator exit signature.
+
+## 7x24 governance (T3-T5)
+
+- **Log rotation** (T3): `--log-file` uses a RotatingFileHandler
+  (`--log-max-bytes` default 5MB, `--log-backups` default 3) — unbounded
+  logs and disk-full crashes are gone.
+- **Single-instance lock** (T4): an O_EXCL `.pi-batch.lock` in the cwd
+  refuses a second concurrent instance (exit 5, holder named in the error);
+  stale locks (dead PID or >24h old) are broken automatically; released in
+  finally; `--dry-run` and `--no-lock` skip it.
+- **Triage** (T5): per-task circuit isolation (`--circuit-max` default 5,
+  poison tasks stop burning quota), stall detection (`--stall-rounds`
+  default 6 rounds without progress -> exit 4), residue markers
+  (`.pi-batch/state/*.start`, a surviving marker signals a killed run and
+  is regenerated), and environment-class halt (identical validator stderr
+  across >=2 tasks stops the loop). Exit codes: 0 success, 1 max rounds,
+  3 budget cap (T8), 4 stall/circuit stop, 5 lock held, 130 interrupt.

@@ -58,6 +58,7 @@ root_policy:
     - git-auto-commit.sh
     - quality.py           # upstream-synced org-quality scanner (validators.pyquality)
     - .coverage            # pytest-cov data file (gitignored, recreated by make coverage)
+    - .pi-batch.lock       # T4 single-instance lock (gitignored, runtime-only)
   banned_patterns:
     - "*_test.py"   # tests belong in tests/ or checks/
 

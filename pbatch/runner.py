@@ -19,6 +19,7 @@ from typing import NamedTuple, Optional
 from . import config
 from .config import AGENT_BIN, AGENT_DEFAULT_WORKERS, _resolve_validators, _session_flags, log
 from .models import Task, TaskResult
+from .triage import clear_marker, task_key, write_marker
 
 def _read_stream(stream, prefix: str, collector: list) -> None:
     """Read lines from *stream*, print them (with prefix), and collect."""
@@ -140,6 +141,10 @@ def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = F
     env = os.environ.copy()
     env.update(task.env)
 
+    # T5 (7x24 governance): residue marker — a surviving marker after this
+    # call means the process group was killed mid-run.
+    key = task_key(task)
+    write_marker(key, workdir)
     proc = None
     completed = False
     try:
@@ -165,6 +170,7 @@ def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = F
         # after Ctrl-C; normal completion already took care of the process.
         if proc is not None and not completed:
             _kill_group(proc)
+        clear_marker(key, workdir)
 
 
 def save_result(task: Task, result: TaskResult) -> None:

@@ -3,3 +3,5 @@ __pycache__/
 logs/
 docs/reviews/
 .coverage
+.pi-batch/
+.pi-batch.lock

@@ -67,6 +67,14 @@ exponential-backoff retries, and optional auto git-commit after each stage.
 >   `run_parallel` share `_run_with_gate`
 > - `revalidate_existing` fails closed on symlink artifacts (QA-1 complete)
 > - tests: 11 more cases (30 total in `tests/test_local_fixes.py`)
+>
+> **Local fixes** (7x24 governance, T3-T5 per `docs/IMPLEMENTATION_PLAN_7x24_GOVERNANCE.md`):
+> - T3 log rotation (`RotatingFileHandler`, `--log-max-bytes`/`--log-backups`)
+> - T4 single-instance lock (`pbatch/lock.py`, O_EXCL, stale detection, exit 5)
+> - T5 triage (`pbatch/triage.py`): circuit isolation (`--circuit-max`),
+>   stall detection (`--stall-rounds`, exit 4), residue markers
+>   (`.pi-batch/state/`), environment-class halt (shared validator stderr)
+> - tests: 12 more cases (42 total in `tests/test_local_fixes.py`)
 >   
 > These pbatch/ + ai/ edits will need re-applying after the next upstream sync (they are
 > the only divergence from snaplink/ai-dev).

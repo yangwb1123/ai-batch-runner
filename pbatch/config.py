@@ -72,6 +72,11 @@ AGENT_DEFAULT_WORKERS = _AGENT_CFG.get("default_workers", 4)
 
 COMMIT_PREFIX_DEFAULT = _BATCH_CFG.get("commit", {}).get("prefix", "[pi-batch]")
 
+# T3 (7x24 governance): log rotation thresholds; --log-max-bytes /
+# --log-backups override per run. 5MB x 3 backups bounds a 24x7 log.
+LOG_MAX_BYTES = _BATCH_CFG.get("logging", {}).get("max_bytes", 5 * 1024 * 1024)
+LOG_BACKUP_COUNT = _BATCH_CFG.get("logging", {}).get("backups", 3)
+
 
 _DEFAULT_SESSION_FLAGS = {
     "start": ["--session-id", "{session}", "--name", "{name}"],

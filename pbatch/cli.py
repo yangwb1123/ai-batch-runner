@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import logging.handlers
 import os
 import re
 import subprocess
@@ -17,6 +18,9 @@ from . import config
 from .config import (AGENT_BIN, AGENT_DEFAULT_WORKERS, COMMIT_PREFIX_DEFAULT, log, yaml)
 from .models import Pipeline, Task
 from .reuse import reuse_decision
+from .lock import acquire_lock, release_lock
+from .triage import (STALL_EXIT_CODE, Circuit, StallDetector, env_signature,
+                     residue_markers, task_key)
 from .pipeline import (_append_decision_log, _archive_outputs, load_pipeline,
                        load_tasks, load_tasks_from_dir, run_pipeline)
 from .runner import print_summary, run_parallel, run_serial
@@ -60,7 +64,11 @@ def _add_runtime_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--commit-prefix", default=COMMIT_PREFIX_DEFAULT,
                    help=f"prefix for auto-generated commit messages (default: {COMMIT_PREFIX_DEFAULT})")
     p.add_argument("--log-file", default="",
-                   help="Append run log to FILE for 24x7 supervision")
+                   help="Append run log to FILE for 24x7 supervision (rotated)")
+    p.add_argument("--log-max-bytes", type=int, default=config.LOG_MAX_BYTES,
+                   help=f"Rotate the log file after this many bytes (default: {config.LOG_MAX_BYTES})")
+    p.add_argument("--log-backups", type=int, default=config.LOG_BACKUP_COUNT,
+                   help=f"Keep this many rotated log backups (default: {config.LOG_BACKUP_COUNT})")
     p.add_argument("--decision-log", default="",
                    help="Append structured per-stage decision records to FILE (overrides pipeline 'decision_log')")
     p.add_argument("--archive-dir", default="",
@@ -73,6 +81,12 @@ def _add_runtime_args(p: argparse.ArgumentParser) -> None:
                    help="Named validators from pi-batch.yaml validators registry, comma-separated (e.g. 'quick,gofmt'); AND semantics. Unknown names are treated as raw shell commands")
     p.add_argument("--validate-cmd", default="",
                    help="Engineering gate run against every agent result BEFORE its output is saved (e.g. 'go build ./... && go vet ./...', 'python cli.py check'); {output} and {cwd} placeholders are substituted. Non-zero exit rejects the result and leaves no file")
+    p.add_argument("--no-lock", action="store_true",
+                   help="skip the single-instance lock (T4 escape hatch)")
+    p.add_argument("--circuit-max", type=int, default=5,
+                   help="T5: isolate a task after this many consecutive failures (default: 5)")
+    p.add_argument("--stall-rounds", type=int, default=6,
+                   help="T5: stop the loop (exit 4) after this many rounds without progress (default: 6)")
     p.add_argument("--dry-run", action="store_true",
                    help="print task list without executing")
     return p
@@ -110,11 +124,18 @@ def main() -> None:
 
     _auto_detect_pipeline(args)
 
-    # Append run log to FILE for 24x7 supervision
+    # Append run log to FILE for 24x7 supervision; T3 (7x24 governance):
+    # bounded rotation instead of unbounded growth (disk-full crashes were
+    # an SRE finding in the self-review).
     if args.log_file:
-        fh = logging.FileHandler(args.log_file, encoding="utf-8")
+        fh = logging.handlers.RotatingFileHandler(
+            args.log_file, maxBytes=args.log_max_bytes, backupCount=args.log_backups,
+            encoding="utf-8")
         fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
         log.addHandler(fh)
+
+    # T4 (7x24 governance): single-instance lock; skipped for --dry-run.
+    lock_path = acquire_lock(no_lock=args.no_lock or args.dry_run)
 
     pipeline = _setup_pipeline(args)
     timeout_override = args.timeout if "--timeout" in sys.argv else 0
@@ -147,16 +168,24 @@ def _validate_session_flags(args) -> None:
 def _run_rounds(args, pipeline: Optional[Pipeline], session_name: str, cli_validate: str, timeout_override: int) -> None:
     """The 24x7 round loop: rerun only the tasks/stages that failed or were
     rejected each round; --max-rounds 0 loops forever with --round-delay
-    rest between rounds so quota and rate-limit windows can clear."""
+    rest between rounds so quota and rate-limit windows can clear.
+
+    T5 (7x24 governance): circuit isolation, stall detection, residue
+    markers and environment-class halts keep an unattended run from
+    burning quota against a broken provider or poisoned task set."""
     max_rounds = args.max_rounds
     stdin_tasks = None  # stdin is consumed once; later rounds reuse it
     round_no = 0
+    circuit = Circuit(max_failures=args.circuit_max)
+    stall = StallDetector(k=args.stall_rounds)
     while True:
         round_no += 1
         log.info("")
         log.info("=" * 60)
         log.info("ROUND %d of %s", round_no, "unlimited" if max_rounds == 0 else max_rounds)
         log.info("=" * 60)
+
+        _warn_residue_markers()
 
         if pipeline is not None:
             round_failed = _run_pipeline_round(args, pipeline, session_name, cli_validate,
@@ -170,8 +199,8 @@ def _run_rounds(args, pipeline: Optional[Pipeline], session_name: str, cli_valid
                 stdin = sys.stdin.read().strip()
                 if stdin:
                     stdin_tasks = [Task(prompt=stdin)]
-            round_failed = _run_batch_round(args, stdin_tasks, session_name, cli_validate,
-                                            max_rounds, round_no)
+            round_failed, failed_keys = _run_batch_round(args, stdin_tasks, session_name, cli_validate,
+                                                         max_rounds, round_no, circuit)
 
         if not round_failed:
             log.info("All tasks passed in round %d", round_no)
@@ -179,9 +208,33 @@ def _run_rounds(args, pipeline: Optional[Pipeline], session_name: str, cli_valid
         if max_rounds > 0 and round_no >= max_rounds:
             log.error("Max rounds (%d) reached with tasks still failing; rerun with --reuse to continue later", max_rounds)
             sys.exit(1)
+        if _circuit_all_stopped(circuit, failed_keys):
+            sys.exit(STALL_EXIT_CODE)
+        if stall.update(failed_keys, 0):
+            sys.exit(STALL_EXIT_CODE)
         log.warning("Round %d finished with failures; waiting %.0fs before round %d",
                     round_no, args.round_delay, round_no + 1)
         time.sleep(args.round_delay)
+
+
+def _warn_residue_markers() -> None:
+    """T5: start markers surviving a previous (killed) run are warned about;
+    the current round regenerates them instead of trusting them silently."""
+    for r in residue_markers():
+        log.warning("RESIDUE: stale start marker %s (previous run was killed); regenerating", r.name)
+
+
+def _circuit_all_stopped(circuit: Circuit, failed_keys: set) -> bool:
+    """True when every failing task is circuit-isolated (nothing left to
+    run — a poison task set must not spin the loop forever)."""
+    if not circuit.isolated:
+        return False
+    log.warning("CIRCUIT: %d task(s) isolated after repeated failures: %s",
+                len(circuit.isolated), ", ".join(sorted(circuit.isolated)))
+    if not failed_keys - circuit.isolated:
+        log.error("All failing tasks are isolated; stopping (exit %d)", STALL_EXIT_CODE)
+        return True
+    return False
 
 
 def _auto_detect_pipeline(args) -> None:
@@ -295,7 +348,8 @@ def _run_pipeline_round(args, pipeline: Pipeline, session_name: str, cli_validat
     return False
 
 
-def _run_batch_round(args, stdin_tasks, session_name: str, cli_validate: str, max_rounds: int, round_no: int) -> bool:
+def _run_batch_round(args, stdin_tasks, session_name: str, cli_validate: str, max_rounds: int, round_no: int,
+                     circuit: Circuit = None) -> tuple[bool, set]:
     """One round of single-batch mode: load tasks, apply overrides and reuse
     filtering, execute, record decisions and archive on full success.
     Returns True when the round failed (caller may loop again)."""
@@ -306,18 +360,36 @@ def _run_batch_round(args, stdin_tasks, session_name: str, cli_validate: str, ma
         log.error("No tasks to execute: a YAML source must contain a 'tasks' list (pipelines use 'stages' and are auto-detected)")
         sys.exit(1)
 
+    # T5: circuit-isolated tasks are dropped from this round (poison task
+    # must not burn quota forever).
+    if circuit is not None and circuit.isolated:
+        before = len(tasks)
+        tasks = [t for t in tasks if circuit.allowed(task_key(t))]
+        if len(tasks) < before:
+            log.warning("CIRCUIT: dropped %d isolated task(s) from round %d", before - len(tasks), round_no)
+
     tasks = _filter_reused(tasks, args.reuse and not args.force, cli_validate, args.reuse_legacy)
     if not tasks:
         log.info("All tasks already have outputs; nothing to run")
-        return False
+        return False, set()
 
     if args.dry_run:
         _print_dry_run(tasks, args.mode)
-        return False
+        return False, set()
 
     results, round_failed = _execute_batch(tasks, args, session_name, cli_validate)
     _finalize_batch_round(args, results, round_failed)
-    return round_failed
+    failed_keys = {task_key(r.task) for r in results if not r.success}
+    for r in results:
+        if not r.success and circuit is not None:
+            circuit.register_failure(task_key(r.task), r.reason or "")
+    # T5: identical validator stderr across >=2 tasks = environment-class
+    # failure (broken gate, not per-task); halt instead of retrying.
+    if round_failed and env_signature(results):
+        log.error("ENVIRONMENT: identical validator failure across >=2 tasks; "
+                  "stopping loop (exit %d)", STALL_EXIT_CODE)
+        sys.exit(STALL_EXIT_CODE)
+    return round_failed, failed_keys
 
 
 def _git_commit_single_batch(args, outputs: list) -> None:

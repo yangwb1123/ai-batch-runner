@@ -466,6 +466,168 @@ class TestValidationFeedback:
         assert not out.exists()
 
 
+class TestLogRotation:
+    """T3 (7x24 governance): the run log rotates instead of growing unbounded."""
+
+    def test_rotation_bounds_active_file(self, tmp_path):
+        import logging
+        import logging.handlers
+        log_file = tmp_path / "run.log"
+        fh = logging.handlers.RotatingFileHandler(
+            str(log_file), maxBytes=1024, backupCount=2, encoding="utf-8")
+        fh.setFormatter(logging.Formatter("%(message)s"))
+        logger = logging.getLogger("rotation-test")
+        logger.addHandler(fh)
+        logger.setLevel(logging.INFO)
+        for i in range(200):  # ~20KB of lines > 1KB x 2 backups
+            logger.info("line-%03d %s", i, "x" * 80)
+        fh.close()
+        assert log_file.exists()
+        assert log_file.stat().st_size <= 2048  # active file bounded
+        backups = sorted(tmp_path.glob("run.log.*"))
+        assert len(backups) == 2
+
+
+class TestInstanceLock:
+    """T4 (7x24 governance): single-instance lock."""
+
+    def test_second_instance_refused(self, tmp_path):
+        import pbatch.lock as lock
+        first = lock.acquire_lock(str(tmp_path))
+        try:
+            with pytest.raises(SystemExit) as exc:
+                lock.acquire_lock(str(tmp_path))
+            assert exc.value.code == 5
+        finally:
+            lock.release_lock(first)
+        assert not (tmp_path / lock.LOCK_NAME).exists()
+
+    def test_stale_lock_broken_and_retried(self, tmp_path):
+        import pbatch.lock as lock
+        import json
+        stale = tmp_path / lock.LOCK_NAME
+        stale.write_text(json.dumps({
+            "pid": 99999999,  # almost certainly dead
+            "start": 1,       # ancient
+            "host": "x", "argv": "y"}), encoding="utf-8")
+        got = lock.acquire_lock(str(tmp_path))
+        assert got == stale  # stale broken, lock re-acquired
+        assert json.loads(stale.read_text(encoding="utf-8"))["pid"] == os.getpid()
+        lock.release_lock(got)
+
+    def test_clean_exit_releases(self, tmp_path):
+        import pbatch.lock as lock
+        got = lock.acquire_lock(str(tmp_path))
+        lock.release_lock(got)
+        assert not (tmp_path / lock.LOCK_NAME).exists()
+
+
+class TestTriage:
+    """T5 (7x24 governance): circuit / stall / environment / residue."""
+
+    def test_circuit_isolates_after_max(self):
+        import pbatch.triage as triage
+        circuit = triage.Circuit(max_failures=3)
+        key = "task-A"
+        for i in range(2):
+            assert circuit.register_failure(key, "agent exited 1") is False
+        assert circuit.register_failure(key, "agent exited 1") is True
+        assert circuit.allowed(key) is False
+
+    def test_circuit_permanent_failure_isolates_immediately(self):
+        import pbatch.triage as triage
+        circuit = triage.Circuit()
+        assert circuit.register_failure("k", "agent binary not found") is True
+
+    def test_stall_detector_stops_after_k(self):
+        import pbatch.triage as triage
+        stall = triage.StallDetector(k=2)
+        assert stall.update({"a", "b"}, 0) is False  # baseline round
+        assert stall.update({"a", "b"}, 0) is False  # stagnant 1
+        assert stall.update({"a", "b"}, 0) is True   # stagnant 2 = K -> stop
+
+    def test_stall_progress_resets(self):
+        import pbatch.triage as triage
+        stall = triage.StallDetector(k=3)
+        stall.update({"a"}, 0)
+        stall.update({"a"}, 0)
+        assert stall.update(set(), 1) is False  # progress resets the counter
+        stall.update(set(), 1)
+        assert stall.update(set(), 1) is False  # no failures: never stalls
+
+    def test_env_signature_detects_shared_gate_failure(self, tmp_path):
+        mod = load_batch()
+        agent = tmp_path / "agent.sh"
+        agent.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+        agent.chmod(0o755)
+        mod.config.AGENT_BIN = str(agent)
+        results = mod.run_serial(
+            [mod.Task(prompt="a", output=str(tmp_path / "a.md")),
+             mod.Task(prompt="b", output=str(tmp_path / "b.md"))],
+            validate_cmd="echo gate-broken >&2; exit 9")
+        assert all(not r.success for r in results)
+        import pbatch.triage as triage
+        assert triage.env_signature(results)  # identical stderr across 2 tasks
+
+    def test_residue_markers_lifecycle(self, tmp_path):
+        import pbatch.triage as triage
+        key = "abc123"
+        assert triage.residue_markers(str(tmp_path)) == []
+        triage.write_marker(key, str(tmp_path))
+        markers = triage.residue_markers(str(tmp_path))
+        assert len(markers) == 1
+        triage.clear_marker(key, str(tmp_path))
+        assert triage.residue_markers(str(tmp_path)) == []
+
+    def test_run_task_leaves_no_marker(self, tmp_path):
+        """A normally finished task clears its start marker (residue-free)."""
+        mod = load_batch()
+        agent = tmp_path / "agent.sh"
+        agent.write_text("#!/bin/sh\necho done\n", encoding="utf-8")
+        agent.chmod(0o755)
+        mod.config.AGENT_BIN = str(agent)
+        out = tmp_path / "o.md"
+        result = mod.run_task(mod.Task(prompt="p", output=str(out), cwd=str(tmp_path)))
+        assert result.success
+        import pbatch.triage as triage
+        assert triage.residue_markers(str(tmp_path)) == []
+
+    def test_cli_circuit_stops_unattended_poison(self, tmp_path):
+        """A permanently failing task under --max-rounds 0 is isolated and
+        the loop stops with exit 4 instead of burning quota forever."""
+        counter = tmp_path / "counter"
+        agent = tmp_path / "poison.sh"
+        agent.write_text(f"#!/bin/sh\necho x >> {counter}\necho plain-failure\nexit 1\n", encoding="utf-8")
+        agent.chmod(0o755)
+        inputs = tmp_path / "in"
+        inputs.mkdir()
+        (inputs / "t.md").write_text("prompt", encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, str(PI_BATCH), "--from-dir", str(inputs),
+             "--agent-bin", str(agent), "--mode", "serial", "--max-rounds", "0",
+             "--round-delay", "0", "--circuit-max", "2", "--stall-rounds", "3"],
+            capture_output=True, text=True, timeout=120)
+        assert result.returncode == 4, result.stderr
+        assert counter.read_text(encoding="utf-8").count("x") == 2  # 2 fails, then isolated
+
+    def test_cli_stall_stops_no_progress(self, tmp_path):
+        """No progress for K rounds stops the loop with exit 4."""
+        counter = tmp_path / "counter"
+        agent = tmp_path / "flaky.sh"
+        agent.write_text(f"#!/bin/sh\necho x >> {counter}\necho plain-failure\nexit 1\n", encoding="utf-8")
+        agent.chmod(0o755)
+        inputs = tmp_path / "in"
+        inputs.mkdir()
+        (inputs / "t.md").write_text("prompt", encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, str(PI_BATCH), "--from-dir", str(inputs),
+             "--agent-bin", str(agent), "--mode", "serial", "--max-rounds", "0",
+             "--round-delay", "0", "--circuit-max", "99", "--stall-rounds", "2"],
+            capture_output=True, text=True, timeout=120)
+        assert result.returncode == 4, result.stderr
+        assert "STALL" in result.stderr
+
+
 class TestStdinReusedAcrossRounds:
     """F9: stdin is consumed once; later rounds reuse the loaded tasks."""
 
