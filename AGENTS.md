@@ -27,6 +27,8 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `pbatch/classifier.py` / `task_keywords.yaml` | 任务类型判断器：执行前双语关键词判定，前端任务自动路由到 UI 生成流水线（`--classify` / `classify` 子命令，零 LLM 成本） |
 | `ui-specs/` | AI UI 生成规范资产：8pt 间距 token、组件/布局/反例规范、业务风格 profile（ERP/CMS/OA…） |
 | `scripts/check-ui-spec.py` | 确定性 UI 门禁（纯标准库）：魔法间距/硬编码颜色/inline style 机械拦截（`uispacing`/`uicolor`/`uistyle` 产物验证器）；`--dir` 项目级扫描（`uicheck` 门禁，gofmt -l 风格，JSON 报告） |
+| `scripts/check-frontend-quality.py` | 前端工程门禁（纯标准库启发式）：console.log/any/不安全 html/测试 skip 恒失败，`--strict` 下上帝文件/复杂度预算失败（`uiquality` 验证器）；需推理的交给工程审查角色 |
+| `ui-specs/engineering/` | 前端工程规范资产：异步/防抖竞态/幂等决策表、表单表格状态、错误恢复与权限、架构预算、缺陷模式库（12 种事故档案） |
 | `pbatch/memory*.py` / `index_io.py` | 渐进式 message memory：稳定会话、有界索引、按需 recent/find/read |
 | `pbatch/campaign*.py` | 项目级模块发现、方向选择、状态/指纹、流水线与 worktree 隔离 |
 | `pbatch/cli.py` | 命令行：参数解析、main、轮循环、单批/流水线分发 |
@@ -34,7 +36,7 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `ai/run-review.py` | 十阶段评审 runner（`--all`/`--resume`/共享会话/验证门禁） |
 | `ai/prompts/00-09` | 评审阶段模板（产品发现→CTO 决策） |
 | `ai/prompts-shared/` | 评审共享片段（工程原则、输出格式、检查清单、角色定义） |
-| `prompts/` | 19 个专家角色模板（architect、security_engineer、qa_lead…） |
+| `prompts/` | 19 个专家角色模板（architect、security_engineer、qa_lead…）+ 前端工程角色（frontend_engineer、async_reviewer、code_architecture_reviewer） |
 | `pipelines/` | SDLC 角色图与代码实现流水线（设计图） |
 | `examples/` | 可用案例：提案、SDLC、meta 分析、完整闭环与 repository campaign |
 | `tests/` | 222 个回归测试（`make ci`） |
@@ -365,6 +367,15 @@ pi-batch --validate uicheck ...   # 项目级 UI 规范门禁（--dir 按项目�
 # 自动重构：不符合 ui-specs 的代码被 agent 修复到 0 违规（门禁反馈循环）
 pi-batch examples/ui-refactor-pipeline.yaml --retries 5 --max-rounds 0 \
   --log-file logs/ui-refactor.log
+
+# 前端工程审计：异步/竞态/防抖/上帝文件/复杂度（决策表+缺陷模式+门禁）
+python scripts/check-frontend-quality.py --dir src --strict --json
+pi-batch examples/frontend-engineering-review.yaml --retries 3 \
+  --log-file logs/fe-review.log
+# 工程规范资产：ui-specs/engineering/（async-data 决策表、form-table-state、
+# error-recovery、architecture-budgets、defect-patterns 缺陷模式库）
+# 审查角色：prompts/frontend_engineer.md、async_reviewer.md、
+# code_architecture_reviewer.md（meta 编排动态挑选）
 
 # 完整闭环：一句话 → 需求 → 设计 → 对抗审查 → 裁决门 → 实现+工程门禁 → 验收门
 #          → git 提交 → 归档 → 决策日志

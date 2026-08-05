@@ -227,3 +227,37 @@ accessibility_reviewer:
   - 对比度
   - 键盘
   - 触控
+frontend_engineer:
+  - frontend
+  - tsx
+  - dart
+  - vue
+  - component
+  - hook
+  - 前端
+  - 组件
+  - 编码
+  - 实现
+async_reviewer:
+  - async
+  - race
+  - debounce
+  - throttle
+  - request
+  - concurrent
+  - 异步
+  - 竞态
+  - 防抖
+  - 请求
+  - 并发
+code_architecture_reviewer:
+  - architecture
+  - module
+  - dependency
+  - god file
+  - complexity
+  - 架构
+  - 模块
+  - 依赖
+  - 复杂度
+  - 上帝文件

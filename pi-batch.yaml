@@ -105,6 +105,12 @@ validators:
   # --dir to the project's frontend root; no frontend files found -> pass.
   # Violations (stderr) feed the retry prompt, driving the refactor loop.
   uicheck: "python {cwd}/scripts/check-ui-spec.py --dir {cwd}/src --all --json -o {cwd}/docs/ui/refactor/report.json"
+  # Project-wide frontend ENGINEERING gate (gofmt -l style): machine-checkable
+  # half of the engineering spec — console.log/any/unsafe html are always
+  # errors; god-file/complexity budgets fail with --strict. Judgment calls
+  # (races, debounce policy, state placement) go to the engineering review
+  # roles and ui-specs/engineering/defect-patterns.md.
+  uiquality: "python {cwd}/scripts/check-frontend-quality.py --dir {cwd}/src --strict --json -o {cwd}/docs/ui/refactor/quality.json"
 
 # Task type classifier: runs BEFORE execution (--classify / `classify`
 # subcommand). Frontend UI tasks route to the UI generation pipeline, which

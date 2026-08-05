@@ -221,6 +221,20 @@ tasks:
   Spec assets live in `ui-specs/`
   (tokens/spacing/component/layout/anti-patterns/business-profiles); roles
   `ui_designer`/`ui_reviewer`/`visual_reviewer` are registered for meta stages.
+- **Frontend engineering governance** (the "10 years of experience" codified):
+  `ui-specs/engineering/` holds decision tables instead of essays — async-data
+  (debounce vs throttle vs submit-lock by event source, race prevention,
+  idempotency, retry matrix), form-table-state, error-recovery (401–5xx →
+  user action, 409 version conflicts, uncertain timeouts), architecture-budgets
+  (dependency direction, god-file criteria, complexity budgets), and a defect
+  pattern library (12 incident archives: async-race, duplicate-submit,
+  stale-closure, effect-loop, listener-leak, ...). `uiquality` validator
+  (`scripts/check-frontend-quality.py`) mechanically enforces the checkable
+  half (console.log/any/unsafe html always fail; god-file/complexity budgets
+  under --strict). Roles `frontend_engineer`/`async_reviewer`/
+  `code_architecture_reviewer` attack the judgment half, and
+  `examples/frontend-engineering-review.yaml` runs the full audit loop
+  (inventory → meta adversarial review → uiquality gate → verdict).
 - **Task loading**: YAML / JSON / plain-text task files, `--from-dir` (one task per `.md`),
   stdin, inline `-p`. `@file.md` references in prompts are inlined automatically. Structured
   files and pipelines are schema-checked fail-closed (types, sources, upstream stage names,

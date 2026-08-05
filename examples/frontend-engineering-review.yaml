@@ -1,0 +1,74 @@
+# 前端工程规范审查流水线：异步/架构/缺陷模式对抗审查 + 工程门禁。
+#
+# 场景：对已有前端项目（TSX/Dart/Vue）做"十年经验级"工程审计——
+# 请求竞态、重复提交、防抖策略、状态放置、上帝文件、复杂度、
+# 错误恢复、资源泄漏。经验 = ui-specs/engineering/ 决策表 + 缺陷模式库；
+# 可机器检查的由 uiquality 门禁拦截，需要推理的由审查角色对抗发现。
+#
+# 运行（把 pi-batch.yaml 的 uiquality --dir 改成项目前端根目录）：
+#   pi-batch examples/frontend-engineering-review.yaml \
+#     --retries 3 --log-file logs/fe-review.log
+# 只跑机器门禁：
+#   python scripts/check-frontend-quality.py --dir src --strict --json
+#
+# 流程：盘点 → 工程对抗审查（meta 现场挑 async_reviewer /
+# code_architecture_reviewer 等并发执行）→ 工程门禁（uiquality）→
+# 裁决门。发现问题后接 examples/ui-refactor-pipeline.yaml 修复。
+
+git_commit: true
+decision_log: docs/DECISIONS.md
+archive_dir: docs/archive
+
+stages:
+  # ── 1. 盘点：列出前端源码结构与关键文件 ──
+  - name: inventory
+    from_prompt: |
+      Inventory the project's frontend code (e.g. src/): list the source
+      tree, the largest files, files with the most hooks/api calls/event
+      handlers, and where async requests, forms and tables live. Output a
+      markdown map. Do not modify code.
+    output: docs/ui/engineering/inventory.md
+    mode: serial
+
+  # ── 2. 工程对抗审查：编排者按盘点现场挑选审查角色并发执行 ──
+  # async_reviewer 攻击竞态/重复提交/防抖/重试；code_architecture_reviewer
+  # 攻击上帝文件/依赖方向/复杂度；frontend_engineer 按决策表复核实现。
+  - name: engineering_review
+    from_outputs: inventory
+    meta: true
+    role_dir: prompts
+    output_dir: docs/ui/engineering
+    max_iterations: 2
+    mode: serial
+
+  # ── 3. 工程门禁：机器可检查项（console.log/any/不安全 html 恒失败；
+  #      --strict 下上帝文件/复杂度预算也失败；stderr 喂回修复循环）──
+  - name: gate
+    from_outputs: engineering_review
+    aggregate: true
+    validate: uiquality
+    mode: serial
+    tasks:
+      - prompt: |
+          Summarize the engineering review findings and the uiquality gate
+          results into an actionable defect list: each item with severity,
+          defect pattern, file, root cause, fix, and the test that would
+          catch it. Mark which findings are machine-verified and which are
+          review-verified.
+        output: docs/ui/engineering/findings.md
+
+  # ── 4. 裁决门：VERDICT: PASS 确认审计闭环 ──
+  - name: verdict
+    from_outputs: gate
+    aggregate: true
+    gate: true
+    mode: serial
+    tasks:
+      - prompt: |
+          You are the engineering gatekeeper. Read {input_content} (the
+          review deliverables and the uiquality gate report). Confirm the
+          defect list is complete and actionable. Output on the last line:
+          VERDICT: PASS - <why the audit is complete>
+          or
+          VERDICT: FAIL - <what is missing>
+        output: docs/ui/engineering/verdict.md
