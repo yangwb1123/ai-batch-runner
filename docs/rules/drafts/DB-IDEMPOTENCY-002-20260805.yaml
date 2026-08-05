@@ -1,0 +1,26 @@
+id: DB-IDEMPOTENCY-002
+title: 订单在并发下创建了两笔重复记录
+category: database
+severity: error
+scope:
+  languages: []
+  paths:
+  - src/**
+trigger:
+  operations: []
+rationale: 'Observed failure: 订单在并发下创建了两笔重复记录. Root-cause analysis is required before
+  this draft can be promoted (edit requirements/forbidden/verification with the actual
+  RCA).'
+requirements: []
+forbidden: []
+exceptions:
+- condition: ''
+verification:
+  static: []
+  tests: []
+examples:
+  good: []
+  bad: []
+owner: ''
+version: 0.1.0
+status: draft
