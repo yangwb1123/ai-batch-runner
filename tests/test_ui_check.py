@@ -109,3 +109,27 @@ def test_ui_refactor_pipeline_schema_and_gate():
     commands = _resolve_validators("uicheck")
     assert commands and "check-ui-spec.py --dir" in commands[0]
     assert "--all" in commands[0]
+
+
+def test_quoted_color_literals_are_not_hardcoded(tmp_path):
+    dart = tmp_path / "i18n.dart"
+    dart.write_text("hintText: '#2563EB'.localized,\n", encoding="utf-8")
+    result = _run("--dir", str(tmp_path), "--all")
+    assert result.returncode == 0
+    real = tmp_path / "real.dart"
+    real.write_text("final c = Color(0xFF6366F1);\n", encoding="utf-8")
+    assert _run("--dir", str(tmp_path), "--all").returncode == 1
+
+
+def test_sizedbox_big_value_is_component_dimension(tmp_path):
+    dart = tmp_path / "dialog.dart"
+    dart.write_text("SizedBox(width: 520)\n", encoding="utf-8")
+    assert _run("--dir", str(tmp_path), "--all").returncode == 0
+
+
+def test_token_definition_file_exempt_from_color(tmp_path):
+    colors = tmp_path / "theme" / "app_colors.dart"
+    colors.parent.mkdir(parents=True)
+    colors.write_text("static const Color primary = Color(0xFF6366F1);\n",
+                      encoding="utf-8")
+    assert _run("--dir", str(tmp_path), "--all").returncode == 0

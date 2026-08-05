@@ -175,3 +175,20 @@ def test_flutter_nesting_threshold_relaxed(tmp_path):
                     "        if (e) {\n          return x;\n        }\n"
                     "      }\n    }\n  }\n}\n", encoding="utf-8")
     assert _run("--strict", str(deep)).returncode == 0  # depth 5 < dart limit 8
+
+
+def test_dart_list_skip_not_test_skip(tmp_path):
+    dart = tmp_path / "page.dart"
+    dart.write_text("final page = rows.skip(1).toList();\n", encoding="utf-8")
+    assert _run("--strict", str(dart)).returncode == 0
+    ts = tmp_path / "t.test.ts"
+    ts.write_text("test.skip('x', () => {});\n", encoding="utf-8")
+    assert _run(str(ts)).returncode == 1
+
+
+def test_dart_const_static_access_ok(tmp_path):
+    # regression: `const AppColors.x` was produced by a refactor tool — the
+    # checker itself must not flag legitimate Dart patterns
+    dart = tmp_path / "w.dart"
+    dart.write_text("const x = Color(0xFF6366F1);\n", encoding="utf-8")
+    assert _run("--strict", str(dart)).returncode == 0

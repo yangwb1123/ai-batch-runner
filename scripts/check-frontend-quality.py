@@ -97,6 +97,20 @@ def _max_nesting(rel: str) -> int:
     return 8 if rel.endswith(".dart") else MAX_NESTING
 
 
+def _error_patterns(rel: str) -> list:
+    """Always-fail patterns; Dart skips via `test(..., skip:)` params, not
+    jest-style .skip(/.only( — List.skip(n)/EdgeInsets.only() are legit."""
+    patterns = [(_CONSOLE_RE, "console.log/debug"),
+                (_DEBUGGER_RE, "debugger statement"),
+                (_DISABLE_RE, "eslint-disable/@ts-ignore"),
+                (_HTML_RE, "unsafe innerHTML/v-html"),
+                (_SWALLOWED_RE, "swallowed exception (empty catch)"),
+                (_ANY_RE, "TS any usage")]
+    if not rel.endswith(".dart"):
+        patterns.append((_SKIP_RE, "test .skip/.only"))
+    return patterns
+
+
 def _effect_leak_warnings(text: str, rel: str) -> list:
     """useEffect resources without matching cleanup (listener/timer leak)."""
     if not re.search(r"\buseEffect\s*\(", text):
@@ -122,13 +136,30 @@ def _test_warnings(text: str, rel: str) -> list:
     return []
 
 
+def _block_body(text: str, brace_start: int) -> str:
+    """The balanced {...} region starting at brace_start (empty on error)."""
+    depth = 0
+    for i in range(brace_start, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[brace_start:i + 1]
+    return ""
+
+
 def _loop_await_warning(text: str) -> str:
-    """N+1 signal: await inside a loop without Promise.all (frontend)."""
-    for match in re.finditer(r"\bfor\s*\(", text):
-        window = text[match.end():match.end() + 300]
-        if re.search(r"\bawait\s+\w+", window) and not re.search(r"Promise\.all", window):
-            return f"await inside loop near char {match.start()} " \
-                   f"(N+1 request risk — batch/Promise.all)"
+    """N+1 signal: await inside the actual balanced loop body — map
+    comprehensions, dispose loops and same-function later awaits are not."""
+    for match in re.finditer(r"\bfor\s*\([^)]*\)\s*\{", text):
+        body = _block_body(text, text.index("{", match.start()))
+        if not body:
+            continue
+        if re.search(r"\bawait\s+\w+", body) and \
+                not re.search(r"(Future\.wait|Promise\.all)", body):
+            return f"await inside loop body near char {match.start()} " \
+                   f"(N+1 request risk — batch/Future.wait)"
     return ""
 
 
@@ -141,13 +172,7 @@ def check_text(text: str, path: Path, strict: bool) -> list:
     def add(severity, message):
         findings.append((severity, f"{path}: {message}"))
 
-    for pattern, label in ((_CONSOLE_RE, "console.log/debug"),
-                           (_DEBUGGER_RE, "debugger statement"),
-                           (_SKIP_RE, "test .skip/.only"),
-                           (_DISABLE_RE, "eslint-disable/@ts-ignore"),
-                           (_HTML_RE, "unsafe innerHTML/v-html"),
-                           (_SWALLOWED_RE, "swallowed exception (empty catch)"),
-                           (_ANY_RE, "TS any usage")):
+    for pattern, label in _error_patterns(rel):
         for match in pattern.finditer(text):
             add("error", f"{label}: {match.group(0).strip()[:60]}")
 

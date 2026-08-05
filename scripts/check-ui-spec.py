@@ -42,6 +42,7 @@ from pathlib import Path
 SPACING_TOKENS = {0, 4, 8, 12, 16, 20, 24, 32, 40, 48, 64}
 
 _SPACING_PATTERNS = [
+    # spacing sizes; big values (>128, matched below) are component dims
     re.compile(r"SizedBox\((?:width|height):\s*(\d+)"),
     re.compile(r"EdgeInsets\.(?:all|only|symmetric|fromLTRB)\(([^)]*)\)"),
     re.compile(r"\b(?:margin|padding|gap|rowGap|columnGap):\s*(\d+)"),
@@ -53,6 +54,9 @@ _COLOR_PATTERNS = [
     re.compile(r"Color\(0x[0-9a-fA-F]{6,8}\)"),
     re.compile(r"\b(?:rgb|rgba|hsl|hsla)\(\s*\d+"),
 ]
+# Token-definition files are the single source of color constants — the
+# literals they define are the tokens, not violations.
+_TOKEN_FILE_MARKERS = ("app_colors", "/theme/", "/tokens", "design_tokens")
 _STYLE_PATTERNS = [
     re.compile(r"style=\{\{"),
     re.compile(r"style=\"[^\"]*(?:margin|padding|font|color|width|height):"),
@@ -77,7 +81,7 @@ def _find_matches(text: str, patterns: list, label: str, check_number=None) -> l
                 if not numbers:
                     continue
                 number = int(numbers[0])
-                if number in check_number:
+                if number in check_number or number > 128:
                     continue
                 found.append(f"{label}: {match.group(0).strip()} "
                              f"(value {number} not in spacing tokens "
@@ -92,7 +96,10 @@ def check_spacing(text: str) -> list:
 
 
 def check_color(text: str) -> list:
-    return _find_matches(text, _COLOR_PATTERNS, "color")
+    """Color literals INSIDE quoted strings (i18n hints, docs) are not
+    hardcoded colors — strip string literals before matching."""
+    cleaned = re.sub(r"'[^']*'|\"[^\"]*\"", "", text)
+    return _find_matches(cleaned, _COLOR_PATTERNS, "color")
 
 
 def check_style(text: str) -> list:
@@ -116,13 +123,19 @@ def scan_directory(directory: Path, exts: tuple, excludes: set) -> list:
 
 
 def check_file(path: Path, checkers: list) -> list:
-    """Violation strings for one file across the active checkers."""
+    """Violation strings for one file across the active checkers; token
+    definition files (app_colors/theme/tokens) are exempt from the color
+    check — they are the single source of the tokens."""
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         return [f"{path}: unreadable ({exc})"]
+    rel = str(path)
+    is_token_file = any(marker in rel for marker in _TOKEN_FILE_MARKERS)
     violations = []
     for label, check in checkers:
+        if is_token_file and label == "color":
+            continue
         for item in check(text):
             violations.append(f"{path}: {item}")
     return violations
@@ -219,6 +232,14 @@ def main(argv: list) -> int:
             Path(report_path).write_text(payload + "\n", encoding="utf-8")
         if want_json:
             print(payload)
+            # stdout carries ONLY the JSON report; summary goes to stderr
+            if violations:
+                print(f"UI-SPEC [{mode}]: {len(violations)} violation(s) in "
+                      f"{len(paths)} file(s); rejected", file=sys.stderr)
+            else:
+                print(f"UI-SPEC [{mode}]: OK ({len(paths)} file(s) scanned)",
+                      file=sys.stderr)
+            return 0 if not violations else 1
     # Violations go to stderr: the runner feeds validator stderr into the
     # retry prompt, so the agent sees exactly what must be fixed.
     for item in violations:
