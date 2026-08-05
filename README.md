@@ -289,6 +289,21 @@ tasks:
   (automated gates), and the senior-architect 15 questions.
   `architecture_constitution_reviewer` role audits the design against it
   (production tier rule only).
+- **Product thinking** (`pbatch/product.py` + `product-specs/`): the agent
+  must think as a product owner, not a code generator — but depth is decided
+  by the productization level (L0 local_feature → L3 product_feature),
+  never by keyword greed. `pi-batch assess` reports the level with
+  evidence; L0 gets an explicit "no product structure" restraint, L2/L3
+  trigger implicit-requirement scenario chains (login/upload/approval/
+  chat/ERP/search) that produce QUESTIONS to confirm (never features to
+  implement silently), low-cost reservations (tenant_id in queries/indexes/
+  events, audit fields, API versioning — mandatory) vs high-cost
+  implementations (Billing/Subscription/marketplace — only with an explicit
+  commercialization signal), open-source readiness (README/LICENSE/
+  CHANGELOG/CONTRIBUTING/CI/SemVer — only with open-source intent), and
+  the completion-evidence report (commands executed vs not_executed,
+  no fabricated verification results). `product_thinker` role audits the
+  level, the chains and the restraint lines.
 - **Requirement assessment** (`pi-batch assess`): rules are prescribed by an
   expert evaluation of the REQUIREMENT, not by keyword hits. Eight
   completeness dimensions are checked (goal/user role/main flow/data source/

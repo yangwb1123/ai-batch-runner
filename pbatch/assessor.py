@@ -38,6 +38,7 @@ from .relevance import _keyword_hit
 from .rule_matcher import (TIER_ORDER, domain_for, format_manifest,
                            load_registry, match_rules, reconcile)
 from .text_io import read_text_bounded
+from .product import format_product, product_manifest
 
 # Requirement completeness dimensions (bilingual presence keywords).
 DIMENSIONS = [
@@ -138,6 +139,7 @@ def prescription(text: str, registry: Optional[dict] = None) -> dict:
             "task_type": cls.task_type,
             "profile": matched["profile"], "platform": cls.platform,
         },
+        "product": product_manifest(text),
         "scale": scale, "effective_tier": effective,
         "matched_tier": matched["tier"], "risk": matched["risk"],
         "page_types": matched["page_types"],
@@ -164,6 +166,7 @@ def format_assessment(assessment: dict) -> str:
     comp = assessment["completeness"]
     missing = ", ".join(comp["missing"]) if comp["missing"] else "无"
     lines.append(f"完整性: {comp['score']}/{comp['total']} — 缺失: {missing}")
+    lines.append(format_product(assessment["product"]))
     selected = assessment["prescription"]
     lines.append(f"处方（最小必要规则集，共 {len(selected)} 条）:")
     for item in selected:
