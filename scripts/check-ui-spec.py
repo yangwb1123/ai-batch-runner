@@ -67,6 +67,7 @@ DEFAULT_EXCLUDES = {
     "node_modules", "dist", "build", "out", ".git", ".dart_tool",
     ".next", ".nuxt", "coverage", ".pi-batch", ".venv", "venv",
     "logs", "docs", "__pycache__", "test", "tests", "spec", "e2e",
+    "ephemeral", "ai-dev-gates",
 }
 
 
