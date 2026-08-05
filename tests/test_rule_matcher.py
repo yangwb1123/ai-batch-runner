@@ -76,7 +76,7 @@ def test_rules_subcommand_json(capsys):
 
 
 def test_rules_subcommand_human(capsys):
-    sys.argv = ["pi-batch.py", "rules", "企业支付页，生产"]
+    sys.argv = ["pi-batch.py", "rules", "企业支付页面，生产"]
     rules_main(sys.argv[2:])
     out = capsys.readouterr().out
     assert "Applicable UI rules" in out

@@ -92,7 +92,7 @@ def scale_signal(text: str, registry: Optional[dict] = None) -> str:
     """Requirement complexity → S / M / L. Signal keywords and weights come
     from the domain registry (frontend: forms/tables/flows; backend:
     use cases/entities/integrations/distribution)."""
-    reg = registry or load_registry()
+    reg = registry or load_registry(domain=domain_for(text))
     signals = reg.get("signals", {})
     weights = reg.get("signal_weights", {})
     lowered = (text or "").lower()

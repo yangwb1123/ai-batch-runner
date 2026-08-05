@@ -51,6 +51,10 @@ _DEFAULT_KEYWORDS: dict = {
             "domain", "entity", "workflow", "transaction",
         ],
         "data": ["sql", "etl", "数据管道", "报表", "指标", "数据仓库"],
+        "code_engineering": [
+            "重构", "维护", "修复", "优化", "清理", "重构代码", "技术债",
+            "refactor", "maintain", "fix", "optimize", "cleanup", "refactoring",
+        ],
         "docs": ["documentation", "spec", "readme", "文档", "需求", "规范", "说明", "手册"],
         "devops": ["ci/cd", "deploy", "docker", "kubernetes", "部署", "运维", "发布", "流水线"],
         "analysis": ["review", "audit", "分析", "审查", "评审", "评估", "调研"],

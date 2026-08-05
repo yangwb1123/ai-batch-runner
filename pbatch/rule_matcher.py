@@ -36,11 +36,14 @@ TIER_ORDER = {"demo": 0, "standard": 1, "production": 2}
 DEFAULT_TIER = "standard"
 
 # Domain -> registry location (selected by the classified task type).
+# "generic" (code maintenance/analysis/docs) loads NO domain specs — a
+# refactor task must not be prescribed frontend spacing rules.
 DOMAIN_REGISTRIES = {
     "backend": ["backend-specs/rules.yaml"],
     "frontend_ui": ["ui-specs/rules.yaml"],
+    "generic": [],
 }
-DEFAULT_DOMAIN = "frontend_ui"
+DEFAULT_DOMAIN = "generic"
 
 _DEFAULT_REGISTRY = {
     "scale": {
@@ -72,10 +75,13 @@ _DEFAULT_REGISTRY = {
 
 
 def domain_for(text: str, classification: Optional[TaskClassification] = None) -> str:
-    """Which spec domain a task belongs to (backend vs frontend)."""
+    """Which spec domain a task belongs to (backend / frontend_ui /
+    generic — code-maintenance and analysis tasks get NO domain specs)."""
     cls = classification or classify_text(text)
     if cls.task_type == "backend":
         return "backend"
+    if cls.task_type == "frontend_ui":
+        return "frontend_ui"
     return DEFAULT_DOMAIN
 
 
@@ -90,7 +96,7 @@ def load_registry(path: str = "", domain: str = "") -> dict:
     sections extend the built-in defaults; a missing backend registry
     degrades to an empty rule set (fail closed, never the frontend rules)."""
     merged = {section: dict(value) for section, value in _DEFAULT_REGISTRY.items()}
-    if domain == "backend":
+    if domain in ("backend", "generic"):
         merged = {"scale": {}, "signals": {}, "signal_weights": {},
                   "page_types": {}, "use_case_types": {},
                   "risk": {}, "rules": {}}
@@ -191,7 +197,8 @@ def match_rules(text: str, classification: Optional[TaskClassification] = None,
         })
     rules.sort(key=lambda item: (0 if item["required"] else 1, item["tier"]))
     return {"tier": tier, "page_types": page_types, "risk": "high" if high_risk else "low",
-            "profile": profile, "rules": rules, "skipped": skipped}
+            "profile": profile, "rules": rules, "skipped": skipped,
+            "domain": domain_for(text, cls)}
 
 
 def _resolve_files(rule: dict, profile: str) -> list:
@@ -268,7 +275,8 @@ def reconcile(algorithm: dict, llm_apply: list, llm_skip: list,
     """Two-sided check: agreed rules stay, the algorithm vetoes skips of
     REQUIRED/risk-mandated rules (fail closed), and valid LLM additions are
     admitted with provenance. Returns the final manifest."""
-    reg = registry or load_registry()
+    reg = registry or load_registry(
+        domain=algorithm.get("domain", "frontend_ui"))
     valid = set(reg.get("rules", {}))
     apply_ids = {str(i) for i in llm_apply} & valid
     skip_ids = {str(i) for i in llm_skip} & valid

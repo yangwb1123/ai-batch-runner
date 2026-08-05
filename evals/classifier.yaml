@@ -46,3 +46,11 @@ cases:
     input: "随便写点什么"
     assert:
       task_type: unknown
+  - id: refactor-task-is-code-engineering
+    input: "重构 pbatch/rule_matcher.py，降低复杂度"
+    assert:
+      task_type: code_engineering
+  - id: refactor-gets-no-domain-specs
+    input: "重构 pbatch/rule_matcher.py，降低复杂度"
+    assert:
+      lacks_rule: [visual-core, async-data, architecture]

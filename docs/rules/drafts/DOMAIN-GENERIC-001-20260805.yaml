@@ -1,0 +1,26 @@
+id: DOMAIN-GENERIC-001
+title: 重构/维护类任务被误配前端视觉规范：unknown 域默认加载 frontend 注册表
+category: backend
+severity: warning
+scope:
+  languages: []
+  paths:
+  - src/**
+trigger:
+  operations: []
+rationale: 'Observed failure: 重构/维护类任务被误配前端视觉规范：unknown 域默认加载 frontend 注册表. Root-cause
+  analysis is required before this draft can be promoted (edit requirements/forbidden/verification
+  with the actual RCA).'
+requirements: []
+forbidden: []
+exceptions:
+- condition: ''
+verification:
+  static: []
+  tests: []
+examples:
+  good: []
+  bad: []
+owner: ai-batch-runner
+version: 0.1.0
+status: draft

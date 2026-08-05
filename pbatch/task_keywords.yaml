@@ -81,6 +81,19 @@ task_types:
     - 报表
     - 指标
     - 数据仓库
+  # Code maintenance / refactoring (no domain-specific specs apply).
+  code_engineering:
+    - 重构
+    - 维护
+    - 修复
+    - 优化
+    - 清理
+    - 技术债
+    - refactor
+    - maintain
+    - fix
+    - optimize
+    - cleanup
   # Documentation / specs.
   docs:
     - documentation
