@@ -122,3 +122,21 @@ def test_effect_leak_warning(tmp_path):
         '  return () => window.removeEventListener("resize", l);\n}, []);\n',
         encoding="utf-8")
     assert _run("--strict", str(clean)).returncode == 0
+
+
+def test_swallowed_exception_is_error(tmp_path):
+    bad = tmp_path / "swallow.tsx"
+    bad.write_text("try { save(); } catch (e) {}\n", encoding="utf-8")
+    result = _run(str(bad))
+    assert result.returncode == 1
+    assert "swallowed exception" in result.stderr
+
+
+def test_loop_await_n_plus_one_warning(tmp_path):
+    bad = tmp_path / "loop.tsx"
+    bad.write_text("for (const id of ids) {\n  await api.fetch(id);\n}\n",
+                   encoding="utf-8")
+    assert _run(str(bad)).returncode == 0  # warning only
+    strict = _run("--strict", str(bad))
+    assert strict.returncode == 1
+    assert "N+1 request risk" in strict.stderr

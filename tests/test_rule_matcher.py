@@ -181,3 +181,17 @@ def test_invalid_llm_json_fails_closed():
     except SystemExit as exc:
         raised = exc.code == 2
     assert raised
+
+
+def test_interaction_patterns_rule_triggered_on_form_table():
+    matched = match_rules("企业订单管理：新建订单表单，含支付审批流程")
+    ids = [item["id"] for item in matched["rules"]]
+    assert "interaction-patterns" in ids
+
+
+def test_interaction_patterns_rule_skipped_for_demo_auth():
+    matched = match_rules("做一个登录页 demo")
+    ids = [item["id"] for item in matched["rules"]]
+    assert "interaction-patterns" not in ids
+    skipped = {item["id"] for item in matched["skipped"]}
+    assert "interaction-patterns" in skipped

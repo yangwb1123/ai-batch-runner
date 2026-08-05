@@ -72,6 +72,11 @@ rules:
     files: [ui-specs/engineering/form-table-state.md]
     min_tier: standard
     page_types: [form, table]
+  interaction-patterns:
+    description: 操作分级/反馈闭环/弹窗vs抽屉/批量报告/删除确认/异步任务
+    files: [ui-specs/engineering/interaction-patterns.md]
+    min_tier: standard
+    page_types: [form, table, detail, workbench]
   error-recovery:
     description: 错误分类→用户动作、409 冲突、超时 uncertain、降级
     files: [ui-specs/engineering/error-recovery.md]

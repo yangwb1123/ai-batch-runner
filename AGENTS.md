@@ -36,8 +36,8 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `scripts/check-backend-quality.py` | 后端工程门禁（纯 stdlib）：过度设计信号（单实现接口/Base 类/模糊命名）、上帝服务、状态直接赋值、domain→infra 反向依赖（`backendquality` 验证器） |
 | `ui-specs/` | AI UI 生成规范资产：8pt 间距 token、组件/布局/反例规范、业务风格 profile（ERP/CMS/OA…） |
 | `scripts/check-ui-spec.py` | 确定性 UI 门禁（纯标准库）：魔法间距/硬编码颜色/inline style 机械拦截（`uispacing`/`uicolor`/`uistyle` 产物验证器）；`--dir` 项目级扫描（`uicheck` 门禁，gofmt -l 风格，JSON 报告） |
-| `scripts/check-frontend-quality.py` | 前端工程门禁（纯标准库启发式）：console.log/any/不安全 html/测试 skip 恒失败，`--strict` 下上帝文件/复杂度预算失败（`uiquality` 验证器）；需推理的交给工程审查角色 |
-| `ui-specs/engineering/` | 前端工程规范资产：异步/防抖竞态/幂等决策表、表单表格状态、错误恢复与权限、架构预算、缺陷模式库（12 种事故档案） |
+| `scripts/check-frontend-quality.py` | 前端工程门禁（纯标准库启发式）：console.log/any/不安全 html/空 catch 吞异常/测试 skip 恒失败，`--strict` 下上帝文件/复杂度/useEffect 泄漏/循环 await（N+1）失败（`uiquality` 验证器）；需推理的交给工程审查角色 |
+| `ui-specs/engineering/` | 前端工程规范资产：异步/防抖竞态/幂等决策表、表单表格状态、交互模式库（操作分级/反馈闭环/批量报告）、错误恢复与权限、架构预算、缺陷模式库（12 种事故档案） |
 | `pbatch/memory*.py` / `index_io.py` | 渐进式 message memory：稳定会话、有界索引、按需 recent/find/read |
 | `pbatch/campaign*.py` | 项目级模块发现、方向选择、状态/指纹、流水线与 worktree 隔离 |
 | `pbatch/cli.py` | 命令行：参数解析、main、轮循环、单批/流水线分发 |

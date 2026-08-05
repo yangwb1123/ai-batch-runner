@@ -55,6 +55,7 @@ _DEBUGGER_RE = re.compile(r"\bdebugger\s*;?")
 _SKIP_RE = re.compile(r"\.(skip|only)\s*\(")
 _DISABLE_RE = re.compile(r"(eslint-disable|@ts-ignore|@ts-nocheck|ignore_for_file)")
 _HTML_RE = re.compile(r"(dangerouslySetInnerHTML|v-html|innerHTML\s*=|html:)\s*[^)]")
+_SWALLOWED_RE = re.compile(r"catch\s*\([^)]*\)\s*\{\s*\}")
 _HOOK_RE = re.compile(r"\buse(State|Effect|Ref|Memo|Callback|Reducer|Context|Query|Mutation)\s*\(")
 _HANDLER_RE = re.compile(r"(onClick|onChange|onPress|onSubmit|@click|@change|onPressed|onTap)\s*[=:]")
 _API_RE = re.compile(r"\b(api|axios|http|dio|client|service|repository)\.[a-zA-Z]+\(|\bfetch\s*\(|\b(\.get|\.post|\.put|\.delete)\s*\(")
@@ -102,6 +103,16 @@ def _effect_leak_warnings(text: str, rel: str) -> list:
     return []
 
 
+def _loop_await_warning(text: str) -> str:
+    """N+1 signal: await inside a loop without Promise.all (frontend)."""
+    for match in re.finditer(r"\bfor\s*\(", text):
+        window = text[match.end():match.end() + 300]
+        if re.search(r"\bawait\s+\w+", window) and not re.search(r"Promise\.all", window):
+            return f"await inside loop near char {match.start()} " \
+                   f"(N+1 request risk — batch/Promise.all)"
+    return ""
+
+
 def check_text(text: str, path: Path, strict: bool) -> list:
     """Violation strings for one file; (severity, message) tuples."""
     lines = text.splitlines()
@@ -116,6 +127,7 @@ def check_text(text: str, path: Path, strict: bool) -> list:
                            (_SKIP_RE, "test .skip/.only"),
                            (_DISABLE_RE, "eslint-disable/@ts-ignore"),
                            (_HTML_RE, "unsafe innerHTML/v-html"),
+                           (_SWALLOWED_RE, "swallowed exception (empty catch)"),
                            (_ANY_RE, "TS any usage")):
         for match in pattern.finditer(text):
             add("error", f"{label}: {match.group(0).strip()[:60]}")
@@ -140,6 +152,9 @@ def check_text(text: str, path: Path, strict: bool) -> list:
     todos = len(_TODO_RE.findall(text))
     if todos > MAX_TODOS:
         add("warning", f"{todos} TODO/FIXME markers > {MAX_TODOS}")
+    loop_await = _loop_await_warning(text)
+    if loop_await:
+        add("warning", loop_await)
 
     if not strict:
         findings = [item for item in findings if item[0] == "error"]
