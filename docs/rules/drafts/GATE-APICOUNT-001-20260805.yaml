@@ -1,0 +1,28 @@
+id: GATE-APICOUNT-001
+title: advance 扫描的 api-calls 计数启发式局限：6 个不同用途端点调用（inbox/preferences/read 各自语义）是合理 API
+  客户
+category: backend
+severity: advice
+scope:
+  languages: []
+  paths:
+  - src/**
+trigger:
+  operations: []
+rationale: 'Observed failure: advance 扫描的 api-calls 计数启发式局限：6 个不同用途端点调用（inbox/preferences/read
+  各自语义）是合理 API 客户端模式，非坏味道；阈值信号需人工甄别后才进入重构. Root-cause analysis is required before
+  this draft can be promoted (edit requirements/forbidden/verification with the actual
+  RCA).'
+requirements: []
+forbidden: []
+exceptions:
+- condition: ''
+verification:
+  static: []
+  tests: []
+examples:
+  good: []
+  bad: []
+owner: ai-batch-runner
+version: 0.1.0
+status: draft
