@@ -45,7 +45,7 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `ai/run-review.py` | 十阶段评审 runner（`--all`/`--resume`/共享会话/验证门禁） |
 | `ai/prompts/00-09` | 评审阶段模板（产品发现→CTO 决策） |
 | `ai/prompts-shared/` | 评审共享片段（工程原则、输出格式、检查清单、角色定义） |
-| `prompts/` | 19 个专家角色模板（architect、security_engineer、qa_lead…）+ 前端工程角色（frontend_engineer、async_reviewer、code_architecture_reviewer） |
+| `prompts/` | 31 个角色模板（architect、security_engineer、qa_lead、backend_engineer、product_thinker…）+ 30 个关键词注册，meta 编排动态挑选 |
 | `pipelines/` | SDLC 角色图与代码实现流水线（设计图） |
 | `examples/` | 可用案例：提案、SDLC、meta 分析、完整闭环与 repository campaign |
 | `tests/` | 387 个回归测试（`make ci`，含 25 个 eval 规则回归用例） |

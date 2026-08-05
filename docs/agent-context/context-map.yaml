@@ -1,38 +1,48 @@
-# Context map template (Context Engineering): which project documents a
-# task needs, matched by file path patterns and task keywords.
+# Context map — 本仓库自身的路由表（dogfooding：项目用自己的功能维护自己）。
 #
-# Copy to a project and fill in the real documents. `pi-batch context`
-# emits only the matched, existing files — project knowledge is loaded on
-# demand, never dumped wholesale into the prompt.
-#
-# Routes are OR-ed within a route (path OR keyword), AND-ed across load.
+# `pi-batch context "<任务>" [--paths <触碰文件>]` 按路径 glob + 任务关键词
+# 加载本仓库的真实文档。给其他项目使用时，复制本文件并替换 load 列表。
 routes:
+  # 引擎/协调器代码
   - when:
-      paths: ["src/order/**", "modules/order/**", "domains/order/**"]
-      task_contains: ["订单", "order"]
+      paths: ["pbatch/**", "pi-batch.py", "pi-batch.yaml"]
+      task_contains: ["pbatch", "runner", "pipeline", "classify", "评估", "规则"]
     load:
-      - docs/adr/order-state-machine.md
-      - docs/contracts/order-api.yaml
+      - AGENTS.md
+      - docs/SPEC_SYSTEM.md
+      - README.md
 
+  # 后端规范域
   - when:
-      paths: ["src/auth/**", "modules/auth/**"]
-      task_contains: ["登录", "认证", "权限", "auth", "login"]
+      paths: ["backend-specs/**"]
+      task_contains: ["后端", "backend", "架构", "设计模式", "持久化"]
     load:
-      - docs/security/authentication.md
-      - docs/security/authorization.md
+      - backend-specs/rules.yaml
+      - backend-specs/persistence-modeling.md
+      - docs/SPEC_SYSTEM.md
 
+  # 前端规范域
   - when:
-      task_contains: ["支付", "payment", "退款", "refund"]
+      paths: ["ui-specs/**", "prompts/ui_*.md", "prompts/frontend_engineer.md",
+              "prompts/async_reviewer.md", "prompts/code_architecture_reviewer.md"]
+      task_contains: ["前端", "ui", "页面", "间距", "组件"]
     load:
-      - docs/contracts/payment-api.yaml
-      - docs/adr/money-and-precision.md
+      - ui-specs/rules.yaml
+      - ui-specs/spacing.md
+      - docs/SPEC_SYSTEM.md
 
+  # 规则注册表 / 经验沉淀
   - when:
-      task_contains: ["迁移", "migration", "schema"]
+      paths: ["evals/**", "docs/rules/**"]
+      task_contains: ["规则", "注册表", "registry", "eval", "learn", "草案"]
     load:
-      - docs/database/migration-conventions.md
+      - docs/SPEC_SYSTEM.md
+      - ui-specs/rules.yaml
+      - backend-specs/rules.yaml
 
+  # 需求评估/产品思维
   - when:
-      task_contains: ["上传", "upload", "文件", "file"]
+      task_contains: ["评估", "产品", "商业化", "开源", "assess", "product"]
     load:
-      - docs/contracts/file-api.yaml
+      - product-specs/product-thinking.md
+      - docs/SPEC_SYSTEM.md
