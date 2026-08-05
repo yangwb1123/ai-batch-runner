@@ -38,7 +38,7 @@ from .relevance import _keyword_hit
 from .rule_matcher import (TIER_ORDER, domain_for, format_manifest,
                            load_registry, match_rules, reconcile)
 from .text_io import read_text_bounded
-from .product import format_product, product_manifest
+from .product import format_product, product_manifest, productization_level
 
 # Requirement completeness dimensions (bilingual presence keywords).
 DIMENSIONS = [
@@ -107,6 +107,43 @@ def scale_signal(text: str, registry: Optional[dict] = None) -> str:
     return "S"
 
 
+_WORKFLOW_SCALE = {"S": 0, "M": 1, "L": 2}
+_WORKFLOW_PRODUCT = {"L0_local_feature": 0, "L1_reusable_module": 1,
+                    "L2_platform_capability": 2, "L3_product_feature": 3}
+
+
+WORKFLOW_SUGGESTIONS = {
+    "L0_direct": "单任务直接修改 + 快速验证门禁（文案/简单修复）",
+    "L1_standard": "标准生成流水线 + 门禁 + 审查（普通功能）",
+    "L2_high_risk": "full-sdlc-implement：对抗审查 + 裁决门 + 验收门（权限/支付/迁移/并发）",
+    "L3_platform": "完整多阶段流水线 + 产品推演（product_thinker 审查）",
+}
+
+
+def workflow_level(text: str, registry: Optional[dict] = None,
+                   product_level: Optional[str] = None) -> dict:
+    """Risk-graded workflow selection: score = risk×2 + scale + product.
+    Low-risk small tasks stay on a direct path; high-risk/platform work
+    escalates to adversarial review + gates + product thinking."""
+    reg = registry or load_registry(domain=domain_for(text))
+    matched = match_rules(text, registry=reg)
+    risk = 1 if matched["risk"] == "high" else 0
+    scale = _WORKFLOW_SCALE.get(scale_signal(text, reg), 0)
+    prod = _WORKFLOW_PRODUCT.get(product_level or productization_level(text)[0], 0)
+    total = risk * 2 + scale + prod
+    if total <= 1:
+        level = "L0_direct"
+    elif total <= 3:
+        level = "L1_standard"
+    elif total <= 5:
+        level = "L2_high_risk"
+    else:
+        level = "L3_platform"
+    return {"level": level, "score": total,
+            "risk": matched["risk"], "scale": matched["tier"],
+            "suggestion": WORKFLOW_SUGGESTIONS[level]}
+
+
 def prescription(text: str, registry: Optional[dict] = None) -> dict:
     """The minimal necessary rule set for THIS requirement.
 
@@ -140,6 +177,7 @@ def prescription(text: str, registry: Optional[dict] = None) -> dict:
             "profile": matched["profile"], "platform": cls.platform,
         },
         "product": product_manifest(text),
+        "workflow": workflow_level(text, reg, None),
         "scale": scale, "effective_tier": effective,
         "matched_tier": matched["tier"], "risk": matched["risk"],
         "page_types": matched["page_types"],
@@ -166,6 +204,9 @@ def format_assessment(assessment: dict) -> str:
     comp = assessment["completeness"]
     missing = ", ".join(comp["missing"]) if comp["missing"] else "无"
     lines.append(f"完整性: {comp['score']}/{comp['total']} — 缺失: {missing}")
+    workflow = assessment["workflow"]
+    lines.append(f"工作流: {workflow['level']}（分 {workflow['score']}）— "
+                 f"{workflow['suggestion']}")
     lines.append(format_product(assessment["product"]))
     selected = assessment["prescription"]
     lines.append(f"处方（最小必要规则集，共 {len(selected)} 条）:")

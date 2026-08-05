@@ -40,8 +40,8 @@ page_types:
   auth: [登录, login, 注册, register]
 
 risk:
-  high: [支付, 审批, 删除, 提交, 作废, 转账, 订单, 采购, 退款,
-         payment, approve, delete, submit, transfer, refund]
+  high: [支付, 审批, 删除, 提交, 作废, 转账, 订单, 采购, 退款, 登录, 认证,
+         payment, approve, delete, submit, transfer, refund, login, auth]
 
 rules:
   visual-core:

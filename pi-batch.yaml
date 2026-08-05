@@ -116,6 +116,9 @@ validators:
   # god-service signals, scattered status assignment, domain->infra imports
   # are mechanically enforced; pattern necessity goes to the review roles.
   backendquality: "python {cwd}/scripts/check-backend-quality.py --dir {cwd}/src --strict --json -o {cwd}/docs/ui/refactor/backend-quality.json"
+  # Definition-of-Done gate: the artifact must carry an honest completion
+  # report (commands executed vs not_executed, no fabricated passes).
+  completion: "python {cwd}/scripts/check-completion-report.py {output}"
 
 # Task type classifier: runs BEFORE execution (--classify / `classify`
 # subcommand). Frontend UI tasks route to the UI generation pipeline, which

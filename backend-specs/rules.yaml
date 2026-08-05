@@ -42,8 +42,8 @@ use_case_types:
   range: [区间, 范围查询, 时间段, range, interval]
 
 risk:
-  high: [支付, 资金, 订单, 审批, 幂等, 对账, 退款, 转账, 库存,
-         payment, money, idempotency, refund, approve]
+  high: [支付, 资金, 订单, 审批, 幂等, 对账, 退款, 转账, 库存, 登录, 认证,
+         payment, money, idempotency, refund, approve, login, auth]
 
 rules:
   architecture:
