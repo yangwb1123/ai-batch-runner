@@ -38,7 +38,7 @@ stages:
       fork rotation, hetero routing, JSON validator protocol, gate reason
       fail-closed, evidence fences, output caps, secretscan, approval stages.
 
-      Current state: make ci green, 169 tests, quality --strict OK.
+      Current state: make ci green, 222 tests, quality --strict OK.
 
       This is round 3: verify the governance layer is real (with evidence, not
       just reading), find NEW issues the previous reviews missed, and prioritize

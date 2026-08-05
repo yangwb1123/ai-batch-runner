@@ -1,12 +1,12 @@
 # Declarative stage + variable-schema definitions for the AI-SDLC review
-# framework (ai-dev/ai/run-review.py). Optional -- run-review.py falls back
+# framework (ai/run-review.py). Optional -- run-review.py falls back
 # to its built-in 10-stage default if this file is absent. Edit this file to
 # add/remove/rename review stages for a different project; no Python
 # changes needed. Each stage's `vars` keys must match the {{VARIABLE}}
 # placeholders used in its prompts/<template> file.
 #
-# The agent CLI binary itself (default: pi) is read from ai-dev/pi-batch.yaml,
-# shared with ai-dev/pi-batch.py -- see that file's header comment.
+# The agent CLI binary itself (default: pi) is read from pi-batch.yaml,
+# shared with pi-batch.py -- see that file's header comment.
 
 stages:
   "00":

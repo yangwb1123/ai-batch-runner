@@ -10,7 +10,7 @@ from .config import (AGENT_BIN, AGENT_DEFAULT_MODEL, AGENT_DEFAULT_TIMEOUT,
 from .models import Pipeline, Stage, Task, TaskResult
 from .runner import (ValidationResult, agent_failure_reason, print_summary,
                      revalidate_existing, run_parallel, run_serial, run_task,
-                     run_validation, save_result)
+                     run_validation, run_argv, save_result)
 from .reuse import fingerprint as _fp_export
 from .reuse import reuse_decision
 from .reuse import sidecar_path as _scp_export
@@ -31,6 +31,7 @@ __all__ = [
     "Pipeline", "Stage", "Task", "TaskResult",
     "agent_failure_reason", "print_summary", "run_parallel", "run_serial",
     "run_task", "save_result", "run_validation", "revalidate_existing",
+    "run_argv",
     "ValidationResult", "reuse_decision", "fingerprint", "sidecar_path", "write_sidecar",
     "execute_stage", "load_pipeline", "load_tasks",
     "load_tasks_from_dir", "run_pipeline", "build_parser", "main",

@@ -69,7 +69,7 @@ stages:
           design, review deliverables). Cross-check the review findings
           against the design: are they resolved or dismissed with
           reasons? Output on the last line:
-          VERDICT: PASS
+          VERDICT: PASS - <why the design is ready>
           or
           VERDICT: FAIL - <blocking issues>
           FAIL blocks the implementation stage.
@@ -106,7 +106,7 @@ stages:
           implementation change report). Verify each improvement's
           acceptance check is actually covered by the changes and
           tests. Output on the last line:
-          VERDICT: PASS
+          VERDICT: PASS - <why every acceptance check is covered>
           or
           VERDICT: FAIL - <missing coverage>
         output: docs/proposals/acceptance.md

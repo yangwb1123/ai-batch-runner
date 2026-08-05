@@ -42,6 +42,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
+from typing import Optional
 
 from .config import log
 
@@ -89,12 +90,12 @@ def _payload(cwd: str) -> dict:
     }
 
 
-def acquire_lock(cwd: str = "", no_lock: bool = False) -> Path:
+def acquire_lock(cwd: str = "", no_lock: bool = False) -> Optional[Path]:
     """Create the lock file; raises SystemExit(5) when another live
     instance holds it (or the lock file is unparseable). Returns the lock
     path (caller must release)."""
     if no_lock:
-        return Path()
+        return None
     lock_path = Path(cwd or os.getcwd()) / LOCK_NAME
     payload = _payload(cwd)
     # Atomic publication: the payload is fully written to a unique temp
@@ -153,7 +154,7 @@ def _reject_or_break(lock_path: Path) -> None:
         raise SystemExit(LOCK_EXIT_CODE)
 
 
-def verify_held(lock_path: Path) -> bool:
+def verify_held(lock_path: Optional[Path]) -> bool:
     """True while the lock file at *lock_path* is still this process's own
     (token + PID match). A lock that vanished or was replaced by another
     instance means the single-instance guarantee is gone — the round loop
@@ -168,7 +169,7 @@ def verify_held(lock_path: Path) -> bool:
     return (holder.get("token") == token and int(holder.get("pid", 0) or 0) == os.getpid())
 
 
-def release_lock(lock_path: Path) -> None:
+def release_lock(lock_path: Optional[Path]) -> None:
     """Remove the lock file only when it is still ours (best-effort, never
     raises): a foreign lock at the same path must survive — unlinking it
     would let a third instance start while the real holder still runs."""

@@ -8,13 +8,13 @@
 
 ```bash
 uv sync                      # 安装 PyYAML（pyproject.toml 已管理）
-python ai-dev/pi-batch.py --help   # 确认 runner 可用
+python pi-batch.py --help   # 确认 runner 可用
 ```
 
 ## 1. 基本运行：两个任务 + 共享会话
 
 ```bash
-python ai-dev/pi-batch.py ai-dev/examples/snaplink-proposals.yaml \
+python pi-batch.py examples/snaplink-proposals.yaml \
   --mode serial \
   --session-mode shared --session-name logout-proposals \
   --log-file logs/proposals.log
@@ -33,7 +33,7 @@ agent 返回 `rate_limit_error`、`insufficient_quota`、`connection refused`
 等错误回复时（即使退出码为 0），输出**不会落盘**，并自动重试：
 
 ```bash
-python ai-dev/pi-batch.py ai-dev/examples/snaplink-proposals.yaml \
+python pi-batch.py examples/snaplink-proposals.yaml \
   --mode serial \
   --retries 3 --retry-delay 30 --retry-backoff 2
 ```
@@ -53,7 +53,7 @@ python ai-dev/pi-batch.py ai-dev/examples/snaplink-proposals.yaml \
 重新运行加 `--reuse` 只重跑失败的任务：
 
 ```bash
-python ai-dev/pi-batch.py ai-dev/examples/snaplink-proposals.yaml \
+python pi-batch.py examples/snaplink-proposals.yaml \
   --mode serial --reuse --session-mode shared --session-name logout-proposals
 ```
 
@@ -71,7 +71,7 @@ python ai-dev/pi-batch.py ai-dev/examples/snaplink-proposals.yaml \
 验证器（`pi-batch.yaml` 的 `validators`，与 `cli.py` 门禁体系一致）：
 
 ```bash
-python ai-dev/pi-batch.py code-tasks.yaml --validate quick,gofmt
+python pi-batch.py code-tasks.yaml --validate quick,gofmt
 ```
 
 生成结果先写临时文件，`python cli.py check`（filesize+vet）与 gofmt 全部
@@ -89,7 +89,7 @@ files:
 ```
 
 ```bash
-python ai-dev/ai/run-review.py --all \
+python ai/run-review.py --all \
   --context docs/proposals/review-ctx.yaml \
   --session-mode shared --session-name logout-review
 ```
@@ -109,3 +109,19 @@ logs/proposals.log                 # 运行日志
 把 AI 产出当**提案**而非结论：按 AGENTS.md 的证据标准核对后，将验证过的
 结论提升到 `docs/feature-matrix.md` / `docs/deferred-backlog.md`，或按
 `docs/templates/feature-spec.md` 走正式特性流程。
+
+## 6. 项目级全自动 Campaign
+
+`repository-campaign.yaml` 声明模块发现、分析并发、方向评分、状态路径和
+实现流水线；`repository-campaign-pipeline.yaml` 是通用的需求→设计→相关性
+角色对抗→设计 gate→实现→验收 gate 模板：
+
+```bash
+python pi-batch.py campaign --dry-run
+python pi-batch.py campaign --max-directions 2 --reuse --retry-failed
+```
+
+分析必须返回 JSON，并为每个方向给出现有文件/符号证据和可测试验收标准。
+恢复依据是 `docs/auto/state.jsonl` 与 fingerprint，不是 Markdown 文件是否非空。
+需要并行实现时使用 `--parallel-pipelines N`；runner 会先要求主工作区干净，
+再为每个方向建立独立 Git worktree 和分支。

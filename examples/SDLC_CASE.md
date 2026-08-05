@@ -21,7 +21,7 @@
 
 ```bash
 # 从仓库根运行
-python ai-dev/pi-batch.py ai-dev/examples/sdlc-mini-pipeline.yaml \
+python pi-batch.py examples/sdlc-mini-pipeline.yaml \
   --log-file logs/sdlc.log
 ```
 
@@ -34,7 +34,7 @@ docs/proposals/
 ├── combined.security.md      # 安全威胁模型
 ├── combined.protocol.md      # 协议合规检查
 ├── combined.qa.md            # 测试策略与验收清单
-ai-dev/examples/sdlc-inputs/oidc-logout-frontchannel.out.md   # 需求理解
+examples/sdlc-inputs/oidc-logout-frontchannel.out.md   # 需求理解
 ```
 
 ## 会话语义（角色如何协作）
@@ -49,14 +49,14 @@ ai-dev/examples/sdlc-inputs/oidc-logout-frontchannel.out.md   # 需求理解
 
 ```bash
 # 额度/断网自动重试（速率类错误至少等 30s）
-python ai-dev/pi-batch.py ai-dev/examples/sdlc-mini-pipeline.yaml \
+python pi-batch.py examples/sdlc-mini-pipeline.yaml \
   --mode serial --retries 3 --retry-delay 30 --log-file logs/sdlc.log
 
 # 中断后续跑：--reuse 只重跑失败阶段的任务
-python ai-dev/pi-batch.py ai-dev/examples/sdlc-mini-pipeline.yaml --reuse
+python pi-batch.py examples/sdlc-mini-pipeline.yaml --reuse
 
 # 7×24：循环直到全部交付物通过（0 = 无限）
-python ai-dev/pi-batch.py ai-dev/examples/sdlc-mini-pipeline.yaml \
+python pi-batch.py examples/sdlc-mini-pipeline.yaml \
   --reuse --max-rounds 0 --round-delay 300 --log-file logs/sdlc.log
 ```
 
@@ -79,7 +79,7 @@ files:
 ```
 
 ```bash
-python ai-dev/ai/run-review.py --all --context docs/proposals/review-ctx.yaml \
+python ai/run-review.py --all --context docs/proposals/review-ctx.yaml \
   --session-mode shared --session-name fc-logout-review
 ```
 

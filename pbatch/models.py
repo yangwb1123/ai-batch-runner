@@ -10,7 +10,10 @@ from pathlib import Path
 from typing import Optional
 
 from . import config
-from .config import AGENT_DEFAULT_MODEL, AGENT_DEFAULT_TIMEOUT, AGENT_DEFAULT_WORKERS
+from .config import (AGENT_DEFAULT_MODEL, AGENT_DEFAULT_TIMEOUT,
+                     AGENT_DEFAULT_WORKERS, COMMAND_OUTPUT_MAX_BYTES,
+                     COMMAND_TIMEOUT)
+from .text_io import read_text_bounded
 
 @dataclass
 class Stage:
@@ -19,7 +22,7 @@ class Stage:
     model: str = ""      # T11: model for the stage's orchestrator/role tasks
     provider: str = ""   # T11: provider override for the stage
     from_dir: str = ""
-    from_outputs: str = ""  # name of previous stage
+    from_outputs: object = ""  # previous stage name, or a list for a DAG evidence join
     suffix: str = ".md"
     output_suffix: str = ".out.md"
     mode: str = "serial"
@@ -29,8 +32,12 @@ class Stage:
     meta: bool = False  # dynamic role orchestration: agent picks review roles per iteration
     meta_prompt: str = ""  # custom orchestrator prompt ({roles}/{input_content} placeholders)
     role_dir: str = ""  # directory of role templates the orchestrator may choose from
+    role_keywords: str = ""  # optional role -> keyword YAML for relevance scoring
     output_dir: str = ""  # where role deliverables are written (required for meta stages)
     max_iterations: int = 3  # orchestrator -> roles -> fold -> re-ask loop limit
+    max_roles_per_iteration: int = 3  # runtime-enforced meta fan-out cap
+    relevance_enabled: bool = True  # inject keyword-based role suggestions
+    relevance_min_score: int = 0  # 0 keeps backward-compatible advisory-only scoring
     gate: bool = False  # verdict gate: output must contain VERDICT: PASS/FAIL/REJECT; FAIL/REJECT blocks later stages
     approval: bool = False  # T12c: human approval point after the stage (D5)
     from_prompt: str = ""  # one-sentence starting prompt instead of from_dir files
@@ -38,6 +45,8 @@ class Stage:
     tasks: list = field(default_factory=list)
     commands: list = field(default_factory=list)
     commands_parallel: bool = False  # if True, run commands concurrently
+    command_timeout: int = COMMAND_TIMEOUT
+    command_output_max_bytes: int = COMMAND_OUTPUT_MAX_BYTES
     cwd: str = ""
     git_commit: bool = False
     commit_message: str = ""
@@ -56,13 +65,19 @@ class Stage:
             "meta": self.meta,
             "meta_prompt": self.meta_prompt,
             "role_dir": self.role_dir,
+            "role_keywords": self.role_keywords,
             "output_dir": self.output_dir,
             "max_iterations": self.max_iterations,
+            "max_roles_per_iteration": self.max_roles_per_iteration,
+            "relevance_enabled": self.relevance_enabled,
+            "relevance_min_score": self.relevance_min_score,
             "from_prompt": self.from_prompt,
             "output": self.output,
             "tasks": self.tasks,
             "commands": self.commands,
             "commands_parallel": self.commands_parallel,
+            "command_timeout": self.command_timeout,
+            "command_output_max_bytes": self.command_output_max_bytes,
             "cwd": self.cwd,
             "git_commit": self.git_commit,
             "commit_message": self.commit_message,
@@ -96,6 +111,7 @@ class Task:
     timeout: int = AGENT_DEFAULT_TIMEOUT
     env: dict = field(default_factory=dict)
     validate: Optional[str] = None  # per-task engineering gate; None = inherit, "" = disabled
+    memory: dict = field(default_factory=dict)  # stage/role/task metadata for the memory index
 
     def to_cmd(self, session_flags: Optional[list] = None) -> list[str]:
         cmd = [config.AGENT_BIN, "-p", self.prompt]
@@ -146,7 +162,8 @@ class Task:
             if not fpath.is_absolute():
                 fpath = Path(base_dir) / fpath
             if fpath.exists():
-                return fpath.read_text(encoding="utf-8")
+                return read_text_bounded(fpath, config.INPUT_MAX_BYTES,
+                                         "prompt reference")
             log.warning("referenced file not found: %s", fpath)
             return match.group(0)
 
@@ -168,3 +185,9 @@ class TaskResult:
     validation_ok: Optional[bool] = None
     validation_exit: int = 0
     validation_stderr: str = ""
+    session_id: str = ""
+    # True when stdout/stderr were already shown live. This prevents the
+    # stdout-only shortcut from printing a successful answer a second time.
+    streamed_output: bool = False
+    session_name: str = ""
+    raw_session: str = ""

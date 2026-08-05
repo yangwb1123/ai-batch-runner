@@ -1,4 +1,4 @@
-"""Regression tests for ai-dev/ai/run-review.py.
+"""Regression tests for ai/run-review.py.
 
 Cover the repaired behaviors: live-run output persistence (including partial
 output on failure), --all stage output chaining with explicit-value
@@ -177,6 +177,18 @@ def test_run_stage_rejects_timeout(tmp_path):
     assert rc == 1
     assert not (tmp_path / "stage-00.out.md").exists()
 
+    args.timeout = -1
+    assert mod.run_stage("00", "PROMPT BODY", args) == 1
+    assert not (tmp_path / "stage-00.out.md").exists()
+
+    old_limit = mod.batch_config.PROMPT_MAX_BYTES
+    mod.batch_config.PROMPT_MAX_BYTES = 1
+    try:
+        args.timeout = 0
+        assert mod.run_stage("00", "PROMPT BODY", args) == 1
+    finally:
+        mod.batch_config.PROMPT_MAX_BYTES = old_limit
+
 
 def test_run_stage_saves_legitimate_mention_of_error_words(tmp_path):
     """Review prose discussing timeouts or unauthorized responses must not be
@@ -193,6 +205,19 @@ def test_run_stage_saves_legitimate_mention_of_error_words(tmp_path):
     rc = mod.run_stage("00", "PROMPT BODY", args)
     assert rc == 0
     assert (tmp_path / "stage-00.out.md").exists()
+
+
+def test_run_stage_rejects_bounded_oversized_output(monkeypatch, tmp_path):
+    """The review compatibility runner must not accumulate an unlimited message."""
+    agent = tmp_path / "noisy-agent.sh"
+    agent.write_text("#!/bin/sh\nprintf '012345678901234567890123456789'\n")
+    agent.chmod(0o755)
+    mod = load_runner()
+    monkeypatch.setattr(mod.batch_config, "OUTPUT_MAX_BYTES", 16)
+    args = _Args(agent_bin=str(agent), output_dir=str(tmp_path), repo=str(tmp_path))
+    rc = mod.run_stage("00", "PROMPT BODY", args)
+    assert rc == 1
+    assert not (tmp_path / "stage-00.out.md").exists()
 
 
 def test_all_chains_stage_outputs_end_to_end(tmp_path, fake_agent):
@@ -258,6 +283,23 @@ def test_resume_skips_completed_stages(tmp_path):
     calls_after_resume = counter.read_text(encoding="utf-8").count("x")
     assert calls_after_resume == 10  # no agent call on resume
     assert len(list(out_dir.iterdir())) == 10
+
+    # A new/current validator is part of the reuse fingerprint in practice:
+    # old outputs that fail it must regenerate instead of being promoted by
+    # file existence alone.
+    fresh_agent = tmp_path / "fresh-agent.sh"
+    fresh_agent.write_text("#!/bin/sh\necho FRESH\n")
+    fresh_agent.chmod(0o755)
+    fresh_cmd = list(cmd)
+    fresh_cmd[fresh_cmd.index("--agent-bin") + 1] = str(fresh_agent)
+    third = subprocess.run(
+        fresh_cmd + ["--resume", "--validate-cmd", "grep -q FRESH {output}"],
+        capture_output=True, text=True, timeout=120)
+    assert third.returncode == 0, third.stderr
+    assert "REGENERATE" in third.stderr
+    assert third.stdout.count("SKIP") == 0
+    assert all(path.read_text(encoding="utf-8").strip() == "FRESH"
+               for path in out_dir.glob("stage-*.out.md"))
 
 
 def test_resume_reruns_failed_stage_with_disk_chaining(tmp_path):

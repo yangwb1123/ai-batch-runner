@@ -1,4 +1,4 @@
-"""Regression tests for ai-dev/pi-batch.py.
+"""Regression tests for pi-batch.py.
 
 Cover the repaired behaviors: pi-batch.yaml resolution next to the script
 (with cwd fallback and built-in defaults), post-stage command failures
@@ -92,11 +92,17 @@ def test_config_falls_back_to_cwd(tmp_path):
     shutil.copy(PI_BATCH, script_dir / "pi-batch.py")
     shutil.copytree(PI_BATCH.parent / "pbatch", script_dir / "pbatch")
     (cwd_dir / "pi-batch.yaml").write_text(
-        "agent:\n  bin: cwd-agent\n  default_workers: 5\n", encoding="utf-8"
+        "agent:\n  bin: cwd-agent\n  default_workers: nope\n"
+        "logging: false\nevidence: []\nprompt:\n  max_bytes: invalid\n"
+        "memory:\n  agent_names: pi\n  manifest_max_bytes: -1\n",
+        encoding="utf-8",
     )
     result = _run_import(cwd_dir, script_dir / "pi-batch.py")
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "cwd-agent 5"
+    assert result.stdout.strip() == "cwd-agent 4"
+    assert "must be a mapping" in result.stderr
+    assert "must be an integer" in result.stderr
+    assert "must be >= 1" in result.stderr
 
 
 def test_config_builtin_defaults_without_any_config(tmp_path):
@@ -138,6 +144,53 @@ def test_command_success_passes_stage(tmp_path, fake_agent):
     results, ok = mod.execute_stage(stage, {})
     assert all(r.success for r in results)
     assert ok is True
+
+
+def test_command_timeout_kills_tree_and_noisy_output_fails_closed(tmp_path, fake_agent):
+    """Stage hooks share validator-grade resource boundaries."""
+    mod = load_batch()
+    mod.config.AGENT_BIN = str(fake_agent)
+    inputs = _inputs_dir(tmp_path, names=("one.md",))
+    marker = tmp_path / "survived"
+    slow = mod.Stage(
+        name="slow", from_dir=str(inputs), command_timeout=1,
+        commands=[f"sleep 30; printf survived > {marker}"],
+    )
+    _, ok = mod.execute_stage(slow, {})
+    assert ok is False
+    assert not marker.exists()
+
+    noisy = mod.Stage(
+        name="noisy", from_dir=str(inputs), command_output_max_bytes=16,
+        commands=["printf '012345678901234567890123456789'"],
+    )
+    _, ok = mod.execute_stage(noisy, {})
+    assert ok is False
+
+    # The argv variant used by Git commits must kill hook-like descendants too.
+    from pbatch.runner import run_argv
+    argv_marker = tmp_path / "argv-survived"
+    result = run_argv(
+        ["sh", "-c", f"sleep 30; printf survived > {argv_marker}"],
+        str(tmp_path), timeout=1)
+    assert result.timed_out is True
+    assert not argv_marker.exists()
+
+
+def test_pipeline_schema_rejects_invalid_command_limits(tmp_path):
+    mod = load_batch()
+    pipeline = tmp_path / "bad-command-limits.yaml"
+    pipeline.write_text(
+        "stages:\n"
+        "  - name: bad\n"
+        "    from_prompt: inspect\n"
+        "    output: out.md\n"
+        "    command_timeout: 0\n"
+        "    command_output_max_bytes: nope\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit):
+        mod.load_pipeline(str(pipeline))
 
 
 def test_aggregate_merges_upstream_outputs(tmp_path, fake_agent):
@@ -200,6 +253,14 @@ def test_agent_provider_error_rejects_task_and_does_not_save(tmp_path, error_age
     assert result.returncode == 0  # the process itself succeeded
     mod.save_result(task, result)
     assert not output.exists()
+    stderr_agent = tmp_path / "stderr-error-agent.sh"
+    stderr_agent.write_text(
+        "#!/bin/sh\necho 'rate_limit_error' >&2\necho 'partial response'\n",
+        encoding="utf-8")
+    stderr_agent.chmod(0o755)
+    mod.config.AGENT_BIN = str(stderr_agent)
+    stderr_result = mod.run_task(mod.Task(prompt="review this"))
+    assert stderr_result.success is False
 
 
 def test_agent_nonzero_exit_does_not_save(tmp_path):
@@ -392,6 +453,20 @@ def test_max_rounds_loop_reruns_failures(tmp_path):
     assert result.returncode != 0
     assert counter.read_text(encoding="utf-8").count("x") == 4  # 2 rounds x 2 tasks
     assert not (inputs / "task1.out.md").exists()
+    bad_values = [
+        (["--max-rounds", "-1"], "--max-rounds"),
+        (["--workers", "0"], "--workers"),
+        (["--retry-backoff", "nan"], "--retry-backoff"),
+        (["--round-delay", "inf"], "--round-delay"),
+        (["--budget-max", "-1"], "--budget-max"),
+    ]
+    for flags, expected in bad_values:
+        rejected = subprocess.run(
+            [sys.executable, str(PI_BATCH), "-p", "x", "--agent-bin", str(agent), *flags],
+            capture_output=True, text=True, timeout=30)
+        assert rejected.returncode == 2
+        assert expected in rejected.stderr
+    assert counter.read_text(encoding="utf-8").count("x") == 4
 
 
 def test_loop_stops_when_all_pass(tmp_path):
@@ -784,7 +859,7 @@ def test_run_validation_success():
     assert "hello" in v.stdout
 
 
-def test_run_validation_failure_returns_exit_and_stderr_tail():
+def test_run_validation_failure_returns_exit_and_stderr_tail(monkeypatch):
     """A failing validator returns its exit code and captured stderr (the
     failure signature surfaced to retry/decision logic)."""
     mod = load_batch()
@@ -793,6 +868,13 @@ def test_run_validation_failure_returns_exit_and_stderr_tail():
     assert v.exit_code == 7
     assert "boom" in v.stderr
     assert v.timed_out is False
+    monkeypatch.setattr(mod.config, "VALIDATION_OUTPUT_MAX_BYTES", 1024)
+    noisy = mod.run_validation("head -c 3000 /dev/zero | tr '\\0' x", os.getcwd())
+    assert noisy.ok is False
+    assert noisy.exit_code == -1
+    assert "validator output exceeds 1024 bytes" in noisy.stderr
+    with pytest.raises(TypeError, match="must be a string"):
+        mod.run_validation(["echo", "not-a-shell-string"], os.getcwd())
 
 
 def test_run_validation_spawn_crash_fails_closed():
@@ -962,7 +1044,7 @@ def test_meta_stage_iterates_and_folds_evidence(tmp_path):
     assert (out_dir / "qa_lead.md").exists()
     calls = meta_log.read_text(encoding="utf-8").split("Analyze the deliverables")
     assert len(calls) == 4  # 3 orchestrator calls (security, qa, then [])
-    assert "--- security_engineer deliverable ---" in calls[2]  # second call sees folded evidence
+    assert '<evidence source="security_engineer">' in calls[2]  # second call sees folded evidence
 
 
 def test_meta_stage_unknown_role_skipped(tmp_path):
@@ -1085,6 +1167,8 @@ def test_meta_stage_ad_hoc_role(tmp_path):
     mod = load_batch()
     counter = tmp_path / "counter"
     counter.touch()
+    role_counter = tmp_path / "role-counter"
+    role_counter.touch()
     args_log = tmp_path / "args.log"
     agent = tmp_path / "adhoc-agent.sh"
     agent.write_text(
@@ -1099,6 +1183,7 @@ def test_meta_stage_ad_hoc_role(tmp_path):
         "    echo '[]'\n"
         "  fi\n"
         "else\n"
+        f"  echo x >> {role_counter}\n"
         "  echo '## Perf review deliverable'\n"
         "fi\n"
     )
@@ -1112,7 +1197,8 @@ def test_meta_stage_ad_hoc_role(tmp_path):
     # role_dir points at a non-existent directory: ad-hoc roles must still run
     stage = mod.Stage(name="review", from_outputs="req", meta=True,
                       role_dir=str(tmp_path / "no-roles"), output_dir=str(out_dir), max_iterations=3)
-    results, ok = mod.execute_stage(stage, {"req": [str(idea)]})
+    results, ok = mod.execute_stage(
+        stage, {"req": [str(idea)]}, fingerprint_mode=True)
     assert ok is True
     assert len(results) == 1
     assert (out_dir / "perf_reviewer.md").exists()
@@ -1120,6 +1206,17 @@ def test_meta_stage_ad_hoc_role(tmp_path):
     # the ad-hoc reviewer prompt carries its assignment plus the context
     assert "Analyze performance bottlenecks" in calls[1]
     assert "Context (current deliverables)" in calls[1]
+    assert role_counter.read_text(encoding="utf-8").count("x") == 1
+    assert (out_dir / "perf_reviewer.md.meta.json").exists()
+
+    # Re-plan against current evidence, but freshness-reuse the selected role
+    # rather than spending another model call on an unchanged assignment.
+    counter.write_text("", encoding="utf-8")
+    reused, ok = mod.execute_stage(
+        stage, {"req": [str(idea)]}, reuse=True, fingerprint_mode=True)
+    assert ok is True
+    assert len(reused) == 1 and reused[0].reason == "reused"
+    assert role_counter.read_text(encoding="utf-8").count("x") == 1
 
 
 def test_meta_stage_mixed_roles(tmp_path):
@@ -1255,15 +1352,17 @@ def test_cli_auto_pipeline_detection(tmp_path, fake_agent):
 
 def test_cli_auto_pipeline_detection_reuse(tmp_path, fake_agent):
     """The reported failure mode: pipeline YAML + --reuse without --pipeline
-    now runs the pipeline and reuses existing outputs."""
+    now runs the pipeline, reuses outputs, and reruns stage-wide commands."""
     inputs = tmp_path / "inputs"
     inputs.mkdir()
     (inputs / "idea.md").write_text("idea", encoding="utf-8")
+    marker = tmp_path / "command-runs"
     pipeline = tmp_path / "pipeline.yaml"
     pipeline.write_text(
         "git_commit: false\n"
         "stages:\n"
-        f"  - name: req\n    from_dir: {inputs}\n    mode: serial\n",
+        f"  - name: req\n    from_dir: {inputs}\n    mode: serial\n"
+        f"    commands:\n      - 'printf x >> {marker}'\n",
         encoding="utf-8",
     )
     base = [sys.executable, str(PI_BATCH), str(pipeline), "--agent-bin", str(fake_agent)]
@@ -1272,6 +1371,7 @@ def test_cli_auto_pipeline_detection_reuse(tmp_path, fake_agent):
     second = subprocess.run(base + ["--reuse"], capture_output=True, text=True, timeout=120)
     assert second.returncode == 0, second.stderr
     assert "REUSE" in second.stderr or "fully reused" in second.stderr
+    assert marker.read_text(encoding="utf-8") == "xx"
 
 
 def test_task_timeout_kills_promptly(tmp_path):
@@ -1423,9 +1523,11 @@ def test_gate_missing_verdict_fails_closed(tmp_path):
     pipeline.write_text(
         "git_commit: false\n"
         "stages:\n"
-        f"  - name: gate\n    from_dir: {inputs}\n    gate: true\n    mode: serial\n"
-        "  - name: impl\n"
-        f"    from_outputs: gate\n    mode: serial\n",
+            f"  - name: gate\n    from_dir: {inputs}\n    gate: true\n    mode: serial\n"
+            "  - name: impl\n"
+            f"    from_outputs: gate\n    mode: serial\n"
+            "    tasks:\n"
+            f"      - prompt: 'Implement {{input_content}}'\n        output: {tmp_path / 'impl.md'}\n",
         encoding="utf-8",
     )
     result = subprocess.run(
@@ -1454,6 +1556,24 @@ def test_archive_outputs_after_full_success_single_batch(tmp_path):
     assert len(moved) == 1 and not out1.exists()
     assert Path(moved[0]).exists()
     assert "batch-" in moved[0]
+
+
+def test_archive_outputs_preserves_same_named_deliverables(tmp_path):
+    mod = load_batch()
+    first = tmp_path / "design" / "report.md"
+    second = tmp_path / "gate" / "report.md"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.write_text("design", encoding="utf-8")
+    second.write_text("gate", encoding="utf-8")
+
+    moved = mod._archive_outputs(
+        [str(first), str(second)], str(tmp_path / "archive"), "pipeline")
+
+    assert len(moved) == 2
+    assert len(set(moved)) == 2
+    assert {Path(item).read_text(encoding="utf-8") for item in moved} == {"design", "gate"}
+    assert not first.exists() and not second.exists()
 
 
 def test_archive_outputs_pipeline_after_gate_pass(tmp_path):
@@ -1519,7 +1639,12 @@ def test_pipeline_reports_failed_stage(tmp_path, fake_agent):
     inputs = _inputs_dir(tmp_path)
     pipeline = mod.Pipeline(stages=[
         mod.Stage(name="s0", from_dir=str(inputs), commands=["exit 1"]),
+        mod.Stage(name="must_not_run", from_outputs="s0", tasks=[{
+            "prompt": "consume {input_content}",
+            "output": str(tmp_path / "downstream.md"),
+        }]),
     ])
     results, failed = mod.run_pipeline(pipeline)
     assert failed == ["s0"]
     assert len(results) == 2  # tasks still ran; the stage is marked failed
+    assert not (tmp_path / "downstream.md").exists()

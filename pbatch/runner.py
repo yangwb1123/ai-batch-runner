@@ -21,7 +21,10 @@ from typing import NamedTuple, Optional
 from . import config
 from .config import AGENT_BIN, AGENT_DEFAULT_WORKERS, _resolve_validators, _session_flags, log
 from .models import Task, TaskResult
+from . import metering
 from .metering import budget_allows, budget_try_consume, record_event
+from .memory import (enrich_prompt, memory_enabled, new_session_id,
+                     record_task, session_id_from_flags)
 from .session import fork_flags, has_compaction, session_size_bytes
 from .triage import clear_marker, task_key, write_marker
 
@@ -50,27 +53,30 @@ def kill_active_procs() -> None:
         _kill_group(proc)
 
 
-def _read_stream(stream, prefix: str, collector: list, cap: int = 0, overflow: Optional[list] = None) -> None:
-    """Read lines from *stream*, print them (with prefix), and collect.
+def _read_stream(stream, prefix: str, collector: list, cap: int = 0,
+                 overflow: Optional[list] = None, emit: bool = False,
+                 target=None) -> None:
+    """Drain and collect a child stream, optionally displaying it live.
     Collection is capped at *cap* bytes (T12e): a misbehaving agent must
     not OOM the runner before the post-hoc size check; overflow is recorded
     so the caller can reject the result. The stream is still drained (a
-    blocked pipe would hang the agent), only collection stops."""
+    blocked pipe would hang the agent), while collection and live display
+    stop at the cap."""
     total = 0
+    sink = target or sys.stdout
     try:
-        for line in iter(stream.readline, ""):
-            if prefix:
-                print(f"{prefix}{line}", end="", flush=True)
-            else:
-                print(line, end="", flush=True)
+        for line in iter(lambda: stream.readline(8192), ""):
+            within_cap = True
             if cap > 0:
                 total += len(line.encode("utf-8", errors="replace"))
-                if total <= cap:
-                    collector.append(line)
-                elif overflow is not None:
-                    overflow[0] = True
-            else:
+                within_cap = total <= cap
+            if within_cap:
                 collector.append(line)
+                if emit:
+                    sink.write(f"{prefix}{line}" if prefix else line)
+                    sink.flush()
+            elif overflow is not None:
+                overflow[0] = True
     except ValueError:
         # stream closed
         pass
@@ -84,6 +90,7 @@ _AGENT_ERROR_PATTERNS = (
     re.compile(r"insufficient_?quota", re.IGNORECASE),
     re.compile(r"quota_?exceeded", re.IGNORECASE),
     re.compile(r"credit_?balance_?too_?low", re.IGNORECASE),
+    re.compile(r"insufficient\s+(?:balance|funds)", re.IGNORECASE),
     re.compile(r"billing_?error", re.IGNORECASE),
     re.compile(r"payment_?required", re.IGNORECASE),
     re.compile(r"invalid_?api_?key", re.IGNORECASE),
@@ -169,7 +176,7 @@ def _prompt_brief(task: Task, cmd: list) -> str:
 
 def _kill_group(proc: Optional[subprocess.Popen]) -> None:
     """Kill the whole child process group, tolerating an already-dead
-    process (used by timeout and abnormal-exit paths)."""
+    process, then reap the direct child before returning."""
     if proc is None:
         return
     try:
@@ -179,6 +186,10 @@ def _kill_group(proc: Optional[subprocess.Popen]) -> None:
             proc.kill()
         except Exception:
             pass  # process already gone
+    try:
+        proc.wait(timeout=1)
+    except (subprocess.TimeoutExpired, ChildProcessError):
+        pass
 
 
 def _spawn_agent(cmd: list, workdir: str, env: dict) -> subprocess.Popen:
@@ -208,54 +219,116 @@ def _overflow_result(task: Task, proc, stdout_lines: list, stderr_lines: list, s
     )
 
 
+def _prompt_limit_result(task: Task, cmd: list) -> Optional[TaskResult]:
+    size = len(cmd[2].encode("utf-8", errors="replace"))
+    if config.PROMPT_MAX_BYTES <= 0 or size <= config.PROMPT_MAX_BYTES:
+        return None
+    reason = f"prompt exceeds {config.PROMPT_MAX_BYTES} bytes ({size} bytes)"
+    log.error("REJECTED: %s", reason)
+    return TaskResult(task=task, success=False, returncode=-1, reason=reason)
+
+
 def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = False, session_flags: Optional[list] = None, session_name: str = "") -> TaskResult:
-    """Execute one pi task, streaming output in real-time, and return the
-    result. session_name is threaded into metering events so T7 usage
-    extraction can find the session file (round-4 P0-2/L4)."""
-    cmd = task.to_cmd(session_flags=session_flags)
-    workdir = task.workdir()
+    """Execute one agent task with live-output policy and T7 session metering."""
+    cmd, workdir, session_id, effective_name = _memory_invocation(task, session_flags, session_name)
+    if prompt_limit := _prompt_limit_result(task, cmd):
+        return _attach_session(prompt_limit, session_id, effective_name, workdir)
     start = time.monotonic()
-    prefix = f"[task-{task_index}] " if (parallel and total > 1) else ""
-    log.info(">>  %s  [model=%s]  [timeout=%ss]  [dir=%s]",
-             _prompt_brief(task, cmd), task.model or "default", task.timeout, workdir)
-    env = os.environ.copy()
-    env.update(task.env)
-    # T5: residue marker — a surviving marker after this call means the
-    # process group was killed mid-run.
-    key = task_key(task)
-    write_marker(key, workdir)
     proc = None
     completed = False
-    _budget_gate(task, key, workdir, session_name)
+    prefix, env, key, usage_before = _prepare_task_run(
+        task, cmd, task_index, total, parallel, workdir, effective_name, session_id)
     try:
         proc = _spawn_agent(cmd, workdir, env)
         _register_proc(proc)
-        stdout_lines, stderr_lines, overflow = _stream_proc(proc, prefix, start, task.timeout)
+        streamed = _stream_output_enabled()
+        stdout_lines, stderr_lines, overflow = _stream_proc(proc, prefix, start,
+                                                            task.timeout, streamed)
         completed = True
         if overflow[0]:
-            return _overflow_result(task, proc, stdout_lines, stderr_lines, start)
+            result = _overflow_result(task, proc, stdout_lines, stderr_lines, start)
+            return _finish_task_result(
+                result, task, session_id, effective_name, workdir, usage_before)
         result = _result_from_proc(task, proc, stdout_lines, stderr_lines, time.monotonic() - start)
-        record_event("task_finish" if result.success else "task_fail",
-                     task.prompt, result.reason, workdir, session_name)
-        return result
+        result.streamed_output = streamed
+        return _finish_task_result(
+            result, task, session_id, effective_name, workdir, usage_before)
     except subprocess.TimeoutExpired:
-        return _timeout_result(task, proc, start)
+        result = _timeout_result(task, proc, start)
+        return _finish_task_result(
+            result, task, session_id, effective_name, workdir, usage_before)
     except FileNotFoundError:
-        return _agent_not_found(task)
+        result = _agent_not_found(task)
+        return _finish_task_result(
+            result, task, session_id, effective_name, workdir, usage_before)
     except Exception as e:
         elapsed = time.monotonic() - start
         log.error("ERROR  [%.1fs]  [%s]", elapsed, e)
-        return TaskResult(task=task, success=False, stderr=str(e), elapsed=elapsed, reason=str(e))
+        result = TaskResult(task=task, success=False, stderr=str(e), elapsed=elapsed, reason=str(e))
+        return _finish_task_result(
+            result, task, session_id, effective_name, workdir, usage_before)
     finally:
-        # F2: on ANY abnormal exit (incl. KeyboardInterrupt, a BaseException
-        # bypassing the handlers above), kill the child process group so no
-        # agent is orphaned after Ctrl-C; normal completion already took
-        # care of the process.
+        # On any abnormal exit kill the child group; normal completion is done.
         if proc is not None and not completed:
             _kill_group(proc)
         if proc is not None:
             _unregister_proc(proc)
         clear_marker(key, workdir)
+
+
+def _prepare_task_run(task: Task, cmd: list, task_index: int, total: int,
+                      parallel: bool, workdir: str, session_name: str,
+                      session_id: str = "") -> tuple:
+    prefix = f"[task-{task_index}] " if (parallel and total > 1) else ""
+    log.info(">>  %s  [model=%s]  [timeout=%ss]  [dir=%s]",
+             _prompt_brief(task, cmd), task.model or "default", task.timeout, workdir)
+    env = {**os.environ, **task.env}
+    key = task_key(task)
+    write_marker(key, workdir)
+    _budget_gate(task, key, workdir, session_name)
+    usage_ref = session_id or session_name
+    usage = metering.session_usage(workdir, usage_ref) if metering.EVENTS_FILE else None
+    return prefix, env, key, usage
+
+
+def _finish_task_result(result: TaskResult, task: Task, session_id: str,
+                        session_name: str, workdir: str,
+                        usage_before: Optional[dict]) -> TaskResult:
+    _attach_session(result, session_id, session_name, workdir)
+    _record_metering(result, task, workdir, session_id or session_name, usage_before)
+    return result
+
+
+def _record_metering(result: TaskResult, task: Task, workdir: str,
+                     session_name: str, usage_before: Optional[dict]) -> None:
+    record_event("task_finish" if result.success else "task_fail",
+                 task.prompt, result.reason, workdir, session_name, usage_before)
+
+
+def _memory_invocation(task: Task, session_flags: Optional[list],
+                       session_name: str) -> tuple[list, str, str, str]:
+    workdir = task.workdir()
+    flags = session_flags
+    name = session_name or task.memory.get("stage", "") or "batch"
+    session_id = session_id_from_flags(flags)
+    prompt = task.prompt
+    if memory_enabled():
+        prompt = enrich_prompt(prompt, workdir, str(task.memory.get("memory_mode", "")))
+        if flags is None:
+            session_id = new_session_id(name, task.prompt, workdir)
+            flags = _session_flags("start", session_id, name)
+    return replace(task, prompt=prompt).to_cmd(flags), workdir, session_id, name
+
+
+def _attach_session(result: TaskResult, session_id: str, session_name: str,
+                    workdir: str) -> TaskResult:
+    result.session_id = session_id
+    result.session_name = session_name
+    if session_id:
+        from .session import session_file
+        path = session_file(workdir, session_id)
+        result.raw_session = str(path) if path else ""
+    return result
 
 
 def _output_path_is_symlink(task: Task) -> bool:
@@ -275,9 +348,10 @@ def save_result(task: Task, result: TaskResult) -> None:
     """
     out_path = task.output_path()
     if out_path is None:
-        sys.stdout.write(result.stdout)
-        if result.stderr:
-            sys.stderr.write(result.stderr)
+        if not result.streamed_output:
+            sys.stdout.write(result.stdout)
+            if result.stderr:
+                sys.stderr.write(result.stderr)
         return
 
     if not result.success:
@@ -328,24 +402,49 @@ class ValidationResult(NamedTuple):
     timed_out: bool
 
 
-def run_validation(cmd: str, cwd: str, timeout: float = 600) -> ValidationResult:
+def run_validation(cmd: str, cwd: str, timeout: float = 600,
+                   cap: Optional[int] = None) -> ValidationResult:
     """Run one validator command in its own process group with a hard
-    deadline; a hung validator tree is killed. Captures the exit code and
-    full stdout/stderr so callers can surface the failure signature (the
-    basis for retry feedback and reuse revalidation). A spawn crash returns
-    a failed result with the exception text in stderr."""
+    deadline and bounded diagnostics. A spawn crash fails closed."""
+    if not isinstance(cmd, str):
+        raise TypeError("validator command must be a string")
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout < 0:
+        raise ValueError("validator timeout must be non-negative")
+    output_cap = config.VALIDATION_OUTPUT_MAX_BYTES if cap is None else max(1, cap)
+    return _run_bounded_process(cmd, cwd, timeout, output_cap, True, "validator")
+
+
+def run_argv(cmd: list[str], cwd: str, timeout: float = 30,
+             cap: Optional[int] = None) -> ValidationResult:
+    """Run an argv command with the same bounded process-tree contract."""
+    if (not isinstance(cmd, (list, tuple)) or not cmd
+            or not all(isinstance(value, str) for value in cmd)):
+        raise TypeError("argv command must be a non-empty string list")
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout < 0:
+        raise ValueError("process timeout must be non-negative")
+    output_cap = config.COMMAND_OUTPUT_MAX_BYTES if cap is None else max(1, cap)
+    return _run_bounded_process(list(cmd), cwd, timeout, output_cap, False, "process")
+
+
+def _run_bounded_process(cmd, cwd: str, timeout: float, output_cap: int,
+                         shell: bool, label: str) -> ValidationResult:
     try:
-        proc = subprocess.Popen(cmd, shell=True, cwd=cwd,
+        proc = subprocess.Popen(cmd, shell=shell, cwd=cwd,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, start_new_session=True)
     except Exception as e:
         return ValidationResult(ok=False, exit_code=-1, stdout="", stderr=str(e), timed_out=False)
+    start = time.monotonic()
     try:
-        stdout, stderr = proc.communicate(timeout=timeout)
+        out, err, out_over, err_over = _drain_process(
+            proc, "", start, timeout, output_cap)
     except subprocess.TimeoutExpired:
         _kill_group(proc)
-        proc.communicate()
         return ValidationResult(ok=False, exit_code=-1, stdout="", stderr="", timed_out=True)
+    stdout, stderr = "".join(out), "".join(err)
+    if out_over[0] or err_over[0]:
+        reason = f"{label} output exceeds {output_cap} bytes"
+        return ValidationResult(False, -1, stdout, stderr + reason, False)
     return ValidationResult(ok=proc.returncode == 0, exit_code=proc.returncode,
                             stdout=stdout, stderr=stderr, timed_out=False)
 
@@ -414,10 +513,10 @@ def _save_validated(task: Task, result: TaskResult, validate_cmd: str) -> bool:
         return False
     # Local fix (self-iteration round 2, F14): unique temp name (no fixed
     # .tmp suffix a local observer could pre-create as a symlink).
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(prefix=out_path.name + ".", suffix=".tmp", dir=str(out_path.parent))
     os.close(fd)
     tmp = Path(tmp_name)
-    tmp.parent.mkdir(parents=True, exist_ok=True)
     tmp.write_text(result.stdout, encoding="utf-8")
     # Local fix (self-iteration round 2, F3): shell-escape {output}/{cwd}
     # substitutions so paths with spaces/quotes cannot inject commands.
@@ -524,7 +623,7 @@ def _result_from_proc(task: Task, proc: subprocess.Popen, stdout_lines: list, st
     rejection (quota/rate-limit/offline/timeout text) overrides exit code 0."""
     stdout_text = "".join(stdout_lines)
     stderr_text = "".join(stderr_lines)
-    reason = agent_failure_reason(proc.returncode, stdout_text)
+    reason = agent_failure_reason(proc.returncode, stdout_text + "\n" + stderr_text)
     success = proc.returncode == 0 and not reason
     if reason:
         log.warning("agent output REJECTED: %s", reason)
@@ -550,7 +649,14 @@ def _timeout_result(task: Task, proc: subprocess.Popen, start: float) -> TaskRes
     )
 
 
-def _stream_proc(proc: subprocess.Popen, prefix: str, start: float, timeout: int) -> tuple[list[str], list[str], list]:
+def _stream_output_enabled() -> bool:
+    """Whether agent response bodies should be displayed while running."""
+    mode = str(config.STREAM_OUTPUT).lower()
+    return mode == "full" or (mode == "auto" and sys.stdout.isatty())
+
+
+def _stream_proc(proc: subprocess.Popen, prefix: str, start: float,
+                 timeout: int, emit: bool = False) -> tuple[list[str], list[str], list]:
     """Drain stdout/stderr concurrently via daemon threads, then wait on a
     hard deadline. Thread joins only drain pipes and must not extend the
     window, so each join/wait gets the remaining budget (they return early
@@ -558,19 +664,30 @@ def _stream_proc(proc: subprocess.Popen, prefix: str, start: float, timeout: int
     Returns (stdout_lines, stderr_lines, overflow): overflow[0] is True
     when stdout collection exceeded the T12e cap (the result must be
     rejected; collection stops but the pipe is still drained)."""
+    stdout_lines, stderr_lines, overflow, _ = _drain_process(
+        proc, prefix, start, timeout, config.OUTPUT_MAX_BYTES, emit)
+    return stdout_lines, stderr_lines, overflow
+
+
+def _drain_process(proc: subprocess.Popen, prefix: str, start: float,
+                   timeout: float, cap: int, emit: bool = False) -> tuple:
+    """Drain both pipes with one absolute deadline and bounded collectors."""
     from threading import Thread
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
-    overflow: list = [False]
-    tout = Thread(target=_read_stream, args=(proc.stdout, prefix, stdout_lines, config.OUTPUT_MAX_BYTES, overflow), daemon=True)
-    terr = Thread(target=_read_stream, args=(proc.stderr, prefix, stderr_lines), daemon=True)
+    stdout_overflow: list = [False]
+    stderr_overflow: list = [False]
+    args = (cap, stdout_overflow, emit, sys.stdout)
+    tout = Thread(target=_read_stream, args=(proc.stdout, prefix, stdout_lines, *args), daemon=True)
+    err_args = (cap, stderr_overflow, emit, sys.stderr)
+    terr = Thread(target=_read_stream, args=(proc.stderr, prefix, stderr_lines, *err_args), daemon=True)
     tout.start()
     terr.start()
     deadline = start + timeout
     tout.join(timeout=max(0, deadline - time.monotonic()))
     terr.join(timeout=max(0, deadline - time.monotonic()))
     proc.wait(timeout=max(0.1, deadline - time.monotonic()))
-    return stdout_lines, stderr_lines, overflow
+    return stdout_lines, stderr_lines, stdout_overflow, stderr_overflow
 
 
 def _rotation_flags(session_id: str, session_name: str, workdir: str = "") -> list:
@@ -580,10 +697,10 @@ def _rotation_flags(session_id: str, session_name: str, workdir: str = "") -> li
     round-4 finding P3/L6)."""
     flags = _session_flags("continue", session_id, session_name)
     cwd = workdir or os.getcwd()
-    if has_compaction(cwd, session_name):
-        log.warning("SESSION: compaction entry in %s (context was shrunk by pi)", session_name)
-    sfile = session_file_path(cwd, session_name)
-    if sfile and session_size_bytes(cwd, session_name) > config.SESSION_MAX_BYTES:
+    if has_compaction(cwd, session_id):
+        log.warning("SESSION: compaction entry in %s (context was shrunk by pi)", session_id)
+    sfile = session_file_path(cwd, session_id)
+    if sfile and session_size_bytes(cwd, session_id) > config.SESSION_MAX_BYTES:
         log.warning("SESSION ROTATION: %s exceeds %d bytes; forking",
                     sfile, config.SESSION_MAX_BYTES)
         return fork_flags(str(sfile))
@@ -602,6 +719,7 @@ def _run_with_gate(task: Task, validate_cmd: str, index: int, total: int,
         if not result.success:
             result.reason = (f"validation failed (exit={result.validation_exit})"
                              if result.validation_exit else "validation failed")
+    record_task(result)
     return result
 
 

@@ -148,6 +148,11 @@ class TestMissingPyYaml:
         with pytest.raises(SystemExit) as exc:
             mod.load_tasks(str(tasks_yaml))
         assert exc.value.code == 1
+        monkeypatch.setattr(mod.pipeline, "yaml", __import__("yaml"))
+        tasks_yaml.write_text("tasks:\n  - prompt: [not, a, string]\n", encoding="utf-8")
+        with pytest.raises(SystemExit) as malformed:
+            mod.load_tasks(str(tasks_yaml))
+        assert malformed.value.code == 1
 
     def test_load_pipeline_without_pyyaml_exits(self, tmp_path, monkeypatch):
         mod = load_batch()
@@ -641,6 +646,29 @@ class TestTriage:
 class TestMeteringBudget:
     """T7/T8 (7x24 governance): metering events + budget caps."""
 
+    def test_session_usage_scans_only_bounded_appends(self, tmp_path, monkeypatch):
+        import pbatch.metering as metering
+        raw_root = tmp_path / "sessions"
+        directory = raw_root / metering.workdir_key(str(tmp_path))
+        directory.mkdir(parents=True)
+        raw = directory / "one_batch.jsonl"
+        raw.write_text(
+            '{"type":"message","message":{"usage":{"totalTokens":3}}}\n',
+            encoding="utf-8")
+        monkeypatch.setattr(metering, "SESSIONS_DIR", raw_root)
+        monkeypatch.setattr(metering, "SESSION_LINE_MAX_BYTES", 128)
+        metering._USAGE_CACHE.clear()
+        assert metering.session_usage(str(tmp_path), "batch") == {"totalTokens": 3}
+
+        with raw.open("ab") as handle:
+            handle.write(b"x" * 300 + b"\n")  # skipped without a large allocation
+            handle.write(b'{"type":"message","message":{"usage":{"totalTokens":2}}}\n')
+            handle.write(b'{"type":"message","message":{"usage":{"totalTokens":4}}}')
+        assert metering.session_usage(str(tmp_path), "batch") == {"totalTokens": 5}
+        with raw.open("ab") as handle:
+            handle.write(b"\n")
+        assert metering.session_usage(str(tmp_path), "batch") == {"totalTokens": 9}
+
     def test_events_file_records_finish_and_fail(self, tmp_path):
         counter = tmp_path / "counter"
         agent = tmp_path / "agent.sh"
@@ -732,6 +760,18 @@ class TestHeteroRouting:
         assert "--thinking" in lines and "high" in lines
         assert "--tools" in lines and "read,edit" in lines
         assert "--exclude-tools" in lines and "bash" in lines
+        args_log.write_text("", encoding="utf-8")
+        inherited = mod.Stage(
+            name="s2", from_outputs="s0", model="m-stage", provider="p-stage",
+            validate_cmd="exit 7",
+            tasks=[{"prompt": "Review {input_content}",
+                    "output": str(tmp_path / "stage-{input_stem}.md"),
+                    "validate": ""}])
+        inherited_results, inherited_ok = mod.execute_stage(
+            inherited, {"s0": [str(inputs / "t.md")]})
+        assert inherited_ok and inherited_results[0].success
+        inherited_args = args_log.read_text(encoding="utf-8").splitlines()
+        assert "m-stage" in inherited_args and "p-stage" in inherited_args
 
     def test_stage_provider_applies_to_meta_role_tasks(self, tmp_path):
         mod = load_batch()
@@ -754,9 +794,10 @@ class TestHeteroRouting:
         results, ok = mod.pipeline.run_meta_stage(stage, {"req": [str(idea)]}, "", 0, "")
         assert ok
         lines = args_log.read_text(encoding="utf-8").splitlines()
-        # both the orchestrator call and the role task carry the stage provider
-        assert lines.count("--provider") == 2
-        assert lines.count("p-stage") == 2
+        # Both iterations route their orchestrator and role task through the
+        # stage provider (2 calls/iteration, 2 provider argv pairs each).
+        assert lines.count("--provider") == 4
+        assert lines.count("p-stage") == 4
 
     def test_cli_provider_overrides_stage(self, tmp_path):
         """CLI --provider wins over a stage-level provider (precedence D6)."""
@@ -950,14 +991,29 @@ class TestGovernanceBatch:
         f2.write_text("VERDICT: PASS - reviewed and approved\n", encoding="utf-8")
         assert mod.pipeline._gate_verdict([str(f2)]) == "PASS"
 
-    def test_evidence_fences_in_combine(self, tmp_path):
+    def test_evidence_fences_in_combine(self, tmp_path, monkeypatch):
         """12d: combined evidence is fenced as untrusted."""
         mod = load_batch()
         a = tmp_path / "a.md"
-        a.write_text("claim", encoding="utf-8")
-        combined = mod.pipeline.combine_outputs([str(a)])
+        b = tmp_path / "b.md"
+        c = tmp_path / "c.md"
+        a.write_text("a" * 100, encoding="utf-8")
+        b.write_text("b" * 100, encoding="utf-8")
+        c.write_text("c" * 100, encoding="utf-8")
+        monkeypatch.setattr(mod.config, "EVIDENCE_MAX_BYTES", 20)
+        monkeypatch.setattr(mod.config, "EVIDENCE_MAX_SOURCES", 2)
+        combined = mod.pipeline.combine_outputs([str(a), str(b), str(c)])
         assert f'<evidence source="{a.stem}">' in combined
+        assert f'<evidence source="{b.stem}">' in combined
+        assert f'<evidence source="{c.stem}">' not in combined
         assert "</evidence>" in combined
+        assert "a" * 10 in combined and "a" * 11 not in combined
+        assert "b" * 10 in combined and "b" * 11 not in combined
+        assert combined.count("evidence truncated") == 2
+        assert '<evidence-sources-omitted count="1" max-sources="2" />' in combined
+        manifest = mod.pipeline.source_manifest([str(a), str(b), str(c)])
+        assert str(a) in manifest and str(b) in manifest and str(c) not in manifest
+        assert "1 more source candidates omitted" in manifest
 
     def test_output_byte_cap_rejects(self, tmp_path, monkeypatch):
         """12e: oversized agent output is rejected during collection (no
@@ -975,6 +1031,12 @@ class TestGovernanceBatch:
         assert "exceeds" in result.reason
         mod.save_result(task, result)
         assert not out.exists()  # rejected, nothing written
+        monkeypatch.setattr(mod.config, "PROMPT_MAX_BYTES", 10)
+        prompt_out = tmp_path / "prompt.md"
+        prompt_result = mod.run_task(mod.Task(prompt="p" * 11, output=str(prompt_out)))
+        assert prompt_result.success is False
+        assert "prompt exceeds 10 bytes" in prompt_result.reason
+        assert not prompt_out.exists()
 
     def test_secretscan_registry_entry(self):
         mod = load_batch()

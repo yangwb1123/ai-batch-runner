@@ -34,7 +34,7 @@ quality: ## Upstream-synced org scanner (quality.py): func lines, complexity, du
 harness: check self-test ## pre-push gate (snaplink naming).
 
 # -- test / coverage (need dev extras) --------------------------------
-test: ## Regression suite (tests/, 169 cases). Requires: pip install -e ".[dev]".
+test: ## Regression suite (tests/, 222 cases). Requires: pip install -e ".[dev]".
 	python -m pytest tests/
 
 coverage: ## Coverage report for tests/ + checks/. Requires pytest-cov.

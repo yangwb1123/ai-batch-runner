@@ -3,7 +3,7 @@
 
 Usage:
   # Run a specific stage with inline context
-  python ai-dev/ai/run-review.py --stage 02 \\
+  python ai/run-review.py --stage 02 \\
     --project "Snaplink SSO" \\
     --subsystem "OIDC RP-Initiated Logout" \\
     --files "interfaces/sso/handlers.go,protocols/oidc/handle_end_session.go" \\
@@ -11,13 +11,13 @@ Usage:
     --model claude-sonnet
 
   # Run from a context YAML file (recommended for multi-stage runs)
-  python ai-dev/ai/run-review.py --stage 01 --context ai-dev/ai/examples/oidc-logout-context.yaml
+  python ai/run-review.py --stage 01 --context ai/examples/oidc-logout-context.yaml
 
   # Dry-run: print the filled prompt without invoking pi
-  python ai-dev/ai/run-review.py --stage 02 --context ai-dev/ai/examples/oidc-logout-context.yaml --dry-run
+  python ai/run-review.py --stage 02 --context ai/examples/oidc-logout-context.yaml --dry-run
 
   # Run all stages sequentially
-  python ai-dev/ai/run-review.py --all --context ai-dev/ai/examples/oidc-logout-context.yaml
+  python ai/run-review.py --all --context ai/examples/oidc-logout-context.yaml
 
 Context YAML format:
   project: "Snaplink SSO"
@@ -43,13 +43,23 @@ import argparse
 import os
 import re
 import shlex
-import signal
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Optional
+
+_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_ROOT))
+os.environ.setdefault("PBATCH_SCRIPT_DIR", str(_ROOT))
+
+from pbatch import config as batch_config
+from pbatch.runner import (_kill_group, _read_stream,
+                           revalidate_existing as _revalidate_existing,
+                           run_validation as _bounded_validation)
+from pbatch.text_io import read_text_bounded
 
 try:
     import yaml
@@ -173,9 +183,15 @@ def _load_stage_schema() -> tuple[dict, dict]:
     sdlc_path = Path(__file__).parent / "sdlc.yaml"
     if not yaml or not sdlc_path.exists():
         return dict(_DEFAULT_STAGES), {k: dict(v) for k, v in _DEFAULT_STAGE_VARS.items()}
-    data = yaml.safe_load(sdlc_path.read_text(encoding="utf-8")) or {}
+    data = yaml.safe_load(read_text_bounded(
+        sdlc_path, batch_config.INPUT_MAX_BYTES, "review schema")) or {}
     stages_cfg = data.get("stages")
     if not isinstance(stages_cfg, dict) or not stages_cfg:
+        return dict(_DEFAULT_STAGES), {k: dict(v) for k, v in _DEFAULT_STAGE_VARS.items()}
+    if not all(isinstance(sid, str) and isinstance(value, dict)
+               and isinstance(value.get("template", ""), str)
+               and isinstance(value.get("vars", {}), dict)
+               for sid, value in stages_cfg.items()):
         return dict(_DEFAULT_STAGES), {k: dict(v) for k, v in _DEFAULT_STAGE_VARS.items()}
     stages = {sid: s.get("template", "") for sid, s in stages_cfg.items()}
     stage_vars = {sid: dict(s.get("vars", {})) for sid, s in stages_cfg.items()}
@@ -183,7 +199,7 @@ def _load_stage_schema() -> tuple[dict, dict]:
 
 
 def _load_agent_bin() -> str:
-    """Read agent.bin from ai-dev/pi-batch.yaml (shared with pi-batch.py,
+    """Read agent.bin from pi-batch.yaml (shared with pi-batch.py,
     which lives alongside this script's parent dir); default to 'pi' if
     absent."""
     if not yaml:
@@ -191,14 +207,15 @@ def _load_agent_bin() -> str:
     path = Path(__file__).parent.parent / "pi-batch.yaml"
     if not path.exists():
         return "pi"
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    data = yaml.safe_load(read_text_bounded(
+        path, batch_config.INPUT_MAX_BYTES, "agent configuration")) or {}
     return (data.get("agent") or {}).get("bin", "pi")
 
 
 STAGES, STAGE_VARS = _load_stage_schema()
 AGENT_BIN = _load_agent_bin()
 
-# pi-style session flags (shared with pi-batch.py via ai-dev/pi-batch.yaml
+# pi-style session flags (shared with pi-batch.py via pi-batch.yaml
 # agent.session_flags when present); {session}/{name} are substituted per run.
 _DEFAULT_SESSION_FLAGS = {
     "start": ["--session-id", "{session}", "--name", "{name}"],
@@ -207,14 +224,15 @@ _DEFAULT_SESSION_FLAGS = {
 
 
 def _load_session_flags() -> dict:
-    """Read agent.session_flags from ai-dev/pi-batch.yaml (shared with
+    """Read agent.session_flags from pi-batch.yaml (shared with
     pi-batch.py); fall back to pi-style flags when absent."""
     if not yaml:
         return {k: list(v) for k, v in _DEFAULT_SESSION_FLAGS.items()}
     path = Path(__file__).parent.parent / "pi-batch.yaml"
     if not path.exists():
         return {k: list(v) for k, v in _DEFAULT_SESSION_FLAGS.items()}
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    data = yaml.safe_load(read_text_bounded(
+        path, batch_config.INPUT_MAX_BYTES, "agent configuration")) or {}
     cfg = (data.get("agent") or {}).get("session_flags")
     if isinstance(cfg, dict):
         return {k: list(v) for k, v in cfg.items()}
@@ -229,7 +247,7 @@ def session_flags(key: str, session_id: str, session_name: str) -> list:
     return [f.replace("{session}", session_id).replace("{name}", session_name) for f in flags]
 
 
-# Named engineering gates declared in ai-dev/pi-batch.yaml (validators key),
+# Named engineering gates declared in pi-batch.yaml (validators key),
 # shared with pi-batch.py; like engineering.yaml for cli.py.
 _DEFAULT_VALIDATORS = {
     "quick": "python cli.py check",
@@ -243,7 +261,8 @@ def _load_validators() -> dict:
     path = Path(__file__).parent.parent / "pi-batch.yaml"
     if not path.exists():
         return dict(_DEFAULT_VALIDATORS)
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    data = yaml.safe_load(read_text_bounded(
+        path, batch_config.INPUT_MAX_BYTES, "agent configuration")) or {}
     v = data.get("validators")
     if isinstance(v, dict):
         merged = dict(_DEFAULT_VALIDATORS)
@@ -273,7 +292,16 @@ def load_context(path: str) -> dict:
     if not fpath.exists():
         print(f"ERROR: context file not found: {path}", file=sys.stderr)
         sys.exit(1)
-    return yaml.safe_load(fpath.read_text(encoding="utf-8")) or {}
+    try:
+        data = yaml.safe_load(read_text_bounded(
+            fpath, batch_config.INPUT_MAX_BYTES, "review context")) or {}
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
+    if not isinstance(data, dict):
+        print(f"ERROR: review context must be a mapping: {path}", file=sys.stderr)
+        sys.exit(1)
+    return data
 
 
 def context_to_vars(ctx: dict, stage: str) -> dict:
@@ -317,7 +345,8 @@ def context_to_vars(ctx: dict, stage: str) -> dict:
 
 
 def fill_template(template_path: Path, variables: dict) -> str:
-    text = template_path.read_text(encoding="utf-8")
+    text = read_text_bounded(template_path, batch_config.INPUT_MAX_BYTES,
+                             "review template")
     for key, value in variables.items():
         text = text.replace("{{" + key + "}}", str(value) if value else f"(not provided: {key})")
     return text
@@ -379,6 +408,7 @@ _AGENT_ERROR_PATTERNS = (
     re.compile(r"insufficient_?quota", re.IGNORECASE),
     re.compile(r"quota_?exceeded", re.IGNORECASE),
     re.compile(r"credit_?balance_?too_?low", re.IGNORECASE),
+    re.compile(r"insufficient\s+(?:balance|funds)", re.IGNORECASE),
     re.compile(r"billing_?error", re.IGNORECASE),
     re.compile(r"payment_?required", re.IGNORECASE),
     re.compile(r"invalid_?api_?key", re.IGNORECASE),
@@ -449,46 +479,98 @@ def _refuse_symlink_output(stage: str, out_file) -> bool:
         return True
     return False
 
+
+def _review_agent_command(args, prompt: str, session_flags: Optional[list]) -> list[str]:
+    """Build the configured review-agent invocation."""
+    cmd = [args.agent_bin or AGENT_BIN, "-p", prompt]
+    if args.model:
+        cmd.extend(["--model", args.model])
+    if session_flags:
+        cmd.extend(session_flags)
+    return cmd
+
+
+def _stage_output_file(args, stage: str) -> Path:
+    out_dir = stage_out_dir(args)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir / f"stage-{stage}.out.md"
+
+
+def _stage_timeout(args) -> Optional[int]:
+    """Return configured timeout or None when the value is unsafe."""
+    value = getattr(args, "timeout", 0)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value or 600
+
+
+def _prompt_size_error(prompt: str) -> str:
+    """Return a bounded-argv error before a review agent is spawned."""
+    size = len((prompt or "").encode("utf-8", errors="replace"))
+    limit = batch_config.PROMPT_MAX_BYTES
+    return (f"prompt exceeds {limit} bytes ({size} bytes)"
+            if limit > 0 and size > limit else "")
+
+
+def _invoke_review_agent(stage: str, args, out_file: Path, cmd: list,
+                         agent_bin: str, timeout: int) -> Optional[str]:
+    """Run the agent and reject transport/provider failures before saving."""
+    try:
+        rc, output = _run_agent(cmd, args.repo or os.getcwd(), timeout)
+    except FileNotFoundError:
+        print(f"ERROR: '{agent_bin}' not found in PATH.", file=sys.stderr)
+        return None
+    if rc == -2:
+        print(f"\nStage {stage} REJECTED: agent output exceeds "
+              f"{batch_config.OUTPUT_MAX_BYTES} bytes; output NOT saved to {out_file}",
+              file=sys.stderr, flush=True)
+        return None
+    if rc < 0:
+        print(f"\nStage {stage} REJECTED: agent timed out; output NOT saved to {out_file}",
+              file=sys.stderr, flush=True)
+        return None
+    text = "".join(output)
+    reason = agent_failure_reason(rc, text)
+    if reason:
+        print(f"\nStage {stage} REJECTED: {reason}; output NOT saved to {out_file}",
+              file=sys.stderr, flush=True)
+        return None
+    return text
+
+
 def run_stage(stage: str, prompt: str, args, session_flags: Optional[list] = None) -> int:
     """Invoke the agent and persist only validated output. Output streams to
     the terminal while running; stage-NN.out.md is written only when the
     agent exits 0 and the output carries no provider/CLI failure signature.
     Rejected output is not saved and the stage fails, so quota or rate-limit
     replies cannot become committed review artifacts."""
-    out_dir = stage_out_dir(args)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_file = out_dir / f"stage-{stage}.out.md"
+    out_file = _stage_output_file(args, stage)
+
+    prompt_error = _prompt_size_error(prompt)
+    if prompt_error:
+        print(f"\nStage {stage} REJECTED: {prompt_error}; output NOT saved to {out_file}",
+              file=sys.stderr, flush=True)
+        return 1
+
+    configured_timeout = _stage_timeout(args)
+    if configured_timeout is None:
+        print(f"\nStage {stage} REJECTED: timeout must be non-negative; "
+              f"output NOT saved to {out_file}", file=sys.stderr, flush=True)
+        return 1
 
     agent_bin = args.agent_bin or AGENT_BIN
-    cmd = [agent_bin, "-p", prompt]
-    if args.model:
-        cmd.extend(["--model", args.model])
-    if session_flags:
-        cmd.extend(session_flags)
+    cmd = _review_agent_command(args, prompt, session_flags)
 
     _print_stage_banner(stage, out_file)
-
-    try:
-        rc, output = _run_agent(cmd, args.repo or os.getcwd(), getattr(args, "timeout", 0) or 600)
-    except FileNotFoundError:
-        print(f"ERROR: '{agent_bin}' not found in PATH.", file=sys.stderr)
-        return 1
-
-    if rc < 0:
-        print(f"\nStage {stage} REJECTED: agent timed out; output NOT saved to {out_file}", file=sys.stderr, flush=True)
-        return 1
-
-    output = "".join(output)
-    reason = agent_failure_reason(rc, output)
-    if reason:
-        print(f"\nStage {stage} REJECTED: {reason}; output NOT saved to {out_file}", file=sys.stderr, flush=True)
+    output = _invoke_review_agent(stage, args, out_file, cmd, agent_bin, configured_timeout)
+    if output is None:
         return 1
 
     # Engineering gates: write to a temp file, run every resolved validator
     # (AND semantics), then atomically rename on success (or delete on
     # failure) so a result that fails the project checks never lands as a
     # review file. {output} points at the temp file so gates can inspect it.
-    validate_spec = ",".join(x for x in (getattr(args, "validate", ""), getattr(args, "validate_cmd", "")) if x)
+    validate_spec = _validation_spec(args)
     commands = resolve_validators(validate_spec)
     if commands:
         return _run_validators(stage, out_file, output, commands, args.repo or os.getcwd())
@@ -499,6 +581,11 @@ def run_stage(stage: str, prompt: str, args, session_flags: Optional[list] = Non
     out_file.write_text(output, encoding="utf-8")
     print(f"\nWROTE: {out_file}", flush=True)
     return 0
+
+
+def _validation_spec(args) -> str:
+    return ",".join(value for value in (
+        getattr(args, "validate", ""), getattr(args, "validate_cmd", "")) if value)
 
 
 
@@ -524,34 +611,31 @@ def _run_agent(cmd: list, cwd: str, timeout: int) -> tuple[int, list[str]]:
         assert proc.stdout is not None
 
         lines: list[str] = []
-
-        def _read():
-            for line in proc.stdout:
-                print(line, end="", flush=True)
-                lines.append(line)
-
-        reader = threading.Thread(target=_read, daemon=True)
+        overflow = [False]
+        reader = threading.Thread(
+            target=_read_stream,
+            args=(proc.stdout, "", lines, batch_config.OUTPUT_MAX_BYTES,
+                  overflow, True, sys.stdout),
+            daemon=True,
+        )
         reader.start()
+        deadline = time.monotonic() + timeout
         try:
-            rc = proc.wait(timeout=timeout)
+            rc = proc.wait(timeout=max(0.1, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
-            # Kill the whole group: the direct child may have spawned helpers
-            # (e.g. a shell running sleep) that keep the pipe open.
-            os.killpg(proc.pid, signal.SIGKILL)
-            reader.join(timeout=5)
+            _kill_group(proc)
+            reader.join(timeout=1)
             return -1, lines
-        reader.join(timeout=5)
+        reader.join(timeout=max(0, deadline - time.monotonic()))
+        if reader.is_alive():
+            _kill_group(proc)
+            reader.join(timeout=1)
+            return -1, lines
         completed = True
-        return rc, lines
+        return (-2 if overflow[0] else rc), lines
     finally:
         if proc is not None and not completed:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                try:
-                    proc.kill()
-                except Exception:
-                    pass  # process already gone
+            _kill_group(proc)
 
 
 def _run_validators(stage: str, out_file, output: str, commands: list, cwd: str) -> int:
@@ -572,18 +656,16 @@ def _run_validators(stage: str, out_file, output: str, commands: list, cwd: str)
     tmp_file.write_text(output, encoding="utf-8")
     for raw in commands:
         cmd = raw.replace("{output}", shlex.quote(str(tmp_file))).replace("{cwd}", shlex.quote(cwd))
-        try:
-            vproc = subprocess.run(cmd, shell=True, cwd=cwd,
-                                   capture_output=True, text=True, timeout=600)
-        except subprocess.TimeoutExpired:
-            vproc = None
-        if vproc is not None and vproc.returncode == 0:
+        result = _bounded_validation(cmd, cwd, timeout=600)
+        if result.ok:
             continue
         tmp_file.unlink(missing_ok=True)
-        print(f"\nStage {stage} REJECTED: validation failed{'' if vproc is None else f' (exit={vproc.returncode})'}: {cmd}; output NOT saved to {out_file}", file=sys.stderr, flush=True)
-        if vproc is not None:
-            for line in (vproc.stdout or "").strip().splitlines()[-5:]:
-                print(f"  | {line}", file=sys.stderr)
+        detail = " (timeout)" if result.timed_out else f" (exit={result.exit_code})"
+        print(f"\nStage {stage} REJECTED: validation failed{detail}: {cmd}; output NOT saved to {out_file}", file=sys.stderr, flush=True)
+        for line in (result.stdout or "").strip().splitlines()[-5:]:
+            print(f"  | {line}", file=sys.stderr)
+        for line in (result.stderr or "").strip().splitlines()[-5:]:
+            print(f"  | {line}", file=sys.stderr)
         return 1
     tmp_file.rename(out_file)
     print(f"\nWROTE: {out_file} (validated)", flush=True)
@@ -610,7 +692,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rfcs", help="Comma-separated RFC/standard references")
     p.add_argument("--repo", help="Repository path (default: cwd)")
     p.add_argument("--model", default="", help="Model for pi invocation")
-    p.add_argument("--agent-bin", default="", help="Agent CLI binary (default: ai-dev/pi-batch.yaml agent.bin, else 'pi')")
+    p.add_argument("--agent-bin", default="", help="Agent CLI binary (default: pi-batch.yaml agent.bin, else 'pi')")
     p.add_argument("--timeout", type=int, default=0,
                    help="Per-stage agent timeout in seconds (default: 600; 0 = default)")
     p.add_argument("--session-mode", choices=["new", "shared"], default="new",
@@ -618,7 +700,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--session-name", default="",
                    help="Reproducible session base name (default: context name); shared sessions continue across runs")
     p.add_argument("--validate", default="",
-                   help="Named validators from ai-dev/pi-batch.yaml validators registry, comma-separated (e.g. 'quick,gofmt'); AND semantics. Unknown names are treated as raw shell commands")
+                   help="Named validators from pi-batch.yaml validators registry, comma-separated (e.g. 'quick,gofmt'); AND semantics. Unknown names are treated as raw shell commands")
     p.add_argument("--validate-cmd", default="",
                    help="Engineering gate run against the agent result BEFORE stage-NN.out.md is written; {output} and {cwd} placeholders are substituted. Non-zero exit rejects the stage and leaves no file")
     p.add_argument("--output-dir", metavar="DIR", help="Output directory for review files")
@@ -628,7 +710,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    args = build_parser().parse_args()
+    parser = build_parser()
+    args = parser.parse_args()
+    if args.timeout < 0:
+        parser.error("--timeout must be non-negative (0 uses the default)")
 
     ctx = _build_context(args)
     prompts_dir = Path(__file__).parent / "prompts"
@@ -648,6 +733,20 @@ def main() -> None:
     if failures:
         print(f"\nFailed stages: {', '.join(failures)}", file=sys.stderr)
         sys.exit(1)
+
+
+def _chain_stage_output(stage: str, args, prior_outputs: dict, failures: list) -> None:
+    """Load a just-written output through the same bounded chain gate."""
+    out_file = stage_out_dir(args) / f"stage-{stage}.out.md"
+    if not out_file.exists():
+        return
+    try:
+        prior_outputs[stage] = read_text_bounded(
+            out_file, batch_config.OUTPUT_MAX_BYTES, "review output")
+    except ValueError as exc:
+        print(f"ERROR: completed stage {stage} cannot be chained: {exc}",
+              file=sys.stderr, flush=True)
+        failures.append(stage)
 
 
 def _run_stage_loop(args, stages_to_run: list, prompts_dir, ctx: dict, out_dir, session_name: str, prior_outputs: dict) -> list:
@@ -691,17 +790,23 @@ def _run_stage_loop(args, stages_to_run: list, prompts_dir, ctx: dict, out_dir, 
             continue
 
         # Keep completed output for chaining into later stages of --all.
-        out_file = stage_out_dir(args) / f"stage-{stage}.out.md"
-        if out_file.exists():
-            prior_outputs[stage] = out_file.read_text(encoding="utf-8")
+        _chain_stage_output(stage, args, prior_outputs, failures)
     return failures
 
 
 def _stage_prompt(args, stage: str, prompts_dir, ctx: dict, prior_outputs: dict) -> tuple[str, bool]:
     """Fill the stage template with context and chained variables from
     prior stage outputs. Returns (prompt, missing_template)."""
-    template_file = prompts_dir / STAGES[stage]
-    if not template_file.exists():
+    base = prompts_dir.resolve()
+    candidate = base / STAGES[stage]
+    template_file = candidate.resolve()
+    try:
+        template_file.relative_to(base)
+    except ValueError:
+        print(f"ERROR: template escapes prompts directory: {STAGES[stage]}",
+              file=sys.stderr)
+        return "", True
+    if candidate.is_symlink() or not template_file.is_file():
         print(f"ERROR: template not found: {template_file}", file=sys.stderr)
         return "", True
 
@@ -709,7 +814,11 @@ def _stage_prompt(args, stage: str, prompts_dir, ctx: dict, prior_outputs: dict)
     variables = {k: ctx.get(k.lower(), v) for k, v in defaults.items()}
     variables.update(context_to_vars(ctx, stage))
     variables.update(chain_variables(prior_outputs, stage, variables, defaults))
-    return fill_template(template_file, variables), False
+    try:
+        return fill_template(template_file, variables), False
+    except ValueError as exc:
+        print(f"ERROR: template rejected: {exc}", file=sys.stderr)
+        return "", True
 
 
 def _build_context(args) -> dict:
@@ -765,10 +874,21 @@ def _resume_prior(args, stages_to_run: list, out_dir) -> tuple[dict, int]:
     a non-empty file (they ran and passed validation last time; rejected
     stages never leave a file, so they rerun). Returns (prior_outputs, count)."""
     prior_outputs: dict = {}
+    validate_spec = _validation_spec(args)
+    workdir = args.repo or os.getcwd()
     for stage in stages_to_run:
         out_file = out_dir / f"stage-{stage}.out.md"
-        if out_file.exists() and out_file.stat().st_size > 0:
-            prior_outputs[stage] = out_file.read_text(encoding="utf-8")
+        if not out_file.exists():
+            continue
+        if not _revalidate_existing(out_file, validate_spec, workdir):
+            print(f"  Stage {stage}: REGENERATE (saved output failed current validation)",
+                  file=sys.stderr, flush=True)
+            continue
+        try:
+            prior_outputs[stage] = read_text_bounded(
+                out_file, batch_config.OUTPUT_MAX_BYTES, "review output")
+        except ValueError as exc:
+            print(f"  Stage {stage}: REGENERATE ({exc})", file=sys.stderr, flush=True)
     return prior_outputs, len(prior_outputs)
 
 

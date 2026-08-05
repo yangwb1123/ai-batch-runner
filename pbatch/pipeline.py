@@ -8,7 +8,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -19,11 +18,14 @@ from typing import Optional
 from . import config
 from .config import AGENT_DEFAULT_TIMEOUT, AGENT_DEFAULT_WORKERS, log, yaml
 from .models import Pipeline, Stage, Task
-from .meta import combine_outputs, run_meta_stage
+from .pipeline_schema import validate_pipeline
+from .evidence import combine_outputs, source_manifest
+from .meta import run_meta_stage
 from .reuse import fingerprint as reuse_fp
 from .reuse import reuse_decision, write_sidecar
-from .runner import _save_validated, print_summary, run_parallel, run_serial, run_task
-
+from .runner import (_save_validated, print_summary, run_parallel,
+                     run_argv, run_serial, run_task, run_validation)
+from .text_io import read_text_bounded
 def load_pipeline(path: str) -> Pipeline:
     """Load pipeline definition from YAML file."""
     if not yaml:
@@ -35,11 +37,17 @@ def load_pipeline(path: str) -> Pipeline:
         log.error("Pipeline file not found: %s", path)
         sys.exit(1)
     
-    raw = fpath.read_text(encoding="utf-8")
-    data = yaml.safe_load(raw)
-    
-    if not isinstance(data, dict) or "stages" not in data:
-        log.error("Invalid pipeline format. Expected 'stages' key.")
+    try:
+        data = yaml.safe_load(read_text_bounded(
+            fpath, config.INPUT_MAX_BYTES, "pipeline file"))
+    except Exception as exc:
+        log.error("Invalid pipeline YAML: %s", exc)
+        sys.exit(1)
+    errors = validate_pipeline(data)
+    errors.extend(_pipeline_resource_errors(data))
+    if errors:
+        for error in errors:
+            log.error("Invalid pipeline: %s", error)
         sys.exit(1)
     
     # Global settings (applied to all stages that don't set it explicitly)
@@ -49,7 +57,6 @@ def load_pipeline(path: str) -> Pipeline:
     
     return Pipeline(stages=stages, decision_log=data.get("decision_log", ""),
                     archive_dir=data.get("archive_dir", ""), name=Path(path).stem)
-
 
 def _parse_stage_def(s: dict, global_git_commit: bool) -> Stage:
     """Map one YAML stage definition onto a Stage (untrusted keys ignored;
@@ -65,12 +72,18 @@ def _parse_stage_def(s: dict, global_git_commit: bool) -> Stage:
         mode=s.get("mode", "serial"),
         workers=s.get("workers", AGENT_DEFAULT_WORKERS),
         aggregate=s.get("aggregate", False),
-        validate_cmd=s.get("validate_cmd"),
+        # Public YAML uses `validate`; `validate_cmd` remains the explicit
+        # spelling and wins when both are present.
+        validate_cmd=s.get("validate_cmd", s.get("validate")),
         meta=s.get("meta", False),
         meta_prompt=s.get("meta_prompt", ""),
         role_dir=s.get("role_dir", ""),
+        role_keywords=s.get("role_keywords", ""),
         output_dir=s.get("output_dir", ""),
         max_iterations=s.get("max_iterations", 3),
+        max_roles_per_iteration=s.get("max_roles_per_iteration", 3),
+        relevance_enabled=s.get("relevance_enabled", True),
+        relevance_min_score=s.get("relevance_min_score", 0),
         gate=s.get("gate", False),
         approval=s.get("approval", False),
         from_prompt=s.get("from_prompt", ""),
@@ -78,12 +91,42 @@ def _parse_stage_def(s: dict, global_git_commit: bool) -> Stage:
         tasks=s.get("tasks", []),
         commands=s.get("commands", []),
         commands_parallel=s.get("commands_parallel", False),
+        command_timeout=s.get("command_timeout", config.COMMAND_TIMEOUT),
+        command_output_max_bytes=s.get(
+            "command_output_max_bytes", config.COMMAND_OUTPUT_MAX_BYTES),
         cwd=s.get("cwd", ""),
         git_commit=s.get("git_commit", global_git_commit),
         commit_message=s.get("commit_message", ""),
     )
 
 
+def _pipeline_resource_errors(data: dict) -> list[str]:
+    errors = []
+    stages = data.get("stages", []) if isinstance(data, dict) else []
+    for stage in stages if isinstance(stages, list) else []:
+        if not isinstance(stage, dict):
+            continue
+        tasks = stage.get("tasks", [])
+        for index, task in enumerate(tasks if isinstance(tasks, list) else [], 1):
+            if not isinstance(task, dict):
+                continue
+            value = task.get("prompt_template")
+            if not value or not isinstance(value, str):
+                continue
+            path = Path(value)
+            if not path.is_file() or path.is_symlink():
+                errors.append(
+                    f"stage '{stage.get('name', '')}'.tasks[{index}].prompt_template is missing or unsafe: {value}")
+            else:
+                try:
+                    oversized = path.stat().st_size > config.INPUT_MAX_BYTES
+                except OSError:
+                    oversized = True
+                if oversized:
+                    errors.append(
+                        f"stage '{stage.get('name', '')}'.tasks[{index}].prompt_template exceeds "
+                        f"{config.INPUT_MAX_BYTES} bytes: {value}")
+    return errors
 def _task_prompt(task_def: dict, input_content: str, input_stem: str, input_path: str) -> str:
     """Build the prompt for a task definition: a literal 'prompt' string or
     a 'prompt_template' file, both with {input_content}/{input_stem}/{input_path}
@@ -91,15 +134,14 @@ def _task_prompt(task_def: dict, input_content: str, input_stem: str, input_path
     prompt = task_def.get("prompt", "")
     prompt_template_path = Path(task_def.get("prompt_template", ""))
     if task_def.get("prompt_template") and prompt_template_path.exists():
-        prompt = prompt_template_path.read_text(encoding="utf-8")
+        prompt = read_text_bounded(prompt_template_path, config.INPUT_MAX_BYTES,
+                                   "prompt template")
     if not prompt:
         log.error("Task in stage needs 'prompt' or an existing 'prompt_template' file")
         return ""
     return (prompt.replace("{input_content}", input_content)
                  .replace("{input_stem}", input_stem)
                  .replace("{input_path}", input_path))
-
-
 def _expected_fp(prompt: str, out: str, validate_cmd: str, model: str, provider: str, fp_mode: bool) -> Optional[str]:
     """T9: fingerprint for a reuse candidate when --reuse-fingerprint is on
     (None otherwise); a mismatch regenerates the artifact. model/provider
@@ -111,19 +153,22 @@ def _expected_fp(prompt: str, out: str, validate_cmd: str, model: str, provider:
     return reuse_fp(prompt, out, validate_cmd or "", model, provider)
 
 
-def _task_from_def(task_def: dict, prompt: str, output_path: str, model_override: str = "", timeout_override: int = 0) -> Task:
+def _task_from_def(task_def: dict, prompt: str, output_path: str, model_override: str = "",
+                   timeout_override: int = 0, stage: Optional[Stage] = None) -> Task:
     """Build a task from a pipeline template definition, applying CLI-level
     model and timeout overrides on top of per-task values."""
     task = Task(
         prompt=prompt,
         output=output_path,
-        model=task_def.get("model", ""),
-        provider=task_def.get("provider", ""),
-        thinking=task_def.get("thinking", ""),
-        tools=task_def.get("tools", ""),
-        exclude_tools=task_def.get("exclude_tools", ""),
-        cwd=task_def.get("cwd", ""),
+        model=task_def.get("model") or (stage.model if stage else ""),
+        provider=task_def.get("provider") or (stage.provider if stage else ""),
+        thinking=task_def.get("thinking") or "",
+        tools=task_def.get("tools") or "",
+        exclude_tools=task_def.get("exclude_tools") or "",
+        cwd=task_def.get("cwd", stage.cwd if stage else ""),
         timeout=task_def.get("timeout", AGENT_DEFAULT_TIMEOUT),
+        env=dict(task_def.get("env", {})),
+        validate=task_def.get("validate"),
     )
     if model_override:
         task.model = model_override
@@ -151,25 +196,25 @@ def _aggregate_tasks(stage: Stage, prev_outputs: list, model_override: str = "",
     tasks = []
     reused = []
     for task_def in stage.tasks:
-        prompt = _task_prompt(task_def, combined, "combined", ", ".join(prev_outputs))
+        prompt = _task_prompt(task_def, combined, "combined", source_manifest(prev_outputs))
         if not prompt:
             continue
         output_path = task_def.get("output", "").replace("{input_stem}", "combined")
-        task = _task_from_def(task_def, prompt, output_path, model_override, timeout_override)
+        task = _task_from_def(task_def, prompt, output_path, model_override, timeout_override, stage)
         # T9: fingerprint the task's EFFECTIVE inputs (resolved output path
         # + task-level model/provider) so the sidecar written after success
         # matches what the reuse check hashed (round-4 finding M6/P1-3).
         out_resolved = str(task.output_path()) if task.output else ""
-        fp = _expected_fp(prompt, out_resolved, validate_cmd, task.model, task.provider, fingerprint_mode)
-        if reuse and task.output and reuse_decision(out_resolved, validate_cmd, legacy=reuse_legacy, expected_fp=fp):
+        effective_validate = task.validate if task.validate is not None else validate_cmd
+        fp = _expected_fp(prompt, out_resolved, effective_validate, task.model,
+                          task.provider, fingerprint_mode)
+        if reuse and task.output and reuse_decision(
+                out_resolved, effective_validate, legacy=reuse_legacy, expected_fp=fp):
             log.info("REUSE: %s (reused+validated)", output_path)
             reused.append(output_path)
             continue
         tasks.append(task)
     return tasks, reused
-
-
-
 
 def _stage_from_prompt_tasks(stage: Stage, reuse: bool, model_override: str, timeout_override: int,
                              validate_cmd: str = "", reuse_legacy: bool = False,
@@ -179,7 +224,8 @@ def _stage_from_prompt_tasks(stage: Stage, reuse: bool, model_override: str, tim
     if not stage.output:
         log.error("Stage '%s': from_prompt requires output", stage.name)
         return [], []
-    task = Task(prompt=stage.from_prompt, output=stage.output)
+    task = Task(prompt=stage.from_prompt, output=stage.output, model=stage.model,
+                provider=stage.provider, cwd=stage.cwd)
     if model_override:
         task.model = model_override
     if timeout_override:
@@ -214,7 +260,8 @@ def _stage_from_dir_tasks(stage: Stage, reuse: bool, model_override: str, timeou
         # output would be double-prefixed by output_path()'s cwd-aware
         # resolution (docs/inputs/docs/inputs/...).
         out_path = (fpath.parent / (fpath.stem + stage.output_suffix)).resolve()
-        prompt = fpath.read_text(encoding="utf-8")
+        prompt = read_text_bounded(fpath, config.INPUT_MAX_BYTES,
+                                   "stage input")
         task = Task(prompt=prompt, output=str(out_path), cwd=str(fpath.parent))
         task.model = stage.model or task.model
         task.provider = stage.provider or task.provider
@@ -237,10 +284,10 @@ def _stage_from_outputs_tasks(stage: Stage, stage_outputs: dict, reuse: bool, mo
                               fingerprint_mode: bool = False) -> tuple[list[Task], list[str]]:
     """Tasks fed by the previous stage's artifacts: one combined task per
     template (aggregate) or one task per artifact per template."""
-    if stage.from_outputs not in stage_outputs:
-        log.error("Previous stage '%s' not found", stage.from_outputs)
+    names, prev_outputs, missing = _collect_upstream(stage.from_outputs, stage_outputs)
+    if missing:
+        log.error("Previous stage(s) not found: %s", ", ".join(missing))
         return [], []
-    prev_outputs = stage_outputs[stage.from_outputs]
     tasks: list[Task] = []
     reused: list[str] = []
     if stage.aggregate:
@@ -255,7 +302,7 @@ def _stage_from_outputs_tasks(stage: Stage, stage_outputs: dict, reuse: bool, mo
         if not out_path.exists():
             log.warning("Output file not found: %s", out_path)
             continue
-        input_content = out_path.read_text(encoding="utf-8")
+        input_content = combine_outputs([str(out_path)])
         input_stem = out_path.stem
         # Create tasks from templates (prompt string or template file,
         # both with {input_content}/{input_stem} placeholders)
@@ -264,48 +311,67 @@ def _stage_from_outputs_tasks(stage: Stage, stage_outputs: dict, reuse: bool, mo
             if not prompt:
                 continue
             output_path = task_def.get("output", "").replace("{input_stem}", input_stem)
-            task = _task_from_def(task_def, prompt, output_path, model_override, timeout_override)
+            task = _task_from_def(task_def, prompt, output_path, model_override, timeout_override, stage)
             # T9 (round-4 M6): fingerprint the task's effective inputs so
             # the sidecar written after success matches this hash.
             out_resolved = str(task.output_path()) if task.output else ""
-            fp = _expected_fp(prompt, out_resolved, validate_cmd, task.model, task.provider, fingerprint_mode)
-            if reuse and task.output and reuse_decision(out_resolved, validate_cmd, legacy=reuse_legacy, expected_fp=fp):
+            effective_validate = task.validate if task.validate is not None else validate_cmd
+            fp = _expected_fp(prompt, out_resolved, effective_validate, task.model,
+                              task.provider, fingerprint_mode)
+            if reuse and task.output and reuse_decision(
+                    out_resolved, effective_validate, legacy=reuse_legacy, expected_fp=fp):
                 log.info("REUSE: %s (reused+validated)", output_path)
                 reused.append(output_path)
                 continue
             tasks.append(task)
-    log.info("Loaded %d tasks from %d outputs of stage '%s'",
-             len(tasks), len(prev_outputs), stage.from_outputs)
+    log.info("Loaded %d tasks from %d outputs of stage(s) '%s'",
+             len(tasks), len(prev_outputs), ", ".join(names))
     return tasks, reused
+
+
+def _collect_upstream(from_outputs, stage_outputs: dict) -> tuple[list[str], list[str], list[str]]:
+    """Resolve one or many upstream stage names into one ordered evidence list."""
+    raw = from_outputs if isinstance(from_outputs, (list, tuple)) else [from_outputs]
+    names = [str(name).strip() for name in raw if str(name).strip()]
+    missing = [name for name in names if name not in stage_outputs]
+    outputs = []
+    for name in names:
+        outputs.extend(stage_outputs.get(name, []))
+    return names, outputs, missing
 
 
 def execute_stage(stage: Stage, stage_outputs: dict[str, list[str]], model_override: str = "", reuse: bool = False, timeout_override: int = 0,
                   session_mode: str = "new", session_name: str = "", validate_cmd: str = "",
                   reuse_legacy: bool = False, fingerprint_mode: bool = False,
                   approval_file: str = "") -> tuple[list[TaskResult], bool]:
-    """Execute one stage and return (task_results, stage_ok). stage_ok is
-    False when any task or configured post-stage command failed, so command
-    hooks act as a failure gate for the pipeline."""
+    """Execute one stage; task or post-stage command failures make it fail."""
     _log_stage_header(stage, reuse)
-    
     # Per-stage engineering gate: the stage's own validate_cmd wins over the
     # CLI default ("" disables validation for this stage), and per-task
     # validate fields override both inside run_serial/run_parallel.
     stage_validate = stage.validate_cmd if stage.validate_cmd is not None else validate_cmd
-
     tasks, reused_outputs, early = _build_stage_tasks(stage, stage_outputs, reuse, model_override, timeout_override,
                                                       stage_validate, reuse_legacy, fingerprint_mode, session_name)
     if early is not None:
-        return early
-
+        results, stage_ok = early
+        outputs = stage_outputs.get(stage.name, [])
+        return _finalize_stage(stage, results, outputs, stage_ok, approval_file)
     if not tasks:
-        return _empty_stage_result(stage, stage_outputs, reused_outputs)
+        results, stage_ok = _empty_stage_result(stage, stage_outputs, reused_outputs)
+        outputs = stage_outputs.get(stage.name, reused_outputs)
+        return _finalize_stage(stage, results, outputs, stage_ok, approval_file)
+
+    for task in tasks:
+        task.memory.setdefault("stage", stage.name)
 
     # Shared sessions must not run in parallel: interleaved calls would
     # corrupt the conversation order inside one session.
     if session_mode != "new" and stage.mode == "parallel":
         log.error("Stage '%s': --session-mode %s requires serial execution (parallel would interleave one session)",
                   stage.name, session_mode)
+        from .memory import record_stage
+        record_stage(stage.name, "FAILED", "shared session cannot run in parallel",
+                     [], stage.cwd or os.getcwd(), session_name)
         return [], False
 
     stage_session_id = f"{session_name}-{stage.name}" if session_mode == "per-stage" else session_name
@@ -321,13 +387,30 @@ def execute_stage(stage: Stage, stage_outputs: dict[str, list[str]], model_overr
     if fingerprint_mode:
         _write_stage_sidecars(results, stage_validate)
 
-    stage_ok = all(r.success for r in results)
-    stage_ok = _apply_approval(stage, stage_ok, outputs, approval_file)
-    if not _run_stage_commands(stage):
-        stage_ok = False
+    return _finalize_stage(
+        stage, results, outputs, all(r.success for r in results), approval_file)
 
-    _git_commit_stage(stage, outputs)  # failures are advisory, not a stage failure
 
+def _finalize_stage(stage: Stage, results: list[TaskResult], outputs: list[str],
+                    stage_ok: bool, approval_file: str) -> tuple[list[TaskResult], bool]:
+    """Apply stage-wide gates even when every artifact was reused."""
+    task_ok = stage_ok
+    approved = _apply_approval(stage, task_ok, outputs, approval_file)
+    commands_ok = _run_stage_commands(stage)
+    stage_ok = task_ok and approved and commands_ok
+    if not stage_ok:
+        from .memory import record_stage
+        reason = next((str(result.reason).strip() for result in results
+                       if not result.success and str(result.reason).strip()), "")
+        if not reason:
+            reason = "task execution failed" if not task_ok else "stage failed"
+        if task_ok and stage.approval and not approved:
+            reason += "; approval rejected or missing"
+        if not commands_ok:
+            reason += "; stage command failed"
+        record_stage(stage.name, "FAILED", reason[:500], outputs,
+                     stage.cwd or os.getcwd())
+    _git_commit_stage(stage, outputs)  # advisory: commit issues do not fail the stage
     return results, stage_ok
 
 
@@ -420,24 +503,32 @@ def _build_stage_tasks(stage: Stage, stage_outputs: dict, reuse: bool, model_ove
 
     # Dynamic role orchestration (meta stage) is handled entirely here.
     if stage.meta:
-        return [], [], run_meta_stage(stage, stage_outputs, model_override, timeout_override, validate_cmd,
-                                       session_name)
+        return [], [], run_meta_stage(
+            stage, stage_outputs, model_override, timeout_override,
+            validate_cmd, session_name, reuse, reuse_legacy, fingerprint_mode)
 
-    if stage.from_prompt:
-        tasks, reused_outputs = _stage_from_prompt_tasks(stage, reuse, model_override, timeout_override,
-                                                         validate_cmd, reuse_legacy, fingerprint_mode)
-        if not tasks and not reused_outputs:
-            return [], [], ([], False)
-    elif stage.from_dir:
-        tasks, reused_outputs = _stage_from_dir_tasks(stage, reuse, model_override, timeout_override,
-                                                      validate_cmd, reuse_legacy, fingerprint_mode)
-    elif stage.from_outputs:
-        tasks, reused_outputs = _stage_from_outputs_tasks(stage, stage_outputs, reuse, model_override, timeout_override,
+    try:
+        if stage.from_prompt:
+            tasks, reused_outputs = _stage_from_prompt_tasks(stage, reuse, model_override, timeout_override,
+                                                             validate_cmd, reuse_legacy, fingerprint_mode)
+            if not tasks and not reused_outputs:
+                return [], [], ([], False)
+        elif stage.from_dir:
+            tasks, reused_outputs = _stage_from_dir_tasks(stage, reuse, model_override, timeout_override,
                                                           validate_cmd, reuse_legacy, fingerprint_mode)
-        if stage.from_outputs not in stage_outputs and not tasks:
+        elif stage.from_outputs:
+            tasks, reused_outputs = _stage_from_outputs_tasks(stage, stage_outputs, reuse, model_override, timeout_override,
+                                                              validate_cmd, reuse_legacy, fingerprint_mode)
+            _, _, missing = _collect_upstream(stage.from_outputs, stage_outputs)
+            if missing and not tasks:
+                return [], [], ([], False)
+        else:
+            log.error("Stage '%s' must have either 'from_dir' or 'from_outputs'", stage.name)
             return [], [], ([], False)
-    else:
-        log.error("Stage '%s' must have either 'from_dir' or 'from_outputs'", stage.name)
+    except ValueError as exc:
+        # Source/template policy failures (including oversized files and
+        # invalid UTF-8) are stage failures, not empty successful stages.
+        log.error("Stage '%s' input rejected: %s", stage.name, exc)
         return [], [], ([], False)
     return tasks, reused_outputs, None
 
@@ -473,13 +564,20 @@ def _run_stage_commands(stage: Stage) -> bool:
 
     if stage.commands_parallel:
         with ThreadPoolExecutor(max_workers=len(stage.commands)) as pool:
-            futs = {pool.submit(_run_single_cmd, cmd, i, len(stage.commands), cmd_cwd): cmd for i, cmd in enumerate(stage.commands, 1)}
+            futs = {
+                pool.submit(_run_single_cmd, cmd, i, len(stage.commands), cmd_cwd,
+                            stage.command_timeout,
+                            stage.command_output_max_bytes): cmd
+                for i, cmd in enumerate(stage.commands, 1)
+            }
             cmd_results = [f.result() for f in as_completed(futs)]
         all_cmd_ok = all(cmd_results)
     else:
         all_cmd_ok = True
         for i, cmd in enumerate(stage.commands, 1):
-            if not _run_single_cmd(cmd, i, len(stage.commands), cmd_cwd):
+            if not _run_single_cmd(cmd, i, len(stage.commands), cmd_cwd,
+                                   stage.command_timeout,
+                                   stage.command_output_max_bytes):
                 all_cmd_ok = False
 
     if all_cmd_ok:
@@ -489,31 +587,28 @@ def _run_stage_commands(stage: Stage) -> bool:
     return all_cmd_ok
 
 
-def _run_single_cmd(cmd: str, index: int, total: int, cmd_cwd: str) -> bool:
-    """Run one post-stage shell command and stream the tail of its output."""
+def _run_single_cmd(cmd: str, index: int, total: int, cmd_cwd: str,
+                    timeout: int, output_max_bytes: int) -> bool:
+    """Run one post-stage command with a hard process-tree deadline."""
     log.info("CMD [%d/%d]: %s", index, total, cmd)
-    try:
-        proc = subprocess.run(
-            cmd, shell=True, cwd=cmd_cwd,
-            capture_output=True, text=True, timeout=600
-        )
-        if proc.returncode == 0:
-            log.info("CMD OK (exit=0) [%d/%d]", index, total)
-            if proc.stdout:
-                for line in proc.stdout.strip().split("\n")[-10:]:
-                    log.info("  | %s", line)
-        else:
-            log.warning("CMD FAILED (exit=%d) [%d/%d]", proc.returncode, index, total)
-            if proc.stderr:
-                for line in proc.stderr.strip().split("\n")[-10:]:
-                    log.warning("  | %s", line)
-            if proc.stdout:
-                for line in proc.stdout.strip().split("\n")[-5:]:
-                    log.info("  | %s", line)
-        return proc.returncode == 0
-    except Exception as e:
-        log.warning("CMD ERROR [%d/%d]: %s", index, total, e)
-        return False
+    result = run_validation(cmd, cmd_cwd, timeout=timeout, cap=output_max_bytes)
+    if result.ok:
+        log.info("CMD OK (exit=0) [%d/%d]", index, total)
+        _log_command_tail(result.stdout, log.info, 10)
+        return True
+    if result.timed_out:
+        log.warning("CMD FAILED (timeout=%ss) [%d/%d]", timeout, index, total)
+    else:
+        log.warning("CMD FAILED (exit=%d) [%d/%d]", result.exit_code, index, total)
+    _log_command_tail(result.stderr, log.warning, 10)
+    _log_command_tail(result.stdout, log.info, 5)
+    return False
+
+
+def _log_command_tail(value: str, writer, lines: int) -> None:
+    """Log only the already-bounded diagnostic tail for a stage command."""
+    for line in (value or "").strip().splitlines()[-lines:]:
+        writer("  | %s", line)
 
 
 def _git_commit_stage(stage: Stage, outputs: list) -> bool:
@@ -523,19 +618,19 @@ def _git_commit_stage(stage: Stage, outputs: list) -> bool:
         return True
     try:
         commit_msg = stage.commit_message or "[pi-batch] Stage: %s - %d tasks completed" % (stage.name, len(outputs))
-        file_list = " ".join(["\"%s\"" % o for o in outputs])
+        git_cwd = stage.cwd or os.getcwd()
 
-        if subprocess.run(["git", "rev-parse", "--git-dir"], capture_output=True, text=True, timeout=10).returncode != 0:
+        if not run_argv(["git", "rev-parse", "--git-dir"], git_cwd, timeout=10).ok:
             log.warning("Not a git repository, skipping git commit")
             return False
-        add = subprocess.run(["git", "add"] + outputs, capture_output=True, text=True, timeout=10)
-        if add.returncode != 0:
-            log.warning("git add failed (exit=%d): %s", add.returncode,
+        add = run_argv(["git", "add"] + outputs, git_cwd, timeout=10)
+        if not add.ok:
+            log.warning("git add failed (exit=%d): %s", add.exit_code,
                         (add.stderr or "").strip()[:500])
             return False
-        commit = subprocess.run(["git", "commit", "-m", commit_msg], capture_output=True, text=True, timeout=10)
-        if commit.returncode != 0:
-            log.warning("git commit failed (exit=%d): %s", commit.returncode,
+        commit = run_argv(["git", "commit", "-m", commit_msg], git_cwd, timeout=10)
+        if not commit.ok:
+            log.warning("git commit failed (exit=%d): %s", commit.exit_code,
                         (commit.stderr or "").strip()[:500])
             return False
         log.info("GIT COMMIT: %s (files: %d)", commit_msg, len(outputs))
@@ -554,21 +649,41 @@ def _archive_outputs(outputs: list, archive_dir: str, label: str) -> list:
     The worktree stays clean; git history (committed artifacts) retains
     everything, and the decision log points at the original paths. Returns
     the moved destinations for logging."""
+    return [destination for _, destination in
+            _archive_output_pairs(outputs, archive_dir, label)]
+
+
+def _archive_output_pairs(outputs: list, archive_dir: str, label: str) -> list[tuple[str, str]]:
+    """Move outputs and retain their original-to-archive mapping."""
     if not archive_dir or not outputs:
         return []
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     target = Path(archive_dir) / f"{label}-{stamp}"
     target.mkdir(parents=True, exist_ok=True)
-    moved = []
+    moved: list[tuple[str, str]] = []
     for o in outputs:
         p = Path(o)
         if p.exists():
-            dest = target / p.name
+            dest = _archive_destination(target, p)
             shutil.move(str(p), str(dest))
-            moved.append(str(dest))
+            moved.append((str(o), str(dest)))
     if moved:
         log.info("ARCHIVED %d deliverable(s) -> %s", len(moved), target)
     return moved
+
+
+def _archive_destination(target: Path, source: Path) -> Path:
+    """Choose a destination without overwriting an earlier deliverable."""
+    direct = target / source.name
+    if not direct.exists():
+        return direct
+    digest = hashlib.sha256(str(source.resolve()).encode("utf-8")).hexdigest()[:8]
+    candidate = target / f"{source.stem}-{digest}{source.suffix}"
+    index = 2
+    while candidate.exists():
+        candidate = target / f"{source.stem}-{digest}-{index}{source.suffix}"
+        index += 1
+    return candidate
 
 
 def _gate_verdict(output_paths: list) -> Optional[str]:
@@ -584,7 +699,12 @@ def _gate_verdict(output_paths: list) -> Optional[str]:
         path = Path(p)
         if not path.exists():
             continue
-        text = path.read_text(encoding="utf-8")
+        try:
+            text = read_text_bounded(path, config.OUTPUT_MAX_BYTES,
+                                     "gate artifact")
+        except ValueError as exc:
+            log.error("GATE: %s; failing closed", exc)
+            continue
         for m in _GATE_VERDICT_RE.finditer(text):
             # the reason is the text between the match end and the line end
             line_end = text.find("\n", m.end())
@@ -674,7 +794,7 @@ def run_pipeline(pipeline: Pipeline, model_override: str = "", dry_run: bool = F
         if not stage_ok:
             failed_stages.append(stage.name)
 
-        gate_verdict = _handle_gate(stage, stage_outputs)
+        gate_verdict = _handle_gate(stage, stage_outputs, session_name)
 
         # Structured decision record for this stage (append-only history)
         log_path = decision_log or pipeline.decision_log
@@ -682,17 +802,34 @@ def run_pipeline(pipeline: Pipeline, model_override: str = "", dry_run: bool = F
             _append_decision_log(log_path, stage.name, results, stage_ok, gate_verdict)
 
         if gate_verdict in ("FAIL", "REJECT"):
-            failed_stages.append(stage.name)
+            if stage.name not in failed_stages:
+                failed_stages.append(stage.name)
             log.error("Pipeline halted by gate: %s", stage.name)
+            break
+        if not stage_ok:
+            log.error("Pipeline halted by failed stage: %s", stage.name)
             break
 
     # The pipeline completed (no failed stages, no gate rejection): move the
     # committed deliverables into the archive so the worktree stays clean.
     if not failed_stages and (pipeline.archive_dir or archive_dir):
-        outputs = [r.task.output for r in all_results if r.success and r.task.output]
-        _archive_outputs(outputs, archive_dir or pipeline.archive_dir, pipeline.name)
+        _archive_pipeline_results(pipeline, all_results, archive_dir, session_name)
     
     return all_results, failed_stages
+
+
+def _archive_pipeline_results(pipeline: Pipeline, results: list[TaskResult],
+                              archive_dir: str, session_name: str) -> None:
+    outputs = [result.task.output for result in results
+               if result.success and result.task.output]
+    moved = dict(_archive_output_pairs(
+        outputs, archive_dir or pipeline.archive_dir, pipeline.name))
+    for result in results:
+        if result.task.output in moved:
+            result.task.output = moved[result.task.output]
+    from .memory import record_archive
+    cwd = pipeline.stages[0].cwd if pipeline.stages and pipeline.stages[0].cwd else os.getcwd()
+    record_archive(list(moved.items()), cwd, session_name)
 
 
 def _describe_stage(stage: Stage, reuse: bool) -> None:
@@ -715,7 +852,7 @@ def _describe_stage(stage: Stage, reuse: bool) -> None:
     log.info("  Mode: %s", stage.mode)
 
 
-def _handle_gate(stage: Stage, stage_outputs: dict) -> Optional[str]:
+def _handle_gate(stage: Stage, stage_outputs: dict, session_name: str = "") -> Optional[str]:
     """Evaluate a gate stage's deliverables: VERDICT: PASS/FAIL/REJECT.
     A missing verdict fails closed (no explicit pass, no unlock). Returns
     the verdict or None when the stage is not a gate."""
@@ -729,6 +866,9 @@ def _handle_gate(stage: Stage, stage_outputs: dict) -> Optional[str]:
         log.error("GATE REJECTED at stage '%s' (verdict: %s) — later stages blocked", stage.name, verdict)
     else:
         log.info("GATE PASSED at stage '%s'", stage.name)
+    from .memory import record_gate
+    record_gate(stage.name, verdict, stage_outputs.get(stage.name, []),
+                stage.cwd or os.getcwd(), session_name)
     return verdict
 
 
@@ -742,7 +882,11 @@ def load_tasks(source: str) -> list[Task]:
         return [Task(prompt=source)]
 
     base_dir = str(path.parent) if path.parent else "."
-    raw = path.read_text(encoding="utf-8")
+    try:
+        raw = read_text_bounded(path, config.INPUT_MAX_BYTES, "task source")
+    except ValueError as exc:
+        log.error("Task source rejected: %s", exc)
+        sys.exit(1)
 
     # YAML
     if source.endswith((".yaml", ".yml")) or raw.lstrip().startswith("tasks:"):
@@ -755,33 +899,71 @@ def load_tasks(source: str) -> list[Task]:
         try:
             data = yaml.safe_load(raw)
         except Exception as e:
-            log.warning("Task file '%s' is not valid YAML (%s); treating it as a plain-text prompt", source, e)
-            return [Task(prompt=raw.strip())]
-        tasks_data = data.get("tasks", []) if isinstance(data, dict) else data
-        tasks = []
-        for t in tasks_data:
-            task = Task(**{k: v for k, v in t.items() if k in Task.__dataclass_fields__})
-            task.prompt = task.resolve_prompt(base_dir)
-            tasks.append(task)
-        return tasks
+            log.error("Task file '%s' is not valid YAML: %s", source, e)
+            sys.exit(1)
+        return _tasks_from_data(data, base_dir, source)
 
     # JSON
     try:
-        tasks_data = json.loads(raw)
-        if isinstance(tasks_data, dict):
-            tasks_data = tasks_data.get("tasks", tasks_data)
-        if isinstance(tasks_data, list):
-            tasks = []
-            for t in tasks_data:
-                task = Task(**{k: v for k, v in t.items() if k in Task.__dataclass_fields__})
-                task.prompt = task.resolve_prompt(base_dir)
-                tasks.append(task)
-            return tasks
-    except json.JSONDecodeError:
-        pass
+        data = json.loads(raw)
+        if source.endswith(".json") or isinstance(data, (dict, list)):
+            return _tasks_from_data(data, base_dir, source)
+    except json.JSONDecodeError as exc:
+        if source.endswith(".json"):
+            log.error("Task file '%s' is not valid JSON: %s", source, exc)
+            sys.exit(1)
 
     # Plain text prompt
     return [Task(prompt=raw.strip())]
+
+
+def _tasks_from_data(data, base_dir: str, source: str) -> list[Task]:
+    tasks_data = data.get("tasks") if isinstance(data, dict) else data
+    if not isinstance(tasks_data, list) or not tasks_data:
+        log.error("Task file '%s' must contain a non-empty tasks list", source)
+        sys.exit(1)
+    tasks = []
+    for index, value in enumerate(tasks_data, 1):
+        error = _task_data_error(value)
+        if error:
+            log.error("Task file '%s': tasks[%d]%s", source, index, error)
+            sys.exit(1)
+        task = Task(**{key: item for key, item in value.items()
+                       if key in Task.__dataclass_fields__})
+        try:
+            task.prompt = task.resolve_prompt(base_dir)
+        except ValueError as exc:
+            log.error("Task file '%s': referenced prompt rejected: %s", source, exc)
+            sys.exit(1)
+        tasks.append(task)
+    return tasks
+
+
+def _task_data_error(value) -> str:
+    if not isinstance(value, dict):
+        return " must be a mapping"
+    prompt = value.get("prompt")
+    timeout = value.get("timeout", AGENT_DEFAULT_TIMEOUT)
+    if not isinstance(prompt, str) or not prompt.strip():
+        return ".prompt must be a non-empty string"
+    if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 1:
+        return ".timeout must be an integer >= 1"
+    if not isinstance(value.get("env", {}), dict):
+        return ".env must be a mapping"
+    if value.get("validate") is not None and not isinstance(value.get("validate"), str):
+        return ".validate must be a string or null"
+    if "memory" in value and not isinstance(value["memory"], dict):
+        return ".memory must be a mapping"
+    return _task_string_error(value)
+
+
+def _task_string_error(value: dict) -> str:
+    fields = ("output", "model", "provider", "thinking", "tools", "exclude_tools", "cwd")
+    nullable = ("model", "provider", "thinking", "tools", "exclude_tools")
+    invalid = next((key for key in fields if key in value
+                    and not isinstance(value[key], str)
+                    and not (key in nullable and value[key] is None)), "")
+    return f".{invalid} must be a string" if invalid else ""
 
 
 def load_tasks_from_dir(directory: str, suffix: str = ".md") -> list[Task]:
@@ -799,7 +981,12 @@ def load_tasks_from_dir(directory: str, suffix: str = ".md") -> list[Task]:
     for fpath in sorted(basedir.glob(f"*{suffix}")):
         if fpath.name.endswith(".out.md"):
             continue
-        prompt = fpath.read_text(encoding="utf-8")
+        try:
+            prompt = read_text_bounded(fpath, config.INPUT_MAX_BYTES,
+                                       "directory task input")
+        except ValueError as exc:
+            log.error("Task source rejected: %s", exc)
+            raise
         out_name = fpath.stem + ".out.md"
         # Local fix (self-iteration round 2, F1): absolute output path —
         # cwd is the input dir, so relative outputs would double-prefix.

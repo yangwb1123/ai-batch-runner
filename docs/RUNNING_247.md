@@ -6,8 +6,8 @@ proposals — with automatic retry, resumption, throttling, and supervision.
 
 The machinery composes existing safeguards: outputs are saved only after
 validation (quota/rate-limit/offline replies and timeouts are rejected),
-`--reuse` skips tasks whose output already exists, and every round reruns
-only what is still missing.
+`--reuse` skips only non-empty, non-symlink outputs that still pass current
+validators, and every round reruns what is missing or stale.
 
 ## One-shot batch
 
@@ -25,7 +25,7 @@ tasks:
 ```
 
 ```bash
-python ai-dev/pi-batch.py proposals.yaml \
+python pi-batch.py proposals.yaml \
   --mode serial \
   --min-interval 5 \
   --log-file logs/pi-batch.log
@@ -46,7 +46,7 @@ are aligned on 900s; lower `--timeout` per task when a fast turnaround is
 needed:
 
 ```bash
-python ai-dev/pi-batch.py proposals.yaml \
+python pi-batch.py proposals.yaml \
   --mode serial \
   --retries 3 \
   --retry-delay 30 \
@@ -64,7 +64,7 @@ forever. Combined with `--reuse`, each round executes only the tasks that
 failed or were rejected in the previous round:
 
 ```bash
-python ai-dev/pi-batch.py proposals.yaml \
+python pi-batch.py proposals.yaml \
   --mode serial \
   --reuse \
   --retries 2 \
@@ -73,16 +73,18 @@ python ai-dev/pi-batch.py proposals.yaml \
   --log-file logs/pi-batch.log
 ```
 
-- Every task that passes is saved and skipped afterwards (`--reuse`).
+- Every task that passes is saved and, while still valid, skipped afterwards (`--reuse`).
 - Failures are retried in-round (`--retries`), then again in the next round
   after a `--round-delay` rest (default 60s; 300s above gives rate limits
   time to reset).
 - The process exits 0 only when every task passes. With `--max-rounds 0` it
   keeps looping; interrupt with Ctrl-C (exit 130).
+- Negative limits, zero worker/circuit/stall values, and NaN/Inf timing values
+  exit 2 before a run log, instance lock, or agent process is created.
+  Structured task/pipeline YAML is likewise schema-checked fail-closed.
 
 The same loop applies to pipelines (`--pipeline file.yaml`), where `--reuse`
-already skips completed stage tasks and `aggregate: true` merges upstream
-outputs.
+revalidates completed stage tasks and `aggregate: true` merges upstream outputs.
 
 ## Engineering gates on generated results
 
@@ -102,13 +104,13 @@ validators:
 
 ```bash
 # named validators, AND semantics (all must pass)
-python ai-dev/pi-batch.py code-tasks.yaml --validate quick,gofmt
+python pi-batch.py code-tasks.yaml --validate quick,gofmt
 
 # add a one-off raw command without touching the registry
-python ai-dev/pi-batch.py code-tasks.yaml --validate-cmd "python cli.py check"
+python pi-batch.py code-tasks.yaml --validate-cmd "python cli.py check"
 
 # review output must pass a doc-level gate before stage-NN.out.md lands
-python ai-dev/ai/run-review.py --all --context ctx.yaml --validate gofmt
+python ai/run-review.py --all --context ctx.yaml --validate gofmt
 ```
 
 A `validate` value on a task or stage overrides the CLI default and may also
@@ -130,6 +132,14 @@ timed_out) instead of being lost in the log stream. The same executor backs
 already-written artifact (missing or empty artifacts fail closed) — the
 building block for keeping `--reuse` from promoting outputs that no longer
 pass their gates.
+
+Post-stage `commands` reuse that executor instead of `subprocess.run` capture.
+Their default deadline and per-pipe diagnostic budget come from
+`pi-batch.yaml` `commands.timeout` and `commands.output_max_bytes`; a stage may
+override them with `command_timeout` and `command_output_max_bytes`. Timeout or
+diagnostic overflow fails the stage and kills the whole hook process group.
+Stage commands run even when every artifact was accepted by `--reuse`, so a
+repository-wide gate cannot be bypassed by an existence-only resume.
 
 ## Validation is optional per stage
 
@@ -189,15 +199,37 @@ stages:
   - name: review
     from_outputs: kickoff
     meta: true                       # orchestrator picks the roles
-    role_dir: ai-dev/prompts         # point at the target project's role templates
+    role_dir: prompts         # point at the target project's role templates
+    role_keywords: pbatch/role_keywords.yaml
     output_dir: docs/reviews
     max_iterations: 3
+    max_roles_per_iteration: 3       # runtime-enforced, not prompt-only
+    relevance_min_score: 2
 ```
 
 `from_prompt` is a full stage type: it runs as a single task, honors
 `--reuse`/validation/sessions, and its output feeds downstream `from_outputs`
 stages. `from_dir` remains available when the input is a directory of
 documents.
+
+`from_outputs` accepts either one stage name or a YAML list. With a list and
+`aggregate: true`, the runner joins every named stage's artifacts in declared
+order. Full-SDLC implementation and acceptance stages should use this form so
+they receive requirements, design, review, and gate evidence—not only the
+immediately preceding verdict.
+
+Artifact content injected into aggregate and meta prompts is bounded by
+`pi-batch.yaml` `evidence.max_bytes` (default 64KiB), while
+`evidence.max_sources` (default 64) independently bounds path traversal, fences,
+and the aggregate `{input_path}` manifest. The byte budget is distributed fairly
+across selected sources; truncation and omitted-source markers remain explicit,
+and each truncated fence reports shown/total bytes and the full artifact path.
+Files on disk are never shortened. Meta iterations rebuild bounded context from
+the upstream/role-output file list, preventing recursive prompt growth while
+preserving on-demand access to complete evidence.
+The final `-p` process argument is separately capped by `prompt.max_bytes`
+(120KiB default), below Linux's usual 128KiB per-argument boundary. Oversized
+prompts fail before spawning; put larger context in referenced artifacts.
 
 Each iteration:
 
@@ -221,6 +253,56 @@ sanitized for output paths. `role_dir` may be absent — ad-hoc roles alone are
 enough. All other machinery (retries, `--reuse`, rounds, validation,
 sessions) applies to meta stages too.
 
+Meta reuse is role-granular: the orchestrator still runs so history cannot
+freeze the plan, but a role it selects again reuses its artifact only after
+the current validator passes and, under `--reuse-fingerprint`, its prompt,
+output, validator, model, and provider fingerprint still matches.
+
+Before each orchestrator call, available role templates are scored against
+the current evidence using the bilingual keyword map. The prompt shows scores
+and matched keywords; after the model responds, the runner deduplicates the
+plan, filters named roles below `relevance_min_score`, and enforces
+`max_roles_per_iteration`. Ad-hoc roles remain available for concerns not
+covered by the template catalog. Set `relevance_enabled: false` to disable
+scoring while retaining the runtime fan-out cap.
+
+## Repository campaigns
+
+`pi-batch.py campaign` is the project-level layer above normal pipelines:
+
+```bash
+python pi-batch.py campaign --dry-run
+python pi-batch.py campaign --jobs 4 --max-directions 2 \
+  --reuse --retry-failed
+```
+
+It discovers bounded module directories, runs structured analyses in parallel,
+scores and deduplicates directions, rejects candidates without existing-file
+evidence or testable acceptance checks, then materializes one direction-scoped
+SDLC pipeline per selection. `docs/auto/state.jsonl` is append-only authority;
+`SUMMARY.md` is an atomic derived view. Freshness fingerprints cover repository
+and module state, prompts, direction data, pipeline/role/config content, and
+model/provider routing. State records use bounded line reads
+(`state.line_max_bytes`, 256KiB default), and the coordinator caches only each
+module/direction's latest transition for repeated reuse checks.
+
+Pi session files remain append-only and untouched. Metering caches each file's
+device/inode, byte offset, and cumulative numeric usage, then scans only newly
+appended complete records. `session.line_max_bytes` (4MiB default) bounds a
+single coordinator-side JSONL parse; an oversized record is skipped without
+changing the raw file. Emitted task usage is the before/after invocation delta.
+
+Analysis parallelism stays inside the one lock-owning process. Implementation
+is serial by default. `--parallel-pipelines N` requires a clean Git worktree at
+campaign start and creates one persistent branch/worktree/output/decision-log/
+run-log namespace per direction. This prevents concurrent agents and validators
+from observing each other's partial repository changes. Isolated branches are
+not auto-merged; state records the branch, commit, and worktree evidence for the
+repository's normal review/merge process. `implementation.timeout` (14400s by
+default) is a wall-clock ceiling for each isolated direction; expiry kills the
+whole child pipeline group and records a failed outcome. The Bash
+`scripts/full-auto.sh` entry is only a compatibility wrapper.
+
 ## One session, many steps
 
 By default every call starts a fresh agent session. When later steps should
@@ -229,15 +311,15 @@ pipeline building on each other's discussion — reuse one session:
 
 ```bash
 # one session for the whole pipeline (every stage continues it)
-python ai-dev/pi-batch.py --pipeline sdlc.yaml \
+python pi-batch.py --pipeline sdlc.yaml \
   --session-mode shared --session-name sdlc-2026-07
 
 # one session per pipeline stage (parallel roles inside a stage share it)
-python ai-dev/pi-batch.py --pipeline sdlc.yaml \
+python pi-batch.py --pipeline sdlc.yaml \
   --session-mode per-stage --session-name sdlc-2026-07
 
 # one session across all ten review stages
-python ai-dev/ai/run-review.py --all --context ctx.yaml \
+python ai/run-review.py --all --context ctx.yaml \
   --session-mode shared --session-name review-2026-07
 ```
 
@@ -258,7 +340,7 @@ python ai-dev/ai/run-review.py --all --context ctx.yaml \
 ## Running detached (nohup)
 
 ```bash
-nohup python ai-dev/pi-batch.py proposals.yaml \
+nohup python pi-batch.py proposals.yaml \
   --mode serial \
   --reuse \
   --retries 3 \
@@ -288,7 +370,7 @@ After=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/home/u1/workspace/demo/snaplink
-ExecStart=/usr/bin/python ai-dev/pi-batch.py /srv/proposals.yaml --mode serial --reuse --retries 3 --max-rounds 0 --min-interval 5 --log-file /var/log/ai-proposals.log
+ExecStart=/usr/bin/python pi-batch.py /srv/proposals.yaml --mode serial --reuse --retries 3 --max-rounds 0 --min-interval 5 --log-file /var/log/ai-proposals.log
 Restart=always
 RestartSec=30
 Environment=HOME=/home/u1
@@ -304,8 +386,9 @@ journalctl -u ai-proposals -f
 ```
 
 `Restart=always` restarts the process after a crash; because every saved
-output is on disk and `--reuse` skips it, a restart continues from exactly
-where the run stopped — no work is lost and none is repeated.
+output is on disk and `--reuse` revalidates it before skipping, a restart
+continues from exactly where the run stopped — no work is lost and stale or
+tampered artifacts are regenerated.
 
 ## Generating a new batch each day
 
@@ -327,7 +410,11 @@ restarting the service.
   (see `AUTOMATION_WORKFLOW_SUMMARY.md`), so a failed run leaves no bogus
   proposal files behind.
 - `--log-file` appends a timestamped log; combine with `tail -f` or a log
-  collector for alerting.
+  collector for alerting. It records operational metadata, not complete model
+  messages. `--stream-output auto` (default) shows response bodies only on an
+  interactive TTY; use `full` or `none` to override. A task without `output`
+  still prints its final answer once because stdout is its result channel.
+  Missing parent directories for the log are created automatically.
 - Budget guardrails: `--min-interval` throttles serial batches, `--workers`
   caps parallel fan-out, and `--retries`/`--max-rounds` bound how many times
   a failing task is re-attempted before the run reports failure.
@@ -351,10 +438,14 @@ validator exit signature.
 
 - **Log rotation** (T3): `--log-file` uses a RotatingFileHandler
   (`--log-max-bytes` default 5MB, `--log-backups` default 3) — unbounded
-  logs and disk-full crashes are gone.
+  logs and disk-full crashes are gone. Streaming also stops at the configured
+  output cap. Parallel Campaign worktrees use only the child handler for each
+  logfile, preventing duplicate writes and rotation races; model bodies remain
+  available in artifacts and native session JSONL.
 - **Single-instance lock** (T4): an O_EXCL `.pi-batch.lock` in the cwd
   refuses a second concurrent instance (exit 5, holder named in the error);
-  stale locks (dead PID or >24h old) are broken automatically; released in
+  stale locks are broken only when the holder PID is dead (a live 7x24 holder
+  is never displaced merely because it is old); released in
   finally; `--dry-run` and `--no-lock` skip it.
 - **Triage** (T5): per-task circuit isolation (`--circuit-max` default 5,
   poison tasks stop burning quota), stall detection (`--stall-rounds`
@@ -379,6 +470,59 @@ validator exit signature.
   `--max-rounds 0`. Exit codes: 0 success, 1 max rounds, 3 budget cap,
   4 stall/circuit stop, 5 lock held, 130 interrupt.
 
+## Progressive message memory
+
+`memory.mode: auto` preserves pi's original session JSONL while building a
+small append-only index at `.pi-batch/memory/sessions.index.jsonl`. Independent
+tasks receive explicit traceable session ids; shared/per-stage sessions retain
+their configured ids. The index contains redacted prompt excerpts, domains,
+status, output hashes and paths, validator/Gate outcomes, Campaign transitions,
+and archive mappings. A failed index write is advisory and never fails a task.
+
+The runner appends a bounded Memory Manifest to each pi prompt. Static routing
+marks short questions as direct/discovery and does not include historical
+records; resume requests keep a few recent rows, while implementation requests
+select domain matches from only the newest `memory.manifest_scan` metadata
+rows. Recent/read lookup scans backward from the append-only index tail in
+bounded blocks, while find streams forward and keeps only its Top-K matches;
+none first materializes the complete metadata history. Individual metadata
+lines are capped by `memory.index_line_max_bytes` (256KiB default). The same
+LLM decides whether to retrieve more—there is no mandatory extra planner call:
+
+```bash
+python pi-batch.py memory ingest
+python pi-batch.py memory recent --limit 5
+python pi-batch.py memory find "protocol acceptance failure" --limit 5
+python pi-batch.py memory read SESSION_ID --max-bytes 65536
+```
+
+`memory ingest` incrementally scans the current project's existing pi session
+directory. It indexes only new/changed files and extracts static metadata
+(domains, roles/message count, token/cost, observed verdicts, and bounded
+`errorMessage/stopReason` failures); it never copies or rewrites raw message
+content. An imported PASS is deliberately named `GATE_PASS_OBSERVED`, while a
+provider/CLI failure is `FAILED_OBSERVED`; neither is promoted to a currently
+verified engineering result.
+
+`read` follows only indexed files inside pi's session directory, refuses
+symlinks/path escapes, caps returned bytes, and redacts likely secrets by
+default (`--raw` is an explicit operator override). Read/import paths use
+bounded line buffers and truncate or skip abnormally large JSONL records rather
+than materializing them whole. Historical content is fenced by policy as
+untrusted evidence. Use `--memory-mode off` for a run that must retain the
+legacy invocation unchanged, or `on` to enable an explicitly adapted agent.
+
+Prompt/task/template files are also read through a bounded UTF-8 reader
+(`input.max_bytes`, 2 MiB by default). Oversized or invalid-UTF-8 sources fail
+the stage before an agent starts; they are never silently treated as an empty
+stage or copied into the operational log. Structured Campaign analysis opts
+into the same execute hint so bounded prior metadata can inform future planning.
+Aggregate evidence retains the separate `evidence.max_bytes` budget and points
+to the full artifact for an explicit on-demand read.
+Campaign analysis fingerprints include only recent failure-class metadata, so a
+new validation/Gate failure triggers re-planning without invalidating reuse for
+ordinary successful calls.
+
 ## Hetero routing (T11)
 
 Pipeline task definitions may set `provider` / `thinking` / `tools` /
@@ -402,9 +546,12 @@ CLI > task > stage > config default (D6).
   (`{"status":"warn"}` allows with warning, `{"status":"fail"}` rejects);
   a bare `VERDICT: PASS` with no reason fails closed (12b); combined
   evidence is fenced as `<evidence source="...">` (12d); outputs over
-  `OUTPUT_MAX_BYTES` (default 2MB) are rejected, not written (12e);
+  `OUTPUT_MAX_BYTES` (default 2MB) are rejected, not written (12e). Agent
+  pipes are drained in fixed 8KiB character chunks, so a huge line without
+  newlines cannot allocate the entire response before the cap is applied;
   `--validate secretscan` greps artifacts for likely secrets (12f,
-  registry hook).
+  registry hook). Validator stdout/stderr use their own
+  `validation.output_max_bytes` bound (256KiB default) and overflow fails closed.
 
 ## Approval stages (T12c, decision D5)
 

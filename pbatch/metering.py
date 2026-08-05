@@ -22,10 +22,11 @@ import tempfile
 import threading
 import urllib.request
 from datetime import datetime, timezone
+from glob import escape as glob_escape
 from pathlib import Path
 from typing import Optional
 
-from .config import log
+from .config import SESSION_LINE_MAX_BYTES, log
 from .session import SESSIONS_DIR, workdir_key
 
 # module-level config, set by cli.main() from CLI flags
@@ -39,6 +40,9 @@ BUDGET_EXIT_CODE = 3
 
 # serializes check-then-act on the run/daily counters across worker threads
 _BUDGET_LOCK = threading.Lock()
+_USAGE_LOCK = threading.Lock()
+# path -> (device, inode, byte offset, cumulative numeric usage)
+_USAGE_CACHE: dict[str, tuple[int, int, int, dict]] = {}
 
 
 def _session_usage(cwd: str, session_name: str) -> Optional[dict]:
@@ -51,44 +55,94 @@ def _session_usage(cwd: str, session_name: str) -> Optional[dict]:
     d = SESSIONS_DIR / workdir_key(cwd)
     if not d.is_dir():
         return None
+    total = None
     try:
-        candidates = sorted(d.glob(f"*_{session_name}.jsonl"))
+        escaped = glob_escape(session_name)
+        candidates = {path for pattern in (f"*_{escaped}.jsonl",
+                                            f"*_{escaped}-*.jsonl")
+                      for path in d.glob(pattern)}
+        with _USAGE_LOCK:
+            for candidate in candidates:
+                usage = _usage_for_file(candidate)
+                if usage is None:
+                    continue
+                total = total or {}
+                for key, value in usage.items():
+                    total[key] = total.get(key, 0) + value
     except OSError:
         return None
-    if not candidates:
-        return None
-    total = None
-    for candidate in candidates:
-        try:
-            with open(candidate, encoding="utf-8") as f:
-                for line in f:
-                    try:
-                        msg = (json.loads(line).get("message") or {})
-                    except ValueError:
-                        continue
-                    usage = msg.get("usage")
-                    if not isinstance(usage, dict):
-                        continue
-                    if total is None:
-                        total = {}
-                    for k, v in usage.items():
-                        if isinstance(v, (int, float)):
-                            total[k] = total.get(k, 0) + v
-        except OSError:
-            return None
     return total
 
 
-def record_event(event: str, task: str = "", detail: str = "", cwd: str = "", session_name: str = "") -> None:
+def session_usage(cwd: str, session_name: str) -> Optional[dict]:
+    """Public snapshot used around one invocation to calculate a delta."""
+    return _session_usage(cwd, session_name)
+
+
+def _usage_for_file(path: Path) -> Optional[dict]:
+    """Incrementally fold complete, bounded JSONL records for one session."""
+    if not path.is_file() or path.is_symlink():
+        return None
+    stat = path.stat()
+    cached = _USAGE_CACHE.get(str(path))
+    if cached and cached[:2] == (stat.st_dev, stat.st_ino) and stat.st_size >= cached[2]:
+        offset, total = cached[2], dict(cached[3])
+    else:
+        offset, total = 0, {}
+    offset = _scan_usage_append(path, offset, total)
+    _USAGE_CACHE[str(path)] = (stat.st_dev, stat.st_ino, offset, total)
+    return dict(total)
+
+
+def _scan_usage_append(path: Path, offset: int, total: dict) -> int:
+    """Scan appended complete lines; leave an incomplete tail for next time."""
+    with path.open("rb") as handle:
+        handle.seek(offset)
+        while True:
+            start = handle.tell()
+            raw = handle.readline(SESSION_LINE_MAX_BYTES + 1)
+            if not raw:
+                return start
+            if len(raw) > SESSION_LINE_MAX_BYTES:
+                _discard_line_tail(handle, raw)
+                offset = handle.tell()
+                continue
+            if not raw.endswith(b"\n"):
+                return start
+            _fold_usage_line(raw, total)
+            offset = handle.tell()
+
+
+def _discard_line_tail(handle, raw: bytes) -> None:
+    while raw and not raw.endswith(b"\n"):
+        raw = handle.readline(SESSION_LINE_MAX_BYTES + 1)
+
+
+def _fold_usage_line(raw: bytes, total: dict) -> None:
+    try:
+        message = (json.loads(raw.decode("utf-8", errors="replace")).get("message") or {})
+    except (ValueError, AttributeError):
+        return
+    usage = message.get("usage")
+    if not isinstance(usage, dict):
+        return
+    for key, value in usage.items():
+        if isinstance(value, (int, float)):
+            total[key] = total.get(key, 0) + value
+
+
+def record_event(event: str, task: str = "", detail: str = "", cwd: str = "",
+                 session_name: str = "", usage_before: Optional[dict] = None) -> None:
     """Append one JSONL event (best-effort, never raises)."""
     if not EVENTS_FILE:
         return
+    current = _session_usage(cwd, session_name) if event in ("task_finish", "task_fail") else None
     payload = {
         "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "event": event,
         "task": task[:120],
         "detail": detail[:500],
-        "usage": _session_usage(cwd, session_name) if event in ("task_finish", "task_fail") else None,
+        "usage": _usage_delta(current, usage_before),
     }
     line = json.dumps(payload, ensure_ascii=False)
     try:
@@ -101,6 +155,14 @@ def record_event(event: str, task: str = "", detail: str = "", cwd: str = "", se
         return
     if WEBHOOK_URL:
         _post_webhook(line)
+
+
+def _usage_delta(current: Optional[dict], before: Optional[dict]) -> Optional[dict]:
+    if current is None:
+        return None
+    if before is None:
+        return current
+    return {key: value - before.get(key, 0) for key, value in current.items()}
 
 
 def _post_webhook(line: str) -> None:
