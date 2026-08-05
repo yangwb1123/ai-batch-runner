@@ -100,6 +100,11 @@ validators:
   uispacing: "python {cwd}/scripts/check-ui-spec.py --mode spacing {output}"
   uicolor: "python {cwd}/scripts/check-ui-spec.py --mode color {output}"
   uistyle: "python {cwd}/scripts/check-ui-spec.py --mode style {output}"
+  # Project-wide frontend UI spec gate (gofmt -l style): scans the whole
+  # frontend source tree for spec violations, not just one artifact. Adapt
+  # --dir to the project's frontend root; no frontend files found -> pass.
+  # Violations (stderr) feed the retry prompt, driving the refactor loop.
+  uicheck: "python {cwd}/scripts/check-ui-spec.py --dir {cwd}/src --all --json -o {cwd}/docs/ui/refactor/report.json"
 
 # Task type classifier: runs BEFORE execution (--classify / `classify`
 # subcommand). Frontend UI tasks route to the UI generation pipeline, which

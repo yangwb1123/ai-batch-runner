@@ -1,0 +1,78 @@
+# 项目级前端 UI 规范重构流水线：像 gofmt 一样检查，超出规范就自动重构。
+#
+# 场景：已有项目的 src/ 前端代码（TSX/Dart/Vue）不符合 ui-specs/ 规范——
+# 魔法间距（SizedBox(height:3)）、硬编码颜色、inline style。
+#
+# 机制（复用 runner 的验证门禁闭环，与 full-sdlc-implement 的
+# `validate: build` 同构）：
+#   1) refactor 阶段：agent 运行项目扫描 → 读取违规报告 → 重构代码到合规；
+#   2) validate: uicheck —— 项目级扫描门禁（gofmt -l 风格）：
+#      违规 → 产物不落盘 → stderr 违规明细自动喂回重试 prompt → 再修；
+#      --retries N --max-rounds 0 时无人值守循环直到 0 违规；
+#   3) meta 对抗审查（ui_reviewer/visual_reviewer）→ VERDICT 裁决门。
+#
+# 运行（把 pi-batch.yaml 的 uicheck 验证器 --dir 改成项目前端根目录）：
+#   pi-batch examples/ui-refactor-pipeline.yaml --retries 5 --max-rounds 0 \
+#     --log-file logs/ui-refactor.log
+# 只检查不改代码：
+#   python scripts/check-ui-spec.py --dir src --all
+# 报告：docs/ui/refactor/report.json（每次扫描覆盖写入）+ decision log + 归档
+
+git_commit: true
+decision_log: docs/DECISIONS.md
+archive_dir: docs/archive
+
+stages:
+  # ── 1. 重构：扫描 → 修复 → uicheck 门禁复验（失败自动重试+反馈）──
+  - name: refactor
+    from_prompt: |
+      You are the UI spec refactorer. The project's frontend sources do not
+      conform to ui-specs/ (8pt spacing tokens, token colors, no inline
+      styles). Workflow:
+      1. Run the project scan to get the violation report:
+         python scripts/check-ui-spec.py --dir src --all --json
+         (or read docs/ui/refactor/report.json written by the uicheck gate)
+      2. Fix EVERY violation in the project's frontend sources:
+         - snap magic spacing values (SizedBox(height:3), margin:11,
+           EdgeInsets.only(left:13), ...) to the token set
+           4/8/12/16/20/24/32/40/48/64 — never pick arbitrary values;
+         - replace hardcoded colors (#1296db, Color(0x...)) with design
+           tokens;
+         - replace inline styles (style={{...}}) with the platform's
+           styled/token mechanism.
+      3. Preserve behavior: this is a spec-compliance refactor, not a
+         redesign. Do not change component logic or business flow.
+      4. Rerun the scan until it reports 0 violations. The uicheck gate
+         re-verifies after you finish and feeds any remaining violations
+         back into your next attempt.
+      Report the changes (files, violations fixed, tokens applied) as a
+      markdown document.
+    output: docs/ui/refactor/changes.md
+    validate: uicheck
+
+  # ── 2. 对抗审查：编排者现场挑选 UI/视觉审查角色并发复核 ──
+  - name: review
+    from_outputs: refactor
+    meta: true
+    role_dir: prompts
+    output_dir: docs/ui/reviews
+    max_iterations: 2
+    mode: serial
+
+  # ── 3. 裁决门：VERDICT: PASS 才确认重构完成 ──
+  - name: gate
+    from_outputs: review
+    aggregate: true
+    gate: true
+    mode: serial
+    tasks:
+      - prompt: |
+          You are the UI gatekeeper. Read {input_content} (the refactor
+          report and the review deliverables). Verify: all violations from
+          the scan are resolved, spacing uses only tokens, no hardcoded
+          colors, no inline styles, and behavior was preserved. Output on
+          the last line:
+          VERDICT: PASS - <why the project now conforms to the UI spec>
+          or
+          VERDICT: FAIL - <remaining violations or behavior changes>
+        output: docs/ui/refactor/gate.md

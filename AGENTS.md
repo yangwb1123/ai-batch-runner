@@ -26,7 +26,7 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `pbatch/relevance.py` | meta 角色关键词评分、命中证据、去重与运行时数量上限 |
 | `pbatch/classifier.py` / `task_keywords.yaml` | 任务类型判断器：执行前双语关键词判定，前端任务自动路由到 UI 生成流水线（`--classify` / `classify` 子命令，零 LLM 成本） |
 | `ui-specs/` | AI UI 生成规范资产：8pt 间距 token、组件/布局/反例规范、业务风格 profile（ERP/CMS/OA…） |
-| `scripts/check-ui-spec.py` | 确定性 UI 门禁（纯标准库）：魔法间距/硬编码颜色/inline style 机械拦截（`uispacing`/`uicolor`/`uistyle` 验证器） |
+| `scripts/check-ui-spec.py` | 确定性 UI 门禁（纯标准库）：魔法间距/硬编码颜色/inline style 机械拦截（`uispacing`/`uicolor`/`uistyle` 产物验证器）；`--dir` 项目级扫描（`uicheck` 门禁，gofmt -l 风格，JSON 报告） |
 | `pbatch/memory*.py` / `index_io.py` | 渐进式 message memory：稳定会话、有界索引、按需 recent/find/read |
 | `pbatch/campaign*.py` | 项目级模块发现、方向选择、状态/指纹、流水线与 worktree 隔离 |
 | `pbatch/cli.py` | 命令行：参数解析、main、轮循环、单批/流水线分发 |
@@ -358,6 +358,13 @@ python pi-batch.py -p "生成一个登录页面 tsx" --classify \
 # UI 流水线：场景细化 → 生成（uispacing/uicolor/uistyle 门禁）→ meta
 # 对抗审查（ui_reviewer/visual_reviewer）→ VERDICT 裁决门 → 截图评审
 # 规范资产：ui-specs/（8pt token、组件/布局/反例、业务 profile）
+
+# 已有项目前端代码的 UI 规范体检（gofmt -l 风格，只检查不改）
+python scripts/check-ui-spec.py --dir src --all --json -o docs/ui/refactor/report.json
+pi-batch --validate uicheck ...   # 项目级 UI 规范门禁（--dir 按项目配置）
+# 自动重构：不符合 ui-specs 的代码被 agent 修复到 0 违规（门禁反馈循环）
+pi-batch examples/ui-refactor-pipeline.yaml --retries 5 --max-rounds 0 \
+  --log-file logs/ui-refactor.log
 
 # 完整闭环：一句话 → 需求 → 设计 → 对抗审查 → 裁决门 → 实现+工程门禁 → 验收门
 #          → git 提交 → 归档 → 决策日志

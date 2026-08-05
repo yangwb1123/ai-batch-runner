@@ -212,7 +212,13 @@ tasks:
   (`scripts/check-ui-spec.py`, pure stdlib) mechanically reject magic spacing
   values outside the 8pt token set, hardcoded colors and inline styles —
   spacing quality becomes a hard gate (fail closed, validator stderr feeds the
-  retry prompt) instead of a prompt wish. Spec assets live in `ui-specs/`
+  retry prompt) instead of a prompt wish. The same script is a **project-wide
+  gate** (gofmt -l style): `--dir src --all` scans an existing frontend tree
+  (`uicheck` validator, JSON report, vendor/build dirs skipped, no frontend
+  files → pass), and `examples/ui-refactor-pipeline.yaml` drives an automatic
+  refactor loop — agent fixes violations, the scan re-verifies, stderr feeds
+  the retry prompt until 0 violations, then meta review + verdict gate.
+  Spec assets live in `ui-specs/`
   (tokens/spacing/component/layout/anti-patterns/business-profiles); roles
   `ui_designer`/`ui_reviewer`/`visual_reviewer` are registered for meta stages.
 - **Task loading**: YAML / JSON / plain-text task files, `--from-dir` (one task per `.md`),

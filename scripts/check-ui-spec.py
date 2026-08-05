@@ -1,28 +1,39 @@
 #!/usr/bin/env python3
-"""Deterministic UI-generation gates for ai-batch-runner (pure stdlib).
+"""Deterministic UI-generation and project-scan gates (pure stdlib).
 
 The spacing/color/style problems of AI-generated TSX/Dart are NOT code
 problems and NOT LLM-capability problems -- they are specification problems.
 Instead of asking the model to be careful, these gates mechanically reject
-artifacts that violate the UI spec, so the runner's fail-closed retry loop
-feeds the violation report back into the agent's next attempt:
+artifacts (or whole projects) that violate the UI spec, and the runner's
+fail-closed retry loop feeds the violation report (stderr) back into the
+agent's next attempt:
 
-    python scripts/check-ui-spec.py --mode spacing   <artifact>
+    python scripts/check-ui-spec.py --mode spacing   <artifact>       # single file
     python scripts/check-ui-spec.py --mode color     <artifact>
     python scripts/check-ui-spec.py --mode style     <artifact>
+    python scripts/check-ui-spec.py --dir src --all                    # project scan
+    python scripts/check-ui-spec.py --dir src --all --json -o report.json
 
 Modes:
-  spacing  reject spacing values outside the token set
+  spacing  reject spacing values outside the 8pt token set
            (SizedBox(height:3), EdgeInsets.only(left:13), margin:11 ...)
   color    reject hardcoded hex/rgb/Color(0x...) literals
   style    reject inline styles (style={{...}}, style="margin:...")
+  all      run spacing + color + style
 
-Exit code 0 = compliant; 1 = violations found (each printed once).
-Register in pi-batch.yaml validators (uispacing/uicolor/uistyle) and attach
-to UI generation stages via `validate:`.
+Project scan (--dir) walks the directory recursively, skipping build/vendor
+directories by default (node_modules, dist, build, .git, ...). No frontend
+files found -> exit 0, so the gate is safe for repos without frontend code
+(a gofmt -l style project gate).
+
+Output: violation details on stderr (the runner feeds validator stderr into
+the retry prompt); a human summary on stdout; --json prints a machine
+report to stdout and -o writes it to a file.
+Exit code 0 = compliant; 1 = violations found.
 """
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -46,6 +57,13 @@ _STYLE_PATTERNS = [
     re.compile(r"style=\{\{"),
     re.compile(r"style=\"[^\"]*(?:margin|padding|font|color|width|height):"),
 ]
+
+DEFAULT_EXTS = (".tsx", ".jsx", ".ts", ".js", ".dart", ".vue")
+DEFAULT_EXCLUDES = {
+    "node_modules", "dist", "build", "out", ".git", ".dart_tool",
+    ".next", ".nuxt", "coverage", ".pi-batch", ".venv", "venv",
+    "logs", "docs", "__pycache__",
+}
 
 
 def _find_matches(text: str, patterns: list, label: str, check_number=None) -> list:
@@ -84,39 +102,132 @@ def check_style(text: str) -> list:
 _MODES = {"spacing": check_spacing, "color": check_color, "style": check_style}
 
 
-def main(argv: list) -> int:
-    mode = ""
-    targets = []
-    for arg in argv:
-        if arg == "--mode":
+def scan_directory(directory: Path, exts: tuple, excludes: set) -> list:
+    """Recursively collect frontend source files, skipping vendor/build dirs."""
+    files = []
+    for path in sorted(directory.rglob("*")):
+        if path.is_dir():
             continue
-        if arg in _MODES and not mode:
-            mode = arg
-        else:
-            targets.append(arg)
-    if not mode or not targets:
-        print("usage: check-ui-spec.py --mode spacing|color|style FILE...", file=sys.stderr)
-        return 2
-    check = _MODES[mode]
+        if any(part in excludes for part in path.parts[:-1]):
+            continue
+        if path.suffix.lower() in exts:
+            files.append(path)
+    return files
+
+
+def check_file(path: Path, checkers: list) -> list:
+    """Violation strings for one file across the active checkers."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return [f"{path}: unreadable ({exc})"]
     violations = []
-    for name in targets:
-        path = Path(name)
-        if not path.exists():
-            violations.append(f"{path}: missing artifact")
-            continue
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
-            violations.append(f"{path}: unreadable ({exc})")
-            continue
+    for label, check in checkers:
         for item in check(text):
             violations.append(f"{path}: {item}")
+    return violations
+
+
+_VALUE_FLAGS = {"--mode": "mode", "--dir": "directory",
+                "--ext": "exts", "--exclude": "excludes"}
+
+
+def _take_value(argv: list, i: int, key: str, state: dict) -> int:
+    """Consume a two-argument flag (--mode/--dir/--ext/--exclude) into
+    state; returns the next index to read."""
+    value = argv[i + 1]
+    if key == "mode":
+        state["mode"] = value
+    elif key == "directory":
+        state["directory"] = Path(value)
+    elif key == "exts":
+        ext = value.lower()
+        state["exts"].add(ext if ext.startswith(".") else "." + ext)
+    else:
+        state["excludes"].add(value)
+    return i + 2
+
+
+def parse_argv(argv: list) -> tuple:
+    """Parse the CLI surface into (mode, targets, directory, exts,
+    excludes, want_json, report_path)."""
+    state = {"mode": "spacing", "directory": None,
+             "exts": set(DEFAULT_EXTS), "excludes": set(DEFAULT_EXCLUDES),
+             "want_json": False, "report_path": ""}
+    targets = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg in _VALUE_FLAGS and i + 1 < len(argv):
+            i = _take_value(argv, i, _VALUE_FLAGS[arg], state)
+            continue
+        if arg == "--json":
+            state["want_json"] = True
+        elif arg == "--all":
+            state["mode"] = "all"
+        elif arg == "-o" and i + 1 < len(argv):
+            state["report_path"] = argv[i + 1]
+            i += 1
+        else:
+            targets.append(arg)
+        i += 1
+    return (state["mode"], targets, state["directory"], state["exts"],
+            state["excludes"], state["want_json"], state["report_path"])
+
+
+def resolve_checkers(mode: str) -> list:
+    """(label, callable) pairs for the requested mode; all = every checker."""
+    if mode == "all":
+        return sorted(_MODES.items())
+    if mode not in _MODES:
+        print(f"UI-SPEC: unknown mode '{mode}' (spacing|color|style|all)", file=sys.stderr)
+        sys.exit(2)
+    return [(mode, _MODES[mode])]
+
+
+def collect_targets(targets: list, directory: Path, exts: tuple, excludes: set) -> list:
+    """Positional files plus any --dir scan; missing files are violations."""
+    paths = [Path(t) for t in targets]
+    if directory is not None:
+        paths.extend(scan_directory(directory, exts, excludes))
+    return paths
+
+
+def main(argv: list) -> int:
+    mode, targets, directory, exts, excludes, want_json, report_path = parse_argv(argv)
+    checkers = resolve_checkers(mode)
+    paths = collect_targets(targets, directory, exts, excludes)
+
+    violations = []
+    for path in paths:
+        if not path.exists():
+            violations.append(f"{path}: missing target")
+            continue
+        violations.extend(check_file(path, checkers))
+
+    report = {
+        "mode": mode,
+        "directory": str(directory) if directory else "",
+        "files_scanned": len(paths),
+        "violations": [{"file": item.split(":")[0], "detail": item} for item in violations],
+        "total": len(violations),
+    }
+    if want_json or report_path:
+        payload = json.dumps(report, ensure_ascii=False, indent=2)
+        if report_path:
+            Path(report_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(report_path).write_text(payload + "\n", encoding="utf-8")
+        if want_json:
+            print(payload)
+    # Violations go to stderr: the runner feeds validator stderr into the
+    # retry prompt, so the agent sees exactly what must be fixed.
     for item in violations:
-        print(f"UI-SPEC [{mode}] {item}")
+        print(f"UI-SPEC [{mode}] {item}", file=sys.stderr)
     if violations:
-        print(f"UI-SPEC [{mode}]: {len(violations)} violation(s); artifact rejected")
+        print(f"UI-SPEC [{mode}]: {len(violations)} violation(s) in "
+              f"{len(paths)} file(s); rejected", file=sys.stderr)
         return 1
-    print(f"UI-SPEC [{mode}]: OK")
+    print(f"UI-SPEC [{mode}]: OK ({len(paths)} file(s) scanned)")
     return 0
 
 
