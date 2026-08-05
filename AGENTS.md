@@ -26,8 +26,10 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `pbatch/relevance.py` | meta 角色关键词评分、命中证据、去重与运行时数量上限 |
 | `pbatch/classifier.py` / `task_keywords.yaml` | 任务类型判断器：执行前双语关键词判定，前端任务自动路由到 UI 生成流水线（`--classify` / `classify` 子命令，零 LLM 成本） |
 | `pbatch/rule_matcher.py` / `ui-specs/rules.yaml` | 规则匹配器：按 scale（demo/standard/production）× page_type × risk 三轴算法式筛选适用规范；**双向校验**——算法 manifest 与 LLM 独立选择对比裁决（`rules --summary/--llm-json/--llm-prompt`），必选规则不可被 LLM 跳过（fail closed） |
-| `pbatch/assessor.py` | 需求评估器（`assess` 子命令）：资深经验式评审——8 维需求完整性检查、规模信号（S/M/L）克制处方（"企业登录页"不会全量上规则）、缺失维度建议、刻意未选用清单、**产品化分级评估**（L0-L3） |
+| `pbatch/assessor.py` | 需求评估器（`assess` 子命令）：资深经验式评审——8 维需求完整性检查、规模信号（S/M/L）克制处方（"企业登录页"不会全量上规则）、缺失维度建议、刻意未选用清单、**产品化分级评估**（L0-L3）、**工作流风险分级**（L0 直改 / L1 标准 / L2 高风险对抗 / L3 平台产品） |
 | `pbatch/product.py` / `product-specs/` | 产品思维层：productization_level（L0 小工具不推演 / L1 模块 / L2 平台 / L3 产品）→ 场景推演链（登录/上传/审批/聊天/ERP/搜索，产出待确认问题非功能）、开源要素、商业要素（低成本预留 vs 高成本实现红线）、完成证据报告 |
+| `pbatch/learn.py` | 自演进闭环（Evolution Engineering）：`learn` 子命令把事故/RCA 沉淀为统一 Rule Schema 草案（docs/rules/drafts/），人工批准后并入域注册表 |
+| `scripts/check-completion-report.py` | Definition-of-Done 门禁（`completion` 验证器）：产物必须携带诚实完成报告——result 枚举/not_executed 必带原因/禁止伪造通过表述 |
 | `backend-specs/` | 后端规范资产（按 classify 的 backend 域自动选用）：architecture、design-patterns、domain-modeling、evolution、oop-and-di、ddd、algorithms-data-structures、complexity-and-scale、**persistence-modeling**（四种模型分离/主键/金额/索引/唯一约束/审计历史/迁移，编码前强制关卡）、**production-readiness**（生产就绪门禁 11 项）、**agent-guardrails**（防幻觉/变更控制/DRY 边界）、**architecture-constitution**（最高层架构宪法：变化管理/可逆决策/耦合八型/爆炸半径/重试预算/一致性显式/15 问）+ `rules.yaml` 后端注册表 |
 | `scripts/check-backend-quality.py` | 后端工程门禁（纯 stdlib）：过度设计信号（单实现接口/Base 类/模糊命名）、上帝服务、状态直接赋值、domain→infra 反向依赖（`backendquality` 验证器） |
 | `ui-specs/` | AI UI 生成规范资产：8pt 间距 token、组件/布局/反例规范、业务风格 profile（ERP/CMS/OA…） |
