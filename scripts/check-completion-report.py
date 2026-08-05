@@ -78,7 +78,10 @@ def _check_commands(commands, violations) -> None:
 
 
 def _check_not_executed(not_run, violations) -> None:
-    """not_executed entries must carry a reason (honest gaps)."""
+    """not_executed entries must carry a reason (honest gaps). Absent or
+    empty means no unrun checks — legitimate."""
+    if not_run is None or not_run == []:
+        return
     if not isinstance(not_run, list):
         violations.append("not_executed must be a list")
         return

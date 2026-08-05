@@ -216,3 +216,12 @@ def test_frontend_implementation_pipeline_schema():
     assert "layout-patterns" in plan
     assert "pi-batch context" in plan
     assert "component tree" in plan
+
+
+def test_visual_review_pipeline_schema():
+    from pbatch.pipeline import load_pipeline
+    pipeline = load_pipeline("examples/visual-review-pipeline.yaml")
+    assert [s.name for s in pipeline.stages] == ["generate", "visual", "review", "gate"]
+    assert len(pipeline.stages[1].commands) == 4  # 3 viewports + scoring
+    assert "playwright screenshot" in pipeline.stages[1].commands[0]
+    assert pipeline.stages[3].gate is True

@@ -1,0 +1,79 @@
+# 视觉评审流水线模板：代码 → Playwright 截图 → Vision 评分 → 不达标修复。
+#
+# 视觉问题最终要通过渲染结果判断。本模板是"截图 Review"环节的可运行骨架：
+# 代码评审看不到的留白/拥挤/层级/对齐问题，由渲染截图 + 视觉模型评分把关。
+#
+# 前置（按项目适配）：
+#   1. Playwright 已安装：npm i -D playwright && npx playwright install chromium
+#   2. 项目前端可本地启动（scripts/visual-serve.sh 提供示例）
+#   3. scripts/score-ui.py 是评分占位：接入 vision API（或人工评分）后
+#      低于 90 分返回非零退出码 → commands 失败 → 修复循环
+#
+# 运行：
+#   pi-batch examples/visual-review-pipeline.yaml --retries 3 --max-rounds 0
+#
+# 机制：generate 阶段产出页面后，visual 阶段用 commands 依次执行
+#   启动服务 → 截图（桌面/平板/手机三档）→ 视觉评分（<90 失败）
+# commands 失败 → 阶段失败 → 重试时 stderr 反馈 → agent 修复 → 重新截图评分。
+# 评分通过后由 gate 裁决（visual_reviewer 角色复核）。
+
+git_commit: true
+decision_log: docs/DECISIONS.md
+archive_dir: docs/archive
+
+stages:
+  # ── 1. 页面生成（复用前端实现流水线的 generate 逻辑，简化为直接实现）──
+  - name: generate
+    from_outputs: []   # 占位：实际运行时改为 from_prompt 或 from_outputs
+    from_prompt: |
+      Implement the page per the rule manifest (pi-batch assess --prompt)
+      and the ui-specs. Output docs/ui/visual/page.tsx.
+    output: docs/ui/visual/page.tsx
+    validate: uispacing,uicolor,uistyle
+    mode: serial
+
+  # ── 2. 截图评审：渲染 → 截图 → 视觉评分（<90 失败 → 修复循环）──
+  - name: visual
+    from_outputs: generate
+    mode: serial
+    command_timeout: 600
+    command_output_max_bytes: 262144
+    commands:
+      # 适配点：启动你的前端开发服务器（按项目替换端口/命令）
+      - "npx playwright screenshot --viewport-size=1440,900 --wait-for-timeout=2000 http://localhost:3000/page docs/ui/visual/desktop.png"
+      - "npx playwright screenshot --viewport-size=768,1024 --wait-for-timeout=2000 http://localhost:3000/page docs/ui/visual/tablet.png"
+      - "npx playwright screenshot --viewport-size=390,844 --wait-for-timeout=2000 http://localhost:3000/page docs/ui/visual/mobile.png"
+      # 适配点：视觉模型评分（接入 vision API；<90 退出码非零 → 阶段失败）
+      - "python scripts/score-ui.py docs/ui/visual/desktop.png docs/ui/visual/tablet.png docs/ui/visual/mobile.png"
+    tasks:
+      - prompt: |
+          Provide the URL and viewport matrix used for the visual review
+          (desktop 1440x900 / tablet 768x1024 / mobile 390x844) and list
+          the score thresholds. The commands above run the screenshots and
+          scoring; if the score is below 90 the stage fails and the scoring
+          output feeds your retry prompt.
+        output: docs/ui/visual/notes.md
+
+  # ── 3. 视觉对抗审查：visual_reviewer 按截图/代码复核 ──
+  - name: review
+    from_outputs: visual
+    meta: true
+    role_dir: prompts
+    output_dir: docs/ui/visual/reviews
+    max_iterations: 2
+    mode: serial
+
+  # ── 4. 裁决门 ──
+  - name: gate
+    from_outputs: review
+    aggregate: true
+    gate: true
+    mode: serial
+    tasks:
+      - prompt: |
+          You are the visual gatekeeper. Read {input_content}. Verify the
+          page passed the screenshot scoring (>= 90), the visual review
+          findings are resolved, and the layout matches the layout-patterns
+          spec at all three viewports. Output:
+          VERDICT: PASS - <why> or VERDICT: FAIL - <blocking visual issues>
+        output: docs/ui/visual/gate.md
