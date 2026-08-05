@@ -1,0 +1,26 @@
+id: CLI-CLASSIFY-001
+title: classify 子命令把含/的中文任务文本误判为文件路径
+category: frontend
+severity: warning
+scope:
+  languages: []
+  paths:
+  - src/**
+trigger:
+  operations: []
+rationale: 'Observed failure: classify 子命令把含/的中文任务文本误判为文件路径. Root-cause analysis is
+  required before this draft can be promoted (edit requirements/forbidden/verification
+  with the actual RCA).'
+requirements: []
+forbidden: []
+exceptions:
+- condition: ''
+verification:
+  static: []
+  tests: []
+examples:
+  good: []
+  bad: []
+owner: ai-batch-runner
+version: 0.1.0
+status: draft

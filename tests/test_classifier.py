@@ -225,3 +225,13 @@ def test_visual_review_pipeline_schema():
     assert len(pipeline.stages[1].commands) == 4  # 3 viewports + scoring
     assert "playwright screenshot" in pipeline.stages[1].commands[0]
     assert pipeline.stages[3].gate is True
+
+
+def test_classify_prompt_with_slashes_is_not_a_path(capsys):
+    """A task text containing '/' must not be treated as a file path."""
+    sys.argv = ["pi-batch.py", "classify", "重构 pbatch/rule_matcher.py 降低复杂度"]
+    from pbatch.classifier import classify_main
+    classify_main(sys.argv[2:])
+    out = capsys.readouterr().out
+    assert "code_engineering" in out
+    assert "File not found" not in out

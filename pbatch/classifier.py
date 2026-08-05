@@ -293,9 +293,10 @@ def _collect_texts(args) -> list[str]:
         if not src.exists():
             # Not a file on disk: treat as an inline prompt unless it looks
             # like a path (slash, dot-prefix, or a known file extension).
-            looks_like_path = ("/" in args.source or "\\" in args.source
-                               or args.source.startswith(".")
-                               or Path(args.source).suffix in (".md", ".txt", ".yaml", ".yml", ".json"))
+            looks_like_path = (" " not in args.source
+                               and ("/" in args.source or "\\" in args.source
+                                   or args.source.startswith(".")
+                                   or Path(args.source).suffix in (".md", ".txt", ".yaml", ".yml", ".json")))
             if not looks_like_path:
                 return [args.source]
             log.error("File not found: %s", src)
