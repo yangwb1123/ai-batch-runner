@@ -393,6 +393,7 @@ pi-batch.py assess "写一个订单创建接口，含支付审批，生产，go"
 # 评估内容：8 维完整性检查（缺失维度给建议）/ 规模信号 S/M/L /
 # 处方档 = min(关键词档, 规模档) / 刻意未选用清单（克制原则）/ 双向校验
 pi-batch.py assess "..." --json
+pi-batch.py assess "..." --prompt   # 编译成可直接执行/喂给 agent 的指令块
 pi-batch.py assess "..." --llm-json '{"apply":[],"skip":[]}'
 # 规则匹配：算法式筛选适用规范（小 demo 只加载视觉核心，生产级自动加全套）
 pi-batch.py rules "生成一个登录页 demo"

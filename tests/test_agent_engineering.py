@@ -183,3 +183,17 @@ def test_check_subcommand_passes():
     except SystemExit as exc:
         code = exc.code
     assert code == 0
+
+
+def test_assess_prompt_compiles_instruction_block(capsys):
+    sys.argv = ["pi-batch.py", "assess", "--prompt",
+                "写一个订单创建接口，含支付审批，生产环境，go 实现"]
+    from pbatch.assessor import assess_main
+    assess_main(sys.argv[2:])
+    out = capsys.readouterr().out
+    assert "Execution instructions" in out
+    assert "REQUIREMENT:" in out
+    assert "WORKFLOW:" in out
+    assert "RULES (load ONLY these files):" in out
+    assert "persistence-modeling" in out
+    assert "COMPLETION:" in out

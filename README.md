@@ -165,6 +165,23 @@ python pi-batch.py ...      # zero-install fallback from the repo root
 pi-batch classify "用 Flutter 实现 ERP 排程列表页"
 pi-batch classify tasks.yaml --json        # machine-readable
 
+# Requirement assessment: prescription + productization + workflow level
+pi-batch assess "企业订单管理：新建订单表单，含支付审批流程"
+pi-batch assess --file requirements.md     # from a document
+pi-batch assess "..." --prompt             # compiled instruction block for the agent
+pi-batch assess "..." --json
+
+# Rule matching (scale × page_type × risk) + two-sided LLM check
+pi-batch rules "生成一个登录页 demo"
+pi-batch rules --check                     # registry schema integrity (both domains)
+pi-batch rules "..." --summary | --llm-prompt p.txt | --llm-json '{...}'
+
+# Context routing + evolution + self-check
+pi-batch context "任务" --paths src/order/**   # project documents for a task
+pi-batch learn "订单并发创建重复记录"            # RCA -> rule draft (--from-memory TERM)
+pi-batch eval                                  # rule-system regression suite (25 cases)
+pi-batch check                                 # one-command self-check
+
 # Frontend task: --classify routes it to the frontend implementation
 # pipeline (real code in the project; plan -> implement with
 # uiquality/uicheck/completion gates -> adversarial review -> verdict)
