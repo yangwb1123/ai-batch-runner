@@ -1,0 +1,26 @@
+id: GATE-EXCEPTPASS-001
+title: 门禁扫描自身发现 except-pass 吞异常需分级：OSError 清理路径 vs 业务异常
+category: backend
+severity: warning
+scope:
+  languages: []
+  paths:
+  - src/**
+trigger:
+  operations: []
+rationale: 'Observed failure: 门禁扫描自身发现 except-pass 吞异常需分级：OSError 清理路径 vs 业务异常. Root-cause
+  analysis is required before this draft can be promoted (edit requirements/forbidden/verification
+  with the actual RCA).'
+requirements: []
+forbidden: []
+exceptions:
+- condition: ''
+verification:
+  static: []
+  tests: []
+examples:
+  good: []
+  bad: []
+owner: ai-batch-runner
+version: 0.1.0
+status: draft

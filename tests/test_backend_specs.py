@@ -337,3 +337,22 @@ def test_classifier_backend_pipeline_configured():
 def test_backend_routing_pipeline_exists():
     from pathlib import Path
     assert Path("examples/backend-implementation-pipeline.yaml").exists()
+
+
+def test_checker_except_pass_severity_split(tmp_path):
+    """OSError cleanup pass = warning (strict only); non-OSError pass =
+    error (always); commented pass = clean."""
+    os_cleanup = tmp_path / "cleanup.py"
+    os_cleanup.write_text("try:\n    os.unlink(f)\nexcept OSError:\n    pass\n",
+                          encoding="utf-8")
+    assert _run(str(os_cleanup)).returncode == 0          # warning only
+    assert _run(str(os_cleanup), "--strict").returncode == 1
+    business = tmp_path / "business.py"
+    business.write_text("try:\n    parse()\nexcept ValueError:\n    pass\n",
+                        encoding="utf-8")
+    assert _run(str(business)).returncode == 1            # error always
+    assert "swallowing non-OSError" in _run(str(business)).stderr
+    commented = tmp_path / "commented.py"
+    commented.write_text("except ValueError:\n    pass  # stream closed\n",
+                         encoding="utf-8")
+    assert _run(str(commented), "--strict").returncode == 0

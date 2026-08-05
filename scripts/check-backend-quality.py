@@ -66,6 +66,13 @@ _BASE_CLASS_RE = re.compile(r"class\s+\w+\s+extends\s+Base\w+")
 _INTERFACE_RE = re.compile(r"interface\s+(\w+)\b")
 _IMPLEMENTS_RE = re.compile(r"class\s+\w+\s+implements\s+([\w,\s]+)")
 _TX_RE = re.compile(r"\b(beginTransaction|commit\(|rollback\()\b")
+# except-pass swallowing: OSError cleanup paths are tolerated (warning),
+# swallowing any other exception type is an error (failure path hidden).
+_EXCEPT_PASS_RE = re.compile(r"except\s*[^:]*:\s*\n\s*pass\b(?!\s*#)")
+_OS_EXCEPT_PASS_RE = re.compile(
+    r"except\s*\((?:OSError|FileNotFoundError|PermissionError|"
+    r"subprocess\.TimeoutExpired|ChildProcessError)[^)]*\)\s*:\s*\n\s*pass\b(?!\s*#)"
+    r"|except\s*(?:OSError|FileNotFoundError|PermissionError)\s*:\s*\n\s*pass\b(?!\s*#)")
 _TODO_RE = re.compile(r"TODO|FIXME|HACK")
 
 
@@ -133,13 +140,20 @@ def _test_warnings(text: str, rel: str) -> list:
 
 
 def _reliability_warnings(text: str, rel: str) -> list:
-    """Strict-mode reliability signals: swallowed exceptions, per-request
-    HTTP clients, busy-polling loops without backoff."""
+    """Swallowed exceptions: empty JS catch is always an error; Python
+    except-pass is an error unless it only swallows OSError-family cleanup
+    paths (warning)."""
     findings = []
-    if re.search(r"catch\s*\([^)]*\)\s*\{\s*\}", text) \
-            or re.search(r"except[^:]*:\s*\n\s*pass\b", text):
-        findings.append(("warning", f"{rel}: swallowed exception (empty catch/except pass) "
-                                    f"— failure path invisible"))
+    if re.search(r"catch\s*\([^)]*\)\s*\{\s*\}", text):
+        findings.append(("error", f"{rel}: swallowed exception (empty catch) "
+                                  f"— failure path invisible"))
+    non_os = len(_EXCEPT_PASS_RE.findall(text)) - len(_OS_EXCEPT_PASS_RE.findall(text))
+    if non_os > 0:
+        findings.append(("error", f"{rel}: {non_os} except-pass swallowing "
+                                  f"non-OSError exceptions — failure path hidden"))
+    elif len(_OS_EXCEPT_PASS_RE.findall(text)) > 0:
+        findings.append(("warning", f"{rel}: except-pass on OSError cleanup "
+                                    f"paths — verify it is intentional"))
     clients = (len(re.findall(r"axios\.create\(|new\s+HttpClient\(|http\.Client\{", text))
                + len(re.findall(r"Dio\(", text)))
     if clients >= 2:

@@ -146,8 +146,9 @@ def _parse_role_plan(stdout: str) -> list:
                                      "task": str(item.get("task", "")).strip()})
                 return plan
         except json.JSONDecodeError:
-            pass
-    log.warning("META orchestrator output did not contain a JSON role plan; treating as complete")
+            plan = []
+    if not plan:
+        log.warning("META orchestrator output did not contain a JSON role plan; treating as complete")
     return []
 
 
