@@ -5,3 +5,4 @@ docs/reviews/
 .coverage
 .pi-batch/
 .pi-batch.lock
+*.egg-info/

@@ -1,0 +1,49 @@
+"""Smoke tests for the CLI entry points: the installed `pi-batch` console
+script (pyproject [project.scripts]) and `python -m pbatch` (__main__.py).
+The repo-root pi-batch.py shim remains the zero-install fallback."""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+import sys
+
+import pytest
+
+
+def _run(args: list) -> subprocess.CompletedProcess:
+    return subprocess.run(args, capture_output=True, text=True, timeout=120)
+
+
+def test_python_m_pbatch_help():
+    result = _run([sys.executable, "-m", "pbatch", "--help"])
+    assert result.returncode == 0
+    assert "--classify" in result.stdout
+    assert "campaign" in result.stdout
+
+
+def test_python_m_pbatch_classify_subcommand():
+    result = _run([sys.executable, "-m", "pbatch", "classify", "生成登录页面 tsx"])
+    assert result.returncode == 0
+    assert "frontend_ui" in result.stdout
+    assert "route to frontend pipeline: True" in result.stdout
+
+
+def test_python_m_pbatch_classify_json():
+    import json
+    result = _run([sys.executable, "-m", "pbatch", "classify", "--json", "写一个后端接口"])
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["tasks"][0]["task_type"] == "backend"
+    assert payload["route_frontend"] is False
+
+
+@pytest.mark.skipif(shutil.which("pi-batch") is None,
+                    reason="console script not installed (pip install .)")
+def test_installed_console_script():
+    result = _run(["pi-batch", "--help"])
+    assert result.returncode == 0
+    assert "usage: pi-batch" in result.stdout
+    result = _run(["pi-batch", "classify", "做一个 ERP 排程页面"])
+    assert result.returncode == 0
+    assert "frontend_ui" in result.stdout
