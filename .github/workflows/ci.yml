@@ -43,5 +43,8 @@ jobs:
       - name: Regression suite (tests/)
         run: make test
 
+      - name: Rule-system eval suite (evals/)
+        run: make eval
+
       - name: Coverage
         run: make coverage

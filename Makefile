@@ -37,6 +37,9 @@ harness: check self-test ## pre-push gate (snaplink naming).
 test: ## Regression suite (tests/, 222 cases). Requires: pip install -e ".[dev]".
 	python -m pytest tests/
 
+eval: ## Rule-system regression suite (evals/, pi-batch eval).
+	python -m pbatch eval
+
 coverage: ## Coverage report for tests/ + checks/. Requires pytest-cov.
 	python -m pytest --cov=checks --cov=cli --cov-report=term-missing tests/ checks/
 

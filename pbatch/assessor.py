@@ -113,10 +113,13 @@ _WORKFLOW_PRODUCT = {"L0_local_feature": 0, "L1_reusable_module": 1,
 
 
 WORKFLOW_SUGGESTIONS = {
-    "L0_direct": "单任务直接修改 + 快速验证门禁（文案/简单修复）",
-    "L1_standard": "标准生成流水线 + 门禁 + 审查（普通功能）",
-    "L2_high_risk": "full-sdlc-implement：对抗审查 + 裁决门 + 验收门（权限/支付/迁移/并发）",
-    "L3_platform": "完整多阶段流水线 + 产品推演（product_thinker 审查）",
+    "L0_direct": "单任务直接修改 + 快速验证门禁（无需流水线）",
+    "L1_standard": "标准实现流水线：frontend-implementation 或 backend-implementation"
+                   "（--classify 自动路由，plan→实现+门禁→对抗审查→gate）",
+    "L2_high_risk": "examples/full-sdlc-implement.yaml：对抗审查 + 裁决门 + 验收门"
+                     "（权限/支付/迁移/并发）",
+    "L3_platform": "examples/full-sdlc-implement.yaml + product_thinker 审查"
+                    "（产品推演 + 商业/开源要素）",
 }
 
 

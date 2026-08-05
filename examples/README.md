@@ -125,3 +125,22 @@ python pi-batch.py campaign --max-directions 2 --reuse --retry-failed
 恢复依据是 `docs/auto/state.jsonl` 与 fingerprint，不是 Markdown 文件是否非空。
 需要并行实现时使用 `--parallel-pipelines N`；runner 会先要求主工作区干净，
 再为每个方向建立独立 Git worktree 和分支。
+
+## 7. 流水线目录（examples/*.yaml）
+
+| 流水线 | 用途 | 入口 |
+|---|---|---|
+| `frontend-implementation-pipeline.yaml` | 前端真实实现：assess → plan（布局/组件树/状态/交互链）→ implement 改项目代码（uiquality+uicheck+completion 三门禁）→ 对抗审查 → VERDICT | `--classify`（前端任务自动路由） |
+| `backend-implementation-pipeline.yaml` | 后端实现：assess → plan（含**强制 Persistence Design 报告**）→ implement（backendquality+completion 双门禁）→ 对抗审查 → VERDICT | `--classify`（后端任务自动路由） |
+| `ui-generation-pipeline.yaml` | 产物型页面生成模板（输出到 docs/ui/generated/） | 显式 `--pipeline` |
+| `ui-refactor-pipeline.yaml` | 已有项目前端代码按 ui-specs 重构到 0 违规（uicheck 门禁反馈循环） | 显式 |
+| `frontend-engineering-review.yaml` | 前端工程审计：异步/竞态/防抖/上帝文件/复杂度 | 显式 |
+| `backend-engineering-review.yaml` | 后端架构/模式/领域/算法对抗审计 + backendquality | 显式 |
+| `full-sdlc-implement.yaml` | 全流程真实实现（需求→设计→对抗→gate→实现→验收） | L2/L3 工作流 |
+| `meta-review-pipeline.yaml` | 通用分析流水线（一句话起点 + meta 动态角色） | 显式 |
+| `quickstart-full-sdlc.yaml` | 完整闭环示例（一句话→提案→归档） | 显式 |
+| `repository-campaign*.yaml` | 项目级自动发现→分析→Top N 实现（implement 阶段自动加载域规则处方） | `campaign` |
+
+配套评估/上下文/规则命令：`assess`（需求评估：处方+产品化+工作流分级）、
+`rules`（规则匹配+双向校验）、`context`（项目文档路由）、`eval`（规则
+系统回归套件）、`learn`（RCA→规则草案）、`classify`（任务类型判断）。

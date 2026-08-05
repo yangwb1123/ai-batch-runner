@@ -57,6 +57,12 @@ stages:
     tasks:
       - prompt: |
           Read the repository's AGENTS.md and the approved evidence below.
+          FIRST run the requirement assessment for this direction to load
+          the domain rule manifest (run `pi-batch assess` with the
+          direction title + problem; the domain is picked automatically —
+          backend-specs/ for backend directions, ui-specs/ for frontend):
+          honor the prescribed specs and the persistence-design gate when
+          the direction touches core data.
           Implement only the selected direction directly in the repository.
           Add focused regression tests and run the project's documented gates.
           Do not commit. Return a change report naming files/symbols, tests,
