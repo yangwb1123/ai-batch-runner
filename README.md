@@ -289,6 +289,20 @@ tasks:
   (automated gates), and the senior-architect 15 questions.
   `architecture_constitution_reviewer` role audits the design against it
   (production tier rule only).
+- **Testing & system engineering** (`backend-specs/testing.md`,
+  `system-engineering.md`, `network-engineering.md`): five-layer testing
+  (unit/integration/contract/E2E/non-functional) with reproduce-first bug
+  fixing, risk coverage instead of line coverage, property/fuzz testing,
+  and honest verification (no assertion-less tests — the `backendquality`
+  gate flags them); message semantics (at-least-once consumers must be
+  idempotent, DLQ for poison messages), cache consistency patterns, long
+  task state machines (never is_running booleans), rate-limit algorithm
+  decision table, distributed-lock alternatives before locks (unique
+  constraints/atomic updates/queues; fencing tokens if used), graceful
+  shutdown; layered timeouts (DNS/connect/TLS/request/response/deadline),
+  client reuse, the retry matrix (bounded budget, never blind retries of
+  non-idempotent writes), streaming with backpressure. `testing_reviewer`
+  role audits risk coverage and verification honesty.
 - **Product thinking** (`pbatch/product.py` + `product-specs/`): the agent
   must think as a product owner, not a code generator — but depth is decided
   by the productization level (L0 local_feature → L3 product_feature),

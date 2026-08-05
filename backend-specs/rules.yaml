@@ -103,3 +103,15 @@ rules:
                  耦合八型/爆炸半径/重试预算/一致性显式/契约演进/架构假设/15 问
     files: [backend-specs/architecture-constitution.md]
     min_tier: production
+  testing:
+    description: 五层测试策略、Bug 复现优先、属性/模糊测试、测试数据治理、防伪造
+    files: [backend-specs/testing.md]
+    min_tier: standard
+  system-engineering:
+    description: 消息语义/缓存一致性/后台任务状态机/限流算法/分布式锁/优雅关闭
+    files: [backend-specs/system-engineering.md]
+    min_tier: production
+  network-engineering:
+    description: 超时分层/客户端复用/重试矩阵/流式与背压
+    files: [backend-specs/network-engineering.md]
+    min_tier: production

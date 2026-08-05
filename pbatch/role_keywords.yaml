@@ -324,3 +324,14 @@ product_thinker:
   - 开源
   - 推演
   - 产品化
+testing_reviewer:
+  - test
+  - coverage
+  - assertion
+  - reproduce
+  - contract test
+  - 测试
+  - 覆盖率
+  - 断言
+  - 复现
+  - 契约测试

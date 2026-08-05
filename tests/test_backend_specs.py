@@ -279,3 +279,37 @@ def test_constitution_prompt_has_15_questions():
     prompt = Path("prompts/architecture_constitution_reviewer.md").read_text(encoding="utf-8")
     assert "blast radius" in prompt.lower()
     assert "coupling octet" in prompt.lower()
+
+
+def test_testing_rule_at_standard_tier():
+    matched = match_rules("写一个订单创建接口")
+    ids = [item["id"] for item in matched["rules"]]
+    assert "testing" in ids
+
+
+def test_system_and_network_rules_production_only():
+    matched = match_rules("企业订单域：多实体复杂流程，微服务生产环境，含支付审批")
+    ids = [item["id"] for item in matched["rules"]]
+    assert {"system-engineering", "network-engineering"} <= set(ids)
+    small = match_rules("做一个客户 CRUD 接口")
+    small_ids = [item["id"] for item in small["rules"]]
+    assert "network-engineering" not in small_ids
+
+
+def test_checker_assertion_less_test_warning(tmp_path):
+    bad = tmp_path / "x.test.ts"
+    bad.write_text("it('renders', () => { render(<App />); });\n", encoding="utf-8")
+    strict = _run(str(bad), "--strict")
+    assert strict.returncode == 1
+    assert "without assertions" in strict.stderr
+    good = tmp_path / "y.test.ts"
+    good.write_text("it('adds', () => { expect(add(1,2)).toBe(3); });\n",
+                    encoding="utf-8")
+    assert _run(str(good), "--strict").returncode == 0
+
+
+def test_testing_reviewer_keywords_registered():
+    from pbatch.relevance import load_role_keywords
+    keywords = load_role_keywords()
+    assert "testing_reviewer" in keywords
+    assert keywords["testing_reviewer"]

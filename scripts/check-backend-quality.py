@@ -108,6 +108,17 @@ def _single_implementation_interfaces(text: str) -> list:
     return flagged
 
 
+def _test_warnings(text: str, rel: str) -> list:
+    """Strict-mode test-quality signals: assertion-less test files."""
+    is_test = ".test." in rel or rel.endswith(("_test.go", "_test.py", "_test.ts", "_spec.ts"))
+    if not is_test:
+        return []
+    if not re.search(r"\b(expect|assert|assertThat|should\.|t\.Error|t\.Fatal|assertion)\b", text):
+        return [("warning", f"{rel}: test file without assertions "
+                            f"(renders/exists checks do not prove behavior)")]
+    return []
+
+
 def _reliability_warnings(text: str, rel: str) -> list:
     """Strict-mode reliability signals: swallowed exceptions, per-request
     HTTP clients, busy-polling loops without backoff."""
@@ -199,6 +210,7 @@ def _warning_findings(lines: list, rel: str, text: str, metrics: dict) -> list:
     findings.extend(_algorithm_warnings(text, rel))
     findings.extend(_persistence_warnings(text, rel))
     findings.extend(_reliability_warnings(text, rel))
+    findings.extend(_test_warnings(text, rel))
     return findings
 
 
