@@ -5,7 +5,7 @@
 #   → git 提交 → 产物归档（工作区整洁，git 历史保留一切）
 #
 # 执行（用户亲自运行，需要 PATH 中有 pi 且 API 可用）：
-#   python ai-dev/pi-batch.py ai-dev/examples/quickstart-full-sdlc.yaml \
+#   python pi-batch.py examples/quickstart-full-sdlc.yaml \
 #     --log-file logs/full-sdlc.log
 #
 # 产物：
@@ -59,7 +59,7 @@ stages:
   - name: adversarial_review
     from_outputs: design
     meta: true
-    role_dir: ai-dev/prompts
+    role_dir: prompts
     output_dir: docs/proposals
     max_iterations: 2
     mode: serial
@@ -76,7 +76,7 @@ stages:
           design, review deliverables). Cross-check the review findings
           against the design: are they resolved or dismissed with
           reasons? Output the verdict on the last line:
-          VERDICT: PASS
+          VERDICT: PASS - <why the design is ready>
           or
           VERDICT: FAIL - <the blocking issues>
           FAIL blocks the implementation stage.
@@ -106,7 +106,7 @@ stages:
           You are the QA lead. Read {input_content} and verify each
           improvement's acceptance check is covered by the plan.
           Output the verdict on the last line:
-          VERDICT: PASS
+          VERDICT: PASS - <why every acceptance check is covered>
           or
           VERDICT: FAIL - <missing coverage>
         output: docs/proposals/acceptance.md

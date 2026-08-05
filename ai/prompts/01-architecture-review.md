@@ -2,7 +2,7 @@
 
 **Roles:** Principal Architect, Backend Architect, and CTO.
 
-Read `ai-dev/ai/prompts-shared/{engineering-principles,role-definitions,output-format}.md`.
+Read `ai/prompts-shared/{engineering-principles,role-definitions,output-format}.md`.
 Use `docs/architecture/DIRECTORY_MAP.md` for current package ownership; treat
 dated plans as historical evidence.
 

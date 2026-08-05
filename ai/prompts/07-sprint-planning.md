@@ -2,7 +2,7 @@
 
 **Roles:** Product Manager, Principal Architect, and Tech Lead.
 
-Read `ai-dev/ai/prompts-shared/{engineering-principles,role-definitions}.md`.
+Read `ai/prompts-shared/{engineering-principles,role-definitions}.md`.
 Only schedule requirements accepted in `docs/feature-matrix.md`,
 `docs/deferred-backlog.md`, or an explicitly approved current feature spec.
 Historical reviews supply candidates, not backlog authority.

@@ -2,7 +2,7 @@
 
 **Roles:** Staff Engineer, QA Lead, and SRE.
 
-Read `ai-dev/ai/prompts-shared/{engineering-principles,review-checklists,output-format,role-definitions}.md`.
+Read `ai/prompts-shared/{engineering-principles,review-checklists,output-format,role-definitions}.md`.
 Judge delivery from current code, executable evidence, and same-change
 contracts—not an implementation report or celebration narrative.
 

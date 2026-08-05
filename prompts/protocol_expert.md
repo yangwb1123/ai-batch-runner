@@ -1,6 +1,6 @@
 # Identity Protocol Expert Prompt
 
-Read and apply `ai-dev/prompts/README.md`. Compare behavior with current
+Read and apply `prompts/README.md`. Compare behavior with current
 handlers, discovery metadata, OpenAPI, and tests.
 
 ## Role and Input

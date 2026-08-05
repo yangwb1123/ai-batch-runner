@@ -1,6 +1,6 @@
 # Architecture Reviewer Prompt
 
-Read and apply `ai-dev/prompts/README.md`, `AGENTS.md`, and
+Read and apply `prompts/README.md`, `AGENTS.md`, and
 `docs/architecture/DIRECTORY_MAP.md`.
 
 ## Role and Input

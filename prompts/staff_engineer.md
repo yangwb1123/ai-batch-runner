@@ -1,6 +1,6 @@
 # Staff Engineer Prompt
 
-Read and apply `ai-dev/prompts/README.md`, the committed root Go gates,
+Read and apply `prompts/README.md`, the committed root Go gates,
 and `engineering.yaml`.
 
 ## Role and Input

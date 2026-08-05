@@ -1,10 +1,10 @@
-# Pipeline 设计示例（仅用于 --dry-run）
+# Pipeline 设计示例（建议先用 --dry-run 检查）
 #
-# 当前 runner 不聚合并行角色输出，且 commands 钩子报错后仍以成功状态继续。
-# 因此本文件不是可执行开发闭环，也不能提供 build/test/release gate。
+# 当前 runner 支持 aggregate 证据合并和 commands 失败门禁；本文件展示基础
+# fan-out 流程。涉及真实代码修改时仍应补充项目专属 validator 和独立验收 Gate。
 #
 # 使用方法：
-#   python3 ai-dev/pi-batch.py --pipeline ai-dev/pipelines/pipeline.example.yaml --dry-run # 预览
+#   python3 pi-batch.py --pipeline pipelines/pipeline.example.yaml --dry-run # 预览
 
 git_commit: false # 默认不提交生成输出；需要时显式传 --git-commit
 
@@ -29,14 +29,14 @@ stages:
     tasks:
       # 架构师：模块设计、接口定义、数据模型
       - role: architect
-        prompt_template: ai-dev/prompts/architect.md
+        prompt_template: prompts/architect.md
         output: docs/results/{input_stem}.arch.md
         model:
         timeout: 600
 
       # Tech Lead：任务拆解、实施计划
       - role: tech-lead
-        prompt_template: ai-dev/prompts/tech_lead.md
+        prompt_template: prompts/tech_lead.md
         output: docs/results/{input_stem}.plan.md
         model:
         timeout: 600
@@ -54,7 +54,7 @@ stages:
     from_outputs: technical-design
     tasks:
       - role: implementer
-        prompt_template: ai-dev/prompts/code-implementer.md
+        prompt_template: prompts/code-implementer.md
         output: docs/results/{input_stem}.code.md
         model:
         timeout: 1800 # 代码实现较长时间
@@ -65,13 +65,13 @@ stages:
   # 阶段 4：代码测试 + 质量检查
   # 输入：代码实现
   # 角色：QA Lead 审查测试策略
-  # 命令定义仅保留作 runner 修复后的设计输入；当前不会形成失败门禁
+  # commands 任一非零退出都会使阶段失败并阻断成功归档
   # ═══════════════════════════════════════════════════════════════
   - name: code-testing
     from_outputs: code-implementation
     tasks:
       - role: qa-engineer
-        prompt_template: ai-dev/prompts/qa_lead.md
+        prompt_template: prompts/qa_lead.md
         output: docs/results/{input_stem}.tests.md
         model:
         timeout: 600
@@ -95,13 +95,13 @@ stages:
     from_outputs: code-testing
     tasks:
       - role: security
-        prompt_template: ai-dev/prompts/security_engineer.md
+        prompt_template: prompts/security_engineer.md
         output: docs/results/{input_stem}.security-review.md
         model:
         timeout: 600
 
       - role: tech-lead
-        prompt_template: ai-dev/prompts/tech_lead.md
+        prompt_template: prompts/tech_lead.md
         output: docs/results/{input_stem}.final-ok.md
         model:
         timeout: 600

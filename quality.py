@@ -8,10 +8,10 @@ Enforces the same organization budgets the repo applies to Go files:
 - duplicate function bodies (normalized AST fingerprint, len >= 8 stmts)
 
 Usage:
-    python ai-dev/quality.py [paths...]
+    python quality.py [paths...]
 
 Exit code 0 when no violations; 1 otherwise. Used as a validator:
-    validators: { pyquality: "python ai-dev/quality.py {cwd}/ai-dev" }
+    validators: { pyquality: "python {cwd}/quality.py {cwd}" }
 """
 from __future__ import annotations
 
@@ -120,7 +120,9 @@ def _scan_duplicates(tree: ast.AST, path: Path) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    targets = [Path(a) for a in (argv or ["ai-dev"]) if Path(a).exists()]
+    # Standalone repo adaptation: upstream defaulted to "ai-dev"; here the
+    # root IS the tool, so a bare run scans the current directory.
+    targets = [Path(a) for a in (argv or ["."]) if Path(a).exists()]
     if not targets:
         print("quality: no targets found", file=sys.stderr)
         return 1

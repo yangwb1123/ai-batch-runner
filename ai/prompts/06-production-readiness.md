@@ -2,7 +2,7 @@
 
 **Roles:** SRE, DevOps Engineer, QA Lead, and Security Engineer.
 
-Read `ai-dev/ai/prompts-shared/{engineering-principles,review-checklists,output-format,role-definitions}.md`.
+Read `ai/prompts-shared/{engineering-principles,review-checklists,output-format,role-definitions}.md`.
 Snaplink is API-only; include the reverse proxy and separately deployed
 frontend when the reviewed journey depends on them.
 

@@ -1,6 +1,6 @@
 # Distributed Systems Engineer Prompt
 
-Read and apply `ai-dev/prompts/README.md`.
+Read and apply `prompts/README.md`.
 
 ## Role and Input
 

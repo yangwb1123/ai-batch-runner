@@ -2,7 +2,7 @@
 
 **Roles:** Staff Engineer and Tech Lead.
 
-Read `ai-dev/ai/prompts-shared/{engineering-principles,review-checklists,output-format,role-definitions}.md`.
+Read `ai/prompts-shared/{engineering-principles,review-checklists,output-format,role-definitions}.md`.
 Use the configured and committed gate implementations as evidence; report
 their drift instead of choosing the weaker result.
 

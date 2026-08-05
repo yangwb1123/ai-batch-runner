@@ -1,6 +1,6 @@
 # Compliance Officer Prompt
 
-Read and apply `ai-dev/prompts/README.md`. Implemented controls are not
+Read and apply `prompts/README.md`. Implemented controls are not
 evidence of certification.
 
 ## Role and Input

@@ -1,6 +1,6 @@
 # Principal Reviewer Prompt
 
-Read and apply `ai-dev/prompts/README.md`. This review is advisory and
+Read and apply `prompts/README.md`. This review is advisory and
 cannot bind maintainers or override accountable release owners.
 
 ## Role and Input

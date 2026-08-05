@@ -1,6 +1,6 @@
 # CTO Decision Prompt
 
-Read and apply `ai-dev/prompts/README.md`. Separate current executable
+Read and apply `prompts/README.md`. Separate current executable
 capability from proposals and external frontend scope.
 
 ## Role and Input

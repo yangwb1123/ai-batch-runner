@@ -2,10 +2,10 @@
 #
 # 结合实际软件开发流程（需求 → 设计 → 安全审查 → 质量）和开发角色
 # （BA → Architect + Tech Lead → Security + Protocol Expert → QA），
-# 用 ai-dev/prompts/ 的角色提示词驱动，上游输出聚合后交给下游阶段。
+# 用 prompts/ 的角色提示词驱动，上游输出聚合后交给下游阶段。
 #
 # 运行（从仓库根）：
-#   python ai-dev/pi-batch.py ai-dev/examples/sdlc-mini-pipeline.yaml \
+#   python pi-batch.py examples/sdlc-mini-pipeline.yaml \
 #     --session-mode per-stage --session-name fc-logout \
 #     --log-file logs/sdlc.log
 #
@@ -22,7 +22,7 @@ stages:
   # 输入：docs/requirements 下的需求文档
   # 输出：需求理解 + MVP 范围
   - name: requirements
-    from_dir: ai-dev/examples/sdlc-inputs
+    from_dir: examples/sdlc-inputs
     mode: serial
 
   # ── 阶段 2：架构设计（Architect + Tech Lead，并行）──
@@ -33,11 +33,11 @@ stages:
     aggregate: true
     tasks:
       - role: architect
-        prompt_template: ai-dev/prompts/architect.md
+        prompt_template: prompts/architect.md
         output: docs/proposals/{input_stem}.arch.md
 
       - role: tech-lead
-        prompt_template: ai-dev/prompts/tech_lead.md
+        prompt_template: prompts/tech_lead.md
         output: docs/proposals/{input_stem}.impl-plan.md
 
     mode: parallel
@@ -51,11 +51,11 @@ stages:
     aggregate: true
     tasks:
       - role: security
-        prompt_template: ai-dev/prompts/security_engineer.md
+        prompt_template: prompts/security_engineer.md
         output: docs/proposals/{input_stem}.security.md
 
       - role: protocol
-        prompt_template: ai-dev/prompts/protocol_expert.md
+        prompt_template: prompts/protocol_expert.md
         output: docs/proposals/{input_stem}.protocol.md
 
     mode: parallel
@@ -69,7 +69,7 @@ stages:
     aggregate: true
     tasks:
       - role: qa
-        prompt_template: ai-dev/prompts/qa_lead.md
+        prompt_template: prompts/qa_lead.md
         output: docs/proposals/{input_stem}.qa.md
 
     mode: serial

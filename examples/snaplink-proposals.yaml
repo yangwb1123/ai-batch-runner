@@ -5,7 +5,7 @@
 # 因此两个任务都显式跳过工程质量门禁（validate: ""）。
 #
 # 用法（见同目录 README.md）：
-#   python ai-dev/pi-batch.py ai-dev/examples/snaplink-proposals.yaml \
+#   python pi-batch.py examples/snaplink-proposals.yaml \
 #     --mode serial --session-mode shared --session-name logout-proposals \
 #     --log-file logs/proposals.log
 #

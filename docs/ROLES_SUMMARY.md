@@ -1,11 +1,11 @@
 # AI-SDLC role index
 
-`ai-dev/` provides two complementary prompt sets:
+`prompts/` and `ai/prompts/` provide two complementary prompt sets:
 
 | Mode | Files | Use |
 |---|---|---|
-| Pipeline roles | `ai-dev/prompts/*.md` | Individual expert or implementation tasks composed by `ai-dev/pipelines/*.yaml` |
-| Staged reviews | `ai-dev/ai/prompts/*.md` | Ten end-to-end review stages run by `ai-dev/ai/run-review.py` |
+| Pipeline roles | `prompts/*.md` | Individual expert or implementation tasks composed by `pipelines/*.yaml` |
+| Staged reviews | `ai/prompts/*.md` | Ten end-to-end review stages run by `ai/run-review.py` |
 
 The staged framework's shared role definitions live in
 [`../ai/prompts-shared/role-definitions.md`](../ai/prompts-shared/role-definitions.md).
@@ -26,8 +26,8 @@ instead of 17 review-only roles.
 Example:
 
 ```bash
-python ai-dev/pi-batch.py \
-  --pipeline ai-dev/pipelines/pipeline-code-impl.yaml \
+python pi-batch.py \
+  --pipeline pipelines/pipeline-code-impl.yaml \
   --dry-run
 ```
 

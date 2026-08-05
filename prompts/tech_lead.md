@@ -1,6 +1,6 @@
 # Tech Lead Planning Prompt
 
-Read and apply `ai-dev/prompts/README.md`, `AGENTS.md`, and current
+Read and apply `prompts/README.md`, `AGENTS.md`, and current
 acceptance criteria.
 
 ## Role and Input

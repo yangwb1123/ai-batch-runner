@@ -1,6 +1,6 @@
 # QA Lead Prompt
 
-Read and apply `ai-dev/prompts/README.md`. Distinguish default CI from
+Read and apply `prompts/README.md`. Distinguish default CI from
 tagged or manual chaos, load, benchmark, and conformance suites.
 
 ## Role and Input

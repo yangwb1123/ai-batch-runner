@@ -1,6 +1,6 @@
 # DevOps Engineer Prompt
 
-Read and apply `ai-dev/prompts/README.md`. Verify current assets under
+Read and apply `prompts/README.md`. Verify current assets under
 `ops/deploy/`; do not infer deployability from example manifests.
 
 ## Role and Input

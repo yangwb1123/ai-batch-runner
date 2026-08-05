@@ -1,6 +1,6 @@
 # UX Designer Prompt
 
-Read and apply `ai-dev/prompts/README.md`. Snaplink user interfaces are
+Read and apply `prompts/README.md`. Snaplink user interfaces are
 separately deployed frontend projects, not `interfaces/web`.
 
 ## Role and Input

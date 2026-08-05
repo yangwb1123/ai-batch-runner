@@ -5,7 +5,7 @@
 # 重复/冲突修改。执行前先用 --dry-run 检查；实现类任务不要在生产分支直接运行。
 #
 # 使用方法：
-#   python3 ai-dev/pi-batch.py --pipeline ai-dev/pipelines/pipeline-code-impl.yaml --dry-run
+#   python3 pi-batch.py --pipeline pipelines/pipeline-code-impl.yaml --dry-run
 
 stages:
   # ═══════════════════════════════════════════════════════════
@@ -28,13 +28,13 @@ stages:
     aggregate: true
     tasks:
       - role: architect
-        prompt_template: ai-dev/prompts/architect.md
+        prompt_template: prompts/architect.md
         output: docs/results/{input_stem}.arch.md
         model:
         timeout: 600
 
       - role: tech-lead
-        prompt_template: ai-dev/prompts/tech_lead.md
+        prompt_template: prompts/tech_lead.md
         output: docs/results/{input_stem}.impl-plan.md
         model:
         timeout: 600
@@ -54,7 +54,7 @@ stages:
     aggregate: true
     tasks:
       - role: implementer
-        prompt_template: ai-dev/prompts/code-implementer.md
+        prompt_template: prompts/code-implementer.md
         output: docs/results/{input_stem}.code.md
         model:
         timeout: 1200 # 代码实现需要更长时间
@@ -73,13 +73,13 @@ stages:
     aggregate: true
     tasks:
       - role: reviewer
-        prompt_template: ai-dev/prompts/staff_engineer.md
+        prompt_template: prompts/staff_engineer.md
         output: docs/results/{input_stem}.review.md
         model:
         timeout: 600
 
       - role: security-reviewer
-        prompt_template: ai-dev/prompts/security_engineer.md
+        prompt_template: prompts/security_engineer.md
         output: docs/results/{input_stem}.security-review.md
         model:
         timeout: 600
@@ -99,7 +99,7 @@ stages:
     aggregate: true
     tasks:
       - role: qa-engineer
-        prompt_template: ai-dev/prompts/qa_lead.md
+        prompt_template: prompts/qa_lead.md
         output: docs/results/{input_stem}.tests.md
         model:
         timeout: 600
@@ -118,7 +118,7 @@ stages:
     aggregate: true
     tasks:
       - role: tech-lead
-        prompt_template: ai-dev/prompts/tech_lead.md
+        prompt_template: prompts/tech_lead.md
         output: docs/results/{input_stem}.final.md
         model:
         timeout: 600

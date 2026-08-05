@@ -26,12 +26,12 @@ stages:
     aggregate: true
     tasks:
       - role: architect
-        prompt_template: ai-dev/prompts/architect.md
+        prompt_template: prompts/architect.md
         output: docs/results/{input_stem}.arch.md
         model:
 
       - role: cto
-        prompt_template: ai-dev/prompts/cto.md
+        prompt_template: prompts/cto.md
         output: docs/results/{input_stem}.cto.md
         model:
 
@@ -48,12 +48,12 @@ stages:
     aggregate: true
     tasks:
       - role: security
-        prompt_template: ai-dev/prompts/security_engineer.md
+        prompt_template: prompts/security_engineer.md
         output: docs/results/{input_stem}.security.md
         model:
 
       - role: protocol
-        prompt_template: ai-dev/prompts/protocol_expert.md
+        prompt_template: prompts/protocol_expert.md
         output: docs/results/{input_stem}.protocol.md
         model:
 
@@ -70,12 +70,12 @@ stages:
     aggregate: true
     tasks:
       - role: distributed
-        prompt_template: ai-dev/prompts/distributed_engineer.md
+        prompt_template: prompts/distributed_engineer.md
         output: docs/results/{input_stem}.distributed.md
         model:
 
       - role: database
-        prompt_template: ai-dev/prompts/database_architect.md
+        prompt_template: prompts/database_architect.md
         output: docs/results/{input_stem}.database.md
         model:
 
@@ -92,12 +92,12 @@ stages:
     aggregate: true
     tasks:
       - role: staff
-        prompt_template: ai-dev/prompts/staff_engineer.md
+        prompt_template: prompts/staff_engineer.md
         output: docs/results/{input_stem}.staff.md
         model:
 
       - role: tech-lead
-        prompt_template: ai-dev/prompts/tech_lead.md
+        prompt_template: prompts/tech_lead.md
         output: docs/results/{input_stem}.techlead.md
         model:
 
@@ -114,7 +114,7 @@ stages:
     aggregate: true
     tasks:
       - role: performance
-        prompt_template: ai-dev/prompts/performance_engineer.md
+        prompt_template: prompts/performance_engineer.md
         output: docs/results/{input_stem}.performance.md
         model:
 
@@ -130,22 +130,22 @@ stages:
     aggregate: true
     tasks:
       - role: sre
-        prompt_template: ai-dev/prompts/sre_engineer.md
+        prompt_template: prompts/sre_engineer.md
         output: docs/results/{input_stem}.sre.md
         model:
 
       - role: devops
-        prompt_template: ai-dev/prompts/devops_engineer.md
+        prompt_template: prompts/devops_engineer.md
         output: docs/results/{input_stem}.devops.md
         model:
 
       - role: qa
-        prompt_template: ai-dev/prompts/qa_lead.md
+        prompt_template: prompts/qa_lead.md
         output: docs/results/{input_stem}.qa.md
         model:
 
       - role: compliance
-        prompt_template: ai-dev/prompts/compliance_officer.md
+        prompt_template: prompts/compliance_officer.md
         output: docs/results/{input_stem}.compliance.md
         model:
 
@@ -162,17 +162,17 @@ stages:
     aggregate: true
     tasks:
       - role: pm
-        prompt_template: ai-dev/prompts/pm.md
+        prompt_template: prompts/pm.md
         output: docs/results/{input_stem}.pm.md
         model:
 
       - role: architect
-        prompt_template: ai-dev/prompts/architect.md
+        prompt_template: prompts/architect.md
         output: docs/results/{input_stem}.arch-plan.md
         model:
 
       - role: tech-lead
-        prompt_template: ai-dev/prompts/tech_lead.md
+        prompt_template: prompts/tech_lead.md
         output: docs/results/{input_stem}.techlead-plan.md
         model:
 
@@ -189,17 +189,17 @@ stages:
     aggregate: true
     tasks:
       - role: staff
-        prompt_template: ai-dev/prompts/staff_engineer.md
+        prompt_template: prompts/staff_engineer.md
         output: docs/results/{input_stem}.staff-review.md
         model:
 
       - role: qa
-        prompt_template: ai-dev/prompts/qa_lead.md
+        prompt_template: prompts/qa_lead.md
         output: docs/results/{input_stem}.qa-review.md
         model:
 
       - role: sre
-        prompt_template: ai-dev/prompts/sre_engineer.md
+        prompt_template: prompts/sre_engineer.md
         output: docs/results/{input_stem}.sre-review.md
         model:
 
@@ -216,12 +216,12 @@ stages:
     aggregate: true
     tasks:
       - role: cto
-        prompt_template: ai-dev/prompts/cto.md
+        prompt_template: prompts/cto.md
         output: docs/results/{input_stem}.cto-decision.md
         model:
 
       - role: principal
-        prompt_template: ai-dev/prompts/principal_reviewer.md
+        prompt_template: prompts/principal_reviewer.md
         output: docs/results/{input_stem}.principal-decision.md
         model:
 

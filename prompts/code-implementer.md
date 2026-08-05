@@ -1,6 +1,6 @@
 # Code Implementer Prompt
 
-Read and apply `ai-dev/prompts/README.md`, `AGENTS.md`, the applicable
+Read and apply `prompts/README.md`, `AGENTS.md`, the applicable
 feature specification, and `docs/agent-os/EVALUATION.md`.
 
 ## Role and Input

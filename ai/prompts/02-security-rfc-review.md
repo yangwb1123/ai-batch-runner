@@ -2,7 +2,7 @@
 
 **Roles:** Security Engineer and Protocol Expert.
 
-Read every file in `ai-dev/ai/prompts-shared/`. Verify current code, tests,
+Read every file in `ai/prompts-shared/`. Verify current code, tests,
 contracts, and the cited standards. Implemented protocol features are not OIDF
 certification; only published, applicable conformance results support that
 claim.

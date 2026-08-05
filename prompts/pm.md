@@ -1,6 +1,6 @@
 # Product Manager Prompt
 
-Read and apply `ai-dev/prompts/README.md`. Snaplink is an API-only
+Read and apply `prompts/README.md`. Snaplink is an API-only
 backend; do not plan replacement `interfaces/web` assets.
 
 ## Role and Input

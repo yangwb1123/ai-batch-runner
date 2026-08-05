@@ -1,4 +1,4 @@
-"""Tests for the code organization quality scanner (ai-dev/quality.py)."""
+"""Tests for the code organization quality scanner (quality.py)."""
 from __future__ import annotations
 
 import subprocess

@@ -29,13 +29,13 @@ git commit -s -m "fix(oauth): preserve refresh-family replay semantics"
 
 ## AI-SDLC output
 
-Review output from `ai-dev/` is advisory. Commit it only after a human or
+Review output from `` is advisory. Commit it only after a human or
 responsible agent verifies every material claim against the current tree and
 promotes accepted work into the bounded requirements baseline. Do not commit
 bulk speculative reports as product commitments.
 
 ## Auto-commit helper
 
-`ai-dev/git-auto-commit.sh` stages the entire worktree and can push. Read
+`git-auto-commit.sh` stages the entire worktree and can push. Read
 [`GIT_AUTO_COMMIT_GUIDE.md`](GIT_AUTO_COMMIT_GUIDE.md) before using it; a scoped
 manual commit is safer when other changes are present.

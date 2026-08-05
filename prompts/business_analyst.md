@@ -1,6 +1,6 @@
 # Business Analyst Prompt
 
-Read and apply `ai-dev/prompts/README.md`. Bound product claims with
+Read and apply `prompts/README.md`. Bound product claims with
 `docs/feature-matrix.md` and `docs/deferred-backlog.md`.
 
 ## Role and Input

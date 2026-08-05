@@ -2,7 +2,7 @@
 
 **Roles:** CTO and Principal Reviewer.
 
-Read `ai-dev/ai/prompts-shared/{output-format,role-definitions}.md`. Synthesize
+Read `ai/prompts-shared/{output-format,role-definitions}.md`. Synthesize
 prior evidence; do not repeat the technical reviews. Separate SDK, stock
 binary, nested module, and external frontend readiness. Protocol coverage is
 not certification without current published conformance evidence.

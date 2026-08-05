@@ -1,6 +1,6 @@
 # Performance Engineer Prompt
 
-Read and apply `ai-dev/prompts/README.md`. Dated benchmark results are
+Read and apply `prompts/README.md`. Dated benchmark results are
 not current SLO evidence.
 
 ## Role and Input

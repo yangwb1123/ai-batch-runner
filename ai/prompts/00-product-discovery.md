@@ -1,7 +1,7 @@
 # Stage 00: Product Discovery
 
 **Roles:** Product Manager, Business Analyst, and UX Designer when a user
-journey is affected. Read `ai-dev/ai/prompts-shared/role-definitions.md`.
+journey is affected. Read `ai/prompts-shared/role-definitions.md`.
 
 ## Decision
 

@@ -1,6 +1,6 @@
 # Git Auto-Commit Helper
 
-`ai-dev/git-auto-commit.sh` is an optional interactive helper. It displays the
+`git-auto-commit.sh` is an optional interactive helper. It displays the
 worktree, runs `git add -A`, creates one commit, and optionally runs
 `git push`.
 
@@ -30,7 +30,7 @@ git commit -s -m "docs(area): describe the change"
 ## Running the helper
 
 ```bash
-./ai-dev/git-auto-commit.sh "docs(area): describe the change"
+./git-auto-commit.sh "docs(area): describe the change"
 ```
 
 Do not rely on its timestamp-based default message for project commits; use the

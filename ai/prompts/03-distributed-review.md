@@ -2,7 +2,7 @@
 
 **Roles:** Distributed Systems Engineer and Database Architect.
 
-Read `ai-dev/ai/prompts-shared/{engineering-principles,review-checklists,output-format,role-definitions}.md`.
+Read `ai/prompts-shared/{engineering-principles,review-checklists,output-format,role-definitions}.md`.
 Review the configured topology separately from merely available backends.
 
 ## Decision

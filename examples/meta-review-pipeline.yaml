@@ -11,7 +11,7 @@
 # 或达到 max_iterations。角色集在运行中发现，而不是写死在流水线里。
 #
 # 运行（从仓库根）：
-#   python ai-dev/pi-batch.py ai-dev/examples/meta-review-pipeline.yaml \
+#   python pi-batch.py examples/meta-review-pipeline.yaml \
 #     --log-file logs/meta.log
 #
 # 说明：
@@ -36,7 +36,7 @@ stages:
   - name: review
     from_outputs: kickoff
     meta: true
-    role_dir: ai-dev/prompts
+    role_dir: prompts
     output_dir: docs/reviews
     max_iterations: 3
     mode: serial

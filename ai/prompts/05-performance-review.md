@@ -2,7 +2,7 @@
 
 **Roles:** Performance Engineer and Database Architect.
 
-Read `ai-dev/ai/prompts-shared/{review-checklists,output-format,role-definitions}.md`.
+Read `ai/prompts-shared/{review-checklists,output-format,role-definitions}.md`.
 Treat checked-in benchmark results as historical until rerun on the reviewed
 commit and declared topology. Never present an estimate as a measurement.
 

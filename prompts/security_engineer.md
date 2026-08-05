@@ -1,6 +1,6 @@
 # Security Engineer Prompt
 
-Read and apply `ai-dev/prompts/README.md` and the security invariants in
+Read and apply `prompts/README.md` and the security invariants in
 `AGENTS.md`.
 
 ## Role and Input

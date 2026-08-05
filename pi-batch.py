@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """pi-batch -- serial/parallel batch executor for the pi agent.
 
-Entry-point shim over the pbatch package: `python ai-dev/pi-batch.py ...`
+Entry-point shim over the pbatch package: `python pi-batch.py ...`
 and `python -c "import pi_batch_under_test"`-style loads both work; the
-implementation lives in ai-dev/pbatch/ (config, models, runner, pipeline,
+implementation lives in pbatch/ (config, models, runner, pipeline,
 cli). Copy the pbatch/ directory next to this script to move the tool to
 another project.
 """

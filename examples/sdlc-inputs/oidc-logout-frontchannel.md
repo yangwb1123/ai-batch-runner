@@ -38,4 +38,4 @@ path or the session management spec compliance.
 
 Protocol-level review, threat model, implementation plan, and test strategy
 are produced by the downstream SDLC stages (see
-`ai-dev/examples/sdlc-mini-pipeline.yaml`).
+`examples/sdlc-mini-pipeline.yaml`).

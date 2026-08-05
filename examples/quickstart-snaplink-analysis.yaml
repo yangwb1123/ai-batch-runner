@@ -6,7 +6,7 @@
 # 审查角色 → 并发执行 → 证据折叠 → 收敛。
 #
 # 执行（用户亲自运行，需要 PATH 中有 pi 且 API 可用）：
-#   python ai-dev/pi-batch.py ai-dev/examples/quickstart-snaplink-analysis.yaml \
+#   python pi-batch.py examples/quickstart-snaplink-analysis.yaml \
 #     --log-file logs/quickstart.log
 #
 # 说明：默认超时已是 900s（与 pi 的 HTTP 空闲超时 httpIdleTimeoutMs
@@ -18,7 +18,7 @@
 #   docs/proposals/<角色名>.md                      # 编排者挑选的审查角色交付物
 #
 # 扩展：加一个 from_outputs 阶段即可接入完整 SDLC 角色流水线
-# （参考 ai-dev/examples/sdlc-mini-pipeline.yaml）。
+# （参考 examples/sdlc-mini-pipeline.yaml）。
 
 git_commit: false
 
@@ -36,12 +36,12 @@ stages:
     mode: serial
 
   # ── 阶段 2：动态角色审查（meta 编排，自优化）──
-  # 编排者分析阶段 1 的产出，从 ai-dev/prompts 的角色库中挑选还需要哪些
+  # 编排者分析阶段 1 的产出，从 prompts 的角色库中挑选还需要哪些
   # 角色（架构/安全/协议/QA/...），并发执行，产出折回证据后收敛
   - name: review
     from_outputs: kickoff
     meta: true
-    role_dir: ai-dev/prompts
+    role_dir: prompts
     output_dir: docs/proposals
     max_iterations: 2
     mode: serial

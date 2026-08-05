@@ -1,6 +1,6 @@
 # Database Architect Prompt
 
-Read and apply `ai-dev/prompts/README.md`. Verify whether each store is
+Read and apply `prompts/README.md`. Verify whether each store is
 hot or durable and whether the stock binary actually wires its backend.
 
 ## Role and Input

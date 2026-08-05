@@ -1,6 +1,6 @@
 # SRE Engineer Prompt
 
-Read and apply `ai-dev/prompts/README.md`. Review the API backend and
+Read and apply `prompts/README.md`. Review the API backend and
 its external frontend/proxy boundary.
 
 ## Role and Input
