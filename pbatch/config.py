@@ -55,33 +55,182 @@ def _load_batch_config(path: str = "pi-batch.yaml") -> dict:
 _BATCH_CFG = _load_batch_config()
 
 
-_AGENT_CFG = _BATCH_CFG.get("agent", {})
+def _section(name: str) -> dict:
+    """Return a mapping config section, falling back on malformed input."""
+    value = _BATCH_CFG.get(name, {})
+    if isinstance(value, dict):
+        return value
+    log.warning("Config section '%s' must be a mapping; using defaults", name)
+    return {}
 
 
-AGENT_BIN = _AGENT_CFG.get("bin", "pi")
+def _int_setting(section: dict, key: str, default: int,
+                 minimum: Optional[int] = None) -> int:
+    """Read an integer without letting YAML type/value mistakes abort import."""
+    value = section.get(key, default)
+    try:
+        if isinstance(value, bool):
+            raise ValueError
+        parsed = int(value)
+    except (TypeError, ValueError):
+        log.warning("Config value '%s' must be an integer; using %d", key, default)
+        return default
+    if minimum is not None and parsed < minimum:
+        log.warning("Config value '%s' must be >= %d; using %d", key, minimum, default)
+        return default
+    return parsed
 
 
-AGENT_DEFAULT_MODEL = _AGENT_CFG.get("default_model", "")
+def _choice_setting(section: dict, key: str, default: str,
+                    choices: tuple[str, ...]) -> str:
+    """Normalize a small string enum, with a usable argparse-safe default."""
+    value = str(section.get(key, default)).lower()
+    if value in choices:
+        return value
+    log.warning("Config value '%s' must be one of %s; using %s",
+                key, ", ".join(choices), default)
+    return default
 
 
-AGENT_DEFAULT_TIMEOUT = _AGENT_CFG.get("default_timeout", 900)
+def _string_setting(section: dict, key: str, default: str,
+                    allow_empty: bool = True) -> str:
+    """Read a scalar string and reject YAML null/collection surprises."""
+    value = section.get(key, default)
+    if isinstance(value, str) and (allow_empty or value):
+        return value
+    kind = "a string" if allow_empty else "a non-empty string"
+    log.warning("Config value '%s' must be %s; using %s", key, kind, default)
+    return default
 
 
-AGENT_DEFAULT_WORKERS = _AGENT_CFG.get("default_workers", 4)
+def _float_setting(section: dict, key: str, default: float,
+                   minimum: Optional[float] = None,
+                   maximum: Optional[float] = None) -> float:
+    """Read a ratio-like float without letting YAML surprises abort import."""
+    value = section.get(key, default)
+    try:
+        if isinstance(value, bool):
+            raise ValueError
+        parsed = float(value)
+    except (TypeError, ValueError):
+        log.warning("Config value '%s' must be a number; using %s", key, default)
+        return default
+    if (minimum is not None and parsed < minimum) or (maximum is not None and parsed > maximum):
+        log.warning("Config value '%s' must be within [%s, %s]; using %s",
+                    key, minimum, maximum, default)
+        return default
+    return parsed
 
 
-COMMIT_PREFIX_DEFAULT = _BATCH_CFG.get("commit", {}).get("prefix", "[pi-batch]")
+_AGENT_CFG = _section("agent")
+_COMMIT_CFG = _section("commit")
+_LOGGING_CFG = _section("logging")
+_SESSION_CFG = _section("session")
+_OUTPUT_CFG = _section("output")
+_INPUT_CFG = _section("input")
+_EVIDENCE_CFG = _section("evidence")
+_PROMPT_CFG = _section("prompt")
+_VALIDATION_CFG = _section("validation")
+_COMMAND_CFG = _section("commands")
+_MEMORY_CFG = _section("memory")
+_CLASSIFIER_CFG = _section("classifier")
+
+
+AGENT_BIN = _string_setting(_AGENT_CFG, "bin", "pi", allow_empty=False)
+
+
+AGENT_DEFAULT_MODEL = _string_setting(_AGENT_CFG, "default_model", "")
+
+
+AGENT_DEFAULT_TIMEOUT = _int_setting(_AGENT_CFG, "default_timeout", 900, 1)
+
+
+AGENT_DEFAULT_WORKERS = _int_setting(_AGENT_CFG, "default_workers", 4, 1)
+
+
+COMMIT_PREFIX_DEFAULT = _string_setting(_COMMIT_CFG, "prefix", "[pi-batch]")
 
 # T3 (7x24 governance): log rotation thresholds; --log-max-bytes /
 # --log-backups override per run. 5MB x 3 backups bounds a 24x7 log.
-LOG_MAX_BYTES = _BATCH_CFG.get("logging", {}).get("max_bytes", 5 * 1024 * 1024)
-LOG_BACKUP_COUNT = _BATCH_CFG.get("logging", {}).get("backups", 3)
+LOG_MAX_BYTES = _int_setting(_LOGGING_CFG, "max_bytes", 5 * 1024 * 1024, 0)
+LOG_BACKUP_COUNT = _int_setting(_LOGGING_CFG, "backups", 3, 0)
+# Model response bodies are artifacts/messages, not operational log records.
+# auto streams them only to an interactive terminal; full/none are explicit
+# overrides. A task without an output path still prints its final answer once.
+STREAM_OUTPUT = _choice_setting(
+    _LOGGING_CFG, "stream_output", "auto", ("auto", "full", "none"))
 
 # T10 (7x24 governance): rotate (fork) the shared session past this size.
-SESSION_MAX_BYTES = _BATCH_CFG.get("session", {}).get("max_bytes", 2 * 1024 * 1024)
+SESSION_MAX_BYTES = _int_setting(_SESSION_CFG, "max_bytes", 2 * 1024 * 1024, 1)
+# Pi stores one JSON object per line. Normal assistant messages may approach
+# OUTPUT_MAX_BYTES, so allow headroom for JSON escaping while refusing a
+# pathological line before metering/compaction scans allocate it wholesale.
+SESSION_LINE_MAX_BYTES = _int_setting(
+    _SESSION_CFG, "line_max_bytes", 4 * 1024 * 1024, 1)
 
 # T12e (governance): reject agent outputs above this size (default 2MB).
-OUTPUT_MAX_BYTES = _BATCH_CFG.get("output", {}).get("max_bytes", 2 * 1024 * 1024)
+OUTPUT_MAX_BYTES = _int_setting(_OUTPUT_CFG, "max_bytes", 2 * 1024 * 1024, 1)
+
+# External prompt/task/template files are trusted repository inputs, but a
+# malformed or accidentally generated multi-gigabyte file must not be read
+# wholesale before the prompt-size gate can reject it.  Keep this separate
+# from OUTPUT_MAX_BYTES so operators can tune input and model-response
+# budgets independently.
+INPUT_MAX_BYTES = _int_setting(_INPUT_CFG, "max_bytes", 2 * 1024 * 1024, 1)
+
+# Bound the total artifact content injected into any aggregate/meta prompt.
+# Full artifacts stay on disk and truncation markers point back to them.
+EVIDENCE_MAX_BYTES = _int_setting(_EVIDENCE_CFG, "max_bytes", 64 * 1024, 1)
+# Bound path traversal and fence/manifest overhead independently of byte size.
+EVIDENCE_MAX_SOURCES = _int_setting(_EVIDENCE_CFG, "max_sources", 64, 1)
+
+# Agent prompts are passed as one `-p` argv value. Stay below Linux's usual
+# 128KiB per-argument ceiling and reject predictably before subprocess spawn.
+PROMPT_MAX_BYTES = _int_setting(_PROMPT_CFG, "max_bytes", 120 * 1024, 0)
+
+# Validator diagnostics are useful only in small tails; cap both pipes so a
+# noisy external gate cannot OOM the coordinator before its timeout.
+VALIDATION_OUTPUT_MAX_BYTES = _int_setting(
+    _VALIDATION_CFG, "output_max_bytes", 256 * 1024, 1)
+
+# Post-stage hooks are repository-wide gates and may legitimately run longer
+# than per-artifact validators. They still need the same bounded process-tree
+# semantics so one noisy or orphan-producing hook cannot wedge a 7x24 run.
+COMMAND_TIMEOUT = _int_setting(_COMMAND_CFG, "timeout", 600, 1)
+COMMAND_OUTPUT_MAX_BYTES = _int_setting(
+    _COMMAND_CFG, "output_max_bytes", 256 * 1024, 1)
+
+# Progressive memory: preserve pi's raw JSONL sessions, while exposing only
+# a small metadata manifest to the model unless it elects to read more.
+MEMORY_MODE = _choice_setting(_MEMORY_CFG, "mode", "auto", ("auto", "on", "off"))
+_MEMORY_AGENT_VALUE = _MEMORY_CFG.get("agent_names", ("pi",))
+if isinstance(_MEMORY_AGENT_VALUE, str):
+    _MEMORY_AGENT_VALUE = (_MEMORY_AGENT_VALUE,)
+elif not isinstance(_MEMORY_AGENT_VALUE, (list, tuple)):
+    log.warning("Config value 'agent_names' must be a string or list; using pi")
+    _MEMORY_AGENT_VALUE = ("pi",)
+MEMORY_AGENT_NAMES = tuple(str(value) for value in _MEMORY_AGENT_VALUE)
+MEMORY_INDEX_FILE = _string_setting(
+    _MEMORY_CFG, "index_file", ".pi-batch/memory/sessions.index.jsonl", allow_empty=False)
+MEMORY_MANIFEST_RECENT = _int_setting(_MEMORY_CFG, "manifest_recent", 3, 0)
+MEMORY_MANIFEST_SCAN = _int_setting(_MEMORY_CFG, "manifest_scan", 30, 1)
+MEMORY_MANIFEST_MAX_BYTES = _int_setting(_MEMORY_CFG, "manifest_max_bytes", 4096, 1)
+MEMORY_READ_MAX_BYTES = _int_setting(_MEMORY_CFG, "read_max_bytes", 65536, 1)
+MEMORY_INDEX_LINE_MAX_BYTES = _int_setting(
+    _MEMORY_CFG, "index_line_max_bytes", 256 * 1024, 1)
+
+# Task type classifier (pbatch/classifier.py): deterministic keyword gate
+# that runs BEFORE execution and routes frontend UI tasks to the UI
+# generation pipeline (--classify / `pi-batch.py classify`).
+CLASSIFIER_KEYWORDS = _string_setting(_CLASSIFIER_CFG, "keywords", "")
+CLASSIFIER_FRONTEND_PIPELINE = _string_setting(
+    _CLASSIFIER_CFG, "frontend_pipeline",
+    "examples/ui-generation-pipeline.yaml", allow_empty=False)
+# Minimum top score for a confident classification (2 = one strong hit).
+CLASSIFIER_MIN_SCORE = _int_setting(_CLASSIFIER_CFG, "min_score", 2, 1)
+# Route when this share of a batch's tasks classify as frontend UI.
+CLASSIFIER_FRONTEND_RATIO = _float_setting(
+    _CLASSIFIER_CFG, "frontend_ratio", 0.5, 0.0, 1.0)
 
 
 _DEFAULT_SESSION_FLAGS = {
@@ -95,8 +244,14 @@ def _session_flags(key: str, session_id: str, session_name: str) -> list:
     """Resolve the configured session flags for a call (start or continue),
     replacing {session} and {name} placeholders. Falls back to pi-style
     flags when the config does not define agent.session_flags."""
-    cfg = (_AGENT_CFG.get("session_flags") or {}) if isinstance(_AGENT_CFG.get("session_flags"), dict) else {}
-    flags = cfg.get(key) or _DEFAULT_SESSION_FLAGS[key]
+    configured = _AGENT_CFG.get("session_flags")
+    cfg = configured if isinstance(configured, dict) else {}
+    flags = cfg.get(key)
+    if (not isinstance(flags, (list, tuple)) or not flags
+            or not all(isinstance(flag, str) for flag in flags)):
+        if flags is not None:
+            log.warning("Config session_flags.%s must be a string list; using defaults", key)
+        flags = _DEFAULT_SESSION_FLAGS[key]
     return [f.replace("{session}", session_id).replace("{name}", session_name) for f in flags]
 
 

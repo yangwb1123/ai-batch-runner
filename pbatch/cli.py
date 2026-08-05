@@ -6,10 +6,10 @@ from __future__ import annotations
 import argparse
 import logging
 import logging.handlers
+import math
 import os
 import re
 import signal
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -24,11 +24,13 @@ from .triage import (STALL_EXIT_CODE, Circuit, StallDetector, env_signature,
                      residue_markers, task_key)
 from .pipeline import (_append_decision_log, _archive_outputs, load_pipeline,
                        load_tasks, load_tasks_from_dir, run_pipeline)
-from .runner import print_summary, run_parallel, run_serial
+from .runner import (kill_active_procs, print_summary, run_argv,
+                     run_parallel, run_serial)
+from .text_io import read_text_bounded
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="pi-batch -- serial/parallel batch executor for pi agent",
+        description="pi-batch -- batch/pipeline executor (use 'campaign --help' for project campaigns)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -52,6 +54,10 @@ def _add_source_args(p: argparse.ArgumentParser) -> None:
 def _add_runtime_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--pipeline", metavar="FILE",
                    help="run a multi-stage pipeline from YAML file")
+    p.add_argument("--classify", action="store_true",
+                   help="run the task type classifier BEFORE execution; frontend UI "
+                        "tasks route to the configured UI generation pipeline "
+                        "(classifier.frontend_pipeline; explicit --pipeline wins)")
     p.add_argument("--reuse", action="store_true",
                    help="reuse existing .out.md files (skip regeneration)")
     p.add_argument("--reuse-legacy", action="store_true",
@@ -66,12 +72,7 @@ def _add_runtime_args(p: argparse.ArgumentParser) -> None:
                    help="disable git commit (overrides pipeline setting)")
     p.add_argument("--commit-prefix", default=COMMIT_PREFIX_DEFAULT,
                    help=f"prefix for auto-generated commit messages (default: {COMMIT_PREFIX_DEFAULT})")
-    p.add_argument("--log-file", default="",
-                   help="Append run log to FILE for 24x7 supervision (rotated)")
-    p.add_argument("--log-max-bytes", type=int, default=config.LOG_MAX_BYTES,
-                   help=f"Rotate the log file after this many bytes (default: {config.LOG_MAX_BYTES})")
-    p.add_argument("--log-backups", type=int, default=config.LOG_BACKUP_COUNT,
-                   help=f"Keep this many rotated log backups (default: {config.LOG_BACKUP_COUNT})")
+    _add_logging_args(p)
     p.add_argument("--decision-log", default="",
                    help="Append structured per-stage decision records to FILE (overrides pipeline 'decision_log')")
     p.add_argument("--archive-dir", default="",
@@ -82,6 +83,7 @@ def _add_runtime_args(p: argparse.ArgumentParser) -> None:
                    help=f"T10: fork the shared session past this size (default: {config.SESSION_MAX_BYTES})")
     p.add_argument("--session-name", default="",
                    help="Reproducible session base name (default: task source file stem); shared sessions continue across runs")
+    _add_memory_arg(p)
     p.add_argument("--validate", default="",
                    help="Named validators from pi-batch.yaml validators registry, comma-separated (e.g. 'quick,gofmt'); AND semantics. Unknown names are treated as raw shell commands")
     p.add_argument("--validate-cmd", default="",
@@ -98,6 +100,23 @@ def _add_runtime_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--dry-run", action="store_true",
                    help="print task list without executing")
     return p
+
+
+def _add_logging_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--log-file", default="",
+                   help="Append run log to FILE for 24x7 supervision (rotated)")
+    p.add_argument("--log-max-bytes", type=int, default=config.LOG_MAX_BYTES,
+                   help=f"Rotate the log file after this many bytes (default: {config.LOG_MAX_BYTES})")
+    p.add_argument("--log-backups", type=int, default=config.LOG_BACKUP_COUNT,
+                   help=f"Keep this many rotated log backups (default: {config.LOG_BACKUP_COUNT})")
+    p.add_argument("--stream-output", choices=["auto", "full", "none"],
+                   default=config.STREAM_OUTPUT,
+                   help="Live model response display: auto only on a TTY, full always, none never")
+
+
+def _add_memory_arg(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--memory-mode", choices=["auto", "on", "off"], default=config.MEMORY_MODE,
+                   help="Progressive message memory: auto for configured agents; on/off override")
 
 
 def _add_batch_args(p: argparse.ArgumentParser) -> None:
@@ -133,12 +152,17 @@ def _sigterm(signum, frame):
     behaves like Ctrl-C — children are killed, the lock released, exit
     130 — instead of stranding agent process groups and the lock."""
     log.warning("\nSIGTERM received; stopping children and releasing the lock (exit 130)")
+    kill_active_procs()
     raise KeyboardInterrupt()
 
 
 def main() -> None:
-    args = build_parser().parse_args()
-    config.AGENT_BIN = args.agent_bin
+    if _dispatch_subcommand():
+        return
+    parser = build_parser()
+    args = parser.parse_args()
+    _validate_runtime_values(parser, args)
+    _wire_agent(args)
     if args.session_max_bytes != config.SESSION_MAX_BYTES:
         config.SESSION_MAX_BYTES = args.session_max_bytes
 
@@ -146,25 +170,63 @@ def main() -> None:
 
     _wire_metering(args)
     _auto_detect_pipeline(args)
-
-    # Append run log to FILE for 24x7 supervision; T3 (7x24 governance):
-    # bounded rotation instead of unbounded growth (disk-full crashes were
-    # an SRE finding in the self-review).
-    if args.log_file:
-        fh = logging.handlers.RotatingFileHandler(
-            args.log_file, maxBytes=args.log_max_bytes, backupCount=args.log_backups,
-            encoding="utf-8")
-        fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-        log.addHandler(fh)
-
-    # T4 (7x24 governance): single-instance lock; skipped for --dry-run.
+    _maybe_classify_route(args)
+    handler = _configure_run_log(args)
     lock_path = acquire_lock(no_lock=args.no_lock or args.dry_run)
+    try:
+        _run_configured(args, lock_path)
+    except KeyboardInterrupt:
+        log.warning("\nInterrupted by user. Rerun with --reuse to continue later.")
+        sys.exit(130)
+    finally:
+        release_lock(lock_path)
+        if handler:
+            log.removeHandler(handler)
+            handler.close()
 
+
+def _validate_runtime_values(parser: argparse.ArgumentParser, args) -> None:
+    """Reject unsafe numeric values before logs, locks, or agents start."""
+    nonnegative = {
+        "timeout": args.timeout, "retries": args.retries,
+        "retry-delay": args.retry_delay, "min-interval": args.min_interval,
+        "max-rounds": args.max_rounds, "round-delay": args.round_delay,
+        "log-max-bytes": args.log_max_bytes, "log-backups": args.log_backups,
+        "budget-max": args.budget_max, "daily-budget": args.daily_budget,
+    }
+    positive = {
+        "workers": args.workers, "retry-backoff": args.retry_backoff,
+        "session-max-bytes": args.session_max_bytes,
+        "circuit-max": args.circuit_max, "stall-rounds": args.stall_rounds,
+    }
+    invalid = [name for name, value in nonnegative.items()
+               if not math.isfinite(float(value)) or value < 0]
+    invalid += [name for name, value in positive.items()
+                if not math.isfinite(float(value)) or value <= 0]
+    if not str(args.agent_bin).strip():
+        invalid.append("agent-bin")
+    if invalid:
+        parser.error("invalid runtime value(s): " + ", ".join(f"--{name}" for name in invalid))
+
+
+def _configure_run_log(args):
+    if not args.log_file:
+        return None
+    Path(args.log_file).parent.mkdir(parents=True, exist_ok=True)
+    handler = logging.handlers.RotatingFileHandler(
+        args.log_file, maxBytes=args.log_max_bytes, backupCount=args.log_backups,
+        encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    log.addHandler(handler)
+    return handler
+
+
+def _run_configured(args, lock_path) -> None:
     pipeline = _setup_pipeline(args)
     timeout_override = args.timeout if "--timeout" in sys.argv else 0
     # T11: CLI --provider wins over stage-level providers (precedence D6:
     # CLI > task > stage > config default).
-    if args.provider:
+    if args.provider and pipeline is not None:
         for stage in pipeline.stages:
             stage.provider = args.provider
 
@@ -174,14 +236,26 @@ def main() -> None:
     # Validation gates: named validators (--validate) and the raw command
     # (--validate-cmd) both apply, in that order, with AND semantics.
     cli_validate = ",".join(x for x in (args.validate, args.validate_cmd) if x)
+    _run_rounds(args, pipeline, session_name, cli_validate, timeout_override, lock_path)
 
-    try:
-        _run_rounds(args, pipeline, session_name, cli_validate, timeout_override, lock_path)
-    except KeyboardInterrupt:
-        log.warning("\nInterrupted by user. Rerun with --reuse to continue later.")
-        sys.exit(130)
-    finally:
-        release_lock(lock_path)
+
+def _dispatch_subcommand() -> bool:
+    if len(sys.argv) <= 1 or sys.argv[1] not in ("memory", "campaign", "classify"):
+        return False
+    if sys.argv[1] == "memory":
+        from .memory import main as subcommand
+    elif sys.argv[1] == "classify":
+        from .classifier import classify_main as subcommand
+    else:
+        from .campaign import main as subcommand
+    subcommand(sys.argv[2:])
+    return True
+
+
+def _wire_agent(args) -> None:
+    config.AGENT_BIN = args.agent_bin
+    config.MEMORY_MODE = args.memory_mode
+    config.STREAM_OUTPUT = args.stream_output
 
 
 def _validate_session_flags(args) -> None:
@@ -343,13 +417,72 @@ def _auto_detect_pipeline(args) -> None:
     src = Path(args.source)
     if src.exists() and src.suffix in (".yaml", ".yml"):
         try:
-            data = yaml.safe_load(src.read_text(encoding="utf-8")) or {}
-        except Exception:
+            data = yaml.safe_load(read_text_bounded(
+                src, config.INPUT_MAX_BYTES, "pipeline source")) or {}
+        except Exception as exc:
+            if isinstance(exc, ValueError):
+                log.error("Source rejected: %s", exc)
             data = {}
         if isinstance(data, dict) and "stages" in data:
             log.info("Detected pipeline file (top-level 'stages'): switching to pipeline mode")
             args.pipeline = args.source
             args.source = ""
+
+
+def _resolve_frontend_pipeline() -> str:
+    """Locate the configured frontend pipeline (classifier.frontend_pipeline)
+    next to cwd, the entry script, or the package; fail loud when absent so
+    --classify never silently degrades to a plain batch."""
+    value = config.CLASSIFIER_FRONTEND_PIPELINE
+    candidates = []
+    if os.path.isabs(value):
+        candidates.append(Path(value))
+    else:
+        candidates.append(Path.cwd() / value)
+        script_dir = os.environ.get("PBATCH_SCRIPT_DIR", "")
+        if script_dir:
+            candidates.append(Path(script_dir) / value)
+        candidates.append(Path(__file__).resolve().parent.parent / value)
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    log.error("Frontend pipeline not found: %s (set classifier.frontend_pipeline in pi-batch.yaml)",
+              value)
+    sys.exit(1)
+
+
+def _maybe_classify_route(args) -> None:
+    """--classify: run the deterministic task type classifier BEFORE
+    execution; a frontend-dominated batch routes to the UI generation
+    pipeline. An explicit --pipeline always wins; stdin is not consumed
+    here (F9 keeps stdin for the round loop)."""
+    if not args.classify or args.pipeline:
+        return
+    if not (args.prompt or args.source or args.from_dir):
+        log.info("--classify: no inline/task-file source (stdin is not classified); running as-is")
+        return
+    try:
+        tasks = _load_batch_tasks(args, None)
+    except SystemExit:
+        return
+    if not tasks:
+        return
+    from .classifier import FRONTEND, classify_tasks, should_route_frontend
+    dominant, per_task = classify_tasks(tasks)
+    for index, item in enumerate(per_task, 1):
+        detail = ""
+        if item.task_type == FRONTEND and (item.platform != "unknown" or item.profile != "unknown"):
+            detail = " [%s/%s]" % (item.platform, item.profile)
+        log.info("CLASSIFY task %d: %s%s (score %d, %s)",
+                 index, item.task_type, detail, item.score,
+                 "confident" if item.confident else "best-guess")
+    if not should_route_frontend(per_task, config.CLASSIFIER_FRONTEND_RATIO):
+        log.info("CLASSIFY: dominant type %s; running as a plain batch", dominant.task_type)
+        return
+    pipeline = _resolve_frontend_pipeline()
+    log.info("CLASSIFY: frontend task(s) detected (%s); routing to %s",
+             dominant.task_type, pipeline)
+    args.pipeline = pipeline
 
 
 def _setup_pipeline(args) -> Optional[Pipeline]:
@@ -398,7 +531,11 @@ def _load_batch_tasks(args, stdin_tasks) -> list:
     """Single-batch task sources: --from-dir files, -p prompt, task file,
     or stdin (consumed once, reused by later rounds)."""
     if args.from_dir:
-        tasks = load_tasks_from_dir(args.from_dir, args.suffix)
+        try:
+            tasks = load_tasks_from_dir(args.from_dir, args.suffix)
+        except ValueError as exc:
+            log.error("Task source rejected: %s", exc)
+            sys.exit(1)
         if not tasks:
             log.error("No %s files found in %s", args.suffix, args.from_dir)
             sys.exit(1)
@@ -529,19 +666,16 @@ def _git_commit_single_batch(args, outputs: list) -> None:
     if not outputs:
         return
     try:
-        if subprocess.run(["git", "rev-parse", "--git-dir"],
-                          capture_output=True, timeout=5).returncode != 0:
+        if not run_argv(["git", "rev-parse", "--git-dir"], os.getcwd(), timeout=5).ok:
             log.warning("Not a git repository, skipping git commit")
             return
-        add = subprocess.run(["git", "add"] + outputs,
-                             capture_output=True, text=True, timeout=10)
+        add = run_argv(["git", "add"] + outputs, os.getcwd(), timeout=10)
         msg = "%s Single batch: %d tasks" % (args.commit_prefix, len(outputs))
-        commit = subprocess.run(["git", "commit", "-m", msg],
-                                capture_output=True, text=True, timeout=10)
-        if add.returncode != 0 or commit.returncode != 0:
+        commit = run_argv(["git", "commit", "-m", msg], os.getcwd(), timeout=10)
+        if not add.ok or not commit.ok:
             detail = (add.stderr or "") + (commit.stderr or "")
             log.warning("git commit failed (add=%d, commit=%d): %s",
-                        add.returncode, commit.returncode, detail.strip()[:500])
+                        add.exit_code, commit.exit_code, detail.strip()[:500])
         else:
             log.info("GIT COMMIT: %s (files: %d)", msg, len(outputs))
     except Exception as e:
@@ -620,5 +754,3 @@ def _execute_batch(tasks: list, args, session_name: str, cli_validate: str) -> t
         results = run_parallel(tasks, args.workers, validate_cmd=cli_validate)
     print_summary(results)
     return results, any(not r.success for r in results)
-
-

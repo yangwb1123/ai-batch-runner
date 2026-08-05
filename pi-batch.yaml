@@ -19,6 +19,63 @@ agent:
     start: ["--session-id", "{session}", "--name", "{name}"]
     continue: ["--session-id", "{session}"]
 
+# Preserve pi's original JSONL messages, but inject only a small metadata
+# manifest. The current LLM decides whether to call `pi-batch.py memory`
+# for more history; other agent CLIs remain unchanged in auto mode.
+memory:
+  mode: auto
+  agent_names: [pi]
+  index_file: .pi-batch/memory/sessions.index.jsonl
+  manifest_recent: 3
+  # Execute-mode static precheck searches only this many newest metadata rows
+  # for matching domains; it never scans all history on every prompt.
+  manifest_scan: 30
+  manifest_max_bytes: 4096
+  read_max_bytes: 65536
+  # Reject pathological metadata records; raw Pi messages remain untouched.
+  index_line_max_bytes: 262144
+
+# Raw session files remain owned by Pi and are never rewritten. These bounds
+# govern only coordinator scans/rotation decisions.
+session:
+  max_bytes: 2097152
+  line_max_bytes: 4194304
+
+# Operational logs contain lifecycle/gate metadata, not complete model
+# messages. "auto" streams model bodies only on an interactive terminal;
+# use --stream-output full|none for an explicit per-run override.
+logging:
+  stream_output: auto
+  max_bytes: 5242880
+  backups: 3
+
+# Maximum combined artifact content and source candidates injected into
+# aggregate/meta prompts. Full artifacts remain on disk; truncation/omission
+# markers make prompt reduction explicit.
+input:
+  # Bound repository prompt/task/template reads before they reach the argv
+  # prompt gate. Full artifacts remain on disk; oversized sources fail closed.
+  max_bytes: 2097152
+
+evidence:
+  max_bytes: 65536
+  max_sources: 64
+
+# Prompts are passed as one `-p` process argument; keep below the common
+# Linux 128KiB per-argument limit. Set 0 only on a compatible agent adapter.
+prompt:
+  max_bytes: 122880
+
+# Bound stdout and stderr captured from external engineering gates.
+validation:
+  output_max_bytes: 262144
+
+# Repository-wide post-stage hooks (`commands`) use the same process-group
+# cleanup as validators, with their own deadline and diagnostic budget.
+commands:
+  timeout: 600
+  output_max_bytes: 262144
+
 # Named engineering gates, referenced via --validate NAME[,NAME...] or a
 # task/stage validate field. Commands run against each generated artifact
 # before it is committed; {output} and {cwd} placeholders are substituted at
@@ -29,12 +86,34 @@ validators:
   build: "go build ./... && go vet ./..."
   config: "python cli.py config-validate"
   root: "python cli.py check-root"
-  # Reference path had an ai-dev/ prefix (snaplink repo layout); this repo
+  # Reference path had an  prefix (snaplink repo layout); this repo
   # keeps quality.py at the root, so the path is adapted accordingly.
   pyquality: "python {cwd}/quality.py {cwd}"
   # T12f: reject artifacts containing likely secrets (registry hook, not a
   # built-in scanner). Adapt the patterns to the project's secret formats.
   secretscan: 'grep -nE "(api[_-]?key|secret|password|token|private[_-]?key)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_./+-]{8,}" {output} && exit 1 || exit 0' 
+
+  # UI generation gates: AI-generated TSX/Dart spacing/color/style problems
+  # are specification problems, so these deterministic checks reject
+  # artifacts mechanically (fail closed -> retry feedback loop). Attach via
+  # stage `validate: uispacing,uicolor,uistyle` on UI generation stages.
+  uispacing: "python {cwd}/scripts/check-ui-spec.py --mode spacing {output}"
+  uicolor: "python {cwd}/scripts/check-ui-spec.py --mode color {output}"
+  uistyle: "python {cwd}/scripts/check-ui-spec.py --mode style {output}"
+
+# Task type classifier: runs BEFORE execution (--classify / `classify`
+# subcommand). Frontend UI tasks route to the UI generation pipeline, which
+# applies the ui-specs + UI validators + meta UI review + verdict gate.
+classifier:
+  # Optional keyword map override (default: pbatch/task_keywords.yaml).
+  keywords: ""
+  # Pipeline for frontend-dominated batches; resolved against cwd, the
+  # entry script dir, then the package dir. Missing file fails loudly.
+  frontend_pipeline: examples/ui-generation-pipeline.yaml
+  # Minimum top score for a confident classification (2 = one strong hit).
+  min_score: 2
+  # Route when this share of a batch's tasks classify as frontend UI.
+  frontend_ratio: 0.5
 
 commit:
   prefix: "[pi-batch]"

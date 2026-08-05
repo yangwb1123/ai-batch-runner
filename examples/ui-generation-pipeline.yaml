@@ -1,0 +1,99 @@
+# UI 生成流水线：--classify 任务类型判断器把前端任务路由到这里。
+#
+# 解决"Agent 生成的页面没有间距/布局乱"——这是生成规范问题，不是代码问题：
+#   1) 确定性门禁（uispacing/uicolor/uistyle）：机械拦截魔法间距、硬编码
+#      颜色、inline style，失败零落盘 + 失败原因自动喂回重试 prompt；
+#   2) 规范注入：ui-specs/ 设计资产（tokens/spacing/组件/布局/反例）约束生成；
+#   3) meta 对抗审查：编排者按产出现场挑选 UI/视觉/无障碍审查角色并发执行；
+#   4) 裁决门：VERDICT: PASS 才放行；5) 截图评审（Playwright 示例，需按
+#      项目适配）。
+#
+# 运行（从仓库根）：
+#   python pi-batch.py -p "用 Flutter 实现 ERP 排程列表页" --classify \
+#     --log-file logs/ui-gen.log
+#   python pi-batch.py classify "生成一个登录页面 tsx"     # 只判断，不执行
+#
+# 说明：classify 阶段让 LLM 把确定性分类细化为完整场景参数（product_type/
+# page_type/density/motion_level...）；generate 阶段产物受验证器约束，失败
+# 自动重试（--retries 3 --max-rounds 0 可无人值守修复循环）。
+
+git_commit: true
+decision_log: docs/DECISIONS.md
+archive_dir: docs/archive
+
+stages:
+  # ── 1. 场景细化：把任务类型判断器的粗分类变成完整 UI 场景参数 ──
+  - name: classify
+    from_prompt: |
+      You are the UI task classifier. Classify the requested UI work and
+      output a JSON block with exactly: product_type (erp/cms/oa/dashboard/
+      immersive/marketing/mobile/generic), page_type (list/detail/form/
+      workbench/wizard/editor/landing), platform (tsx/dart/vue), density
+      (compact/standard/comfortable), motion_level (0-3), primary_user,
+      primary_task, risk_level (low/medium/high). Do not write code.
+    output: docs/ui/classify.md
+    mode: serial
+
+  # ── 2. UI 生成 + 确定性规范门禁（魔法间距/硬编码颜色/inline style）──
+  # 失败 = 不落盘 = 自动重试，validator 报告喂回 agent 修复。
+  - name: generate
+    from_outputs: classify
+    mode: serial
+    validate: uispacing,uicolor,uistyle
+    tasks:
+      - prompt: |
+          You are the frontend implementer. Read {input_content} and the
+          UI spec assets: ui-specs/spacing.md, ui-specs/component-spec.md,
+          ui-specs/layout-patterns.md, ui-specs/anti-patterns.md (and the
+          matching ui-specs/business-profiles/<product_type>.md if one
+          exists). Generate the complete page in the classified platform
+          (TSX or Dart).
+
+          Hard rules:
+          - Spacing ONLY from the 8pt token set (4/8/12/16/20/24/32/40/48/64).
+            Never SizedBox(height:3), margin:11, padding:13, or any magic
+            number; use design tokens.
+          - No hardcoded colors; use tokens (theme/primary, neutral text,
+            border, background).
+          - No inline styles; use the platform's styled/token mechanism.
+          - Every component state: loading, empty, error, disabled.
+          - Follow the layout pattern for the classified page type.
+        output: docs/ui/generated/page.tsx
+
+  # ── 3. 对抗审查：编排者现场挑选 UI/视觉/无障碍审查角色并发执行 ──
+  - name: review
+    from_outputs: generate
+    meta: true
+    role_dir: prompts
+    output_dir: docs/ui/reviews
+    max_iterations: 2
+    mode: serial
+
+  # ── 4. 裁决门：独立 gatekeeper，VERDICT: PASS 才放行 ──
+  - name: gate
+    from_outputs: review
+    aggregate: true
+    gate: true
+    mode: serial
+    tasks:
+      - prompt: |
+          You are the UI gatekeeper. Read {input_content} (the generated
+          page and the review deliverables). Verify: spacing uses only
+          tokens, no hardcoded colors, no inline styles, all states
+          present, layout matches the classified pattern. Output on the
+          last line:
+          VERDICT: PASS - <why the page meets the UI spec>
+          or
+          VERDICT: FAIL - <the blocking violations>
+        output: docs/ui/gate.md
+
+  # ── 5. 截图评审（可选，按项目适配后启用）──
+  # 视觉问题最终要通过渲染结果判断：跑起页面 -> Playwright 截图 ->
+  # 视觉模型评分（<90 不通过 -> commands 失败阻断 -> 修复循环）。
+  # - name: screenshot
+  #   from_outputs: gate
+  #   mode: serial
+  #   command_timeout: 600
+  #   commands:
+  #     - "npx playwright screenshot --viewport-size=1440,900 http://localhost:3000/page docs/ui/shot.png"
+  #     - "python scripts/score-ui.py docs/ui/shot.png"
