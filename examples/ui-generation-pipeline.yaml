@@ -51,15 +51,21 @@ stages:
           matching ui-specs/business-profiles/<product_type>.md if one
           exists).
 
-          FIRST run the deterministic rule matcher and apply ONLY its
+          FIRST run the two-sided rule check and apply ONLY its final
           manifest (scale × page_type × risk decides the rule set — a demo
           task loads only the visual core, a production task also loads the
           engineering specs):
-            pi-batch rules "<original task>"
-          Load the listed files; do not load unrelated specs. For
-          standard/production tasks this includes ui-specs/engineering/
-          (async-data decision tables, form-table-state, error-recovery,
-          defect-patterns).
+            1. pi-batch rules --summary "<original task>"   # compressed
+               requirement + algorithm manifest
+            2. As the LLM side, output your own selection JSON
+               {"apply": [...], "skip": [...], "reason": "..."}
+            3. pi-batch rules "<original task>" --llm-json '<your json>'
+               # two-sided check: agreed rules stay, REQUIRED rules are
+               # veto-protected, your additions are admitted with provenance
+          Load the files listed in the FINAL manifest; do not load
+          unrelated specs. For standard/production tasks this includes
+          ui-specs/engineering/ (async-data decision tables,
+          form-table-state, error-recovery, defect-patterns).
 
           Generate the complete page in the classified platform
           (TSX or Dart).

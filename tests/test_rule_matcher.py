@@ -8,8 +8,9 @@ import json
 import sys
 from pathlib import Path
 
-from pbatch.rule_matcher import (format_manifest, load_registry, match_rules,
-                                 rules_main)
+from pbatch.rule_matcher import (format_manifest, format_llm_prompt,
+                                 load_registry, match_rules, reconcile,
+                                 rules_main, summarize_task)
 
 
 def test_demo_tier_loads_only_visual_core():
@@ -106,3 +107,77 @@ def test_registry_keyword_sections_present():
     assert {"demo", "production"} <= set(registry["scale"])
     assert "rules" in registry
     assert "visual-core" in registry["rules"]
+
+
+def test_summarize_task_compresses_requirement():
+    summary = summarize_task("企业订单管理系统：新建订单表单，含支付审批流程，生产环境上线")
+    assert "scale=production" in summary
+    assert "risk=high" in summary
+    assert "page_types=form" in summary
+    assert "原文" in summary
+    long = summarize_task("做 " + "很长的需求描述" * 200)
+    assert "原文截断" in long
+
+
+def test_reconcile_agreed_and_llm_added():
+    algorithm = match_rules("登录页 demo")
+    final = reconcile(algorithm, ["visual-core", "component-spec", "async-data"], [])
+    provenance = final["provenance"]
+    assert provenance["visual-core"] == "both"
+    assert provenance["async-data"] == "llm-added"
+    ids = [item["id"] for item in final["rules"]]
+    assert "async-data" in ids
+
+
+def test_reconcile_vetoes_required_skip_and_drops_optional():
+    algorithm = match_rules("企业支付审批，生产")
+    final = reconcile(algorithm, ["visual-core"],
+                      ["visual-core", "error-recovery", "architecture-budgets"])
+    provenance = final["provenance"]
+    assert provenance["visual-core"] == "algorithm-vetoed-llm-skip"
+    assert provenance["error-recovery"] == "algorithm-vetoed-llm-skip"
+    ids = [item["id"] for item in final["rules"]]
+    assert "visual-core" in ids and "error-recovery" in ids
+    # optional architecture-budgets IS dropped when the LLM skips it
+    assert "architecture-budgets" not in ids
+    assert any(item["id"] == "architecture-budgets" for item in final["dropped"])
+
+
+def test_reconcile_ignores_unknown_rule_ids():
+    algorithm = match_rules("登录页 demo")
+    final = reconcile(algorithm, ["visual-core", "no-such-rule"], [])
+    assert "no-such-rule" not in final["provenance"]
+
+
+def test_risk_mandated_rules_are_required():
+    algorithm = match_rules("企业支付审批，生产")
+    required = {item["id"] for item in algorithm["rules"] if item["required"]}
+    assert {"error-recovery", "defect-patterns"} <= required
+
+
+def test_llm_prompt_contains_both_sides(capsys):
+    sys.argv = ["pi-batch.py", "rules", "登录页 demo", "--llm-prompt", "/tmp/llm-check.txt"]
+    rules_main(sys.argv[2:])
+    prompt = Path("/tmp/llm-check.txt").read_text(encoding="utf-8")
+    assert "COMPRESSED REQUIREMENT" in prompt
+    assert "ALGORITHM MANIFEST" in prompt
+    assert '"apply"' in prompt
+
+
+def test_llm_json_flag_reconciles(capsys):
+    sys.argv = ["pi-batch.py", "rules", "登录页 demo", "--llm-json",
+                '{"apply":["visual-core","async-data"],"skip":[],"reason":"x"}']
+    rules_main(sys.argv[2:])
+    out = capsys.readouterr().out
+    assert "llm-added" in out
+    assert "async-data" in out
+
+
+def test_invalid_llm_json_fails_closed():
+    sys.argv = ["pi-batch.py", "rules", "登录页", "--llm-json", "not json"]
+    try:
+        rules_main(sys.argv[2:])
+        raised = False
+    except SystemExit as exc:
+        raised = exc.code == 2
+    assert raised

@@ -25,7 +25,7 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `pbatch/pipeline_schema.py` / `evidence.py` | Pipeline fail-closed schema 与有界证据注入 |
 | `pbatch/relevance.py` | meta 角色关键词评分、命中证据、去重与运行时数量上限 |
 | `pbatch/classifier.py` / `task_keywords.yaml` | 任务类型判断器：执行前双语关键词判定，前端任务自动路由到 UI 生成流水线（`--classify` / `classify` 子命令，零 LLM 成本） |
-| `pbatch/rule_matcher.py` / `ui-specs/rules.yaml` | 规则匹配器：按 scale（demo/standard/production）× page_type × risk 三轴算法式筛选适用规范，输出有界 manifest（`rules` 子命令）；LLM 只在候选集内软选择 |
+| `pbatch/rule_matcher.py` / `ui-specs/rules.yaml` | 规则匹配器：按 scale（demo/standard/production）× page_type × risk 三轴算法式筛选适用规范；**双向校验**——算法 manifest 与 LLM 独立选择对比裁决（`rules --summary/--llm-json/--llm-prompt`），必选规则不可被 LLM 跳过（fail closed） |
 | `ui-specs/` | AI UI 生成规范资产：8pt 间距 token、组件/布局/反例规范、业务风格 profile（ERP/CMS/OA…） |
 | `scripts/check-ui-spec.py` | 确定性 UI 门禁（纯标准库）：魔法间距/硬编码颜色/inline style 机械拦截（`uispacing`/`uicolor`/`uistyle` 产物验证器）；`--dir` 项目级扫描（`uicheck` 门禁，gofmt -l 风格，JSON 报告） |
 | `scripts/check-frontend-quality.py` | 前端工程门禁（纯标准库启发式）：console.log/any/不安全 html/测试 skip 恒失败，`--strict` 下上帝文件/复杂度预算失败（`uiquality` 验证器）；需推理的交给工程审查角色 |
@@ -359,8 +359,13 @@ python pi-batch.py classify tasks.yaml --json
 # 规则匹配：算法式筛选适用规范（小 demo 只加载视觉核心，生产级自动加全套）
 pi-batch.py rules "生成一个登录页 demo"
 pi-batch.py rules "企业订单+支付审批，生产" --json
+# 双向校验：压缩需求给 LLM 独立选择 → 与算法对比裁决
+pi-batch.py rules "企业支付审批，生产" --summary          # 压缩后的需求文本
+pi-batch.py rules "企业支付审批，生产" --llm-prompt p.txt  # 生成 LLM 检查 prompt
+pi-batch.py rules "企业支付审批，生产" --llm-json '{"apply":[],"skip":[]}'
+# 裁决规则：两边一致→保留；必选/风险强制规则 LLM 跳过→算法否决；
+# LLM 增补→采纳并标记 provenance；坏 JSON→fail closed（退出码 2）
 # 分级：demo（视觉核心）< standard（+异步/表单/错误）< production（+架构预算）
-# 混合式选择：确定性算法硬过滤 + LLM 在 manifest 候选集内软选择
 python pi-batch.py -p "生成一个登录页面 tsx" --classify \
   --log-file logs/ui-gen.log
 # UI 流水线：场景细化 → 生成（uispacing/uicolor/uistyle 门禁）→ meta

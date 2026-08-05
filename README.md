@@ -215,9 +215,16 @@ tasks:
   detail/workbench/immersive/auth) and risk (high-risk pay/approve/delete
   flows force error-recovery + defect-patterns). Output is a bounded manifest
   (paths + why + skipped reasons); prompts inject ONLY the manifest and agents
-  load files on demand (progressive disclosure). Hybrid selection: the
-  deterministic algorithm is the hard filter (cheap, reproducible, cannot skip
-  safety rules), the classify-stage LLM stays inside the emitted candidate set.
+  load files on demand (progressive disclosure).
+- **Two-sided rule check** (`rules --summary/--llm-json/--llm-prompt`): the
+  algorithm compresses the requirement text (salient classification axes +
+  business terms + bounded original tail) into the LLM's input; the LLM
+  independently picks apply/skip; `reconcile` merges both sides — agreed rules
+  stay with `[both]` provenance, LLM additions are admitted as `[llm-added]`,
+  optional skips are dropped and recorded, and skips of REQUIRED or
+  risk-mandated rules are **vetoed by the algorithm** (fail closed, marked
+  `[algorithm-vetoed-llm-skip]`); malformed LLM JSON exits 2. The generation
+  pipeline runs this check before writing code.
 - **UI generation gates**: `uispacing`/`uicolor`/`uistyle` validators
   (`scripts/check-ui-spec.py`, pure stdlib) mechanically reject magic spacing
   values outside the 8pt token set, hardcoded colors and inline styles —
