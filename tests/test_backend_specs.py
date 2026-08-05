@@ -188,3 +188,47 @@ def test_backend_spec_registry_integrity():
             if not Path(file).exists():
                 missing.append(f"{rule_id}: {file}")
     assert not missing, missing
+
+
+def test_persistence_rule_risk_mandated():
+    matched = match_rules("写一个订单创建接口，含支付")
+    ids = [item["id"] for item in matched["rules"]]
+    assert "persistence-modeling" in ids
+    required = {item["id"] for item in matched["rules"] if item["required"]}
+    assert "persistence-modeling" in required
+
+
+def test_persistence_rule_not_at_demo_tier():
+    matched = match_rules("做一个客户管理的 CRUD 接口")
+    ids = [item["id"] for item in matched["rules"]]
+    assert "persistence-modeling" not in ids
+
+
+def test_production_rules_at_production_tier():
+    matched = match_rules("企业订单域：多实体复杂流程，微服务生产环境，含支付审批")
+    ids = [item["id"] for item in matched["rules"]]
+    assert {"production-readiness", "persistence-modeling",
+            "agent-guardrails"} <= set(ids)
+
+
+def test_checker_float_money_error(tmp_path):
+    sql = tmp_path / "schema.sql"
+    sql.write_text("CREATE TABLE t (price DOUBLE, amount FLOAT);\n", encoding="utf-8")
+    result = _run(str(sql), "--strict")
+    assert result.returncode == 1
+    assert "money stored as float/double" in result.stderr
+
+
+def test_checker_select_star_and_tenant(tmp_path):
+    sql = tmp_path / "q.sql"
+    sql.write_text("SELECT * FROM orders WHERE id = ?;\n", encoding="utf-8")
+    result = _run(str(sql), "--strict")
+    assert result.returncode == 1
+    assert "SELECT *" in result.stderr
+    assert "tenant scoping" in result.stderr
+
+
+def test_backend_engineer_prompt_requires_persistence_report():
+    prompt = Path("prompts/backend_engineer.md").read_text(encoding="utf-8")
+    assert "Persistence Design" in prompt
+    assert "four models" in prompt.lower() or "API DTO" in prompt

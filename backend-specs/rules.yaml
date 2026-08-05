@@ -82,3 +82,19 @@ rules:
     description: 数据规模×10/×100 推理、内存/DB/网络成本、优化顺序、基准测试
     files: [backend-specs/complexity-and-scale.md]
     min_tier: production
+  persistence-modeling:
+    description: 四种模型分离、主键/金额/时间/状态/NULL 决策、索引与唯一约束、
+                 审计/历史/软删除、Expand–Migrate–Contract、持久化设计报告
+    files: [backend-specs/persistence-modeling.md]
+    min_tier: standard
+    risk: [high]
+    required_when_risk: true
+  production-readiness:
+    description: 生产就绪门禁：需求正确性/契约/错误模型/可靠性/容量/多租户/安全/
+                 可观测性/测试验证/发布恢复
+    files: [backend-specs/production-readiness.md]
+    min_tier: production
+  agent-guardrails:
+    description: AI 护栏：防幻觉红线、变更范围控制、DRY 边界、完成定义
+    files: [backend-specs/agent-guardrails.md]
+    min_tier: standard

@@ -249,6 +249,31 @@ tasks:
   tasks; `ddd`/`complexity-scale` are production-tier. Roles include
   `algorithm_reviewer` (default stance: every hot path is guilty of O(n²)/
   N+1/scale blindness until proven otherwise).
+- **Persistence modeling gate** (`backend-specs/persistence-modeling.md`):
+  the data objects being persisted decide five to ten years of maintenance
+  cost, so persistence design is a MANDATORY pre-code gate: four models stay
+  separate (API DTO / Domain Model / Persistence Model / Read Model — never
+  return ORM entities), identity decision table (surrogate PK vs UUIDv7/ULID/
+  Snowflake vs business key vs idempotency key), money as minor-unit BIGINT
+  or DECIMAL (never float), time semantics, status codes with a central
+  state machine, snapshot fields for historical integrity, NULL semantics,
+  index design driven by access paths, database unique constraints as the
+  final idempotency line, audit/status-history tables, optimistic locking,
+  soft-delete trade-offs, and Expand–Migrate–Contract migrations. The
+  `backend_engineer` role must output a Persistence Design report (aggregate/
+  tables/identity/consistency/snapshots/concurrency/queries+indexes/history/
+  deletion/migration) before any table or ORM entity.
+- **Production readiness + guardrails** (`backend-specs/production-readiness.md`,
+  `agent-guardrails.md`): an 11-section readiness gate (requirement
+  correctness, contracts/events, stable error model, reliability per
+  dependency, capacity budgets with bounded pools, rate limiting/cache
+  consistency/message semantics/background jobs, multi-tenant scoping,
+  security & privacy, observability, five-layer testing with honest
+  verification reporting, graceful shutdown & migration windows) plus AI-
+  specific guardrails (no hallucinated APIs/results, change-radius control,
+  don't-DRY-away-boundaries, no perf claims without benchmarks). The
+  `backendquality` validator adds float-money, SELECT *, tenant-less WHERE
+  id, LIKE-% full scans and VARCHAR(255) sprawl to its strict warnings.
 - **Requirement assessment** (`pi-batch assess`): rules are prescribed by an
   expert evaluation of the REQUIREMENT, not by keyword hits. Eight
   completeness dimensions are checked (goal/user role/main flow/data source/

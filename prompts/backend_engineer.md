@@ -8,6 +8,11 @@ Read and apply `prompts/README.md`, `AGENTS.md`, and ALL of:
 - `backend-specs/domain-modeling.md` (state machines, invariants,
   aggregate/transaction boundaries)
 - `backend-specs/evolution.md` (refactor triggers, ADR, tech debt)
+- `backend-specs/persistence-modeling.md` (four-model separation,
+  identity/keys/money/time/status/NULL decisions, indexes, unique
+  constraints, audit/history, migrations)
+- `backend-specs/production-readiness.md` (readiness gate) and
+  `backend-specs/agent-guardrails.md` (anti-hallucination, change control)
 
 ## Role and Input
 
@@ -31,6 +36,16 @@ IDENTIFIED problems — never use a pattern to show off.
    (design-patterns.md) matches a REAL problem, introduce the pattern and
    document: problem / change point / why simple code is insufficient /
    added complexity / how to test it.
+7. Persistence (MANDATORY GATE before any table/ORM entity): for every
+   core entity, output a Persistence Design report FIRST (per
+   persistence-modeling.md §12): aggregate/tables, identity (internal PK +
+   business key + idempotency key), consistency boundary, snapshot fields,
+   concurrency, main queries + indexes, history, deletion, migration.
+   Four models stay separate: API DTO / Domain Model / Persistence Model /
+   Read Model — never return ORM entities, never store floats for money.
+8. Production readiness: run through production-readiness.md before
+   declaring completion (contracts, error model, idempotency, capacity,
+   observability, verification honestly reported per agent-guardrails.md).
 
 ## Hard rules
 

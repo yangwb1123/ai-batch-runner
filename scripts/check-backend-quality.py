@@ -35,7 +35,7 @@ import re
 import sys
 from pathlib import Path
 
-DEFAULT_EXTS = (".ts", ".tsx", ".js", ".go", ".py", ".java", ".php", ".rs")
+DEFAULT_EXTS = (".ts", ".tsx", ".js", ".go", ".py", ".java", ".php", ".rs", ".sql")
 DEFAULT_EXCLUDES = {
     "node_modules", "dist", "build", "out", ".git", ".venv", "venv",
     "coverage", ".pi-batch", "logs", "docs", "__pycache__", "vendor",
@@ -108,6 +108,30 @@ def _single_implementation_interfaces(text: str) -> list:
     return flagged
 
 
+def _persistence_warnings(text: str, rel: str) -> list:
+    """Strict-mode persistence/query signals: float money, SELECT *, LIKE
+    %-scans, tenant-less WHERE id queries, VARCHAR(255) sprawl."""
+    findings = []
+    if re.search(r"(?:price|amount|total|fee|balance|cost)\s+\w*(?:double|float|real)\b",
+                 text, re.IGNORECASE):
+        findings.append(("warning", f"{rel}: money stored as float/double "
+                                    f"(use minor-unit BIGINT or DECIMAL)"))
+    if re.search(r"\bSELECT\s+\*", text, re.IGNORECASE):
+        findings.append(("warning", f"{rel}: SELECT * — list explicit columns "
+                                    f"(read model + tenant safety)"))
+    if re.search(r"LIKE\s*'%|LIKE\s*\"%", text, re.IGNORECASE):
+        findings.append(("warning", f"{rel}: LIKE '%...%' full scan — evaluate "
+                                    f"full-text/inverted index for search"))
+    if re.search(r"WHERE\s+id\s*=\s*\?|WHERE\s+id\s*=\s*[a-zA-Z_]+\b", text) \
+            and not re.search(r"tenant", text, re.IGNORECASE):
+        findings.append(("warning", f"{rel}: WHERE id without tenant scoping "
+                                    f"(cross-tenant access risk in shared tables)"))
+    if len(re.findall(r"varchar\s*\(\s*255\s*\)", text, re.IGNORECASE)) >= 5:
+        findings.append(("warning", f"{rel}: VARCHAR(255) sprawl — fields need "
+                                    f"deliberate lengths"))
+    return findings
+
+
 def _algorithm_warnings(text: str, rel: str) -> list:
     """Strict-mode complexity signals: N+1 loops, O(n) shift queues,
     full-sort Top K, nested linear searches."""
@@ -154,6 +178,7 @@ def _warning_findings(lines: list, rel: str, text: str, metrics: dict) -> list:
     if todos > MAX_TODOS:
         findings.append(("warning", f"{rel}: {todos} TODO/FIXME markers > {MAX_TODOS}"))
     findings.extend(_algorithm_warnings(text, rel))
+    findings.extend(_persistence_warnings(text, rel))
     return findings
 
 
