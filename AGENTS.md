@@ -24,7 +24,7 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `pbatch/pipeline.py` | 流水线：阶段构建、meta 角色编排、gate 裁决、决策日志、归档 |
 | `pbatch/pipeline_schema.py` / `evidence.py` | Pipeline fail-closed schema 与有界证据注入 |
 | `pbatch/relevance.py` | meta 角色关键词评分、命中证据、去重与运行时数量上限 |
-| `pbatch/classifier.py` / `task_keywords.yaml` | 任务类型判断器：执行前双语关键词判定，前端→UI 生成流水线、后端→后端实现流水线（`classifier.frontend_pipeline` / `backend_pipeline`），`--classify` / `classify` 子命令，零 LLM 成本 |
+| `pbatch/classifier.py` / `task_keywords.yaml` | 任务类型判断器：执行前双语关键词判定，前端→前端实现流水线、后端→后端实现流水线（`classifier.frontend_pipeline` / `backend_pipeline`，均为 plan→implement+门禁→对抗审查→gate 结构），`--classify` / `classify` 子命令，零 LLM 成本 |
 | `pbatch/rule_matcher.py` / `ui-specs/rules.yaml` | 规则匹配器：按 scale（demo/standard/production）× page_type × risk 三轴算法式筛选适用规范；**双向校验**——算法 manifest 与 LLM 独立选择对比裁决（`rules --summary/--llm-json/--llm-prompt`），必选规则不可被 LLM 跳过（fail closed） |
 | `pbatch/assessor.py` | 需求评估器（`assess` 子命令）：资深经验式评审——8 维需求完整性检查、规模信号（S/M/L）克制处方（"企业登录页"不会全量上规则）、缺失维度建议、刻意未选用清单、**产品化分级评估**（L0-L3）、**工作流风险分级**（L0 直改 / L1 标准 / L2 高风险对抗 / L3 平台产品） |
 | `pbatch/product.py` / `product-specs/` | 产品思维层：productization_level（L0 小工具不推演 / L1 模块 / L2 平台 / L3 产品）→ 场景推演链（登录/上传/审批/聊天/ERP/搜索，产出待确认问题非功能）、开源要素、商业要素（低成本预留 vs 高成本实现红线）、完成证据报告 |
@@ -402,6 +402,10 @@ pi-batch.py rules "企业支付审批，生产" --llm-json '{"apply":[],"skip":[
 # 分级：demo（视觉核心）< standard（+异步/表单/错误）< production（+架构预算）
 python pi-batch.py -p "生成一个登录页面 tsx" --classify \
   --log-file logs/ui-gen.log
+# 前端实现流水线（真实改项目代码，三门禁）：
+# plan（assess+布局/组件树/状态/交互链）→ implement（uiquality+
+# uicheck+completion）→ 对抗审查 → VERDICT 裁决
+python pi-batch.py examples/frontend-implementation-pipeline.yaml --retries 3
 # 后端任务自动路由到 backend-implementation-pipeline
 # （plan含强制持久化设计报告 → 实现+backendquality/completion 双门禁 →
 #  对抗审查 → VERDICT 裁决）

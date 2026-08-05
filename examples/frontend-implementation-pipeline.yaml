@@ -1,0 +1,99 @@
+# 前端真实实现流水线：需求评估 → 计划 → 实现进项目 + 三门禁 → 对抗审查 → 裁决。
+#
+# 与 examples/backend-implementation-pipeline.yaml 对称的前端版；由
+# --classify 路由（classifier.frontend_pipeline）。与 ui-generation 的
+# 区别：本流水线让 agent 直接修改项目的真实前端代码（src/），而非把
+# 页面写到 docs/ui/generated/ 作为产物。
+#
+# 流程：
+#   1) plan：运行 pi-batch assess 获取规则处方（按 scale/page_type/risk
+#      分级的 manifest）+ 产品化/工作流等级；输出页面分类、布局模式
+#      （layout-patterns）、组件树（component-spec）、状态模型、
+#      交互链路（含失败路径）、变更半径
+#   2) implement：frontend_engineer 修改项目代码 + 三门禁：
+#      uiquality（工程：console.log/any/上帝文件/复杂度）+
+#      uicheck（UI 规范：魔法间距/硬编码颜色/inline style 项目级扫描）+
+#      completion（完成证据报告）；违规 stderr 喂回重试循环
+#   3) review：meta 对抗审查（ui_reviewer / visual_reviewer /
+#      async_reviewer / code_architecture_reviewer 由编排者挑）
+#   4) gate：VERDICT: PASS 才放行
+#
+# 运行（--classify 自动路由前端任务到这里）：
+#   pi-batch -p "用 React 实现 ERP 排程列表页，生产环境" --classify
+# 注意：pi-batch.yaml 中 uicheck/uiquality 的 --dir 需指向项目前端根目录。
+
+git_commit: true
+decision_log: docs/DECISIONS.md
+archive_dir: docs/archive
+
+stages:
+  # ── 1. 计划：需求评估 + 页面设计（不写代码）──
+  - name: plan
+    from_prompt: |
+      You are the frontend planner. FIRST run the requirement assessment:
+        pi-batch assess "<original task>"
+      Use the prescription (rule manifest — visual core, engineering specs,
+      business profile by scale × page_type × risk), the product level and
+      the workflow level from the assessment. Then produce an
+      implementation plan with:
+      - page classification (product_type/page_type/platform/density/
+        motion_level/risk)
+      - layout pattern from ui-specs/layout-patterns.md (page skeleton)
+      - component tree from ui-specs/component-spec.md
+      - state model (form-table-state.md: where each state lives)
+      - interaction chain with failure paths (async-data decision tables:
+        debounce vs submit-lock vs cancel, race prevention, idempotency)
+      - change radius (backend-specs/agent-guardrails.md applies to all
+        domains)
+      Do NOT write implementation code yet.
+    output: docs/ui/plan.md
+    mode: serial
+
+  # ── 2. 实现：frontend_engineer 修改项目代码 + 三门禁 ──
+  # 失败 = 不落盘 = 自动重试；门禁 stderr（违规明细）喂回修复循环。
+  - name: implement
+    from_outputs: plan
+    validate: uiquality,uicheck,completion
+    tasks:
+      - prompt: |
+          You are the frontend implementer (apply prompts/frontend_engineer.md
+          and the loaded ui-specs). Read {input_content} (the plan) and the
+          rule manifest (run `pi-batch assess "<original task>"` if needed).
+          Implement the page/component in the project's real frontend
+          sources (e.g. src/), following the plan exactly: layout pattern,
+          component tree, state placement, interaction chain with loading/
+          empty/error states, spacing ONLY from the token set, token colors,
+          no inline styles, no console.log/any/unsafe html. Then actually
+          run lint/typecheck/test/build. Finish with a completion_report
+          per product-specs/completion-evidence.md. The uiquality, uicheck
+          and completion gates re-verify your changes and feed any
+          violations back.
+        output: docs/ui/implementation.md
+
+  # ── 3. 对抗审查：编排者现场挑选前端审查角色并发执行 ──
+  - name: review
+    from_outputs: implement
+    meta: true
+    role_dir: prompts
+    output_dir: docs/ui/reviews
+    max_iterations: 2
+    mode: serial
+
+  # ── 4. 裁决门：VERDICT: PASS 才确认完成 ──
+  - name: gate
+    from_outputs: review
+    aggregate: true
+    gate: true
+    mode: serial
+    tasks:
+      - prompt: |
+          You are the frontend gatekeeper. Read {input_content} (the plan,
+          implementation report and review deliverables). Verify: the plan
+          was honored, spacing/colors/styles follow the tokens, all states
+          present, async decisions follow the decision tables, review
+          findings resolved, gates passed, completion report honest.
+          Output on the last line:
+          VERDICT: PASS - <why the implementation is complete>
+          or
+          VERDICT: FAIL - <blocking issues>
+        output: docs/ui/gate.md

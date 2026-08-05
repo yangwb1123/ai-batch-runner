@@ -225,7 +225,7 @@ MEMORY_INDEX_LINE_MAX_BYTES = _int_setting(
 CLASSIFIER_KEYWORDS = _string_setting(_CLASSIFIER_CFG, "keywords", "")
 CLASSIFIER_FRONTEND_PIPELINE = _string_setting(
     _CLASSIFIER_CFG, "frontend_pipeline",
-    "examples/ui-generation-pipeline.yaml", allow_empty=False)
+    "examples/frontend-implementation-pipeline.yaml", allow_empty=False)
 CLASSIFIER_BACKEND_PIPELINE = _string_setting(
     _CLASSIFIER_CFG, "backend_pipeline",
     "examples/backend-implementation-pipeline.yaml", allow_empty=False)

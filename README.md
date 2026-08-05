@@ -165,7 +165,9 @@ python pi-batch.py ...      # zero-install fallback from the repo root
 pi-batch classify "用 Flutter 实现 ERP 排程列表页"
 pi-batch classify tasks.yaml --json        # machine-readable
 
-# Frontend task: --classify routes it to the UI generation pipeline
+# Frontend task: --classify routes it to the frontend implementation
+# pipeline (real code in the project; plan -> implement with
+# uiquality/uicheck/completion gates -> adversarial review -> verdict)
 # (classifier.frontend_pipeline), which applies ui-specs + UI validators
 # (uispacing/uicolor/uistyle) + meta UI review + verdict gate
 pi-batch -p "生成一个登录页面 tsx" --classify --dry-run

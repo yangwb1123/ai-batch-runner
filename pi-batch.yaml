@@ -128,7 +128,9 @@ classifier:
   keywords: ""
   # Pipeline for frontend-dominated batches; resolved against cwd, the
   # entry script dir, then the package dir. Missing file fails loudly.
-  frontend_pipeline: examples/ui-generation-pipeline.yaml
+  # Real implementation into the project (ui-generation-pipeline.yaml stays
+  # as the artifact-style template).
+  frontend_pipeline: examples/frontend-implementation-pipeline.yaml
   # Pipeline for backend-dominated batches (symmetrical to frontend).
   backend_pipeline: examples/backend-implementation-pipeline.yaml
   # Minimum top score for a confident classification (2 = one strong hit).

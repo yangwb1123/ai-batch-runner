@@ -194,3 +194,24 @@ def test_check_ui_spec_script_rejects_and_accepts(tmp_path):
     tsx.write_text("style={{ marginLeft: 13 }}\ncolor: #1296db\n", encoding="utf-8")
     assert subprocess.run(["python", script, "--mode", "style", str(tsx)]).returncode == 1
     assert subprocess.run(["python", script, "--mode", "color", str(tsx)]).returncode == 1
+
+
+def test_default_routing_pipelines_exist():
+    """The classifier's default routing targets must exist (fail loud)."""
+    from pathlib import Path
+    assert Path(classifier.config.CLASSIFIER_FRONTEND_PIPELINE).exists()
+    assert Path(classifier.config.CLASSIFIER_BACKEND_PIPELINE).exists()
+    assert "frontend-implementation" in classifier.config.CLASSIFIER_FRONTEND_PIPELINE
+
+
+def test_frontend_implementation_pipeline_schema():
+    from pbatch.pipeline import load_pipeline
+    pipeline = load_pipeline("examples/frontend-implementation-pipeline.yaml")
+    assert [s.name for s in pipeline.stages] == ["plan", "implement", "review", "gate"]
+    assert pipeline.stages[1].validate_cmd == "uiquality,uicheck,completion"
+    assert pipeline.stages[2].meta is True
+    assert pipeline.stages[3].gate is True
+    plan = pipeline.stages[0].from_prompt
+    assert "pi-batch assess" in plan
+    assert "layout-patterns" in plan
+    assert "component tree" in plan
