@@ -6,3 +6,4 @@ docs/reviews/
 .pi-batch/
 .pi-batch.lock
 *.egg-info/
+docs/ui/
