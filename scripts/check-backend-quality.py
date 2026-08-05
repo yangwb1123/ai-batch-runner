@@ -108,6 +108,19 @@ def _single_implementation_interfaces(text: str) -> list:
     return flagged
 
 
+def _ddl_warnings(text: str, rel: str) -> list:
+    """Dangerous DDL outside migration files (data-loss risk)."""
+    if any(part in rel.lower() for part in ("migration", "migrate", "seed")):
+        return []
+    matches = re.findall(
+        r"\b(DROP\s+TABLE|DROP\s+COLUMN|TRUNCATE\s+TABLE)\b|ALTER\s+TABLE[^;]{0,80}?\bDROP\b",
+        text, re.IGNORECASE)
+    return [("error", f"{rel}: dangerous DDL outside a migration file: "
+                      f"{matches[0][0] or matches[0][1] or 'ALTER ... DROP'} "
+                      f"(data-loss risk; migrations must be versioned)")] \
+        if matches else []
+
+
 def _test_warnings(text: str, rel: str) -> list:
     """Strict-mode test-quality signals: assertion-less test files."""
     is_test = ".test." in rel or rel.endswith(("_test.go", "_test.py", "_test.ts", "_spec.ts"))
@@ -211,6 +224,7 @@ def _warning_findings(lines: list, rel: str, text: str, metrics: dict) -> list:
     findings.extend(_persistence_warnings(text, rel))
     findings.extend(_reliability_warnings(text, rel))
     findings.extend(_test_warnings(text, rel))
+    findings.extend(_ddl_warnings(text, rel))
     return findings
 
 

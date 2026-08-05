@@ -1,0 +1,32 @@
+# Assessor + product/workflow regression suite — run: pi-batch eval
+name: assess
+cases:
+  - id: login-is-high-risk-not-trivial
+    input: "做一个登录页面"
+    assert:
+      risk: high
+      workflow_level: L1_standard
+  - id: trivial-edit-direct
+    input: "改个文案"
+    assert:
+      workflow_level: L0_direct
+  - id: internal-tool-no-product
+    input: "写个内部小工具脚本，解析日志"
+    assert:
+      product_level: L0_local_feature
+      workflow_level: L0_direct
+  - id: open-source-upload-product
+    input: "做一个开源文件上传产品，断点续传，商业化收费，多租户"
+    assert:
+      product_level: L3_product_feature
+      workflow_level: L3_platform
+  - id: enterprise-login-restrained-prescription
+    input: "做一个企业登录页面"
+    assert:
+      tier: production
+      product_level: L0_local_feature
+  - id: saas-platform-level
+    input: "构建多租户 SaaS 平台，开放 API 与 Webhook"
+    assert:
+      product_level: L3_product_feature
+      workflow_level: L3_platform

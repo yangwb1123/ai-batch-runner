@@ -1,0 +1,48 @@
+# Classifier regression suite — run: pi-batch eval
+# These cases encode every classifier regression we have actually hit.
+name: classifier
+cases:
+  - id: frontend-flutter-erp
+    input: "用 Flutter 实现 ERP 排程列表页，布局按规范"
+    assert:
+      task_type: frontend_ui
+      platform: dart
+      profile: erp
+  - id: frontend-tsx-login
+    input: "生成一个登录页面 tsx"
+    assert:
+      task_type: frontend_ui
+      platform: tsx
+  - id: backend-go-order
+    input: "写一个订单创建接口，含支付和审批，生产环境，go 实现"
+    assert:
+      task_type: backend
+  - id: backend-domain-terms
+    input: "企业订单域：多实体复杂流程，微服务生产环境，含支付审批"
+    assert:
+      task_type: backend
+  - id: frontend-order-page
+    input: "做一个订单支付页面"
+    assert:
+      task_type: frontend_ui
+  - id: platform-boost-flutter-backend
+    input: "实现一个 flutter 后端接口"
+    assert:
+      task_type: frontend_ui
+  - id: admin-console
+    input: "生成客户管理后台"
+    assert:
+      task_type: frontend_ui
+  - id: marketing-landing
+    input: "生成一个营销落地页，特效风格"
+    assert:
+      task_type: frontend_ui
+      profile: marketing
+  - id: analysis-not-frontend
+    input: "分析 MFA 子系统的错误处理"
+    assert:
+      task_type: analysis
+  - id: gibberish-unknown
+    input: "随便写点什么"
+    assert:
+      task_type: unknown

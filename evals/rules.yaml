@@ -1,0 +1,45 @@
+# Rule-matcher regression suite — run: pi-batch eval
+name: rules
+cases:
+  - id: demo-login-loads-visual-core-only
+    input: "做一个登录页面 demo"
+    assert:
+      tier: demo
+      has_rule: [visual-core, component-spec]
+      lacks_rule: [async-data, architecture-budgets]
+  - id: production-payment-full-set
+    input: "企业订单管理：新建订单表单，含支付审批，生产环境"
+    assert:
+      tier: production
+      risk: high
+      has_rule: [visual-core, async-data, error-recovery,
+                 defect-patterns, form-table-state, architecture-budgets]
+  - id: crud-backend-minimal
+    input: "做一个客户管理的 CRUD 接口"
+    assert:
+      task_type: backend
+      tier: demo
+      lacks_rule: [ddd, architecture-constitution, algorithms,
+                   persistence-modeling]
+  - id: backend-order-persistence-mandated
+    input: "写一个订单创建接口，含支付"
+    assert:
+      task_type: backend
+      risk: high
+      has_rule: [architecture, persistence-modeling, domain-modeling, testing]
+  - id: search-triggers-algorithms
+    input: "写一个商品搜索接口，Top K 排行，用 go 实现"
+    assert:
+      task_type: backend
+      has_rule: [algorithms]
+  - id: plain-crud-no-algorithms
+    input: "做一个客户管理的 CRUD 接口"
+    assert:
+      task_type: backend
+      lacks_rule: [algorithms]
+  - id: production-complex-has-constitution
+    input: "企业订单域：多实体复杂流程，微服务生产环境，含支付审批"
+    assert:
+      tier: production
+      has_rule: [ddd, complexity-scale, evolution, system-engineering,
+                 network-engineering, architecture-constitution]

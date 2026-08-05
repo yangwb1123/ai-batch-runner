@@ -92,8 +92,8 @@ def test_workflow_level_direct_for_trivial():
 
 def test_workflow_level_escalates_on_risk_and_scale():
     workflow = workflow_level("企业支付审批，多租户平台，生产环境，React")
-    assert workflow["level"] == "L2_high_risk"
-    assert workflow["score"] >= 4
+    assert workflow["level"] == "L3_platform"
+    assert workflow["score"] >= 6
 
 
 def test_login_is_high_risk():

@@ -1,0 +1,38 @@
+# Context map template (Context Engineering): which project documents a
+# task needs, matched by file path patterns and task keywords.
+#
+# Copy to a project and fill in the real documents. `pi-batch context`
+# emits only the matched, existing files — project knowledge is loaded on
+# demand, never dumped wholesale into the prompt.
+#
+# Routes are OR-ed within a route (path OR keyword), AND-ed across load.
+routes:
+  - when:
+      paths: ["src/order/**", "modules/order/**", "domains/order/**"]
+      task_contains: ["订单", "order"]
+    load:
+      - docs/adr/order-state-machine.md
+      - docs/contracts/order-api.yaml
+
+  - when:
+      paths: ["src/auth/**", "modules/auth/**"]
+      task_contains: ["登录", "认证", "权限", "auth", "login"]
+    load:
+      - docs/security/authentication.md
+      - docs/security/authorization.md
+
+  - when:
+      task_contains: ["支付", "payment", "退款", "refund"]
+    load:
+      - docs/contracts/payment-api.yaml
+      - docs/adr/money-and-precision.md
+
+  - when:
+      task_contains: ["迁移", "migration", "schema"]
+    load:
+      - docs/database/migration-conventions.md
+
+  - when:
+      task_contains: ["上传", "upload", "文件", "file"]
+    load:
+      - docs/contracts/file-api.yaml

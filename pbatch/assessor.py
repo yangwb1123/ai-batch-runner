@@ -122,7 +122,7 @@ WORKFLOW_SUGGESTIONS = {
 
 def workflow_level(text: str, registry: Optional[dict] = None,
                    product_level: Optional[str] = None) -> dict:
-    """Risk-graded workflow selection: score = risk×2 + scale + product.
+    """Risk-graded workflow selection: score = risk×2 + scale + product×3.
     Low-risk small tasks stay on a direct path; high-risk/platform work
     escalates to adversarial review + gates + product thinking."""
     reg = registry or load_registry(domain=domain_for(text))
@@ -130,7 +130,7 @@ def workflow_level(text: str, registry: Optional[dict] = None,
     risk = 1 if matched["risk"] == "high" else 0
     scale = _WORKFLOW_SCALE.get(scale_signal(text, reg), 0)
     prod = _WORKFLOW_PRODUCT.get(product_level or productization_level(text)[0], 0)
-    total = risk * 2 + scale + prod
+    total = risk * 2 + scale + prod * 3
     if total <= 1:
         level = "L0_direct"
     elif total <= 3:
