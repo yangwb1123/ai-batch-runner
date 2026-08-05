@@ -77,15 +77,33 @@ def learn_main(argv: list) -> None:
         prog="pi-batch.py learn",
         description="Turn an incident/RCA into a rule draft (Evolution "
                     "Engineering: failure -> draft -> human approval -> registry).")
-    parser.add_argument("failure", nargs="+", help="observed failure description")
+    parser.add_argument("failure", nargs="*", default=[],
+                        help="observed failure description (or use --from-memory)")
     parser.add_argument("--category", default="backend", choices=CATEGORIES,
                         help="rule category")
     parser.add_argument("--severity", default="error", choices=SEVERITIES,
                         help="rule severity")
     parser.add_argument("--rule-id", default="", help="rule id (default DRAFT-<date>)")
     parser.add_argument("--owner", default="", help="rule owner")
+    parser.add_argument("--from-memory", default="",
+                        help="use the top memory search hit as the failure "
+                             "description (Evolution loop: incident -> draft)")
     args = parser.parse_args(argv)
-    path, draft = make_draft(" ".join(args.failure), args.category,
+    if not args.failure and not args.from_memory:
+        parser.error("Provide a failure description or --from-memory TERM")
+    if args.from_memory:
+        from .memory import find as memory_find
+        hits = memory_find(args.from_memory)
+        if not hits:
+            log.error("No memory records match %r", args.from_memory)
+            sys.exit(1)
+        top = hits[0]
+        failure = (f"{args.from_memory} | {top.get('domain') or top.get('stage') or ''} "
+                   f"{str(top.get('error') or top.get('status') or top)[:200]}")
+        log.info("Using memory hit %r as the observed failure", top.get("session_id", ""))
+    else:
+        failure = " ".join(args.failure)
+    path, draft = make_draft(failure, args.category,
                              args.severity, args.rule_id, args.owner)
     log.info("Rule draft written to %s", path)
     log.info("Review the draft, fill requirements/forbidden/verification "

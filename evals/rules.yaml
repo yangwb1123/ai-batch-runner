@@ -43,3 +43,11 @@ cases:
       tier: production
       has_rule: [ddd, complexity-scale, evolution, system-engineering,
                  network-engineering, architecture-constitution]
+  - id: form-table-triggers-interaction
+    input: "企业订单管理：新建订单表单，含支付审批流程"
+    assert:
+      has_rule: [interaction-patterns]
+  - id: demo-auth-skips-interaction
+    input: "做一个登录页 demo"
+    assert:
+      lacks_rule: [interaction-patterns]

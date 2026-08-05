@@ -236,13 +236,22 @@ def assess_main(argv: list) -> None:
         prog="pi-batch.py assess",
         description="Evaluate a requirement (completeness, scale, risk) and "
                     "prescribe the minimal necessary ui-spec rules.")
-    parser.add_argument("task", nargs="+", help="requirement text")
+    parser.add_argument("task", nargs="*", default=[], help="requirement text")
+    parser.add_argument("--file", default="",
+                        help="read the requirement from FILE (markdown/txt)")
     parser.add_argument("--json", action="store_true", help="machine-readable output")
     parser.add_argument("--llm-json", default="",
                         help='LLM selection JSON {"apply":[],"skip":[]} to reconcile')
     parser.add_argument("--registry", default="", help="rule registry YAML override")
     args = parser.parse_args(argv)
-    text = " ".join(args.task)
+    if args.file:
+        from .text_io import read_text_bounded
+        text = read_text_bounded(Path(args.file), config.INPUT_MAX_BYTES,
+                                 "assess source")
+    else:
+        text = " ".join(args.task)
+    if not text.strip():
+        parser.error("Provide a requirement (positional text or --file)")
     registry = load_registry(args.registry) if args.registry else None
     assessment = prescription(text, registry)
     if args.llm_json:

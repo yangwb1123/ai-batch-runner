@@ -367,6 +367,7 @@ python pi-batch.py classify tasks.yaml --json
 # 需求评估：像资深评审一样先评估需求，再开克制的最小处方
 pi-batch.py assess "企业订单管理：新建订单表单，含支付审批流程"
 pi-batch.py assess "企业登录页面"   # 一句话需求 → 处方档降为 demo，只给 2 条
+pi-batch.py assess --file requirements.md   # 从文件评估需求
 pi-batch.py assess "做一个开源上传产品，断点续传，商业化"  # 产品化 L3：推演链+开源/商业要素
 # 产品思维层：product-specs/（product-thinking 分级/推演链/克制红线、
 # commercial-readiness 低成本预留vs高成本实现、open-source-readiness、
@@ -395,6 +396,7 @@ pi-batch.py rules "生成一个登录页 demo"
 pi-batch.py rules "企业订单+支付审批，生产" --json
 # 双向校验：压缩需求给 LLM 独立选择 → 与算法对比裁决
 pi-batch.py rules "企业支付审批，生产" --summary          # 压缩后的需求文本
+pi-batch.py rules --check                                  # 注册表 schema 校验（双域）
 pi-batch.py rules "企业支付审批，生产" --llm-prompt p.txt  # 生成 LLM 检查 prompt
 pi-batch.py rules "企业支付审批，生产" --llm-json '{"apply":[],"skip":[]}'
 # 裁决规则：两边一致→保留；必选/风险强制规则 LLM 跳过→算法否决；

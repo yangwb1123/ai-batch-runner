@@ -348,6 +348,64 @@ def _reconcile_cli(text: str, llm_json: str, registry: dict, want_json: bool) ->
               ", ".join(item["id"] for item in dropped))
 
 
+def _check_rule(rule_id: str, rule, violations: list) -> None:
+    """One rule's schema: required fields, tier, referenced files."""
+    if not isinstance(rule, dict):
+        violations.append(f"rule '{rule_id}': must be a mapping")
+        return
+    for key in ("description", "min_tier"):
+        if not str(rule.get(key, "")).strip():
+            violations.append(f"rule '{rule_id}': missing '{key}'")
+    if rule.get("min_tier") not in TIER_ORDER:
+        violations.append(f"rule '{rule_id}': invalid min_tier "
+                          f"{rule.get('min_tier')!r}")
+    files = rule.get("files", [])
+    template = rule.get("files_template")
+    if not files and not template:
+        violations.append(f"rule '{rule_id}': missing 'files' or "
+                          f"'files_template'")
+    for file in files:
+        if not Path(str(file)).exists():
+            violations.append(f"rule '{rule_id}': missing file {file}")
+    if template:
+        for profile in rule.get("profiles", []):
+            target = str(template).replace("{profile}", str(profile))
+            if not Path(target).exists():
+                violations.append(f"rule '{rule_id}': missing profile file "
+                                  f"{target}")
+
+
+def check_registry(registry: dict) -> list:
+    """Schema integrity of one rule registry: rule fields, tiers, files."""
+    rules = registry.get("rules", {})
+    if not isinstance(rules, dict):
+        return ["'rules' section must be a mapping"]
+    violations = []
+    for rule_id, rule in rules.items():
+        _check_rule(rule_id, rule, violations)
+    for section in ("scale", "risk", "page_types", "use_case_types",
+                    "signals", "signal_weights"):
+        value = registry.get(section)
+        if value is not None and not isinstance(value, dict):
+            violations.append(f"section '{section}' must be a mapping")
+    return violations
+
+
+def _check_registries_cli() -> None:
+    """--check: validate schema integrity of both domain registries."""
+    for domain, path in (("frontend", "ui-specs/rules.yaml"),
+                         ("backend", "backend-specs/rules.yaml")):
+        if not Path(path).exists():
+            log.error("registry not found: %s", path)
+            sys.exit(1)
+        violations = check_registry(load_registry(domain=domain))
+        if violations:
+            for item in violations:
+                log.error("%s registry: %s", domain, item)
+            sys.exit(1)
+        log.info("%s registry: OK", domain)
+
+
 def rules_main(argv: list) -> None:
     """`pi-batch rules "<task>"` — deterministic rule manifest;
     `--summary` prints the compressed requirement for the LLM side;
@@ -360,7 +418,7 @@ def rules_main(argv: list) -> None:
         prog="pi-batch.py rules",
         description="Match ui-spec rules to a task (algorithm) and reconcile "
                     "the LLM's independent selection (two-sided check).")
-    parser.add_argument("task", nargs="+", help="task prompt text")
+    parser.add_argument("task", nargs="*", default=[], help="task prompt text")
     parser.add_argument("--json", action="store_true", help="machine-readable output")
     parser.add_argument("--summary", action="store_true",
                         help="print the compressed requirement (LLM input)")
@@ -369,8 +427,15 @@ def rules_main(argv: list) -> None:
     parser.add_argument("--llm-json", default="",
                         help='LLM selection JSON {"apply":[],"skip":[]} to reconcile')
     parser.add_argument("--registry", default="", help="rule registry YAML override")
+    parser.add_argument("--check", action="store_true",
+                        help="validate registry schema integrity (both domains)")
     args = parser.parse_args(argv)
+    if args.check:
+        _check_registries_cli()
+        return
     text = " ".join(args.task)
+    if not text.strip():
+        parser.error("Provide a task (positional text) or --check")
     registry = load_registry(args.registry) if args.registry else None
     if args.summary:
         print(summarize_task(text, registry))

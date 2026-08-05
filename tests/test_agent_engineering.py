@@ -126,3 +126,49 @@ def test_learn_schema_complete():
                 "rationale", "requirements", "forbidden", "exceptions",
                 "verification", "examples", "owner", "version", "status"):
         assert key in schema
+
+
+def test_assess_from_file(tmp_path, capsys):
+    req = tmp_path / "req.md"
+    req.write_text("做一个开源文件上传产品，断点续传，商业化收费", encoding="utf-8")
+    sys.argv = ["pi-batch.py", "assess", "--file", str(req)]
+    from pbatch.assessor import assess_main
+    assess_main(sys.argv[2:])
+    out = capsys.readouterr().out
+    assert "产品化: L3_product_feature" in out
+
+
+def test_rules_check_passes():
+    sys.argv = ["pi-batch.py", "rules", "--check"]
+    from pbatch.rule_matcher import rules_main
+    try:
+        rules_main(sys.argv[2:])
+        code = 0
+    except SystemExit as exc:
+        code = exc.code
+    assert code == 0
+
+
+def test_rules_check_fails_on_broken_registry(tmp_path, monkeypatch):
+    broken = tmp_path / "rules.yaml"
+    broken.write_text("rules:\n  bad-rule:\n    description: x\n",
+                      encoding="utf-8")
+    from pbatch.rule_matcher import check_registry, load_registry
+    violations = check_registry(load_registry(str(broken)))
+    assert any("min_tier" in v for v in violations)
+    assert any("files" in v for v in violations)
+
+
+def test_learn_from_memory(tmp_path, monkeypatch, capsys):
+    import pbatch.learn as learn
+    import pbatch.memory as memory
+    monkeypatch.chdir(tmp_path)
+    hits = [{"session_id": "s1", "domain": "backend",
+             "error": "订单并发创建重复记录"}]
+    monkeypatch.setattr(memory, "find", lambda q, **kw: hits)
+    sys.argv = ["pi-batch.py", "learn", "--from-memory", "订单并发",
+                "--category", "database", "--rule-id", "DB-002"]
+    learn.learn_main(sys.argv[2:])
+    drafts = list(Path(tmp_path).glob("docs/rules/drafts/*.yaml"))
+    assert drafts
+    assert "重复" in drafts[0].read_text(encoding="utf-8")
