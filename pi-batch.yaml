@@ -129,6 +129,8 @@ classifier:
   # Pipeline for frontend-dominated batches; resolved against cwd, the
   # entry script dir, then the package dir. Missing file fails loudly.
   frontend_pipeline: examples/ui-generation-pipeline.yaml
+  # Pipeline for backend-dominated batches (symmetrical to frontend).
+  backend_pipeline: examples/backend-implementation-pipeline.yaml
   # Minimum top score for a confident classification (2 = one strong hit).
   min_score: 2
   # Route when this share of a batch's tasks classify as frontend UI.

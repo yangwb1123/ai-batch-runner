@@ -313,3 +313,26 @@ def test_testing_reviewer_keywords_registered():
     keywords = load_role_keywords()
     assert "testing_reviewer" in keywords
     assert keywords["testing_reviewer"]
+
+
+def test_backend_implementation_pipeline_schema():
+    from pbatch.pipeline import load_pipeline
+    pipeline = load_pipeline("examples/backend-implementation-pipeline.yaml")
+    assert [s.name for s in pipeline.stages] == ["plan", "implement", "review", "gate"]
+    assert pipeline.stages[1].validate_cmd == "backendquality,completion"
+    assert pipeline.stages[2].meta is True
+    assert pipeline.stages[3].gate is True
+    plan_prompt = pipeline.stages[0].from_prompt
+    assert "Persistence Design" in plan_prompt
+    assert "pi-batch assess" in plan_prompt
+
+
+def test_classifier_backend_pipeline_configured():
+    from pbatch import config
+    assert config.CLASSIFIER_BACKEND_PIPELINE
+    assert config.CLASSIFIER_BACKEND_PIPELINE.endswith("backend-implementation-pipeline.yaml")
+
+
+def test_backend_routing_pipeline_exists():
+    from pathlib import Path
+    assert Path("examples/backend-implementation-pipeline.yaml").exists()

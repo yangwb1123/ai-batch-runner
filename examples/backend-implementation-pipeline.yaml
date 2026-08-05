@@ -1,0 +1,88 @@
+# 后端实现流水线：需求评估 → 计划（含强制持久化设计报告）→ 实现 + 门禁 → 对抗审查 → 裁决。
+#
+# 与 examples/ui-generation-pipeline.yaml 对称的后端版；由 --classify 路由
+# （classifier.backend_pipeline）。流程：
+#   1) plan：运行 pi-batch assess 获取规则处方与工作流等级，输出实现计划
+#      —— 模块边界/数据所有权/契约/错误模型/测试计划/变更半径，
+#      **编码前必须输出 Persistence Design 报告**（persistence-modeling.md §12）
+#   2) implement：backend_engineer 实现 + backendquality（架构/模式/复杂度/
+#      持久化门禁）+ completion（完成证据报告）双门禁，失败喂回重试
+#   3) review：meta 对抗审查（编排者现场挑 design_pattern_reviewer /
+#      algorithm_reviewer / architecture_constitution_reviewer / testing_reviewer）
+#   4) gate：VERDICT: PASS 才放行
+#
+# 运行（从仓库根，--classify 自动路由后端任务到这里）：
+#   pi-batch -p "写一个订单创建接口，含支付审批，生产环境，go" --classify
+# 或显式：
+#   pi-batch examples/backend-implementation-pipeline.yaml --retries 3 --max-rounds 0
+
+git_commit: true
+decision_log: docs/DECISIONS.md
+archive_dir: docs/archive
+
+stages:
+  # ── 1. 计划：需求评估 + 实现计划（含强制持久化设计报告）──
+  - name: plan
+    from_prompt: |
+      You are the backend planner. FIRST run the requirement assessment:
+        pi-batch assess "<original task>"
+      Use the prescription (rule manifest), product level and workflow
+      level from the assessment. Then produce an implementation plan with:
+      - module boundary and data ownership (backend-specs/architecture.md)
+      - Persistence Design report (backend-specs/persistence-modeling.md
+        §12): aggregate / tables / identity (internal PK + business key +
+        idempotency key) / consistency boundary / snapshot fields /
+        concurrency / main queries + indexes / history / deletion /
+        migration
+      - API contract + stable error model + idempotency strategy
+      - test plan (five layers, backend-specs/testing.md)
+      - change radius (backend-specs/agent-guardrails.md)
+      Do NOT write implementation code yet.
+    output: docs/backend/plan.md
+    mode: serial
+
+  # ── 2. 实现：backend_engineer 执行 + 双门禁（backendquality + completion）──
+  # 失败 = 不落盘 = 自动重试；门禁 stderr（违规明细）喂回修复循环。
+  - name: implement
+    from_outputs: plan
+    validate: backendquality,completion
+    tasks:
+      - prompt: |
+          You are the backend implementer (apply prompts/backend_engineer.md
+          and the loaded backend-specs). Read {input_content} (the plan,
+          including the Persistence Design report) and the rule manifest
+          (run `pi-batch assess "<original task>"` if needed). Implement:
+          write the code into the repository, add tests per the test plan,
+          then actually run lint/typecheck/test/build. Finish with a
+          completion_report per product-specs/completion-evidence.md
+          (commands_executed with passed/failed/not_executed, residual
+          risks, assumptions). The backendquality and completion gates
+          re-verify your artifact and feed any violations back.
+        output: docs/backend/implementation.md
+
+  # ── 3. 对抗审查：编排者现场挑选后端审查角色并发执行 ──
+  - name: review
+    from_outputs: implement
+    meta: true
+    role_dir: prompts
+    output_dir: docs/backend/reviews
+    max_iterations: 2
+    mode: serial
+
+  # ── 4. 裁决门：VERDICT: PASS 才确认完成 ──
+  - name: gate
+    from_outputs: review
+    aggregate: true
+    gate: true
+    mode: serial
+    tasks:
+      - prompt: |
+          You are the backend gatekeeper. Read {input_content} (the plan,
+          implementation report and review deliverables). Verify: the plan
+          was honored, the Persistence Design report was followed, review
+          findings are resolved or dismissed with reasons, gates passed,
+          and the completion report is honest. Output on the last line:
+          VERDICT: PASS - <why the implementation is complete>
+          or
+          VERDICT: FAIL - <blocking issues>
+        output: docs/backend/gate.md

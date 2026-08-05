@@ -105,3 +105,20 @@ def test_engineering_role_keywords_registered():
     for role in ("frontend_engineer", "async_reviewer", "code_architecture_reviewer"):
         assert role in keywords
         assert keywords[role]
+
+
+def test_effect_leak_warning(tmp_path):
+    leaky = tmp_path / "leak.tsx"
+    leaky.write_text(
+        'useEffect(() => {\n  window.addEventListener("resize", h);\n'
+        '  setInterval(tick, 1000);\n}, []);\n', encoding="utf-8")
+    strict = _run("--strict", str(leaky))
+    assert strict.returncode == 1
+    assert "cleanup" in strict.stderr
+    clean = tmp_path / "clean.tsx"
+    clean.write_text(
+        'useEffect(() => {\n  const l = () => {};\n'
+        '  window.addEventListener("resize", l);\n'
+        '  return () => window.removeEventListener("resize", l);\n}, []);\n',
+        encoding="utf-8")
+    assert _run("--strict", str(clean)).returncode == 0

@@ -226,6 +226,9 @@ CLASSIFIER_KEYWORDS = _string_setting(_CLASSIFIER_CFG, "keywords", "")
 CLASSIFIER_FRONTEND_PIPELINE = _string_setting(
     _CLASSIFIER_CFG, "frontend_pipeline",
     "examples/ui-generation-pipeline.yaml", allow_empty=False)
+CLASSIFIER_BACKEND_PIPELINE = _string_setting(
+    _CLASSIFIER_CFG, "backend_pipeline",
+    "examples/backend-implementation-pipeline.yaml", allow_empty=False)
 # Minimum top score for a confident classification (2 = one strong hit).
 CLASSIFIER_MIN_SCORE = _int_setting(_CLASSIFIER_CFG, "min_score", 2, 1)
 # Route when this share of a batch's tasks classify as frontend UI.

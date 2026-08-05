@@ -439,11 +439,10 @@ def _auto_detect_pipeline(args) -> None:
             args.source = ""
 
 
-def _resolve_frontend_pipeline() -> str:
-    """Locate the configured frontend pipeline (classifier.frontend_pipeline)
-    next to cwd, the entry script, or the package; fail loud when absent so
-    --classify never silently degrades to a plain batch."""
-    value = config.CLASSIFIER_FRONTEND_PIPELINE
+def _resolve_pipeline(value: str, label: str, config_key: str) -> str:
+    """Locate a configured routing pipeline next to cwd, the entry script,
+    or the package; fail loud when absent so --classify never silently
+    degrades to a plain batch."""
     candidates = []
     if os.path.isabs(value):
         candidates.append(Path(value))
@@ -456,9 +455,15 @@ def _resolve_frontend_pipeline() -> str:
     for candidate in candidates:
         if candidate.exists():
             return str(candidate)
-    log.error("Frontend pipeline not found: %s (set classifier.frontend_pipeline in pi-batch.yaml)",
-              value)
+    log.error("%s pipeline not found: %s (set classifier.%s in pi-batch.yaml)",
+              label, value, config_key)
     sys.exit(1)
+
+
+def _resolve_frontend_pipeline() -> str:
+    """Frontend routing pipeline (classifier.frontend_pipeline)."""
+    return _resolve_pipeline(config.CLASSIFIER_FRONTEND_PIPELINE,
+                             "Frontend", "frontend_pipeline")
 
 
 def _maybe_classify_route(args) -> None:
@@ -487,7 +492,15 @@ def _maybe_classify_route(args) -> None:
                  index, item.task_type, detail, item.score,
                  "confident" if item.confident else "best-guess")
     if not should_route_frontend(per_task, config.CLASSIFIER_FRONTEND_RATIO):
-        log.info("CLASSIFY: dominant type %s; running as a plain batch", dominant.task_type)
+        if dominant.task_type == "backend":
+            pipeline = _resolve_pipeline(config.CLASSIFIER_BACKEND_PIPELINE,
+                                         "Backend", "backend_pipeline")
+            log.info("CLASSIFY: backend task(s) detected (%s); routing to %s",
+                     dominant.task_type, pipeline)
+            args.pipeline = pipeline
+            return
+        log.info("CLASSIFY: dominant type %s; running as a plain batch",
+                 dominant.task_type)
         return
     pipeline = _resolve_frontend_pipeline()
     log.info("CLASSIFY: frontend task(s) detected (%s); routing to %s",

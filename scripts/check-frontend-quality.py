@@ -89,10 +89,24 @@ def _nesting_depth(lines: list) -> int:
     return depth
 
 
+def _effect_leak_warnings(text: str, rel: str) -> list:
+    """useEffect resources without matching cleanup (listener/timer leak)."""
+    if not re.search(r"\buseEffect\s*\(", text):
+        return []
+    created = len(re.findall(r"\b(addEventListener|setInterval|setTimeout)\s*\(", text))
+    cleaned = len(re.findall(r"\b(removeEventListener|clearInterval|clearTimeout)\s*\(", text))
+    if created and cleaned < created:
+        return [("warning", f"{rel}: {created} listener/timer creations but only "
+                            f"{cleaned} cleanups — useEffect must return a "
+                            f"cleanup that releases them")]
+    return []
+
+
 def check_text(text: str, path: Path, strict: bool) -> list:
     """Violation strings for one file; (severity, message) tuples."""
     lines = text.splitlines()
     findings = []
+    rel = str(path)
 
     def add(severity, message):
         findings.append((severity, f"{path}: {message}"))
@@ -129,6 +143,7 @@ def check_text(text: str, path: Path, strict: bool) -> list:
 
     if not strict:
         findings = [item for item in findings if item[0] == "error"]
+    findings.extend(_effect_leak_warnings(text, rel))
     return [message for severity, message in findings]
 
 

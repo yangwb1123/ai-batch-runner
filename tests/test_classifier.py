@@ -137,12 +137,15 @@ def test_maybe_classify_route_frontend(monkeypatch, tmp_path):
     assert args.pipeline == str(pipeline)
 
 
-def test_maybe_classify_route_backend_keeps_batch(monkeypatch):
+def test_maybe_classify_route_backend_routes_to_backend_pipeline(monkeypatch, tmp_path):
+    pipeline = tmp_path / "be-impl.yaml"
+    pipeline.write_text("stages: []\n", encoding="utf-8")
+    monkeypatch.setattr(classifier.config, "CLASSIFIER_BACKEND_PIPELINE", str(pipeline))
     args = cli.argparse.Namespace(
-        classify=True, pipeline="", prompt="写一个后端接口",
+        classify=True, pipeline="", prompt="写一个订单创建接口，含支付，go 实现",
         source="", from_dir="", output="", model="", provider="", timeout=0)
     cli._maybe_classify_route(args)
-    assert args.pipeline == ""
+    assert args.pipeline == str(pipeline)
 
 
 def test_maybe_classify_route_explicit_pipeline_wins(monkeypatch):
