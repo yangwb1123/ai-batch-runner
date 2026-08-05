@@ -299,3 +299,16 @@ algorithm_reviewer:
   - 性能
   - 数据规模
   - 布隆
+architecture_constitution_reviewer:
+  - architecture
+  - blast radius
+  - coupling
+  - change amplification
+  - reversibility
+  - 架构
+  - 爆炸半径
+  - 耦合
+  - 变化放大
+  - 可逆
+  - 演进
+  - 一致性

@@ -108,6 +108,25 @@ def _single_implementation_interfaces(text: str) -> list:
     return flagged
 
 
+def _reliability_warnings(text: str, rel: str) -> list:
+    """Strict-mode reliability signals: swallowed exceptions, per-request
+    HTTP clients, busy-polling loops without backoff."""
+    findings = []
+    if re.search(r"catch\s*\([^)]*\)\s*\{\s*\}", text) \
+            or re.search(r"except[^:]*:\s*\n\s*pass\b", text):
+        findings.append(("warning", f"{rel}: swallowed exception (empty catch/except pass) "
+                                    f"— failure path invisible"))
+    clients = (len(re.findall(r"axios\.create\(|new\s+HttpClient\(|http\.Client\{", text))
+               + len(re.findall(r"Dio\(", text)))
+    if clients >= 2:
+        findings.append(("warning", f"{rel}: {clients} HTTP client creations — reuse a "
+                                    f"single client with a connection pool"))
+    if re.search(r"while\s*\([^)]*\)\s*\{[\s\S]{0,200}?(?:sleep|Sleep|setTimeout|Thread\.sleep)", text):
+        findings.append(("warning", f"{rel}: busy-polling loop without backoff/cap — "
+                                    f"use exponential backoff + max attempts"))
+    return findings
+
+
 def _persistence_warnings(text: str, rel: str) -> list:
     """Strict-mode persistence/query signals: float money, SELECT *, LIKE
     %-scans, tenant-less WHERE id queries, VARCHAR(255) sprawl."""
@@ -179,6 +198,7 @@ def _warning_findings(lines: list, rel: str, text: str, metrics: dict) -> list:
         findings.append(("warning", f"{rel}: {todos} TODO/FIXME markers > {MAX_TODOS}"))
     findings.extend(_algorithm_warnings(text, rel))
     findings.extend(_persistence_warnings(text, rel))
+    findings.extend(_reliability_warnings(text, rel))
     return findings
 
 

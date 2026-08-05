@@ -232,3 +232,50 @@ def test_backend_engineer_prompt_requires_persistence_report():
     prompt = Path("prompts/backend_engineer.md").read_text(encoding="utf-8")
     assert "Persistence Design" in prompt
     assert "four models" in prompt.lower() or "API DTO" in prompt
+
+
+def test_constitution_rule_production_tier_only():
+    matched = match_rules("企业订单域：多实体复杂流程，微服务生产环境，含支付审批")
+    ids = [item["id"] for item in matched["rules"]]
+    assert "architecture-constitution" in ids
+    crud = match_rules("做一个客户管理的 CRUD 接口")
+    crud_ids = [item["id"] for item in crud["rules"]]
+    assert "architecture-constitution" not in crud_ids
+
+
+def test_checker_swallowed_exception(tmp_path):
+    bad = tmp_path / "svc.ts"
+    bad.write_text("try { risky(); } catch (e) {}\n", encoding="utf-8")
+    result = _run(str(bad), "--strict")
+    assert result.returncode == 1
+    assert "swallowed exception" in result.stderr
+
+
+def test_checker_http_client_reuse(tmp_path):
+    bad = tmp_path / "api.ts"
+    bad.write_text("const a = axios.create({});\nconst b = axios.create({});\n",
+                   encoding="utf-8")
+    result = _run(str(bad), "--strict")
+    assert result.returncode == 1
+    assert "HTTP client creations" in result.stderr
+
+
+def test_checker_busy_polling(tmp_path):
+    bad = tmp_path / "poll.ts"
+    bad.write_text("while (true) { await sleep(1000); check(); }\n", encoding="utf-8")
+    result = _run(str(bad), "--strict")
+    assert result.returncode == 1
+    assert "busy-polling" in result.stderr
+
+
+def test_constitution_reviewer_keywords_registered():
+    from pbatch.relevance import load_role_keywords
+    keywords = load_role_keywords()
+    assert "architecture_constitution_reviewer" in keywords
+    assert keywords["architecture_constitution_reviewer"]
+
+
+def test_constitution_prompt_has_15_questions():
+    prompt = Path("prompts/architecture_constitution_reviewer.md").read_text(encoding="utf-8")
+    assert "blast radius" in prompt.lower()
+    assert "coupling octet" in prompt.lower()

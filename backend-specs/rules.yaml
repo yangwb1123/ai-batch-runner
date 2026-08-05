@@ -98,3 +98,8 @@ rules:
     description: AI 护栏：防幻觉红线、变更范围控制、DRY 边界、完成定义
     files: [backend-specs/agent-guardrails.md]
     min_tier: standard
+  architecture-constitution:
+    description: 最高层架构宪法：变化管理/可逆决策/组织匹配/模块化优先/数据所有权/
+                 耦合八型/爆炸半径/重试预算/一致性显式/契约演进/架构假设/15 问
+    files: [backend-specs/architecture-constitution.md]
+    min_tier: production

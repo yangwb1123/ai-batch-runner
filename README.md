@@ -273,7 +273,22 @@ tasks:
   specific guardrails (no hallucinated APIs/results, change-radius control,
   don't-DRY-away-boundaries, no perf claims without benchmarks). The
   `backendquality` validator adds float-money, SELECT *, tenant-less WHERE
-  id, LIKE-% full scans and VARCHAR(255) sprawl to its strict warnings.
+  id, LIKE-% full scans, VARCHAR(255) sprawl, swallowed exceptions, per-request
+  HTTP clients and busy-polling loops to its strict warnings.
+- **Senior architecture constitution** (`backend-specs/architecture-constitution.md`):
+  architecture as change management — Change Amplification as the key metric,
+  decision reversibility register (PKs/public APIs/event formats/service
+  boundaries need evidence before commitment), organization fit & cognitive
+  load, modular monolith as the default (distributed-monolith is the anti-
+  pattern), unique data ownership with derived data marked, the coupling
+  octet (code/data/temporal/order/deployment/semantic/organizational/runtime),
+  blast radius & bulkheads, tail latency & queueing theory, retry budgets &
+  end-to-end timeout allocation, explicit consistency models (PACELC),
+  contract evolution with deprecation, delete-ability, designed manual
+  intervention, STRIDE threat modeling, TCO, architecture fitness functions
+  (automated gates), and the senior-architect 15 questions.
+  `architecture_constitution_reviewer` role audits the design against it
+  (production tier rule only).
 - **Requirement assessment** (`pi-batch assess`): rules are prescribed by an
   expert evaluation of the REQUIREMENT, not by keyword hits. Eight
   completeness dimensions are checked (goal/user role/main flow/data source/
