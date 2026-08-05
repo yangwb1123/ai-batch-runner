@@ -303,6 +303,18 @@ tasks:
   client reuse, the retry matrix (bounded budget, never blind retries of
   non-idempotent writes), streaming with backpressure. `testing_reviewer`
   role audits risk coverage and verification honesty.
+- **Context routing & rule-system evals** (`pbatch/context.py`,
+  `pbatch/eval.py`): `pi-batch context "<task>" --paths src/order/**` loads
+  only the project documents a task needs (ADRs/contracts/security
+  baselines from `docs/agent-context/context-map.yaml`, path glob + task
+  keywords, missing files warned); `pi-batch eval` runs the evals/*.yaml
+  regression suite against the live classifier/matcher/assessor (23
+  cases encoding every regression we have actually hit — saas → L3,
+  login → high risk, flutter+backend → frontend, restrained
+  prescriptions) and is wired into make ci, so a keyword or registry
+  change that breaks behavior fails the gate. Dangerous DDL
+  (DROP TABLE/COLUMN/TRUNCATE outside migrations) added to the
+  backendquality errors.
 - **Product thinking** (`pbatch/product.py` + `product-specs/`): the agent
   must think as a product owner, not a code generator — but depth is decided
   by the productization level (L0 local_feature → L3 product_feature),
