@@ -208,6 +208,16 @@ tasks:
   Keywords are additive-extensible via `pbatch/task_keywords.yaml`; platform
   mention (tsx/dart/flutter/vue/react-native) boosts the frontend decision;
   explicit `--pipeline` always wins; missing pipeline file fails loudly.
+- **Rule matcher** (`pi-batch rules`): the spec system is large, so a small demo
+  must not load all of it. `pbatch/rule_matcher.py` + `ui-specs/rules.yaml`
+  algorithmically select the applicable rules along three axes — scale
+  (demo < standard < production, default standard), page type (form/table/
+  detail/workbench/immersive/auth) and risk (high-risk pay/approve/delete
+  flows force error-recovery + defect-patterns). Output is a bounded manifest
+  (paths + why + skipped reasons); prompts inject ONLY the manifest and agents
+  load files on demand (progressive disclosure). Hybrid selection: the
+  deterministic algorithm is the hard filter (cheap, reproducible, cannot skip
+  safety rules), the classify-stage LLM stays inside the emitted candidate set.
 - **UI generation gates**: `uispacing`/`uicolor`/`uistyle` validators
   (`scripts/check-ui-spec.py`, pure stdlib) mechanically reject magic spacing
   values outside the 8pt token set, hardcoded colors and inline styles —

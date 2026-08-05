@@ -29,8 +29,11 @@ stages:
       output a JSON block with exactly: product_type (erp/cms/oa/dashboard/
       immersive/marketing/mobile/generic), page_type (list/detail/form/
       workbench/wizard/editor/landing), platform (tsx/dart/vue), density
-      (compact/standard/comfortable), motion_level (0-3), primary_user,
-      primary_task, risk_level (low/medium/high). Do not write code.
+      (compact/standard/comfortable), motion_level (0-3), scale
+      (demo/standard/production — production only for real enterprise/
+      go-live usage, demo for prototypes/examples), risk (low/medium/high
+      — high for pay/approve/delete/submit flows), primary_user,
+      primary_task. Do not write code.
     output: docs/ui/classify.md
     mode: serial
 
@@ -46,7 +49,19 @@ stages:
           UI spec assets: ui-specs/spacing.md, ui-specs/component-spec.md,
           ui-specs/layout-patterns.md, ui-specs/anti-patterns.md (and the
           matching ui-specs/business-profiles/<product_type>.md if one
-          exists). Generate the complete page in the classified platform
+          exists).
+
+          FIRST run the deterministic rule matcher and apply ONLY its
+          manifest (scale × page_type × risk decides the rule set — a demo
+          task loads only the visual core, a production task also loads the
+          engineering specs):
+            pi-batch rules "<original task>"
+          Load the listed files; do not load unrelated specs. For
+          standard/production tasks this includes ui-specs/engineering/
+          (async-data decision tables, form-table-state, error-recovery,
+          defect-patterns).
+
+          Generate the complete page in the classified platform
           (TSX or Dart).
 
           Hard rules:

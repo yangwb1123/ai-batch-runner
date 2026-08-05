@@ -1,0 +1,76 @@
+# Rule registry: which ui-spec files apply to which task.
+#
+# The deterministic half of rule selection (pbatch/rule_matcher.py):
+# a task is classified along three axes — scale (demo/standard/production),
+# page type (form/table/detail/workbench/immersive/auth) and risk
+# (high-risk business actions) — and the matcher emits a bounded rule
+# manifest. Prompts inject ONLY the manifest (paths + why); the agent
+# loads the listed files on demand, like the memory manifest pattern.
+#
+# Tiers (demo < standard < production):
+#   demo       - small demos/prototypes: visual core only
+#   standard   - normal pages: + async/form/error/defect rules
+#   production - enterprise/go-live: + architecture/observability budgets
+# Default tier is standard; demos must be marked (demo/示例/原型...).
+
+scale:
+  demo: [demo, 示例, 演示, 原型, prototype, playground, 练习, 小demo, test page]
+  production: [生产, 上线, 正式, 企业, production, enterprise, prod, 公司]
+
+page_types:
+  form: [form, 表单, 新建, 编辑页, 提交页]
+  table: [table, 表格, 列表, 分页, 批量, 查询页]
+  detail: [detail, 详情]
+  workbench: [workbench, 工作台, dashboard, 仪表盘, 看板]
+  immersive: [特效, 3d, 沉浸, 动画, 落地页, landing, 官网, 营销]
+  auth: [登录, login, 注册, register]
+
+risk:
+  high: [支付, 审批, 删除, 提交, 作废, 转账, 订单, 采购, 退款,
+         payment, approve, delete, submit, transfer, refund]
+
+rules:
+  visual-core:
+    description: 8pt 间距 token 与反例清单（任何前端任务必读）
+    files: [ui-specs/spacing.md, ui-specs/anti-patterns.md]
+    min_tier: demo
+    required: true
+  component-spec:
+    description: 组件尺寸/状态/行为规范
+    files: [ui-specs/component-spec.md]
+    min_tier: demo
+  layout-patterns:
+    description: 页面骨架模板（列表/详情/表单/工作台）
+    files: [ui-specs/layout-patterns.md]
+    min_tier: demo
+    page_types: [form, table, detail, workbench]
+  business-profile:
+    description: 业务风格配置（密度/动效/布局偏好）
+    files_template: ui-specs/business-profiles/{profile}.md
+    min_tier: demo
+    profiles: [erp, cms, oa, dashboard, immersive, marketing, mobile]
+  async-data:
+    description: 防抖/节流决策表、竞态、幂等、重试矩阵
+    files: [ui-specs/engineering/async-data.md]
+    min_tier: standard
+  form-table-state:
+    description: 表单字段策略、表格选择/分页一致性、状态放置
+    files: [ui-specs/engineering/form-table-state.md]
+    min_tier: standard
+    page_types: [form, table]
+  error-recovery:
+    description: 错误分类→用户动作、409 冲突、超时 uncertain、降级
+    files: [ui-specs/engineering/error-recovery.md]
+    min_tier: standard
+    risk: [high]
+    required_when_risk: true
+  defect-patterns:
+    description: 12 种缺陷模式档案（竞态/重复提交/泄漏/脏数据...）
+    files: [ui-specs/engineering/defect-patterns.md]
+    min_tier: standard
+    risk: [high]
+    required_when_risk: true
+  architecture-budgets:
+    description: 依赖方向、上帝文件、复杂度预算、shared 准入
+    files: [ui-specs/engineering/architecture-budgets.md]
+    min_tier: production
