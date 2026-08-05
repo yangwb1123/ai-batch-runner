@@ -1,0 +1,26 @@
+id: GATE-DART-ADAPT-001
+title: 'Dart 前端检查器误报：EdgeInsets.only 被当测试 .only、html: 命名参数被当不安全 HTML、Flutter 嵌套阈值过严'
+category: frontend
+severity: warning
+scope:
+  languages: []
+  paths:
+  - src/**
+trigger:
+  operations: []
+rationale: 'Observed failure: Dart 前端检查器误报：EdgeInsets.only 被当测试 .only、html: 命名参数被当不安全
+  HTML、Flutter 嵌套阈值过严. Root-cause analysis is required before this draft can be promoted
+  (edit requirements/forbidden/verification with the actual RCA).'
+requirements: []
+forbidden: []
+exceptions:
+- condition: ''
+verification:
+  static: []
+  tests: []
+examples:
+  good: []
+  bad: []
+owner: ai-batch-runner
+version: 0.1.0
+status: draft

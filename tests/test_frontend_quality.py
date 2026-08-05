@@ -152,3 +152,26 @@ def test_assertion_less_test_warning(tmp_path):
     good.write_text("it('adds', () => { expect(add(1,2)).toBe(3); });\n",
                     encoding="utf-8")
     assert _run("--strict", str(good)).returncode == 0
+
+
+def test_dart_edgeinsets_only_not_test_only(tmp_path):
+    dart = tmp_path / "x.dart"
+    dart.write_text("padding: EdgeInsets.only(bottom: 12),\n", encoding="utf-8")
+    assert _run("--strict", str(dart)).returncode == 0
+    ts = tmp_path / "y.test.ts"
+    ts.write_text("it.only('x', () => {});\n", encoding="utf-8")
+    assert _run(str(ts)).returncode == 1
+
+
+def test_dart_html_named_param_not_unsafe(tmp_path):
+    dart = tmp_path / "api.dart"
+    dart.write_text("html: resp.body,\n", encoding="utf-8")
+    assert _run("--strict", str(dart)).returncode == 0
+
+
+def test_flutter_nesting_threshold_relaxed(tmp_path):
+    deep = tmp_path / "widget.dart"
+    deep.write_text("if (a) {\n  if (b) {\n    if (c) {\n      if (d) {\n"
+                    "        if (e) {\n          return x;\n        }\n"
+                    "      }\n    }\n  }\n}\n", encoding="utf-8")
+    assert _run("--strict", str(deep)).returncode == 0  # depth 5 < dart limit 8

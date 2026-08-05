@@ -52,9 +52,10 @@ MAX_TODOS = 10
 _ANY_RE = re.compile(r"(:|as)\s+any\b|\bany\[\]")
 _CONSOLE_RE = re.compile(r"\bconsole\.(log|debug)\s*\(")
 _DEBUGGER_RE = re.compile(r"\bdebugger\s*;?")
-_SKIP_RE = re.compile(r"\.(skip|only)\s*\(")
+# Dart's EdgeInsets.only() is a legit API, not a test .only — exclude it.
+_SKIP_RE = re.compile(r"\.skip\s*\(|(?<!EdgeInsets)\.only\s*\(")
 _DISABLE_RE = re.compile(r"(eslint-disable|@ts-ignore|@ts-nocheck|ignore_for_file)")
-_HTML_RE = re.compile(r"(dangerouslySetInnerHTML|v-html|innerHTML\s*=|html:)\s*[^)]")
+_HTML_RE = re.compile(r"(dangerouslySetInnerHTML|v-html|innerHTML\s*=)\s*[^)]")
 _SWALLOWED_RE = re.compile(r"catch\s*\([^)]*\)\s*\{\s*\}")
 _HOOK_RE = re.compile(r"\buse(State|Effect|Ref|Memo|Callback|Reducer|Context|Query|Mutation)\s*\(")
 _HANDLER_RE = re.compile(r"(onClick|onChange|onPress|onSubmit|@click|@change|onPressed|onTap)\s*[=:]")
@@ -88,6 +89,12 @@ def _nesting_depth(lines: list) -> int:
             indent = len(line) - len(line.lstrip())
             depth = max(depth, indent // 2)
     return depth
+
+
+def _max_nesting(rel: str) -> int:
+    """Flutter widget trees nest structurally deep — relax the threshold
+    for .dart so only real control-flow complexity is flagged."""
+    return 8 if rel.endswith(".dart") else MAX_NESTING
 
 
 def _effect_leak_warnings(text: str, rel: str) -> list:
@@ -159,8 +166,9 @@ def check_text(text: str, path: Path, strict: bool) -> list:
     if decisions > MAX_DECISIONS:
         add("warning", f"{decisions} decision points > {MAX_DECISIONS}")
     depth = _nesting_depth(lines)
-    if depth > MAX_NESTING:
-        add("warning", f"nesting depth {depth} > {MAX_NESTING}")
+    limit = _max_nesting(rel)
+    if depth > limit:
+        add("warning", f"nesting depth {depth} > {limit}")
     todos = len(_TODO_RE.findall(text))
     if todos > MAX_TODOS:
         add("warning", f"{todos} TODO/FIXME markers > {MAX_TODOS}")
