@@ -59,6 +59,20 @@ task_types:
     - 服务端
     - 数据库
     - 表结构
+    - 微服务
+    - 分布式
+    - 领域模型
+    - 实体
+    - 聚合
+    - 事务
+    - 消息队列
+    - 对账
+    - 库存
+    - 工作流
+    - domain
+    - entity
+    - workflow
+    - transaction
   # Data engineering / reporting.
   data:
     - sql

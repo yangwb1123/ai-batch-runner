@@ -286,3 +286,16 @@ design_pattern_reviewer:
   - 适配器
   - 接口
   - 过度设计
+algorithm_reviewer:
+  - algorithm
+  - complexity
+  - data structure
+  - performance
+  - n+1
+  - top k
+  - 算法
+  - 复杂度
+  - 数据结构
+  - 性能
+  - 数据规模
+  - 布隆

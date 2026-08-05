@@ -232,8 +232,23 @@ tasks:
   stance: every pattern is guilty until it proves it solves a real problem).
   `backendquality` validator mechanically enforces over-engineering signals
   (single-implementation interfaces, Base classes, fuzzy names), god-service
-  signals, scattered status assignment, and domain→infrastructure imports;
+  signals, scattered status assignment, domain→infrastructure imports, and
+  complexity signals (N+1 loops, full-sort Top K, O(n) shift queues);
   `examples/backend-engineering-review.yaml` runs the audit loop.
+- **Computer science base** (`backend-specs/oop-and-di.md`, `ddd.md`,
+  `algorithms-data-structures.md`, `complexity-and-scale.md`): the backend
+  agent must judge object-vs-function, encapsulation (business-semantic
+  methods, never setter soup), IoC/DI lifecycle (constructor injection, no
+  Service Locator), AOP boundaries (never hide inventory/state/payment rules
+  in aspects), DDD with usage LEVELS (L0 transaction script → L3 full DDD,
+  never default full DDD), the data structure decision table (Map for key
+  lookups, Heap for Top K, Bloom Filter only for false-positive-tolerant
+  prefiltering), BFS/DFS choice, five cost classes (CPU/memory/database/
+  network/distributed coordination), and ×10/×100 scale reasoning. The
+  `algorithms` rule triggers only on search/sort/graph/schedule/cache/range
+  tasks; `ddd`/`complexity-scale` are production-tier. Roles include
+  `algorithm_reviewer` (default stance: every hot path is guilty of O(n²)/
+  N+1/scale blindness until proven otherwise).
 - **Requirement assessment** (`pi-batch assess`): rules are prescribed by an
   expert evaluation of the REQUIREMENT, not by keyword hits. Eight
   completeness dimensions are checked (goal/user role/main flow/data source/

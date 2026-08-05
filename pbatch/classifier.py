@@ -46,6 +46,9 @@ _DEFAULT_KEYWORDS: dict = {
         "backend": [
             "api", "server", "endpoint", "database", "schema", "service",
             "后端", "接口", "服务端", "数据库", "表结构",
+            "微服务", "分布式", "领域模型", "实体", "聚合", "事务",
+            "消息队列", "对账", "库存", "工作流",
+            "domain", "entity", "workflow", "transaction",
         ],
         "data": ["sql", "etl", "数据管道", "报表", "指标", "数据仓库"],
         "docs": ["documentation", "spec", "readme", "文档", "需求", "规范", "说明", "手册"],

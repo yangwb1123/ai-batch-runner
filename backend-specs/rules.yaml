@@ -33,6 +33,13 @@ use_case_types:
   workflow: [审批, 状态机, 流程, 工单, 订单流转, 状态流转]
   integration: [支付, 消息, 对接, 集成, webhook, 回调]
   query: [报表, 统计, 查询, 只读, 分析]
+  # Algorithm-triggering scenarios (drive the algorithms rule).
+  search: [搜索, 查找, 检索, 模糊查询, search, lookup]
+  sort: [排序, 排行, top k, topk, rank, sort]
+  graph: [图, 树, 层级, 依赖, 路径, 递归展开, graph, tree, dependency]
+  schedule: [排程, 调度, 优先级, 任务队列, schedule, priority]
+  cache: [缓存, 限流, 去重, 布隆, 倒排, cache, dedupe, bloom, inverted index]
+  range: [区间, 范围查询, 时间段, range, interval]
 
 risk:
   high: [支付, 资金, 订单, 审批, 幂等, 对账, 退款, 转账, 库存,
@@ -57,4 +64,21 @@ rules:
   evolution:
     description: 重构触发条件、渐进迁移、ADR、技术债、架构审查清单
     files: [backend-specs/evolution.md]
+    min_tier: production
+  oop-di:
+    description: 对象vs函数、封装/抽象/继承/多态、IoC/DI 生命周期、AOP 边界
+    files: [backend-specs/oop-and-di.md]
+    min_tier: standard
+  ddd:
+    description: 战略（统一语言/限界上下文/防腐层）+ 战术（实体/值对象/聚合）+ 分级使用
+    files: [backend-specs/ddd.md]
+    min_tier: production
+  algorithms:
+    description: 数据结构决策表、BFS/DFS、排序、Bloom Filter、复杂度五类成本
+    files: [backend-specs/algorithms-data-structures.md]
+    min_tier: standard
+    page_types: [search, sort, graph, schedule, cache, range]
+  complexity-scale:
+    description: 数据规模×10/×100 推理、内存/DB/网络成本、优化顺序、基准测试
+    files: [backend-specs/complexity-and-scale.md]
     min_tier: production

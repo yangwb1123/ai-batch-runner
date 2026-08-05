@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 from pbatch.rule_matcher import domain_for, load_registry, match_rules
 
@@ -121,3 +122,69 @@ def test_backend_spec_files_exist():
     for file in ("architecture.md", "design-patterns.md",
                  "domain-modeling.md", "evolution.md", "rules.yaml"):
         assert (__import__("pathlib").Path("backend-specs") / file).exists()
+
+
+def test_algorithms_rule_triggered_by_scenario():
+    matched = match_rules("写一个商品搜索接口，Top K 排行，用 go 实现")
+    ids = [item["id"] for item in matched["rules"]]
+    assert "algorithms" in ids
+
+
+def test_algorithms_rule_not_triggered_by_plain_crud():
+    matched = match_rules("做一个客户管理的 CRUD 接口")
+    ids = [item["id"] for item in matched["rules"]]
+    assert "algorithms" not in ids
+
+
+def test_ddd_and_complexity_only_at_production_tier():
+    matched = match_rules("企业订单域：多实体复杂流程，微服务生产环境，含支付审批")
+    ids = [item["id"] for item in matched["rules"]]
+    assert matched["tier"] == "production"
+    assert {"ddd", "complexity-scale", "evolution"} <= set(ids)
+    small = match_rules("写一个订单接口")
+    small_ids = [item["id"] for item in small["rules"]]
+    assert "ddd" not in small_ids
+
+
+def test_oop_di_rule_at_standard_tier():
+    matched = match_rules("写一个订单创建接口")
+    ids = [item["id"] for item in matched["rules"]]
+    assert "oop-di" in ids
+
+
+def test_backend_classifier_business_terms():
+    from pbatch.classifier import classify_text
+    assert classify_text("企业订单域：多实体复杂流程，微服务生产环境").task_type == "backend"
+    assert classify_text("做一个订单支付页面").task_type == "frontend_ui"
+
+
+def test_checker_n_plus_one_warning(tmp_path):
+    bad = tmp_path / "svc.ts"
+    bad.write_text(
+        "for (const order of orders) {\n"
+        "  const customer = await customerRepo.findById(order.customerId);\n"
+        "}\n", encoding="utf-8")
+    assert _run(str(bad)).returncode == 0  # warnings under strict only
+    strict = _run(str(bad), "--strict")
+    assert strict.returncode == 1
+    assert "N+1 I/O risk" in strict.stderr
+
+
+def test_checker_full_sort_topk_warning(tmp_path):
+    bad = tmp_path / "rank.ts"
+    bad.write_text("const top = rows.sort((a, b) => b.score - a.score).slice(0, 10);\n",
+                   encoding="utf-8")
+    strict = _run(str(bad), "--strict")
+    assert strict.returncode == 1
+    assert "Top K should use a heap" in strict.stderr
+
+
+def test_backend_spec_registry_integrity():
+    import yaml
+    data = yaml.safe_load(Path("backend-specs/rules.yaml").read_text(encoding="utf-8"))
+    missing = []
+    for rule_id, rule in data["rules"].items():
+        for file in rule.get("files", []):
+            if not Path(file).exists():
+                missing.append(f"{rule_id}: {file}")
+    assert not missing, missing

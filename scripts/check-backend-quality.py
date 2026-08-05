@@ -108,6 +108,28 @@ def _single_implementation_interfaces(text: str) -> list:
     return flagged
 
 
+def _algorithm_warnings(text: str, rel: str) -> list:
+    """Strict-mode complexity signals: N+1 loops, O(n) shift queues,
+    full-sort Top K, nested linear searches."""
+    findings = []
+    for match in re.finditer(r"\bfor\s*\(", text):
+        window = text[match.end():match.end() + 400]
+        if re.search(r"\bawait\s+\w+", window) and not re.search(r"Promise\.all", window):
+            findings.append(("warning", f"{rel}: await inside loop near char {match.start()} "
+                                        f"(N+1 I/O risk — batch/JOIN/Promise.all)"))
+            break
+    if re.search(r"\.shift\(\)", text):
+        findings.append(("warning", f"{rel}: array.shift() is O(n) — "
+                                    f"use a deque/head index for queues"))
+    if re.search(r"\.sort\([\s\S]{1,150}?\)\s*\.slice\(0,", text):
+        findings.append(("warning", f"{rel}: full sort then slice — "
+                                    f"Top K should use a heap (O(n log k))"))
+    if re.search(r"\bfor\s*\([^)]*\)[^{]*\{[^{}]*\bfor\s*\(", text):
+        findings.append(("warning", f"{rel}: nested loops with inner linear "
+                                    f"search risk (O(n²) — preload a Map)"))
+    return findings
+
+
 def _warning_findings(lines: list, rel: str, text: str, metrics: dict) -> list:
     """Strict-mode warnings: god-file/god-service signals, fuzzy names,
     over-abstraction candidates, scattered transactions."""
@@ -131,6 +153,7 @@ def _warning_findings(lines: list, rel: str, text: str, metrics: dict) -> list:
     todos = len(_TODO_RE.findall(text))
     if todos > MAX_TODOS:
         findings.append(("warning", f"{rel}: {todos} TODO/FIXME markers > {MAX_TODOS}"))
+    findings.extend(_algorithm_warnings(text, rel))
     return findings
 
 
