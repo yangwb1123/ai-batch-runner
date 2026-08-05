@@ -240,7 +240,7 @@ def _run_configured(args, lock_path) -> None:
 
 
 def _dispatch_subcommand() -> bool:
-    if len(sys.argv) <= 1 or sys.argv[1] not in ("memory", "campaign", "classify", "rules"):
+    if len(sys.argv) <= 1 or sys.argv[1] not in ("memory", "campaign", "classify", "rules", "assess"):
         return False
     if sys.argv[1] == "memory":
         from .memory import main as subcommand
@@ -248,6 +248,8 @@ def _dispatch_subcommand() -> bool:
         from .classifier import classify_main as subcommand
     elif sys.argv[1] == "rules":
         from .rule_matcher import rules_main as subcommand
+    elif sys.argv[1] == "assess":
+        from .assessor import assess_main as subcommand
     else:
         from .campaign import main as subcommand
     subcommand(sys.argv[2:])

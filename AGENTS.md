@@ -26,6 +26,7 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `pbatch/relevance.py` | meta 角色关键词评分、命中证据、去重与运行时数量上限 |
 | `pbatch/classifier.py` / `task_keywords.yaml` | 任务类型判断器：执行前双语关键词判定，前端任务自动路由到 UI 生成流水线（`--classify` / `classify` 子命令，零 LLM 成本） |
 | `pbatch/rule_matcher.py` / `ui-specs/rules.yaml` | 规则匹配器：按 scale（demo/standard/production）× page_type × risk 三轴算法式筛选适用规范；**双向校验**——算法 manifest 与 LLM 独立选择对比裁决（`rules --summary/--llm-json/--llm-prompt`），必选规则不可被 LLM 跳过（fail closed） |
+| `pbatch/assessor.py` | 需求评估器（`assess` 子命令）：资深经验式评审——8 维需求完整性检查、规模信号（S/M/L）克制处方（"企业登录页"不会全量上规则）、缺失维度建议、刻意未选用清单 |
 | `ui-specs/` | AI UI 生成规范资产：8pt 间距 token、组件/布局/反例规范、业务风格 profile（ERP/CMS/OA…） |
 | `scripts/check-ui-spec.py` | 确定性 UI 门禁（纯标准库）：魔法间距/硬编码颜色/inline style 机械拦截（`uispacing`/`uicolor`/`uistyle` 产物验证器）；`--dir` 项目级扫描（`uicheck` 门禁，gofmt -l 风格，JSON 报告） |
 | `scripts/check-frontend-quality.py` | 前端工程门禁（纯标准库启发式）：console.log/any/不安全 html/测试 skip 恒失败，`--strict` 下上帝文件/复杂度预算失败（`uiquality` 验证器）；需推理的交给工程审查角色 |
@@ -356,6 +357,13 @@ python pi-batch.py examples/meta-review-pipeline.yaml
 # 任务类型判断：执行前判定是否前端任务（前端→自动路由 UI 生成流水线）
 python pi-batch.py classify "用 Flutter 实现 ERP 排程列表页"
 python pi-batch.py classify tasks.yaml --json
+# 需求评估：像资深评审一样先评估需求，再开克制的最小处方
+pi-batch.py assess "企业订单管理：新建订单表单，含支付审批流程"
+pi-batch.py assess "企业登录页面"   # 一句话需求 → 处方档降为 demo，只给 2 条
+# 评估内容：8 维完整性检查（缺失维度给建议）/ 规模信号 S/M/L /
+# 处方档 = min(关键词档, 规模档) / 刻意未选用清单（克制原则）/ 双向校验
+pi-batch.py assess "..." --json
+pi-batch.py assess "..." --llm-json '{"apply":[],"skip":[]}'
 # 规则匹配：算法式筛选适用规范（小 demo 只加载视觉核心，生产级自动加全套）
 pi-batch.py rules "生成一个登录页 demo"
 pi-batch.py rules "企业订单+支付审批，生产" --json

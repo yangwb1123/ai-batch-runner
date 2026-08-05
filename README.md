@@ -216,6 +216,16 @@ tasks:
   flows force error-recovery + defect-patterns). Output is a bounded manifest
   (paths + why + skipped reasons); prompts inject ONLY the manifest and agents
   load files on demand (progressive disclosure).
+- **Requirement assessment** (`pi-batch assess`): rules are prescribed by an
+  expert evaluation of the REQUIREMENT, not by keyword hits. Eight
+  completeness dimensions are checked (goal/user role/main flow/data source/
+  permission/error path/acceptance/tech stack) with per-missing suggestions;
+  a scale signal (S/M/L) counts real forms/tables/flows/modules and caps the
+  effective prescription tier below the keyword-matched tier — "企业登录页"
+  stays demo-tier with 2 rules even though the prompt says 企业. The report
+  lists the prescription, an explicit "deliberately not selected" list with
+  reasons (restraint), and requirement gaps to fill. `--llm-json` runs the
+  two-sided check on top (REQUIRED rules veto-protected).
 - **Two-sided rule check** (`rules --summary/--llm-json/--llm-prompt`): the
   algorithm compresses the requirement text (salient classification axes +
   business terms + bounded original tail) into the LLM's input; the LLM
