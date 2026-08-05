@@ -303,6 +303,14 @@ tasks:
   client reuse, the retry matrix (bounded budget, never blind retries of
   non-idempotent writes), streaming with backpressure. `testing_reviewer`
   role audits risk coverage and verification honesty.
+- **Backend implementation pipeline + full classifier routing**: `--classify`
+  now routes frontend tasks to `examples/ui-generation-pipeline.yaml` AND
+  backend tasks to `examples/backend-implementation-pipeline.yaml`
+  (`classifier.backend_pipeline`) — plan stage runs `pi-batch assess` and
+  mandates the Persistence Design report before any code, the implement
+  stage is double-gated (`backendquality` + `completion`), followed by
+  meta adversarial review and a VERDICT gate. `check-frontend-quality`
+  gained useEffect listener/timer cleanup detection.
 - **Context routing & rule-system evals** (`pbatch/context.py`,
   `pbatch/eval.py`): `pi-batch context "<task>" --paths src/order/**` loads
   only the project documents a task needs (ADRs/contracts/security
