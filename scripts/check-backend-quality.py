@@ -136,7 +136,10 @@ def _test_warnings(text: str, rel: str) -> list:
     is_test = ".test." in rel or rel.endswith(("_test.go", "_test.py", "_test.ts", "_spec.ts"))
     if not is_test:
         return []
-    if not re.search(r"\b(expect|assert|assertThat|should\.|t\.Error|t\.Fatal|assertion)\b", text):
+    has_assertion = (re.search(r"\b(expect|assert|assertThat|should\.|t\.Error|t\.Fatal|assertion)\b", text)
+                     or bool(re.search(r"test\(['\"]", text) and re.search(r"lambda\s*:", text))
+                     or bool(re.search(r"\bcheck\(\s*['\"]", text)))  # custom check(label, cond) style
+    if not has_assertion:
         return [("warning", f"{rel}: test file without assertions "
                             f"(renders/exists checks do not prove behavior)")]
     return []
@@ -254,7 +257,12 @@ def check_text(text: str, path: Path, strict: bool) -> list:
     def add(severity, message):
         findings.append((severity, f"{rel}: {message}"))
 
-    for pattern, label in _ERROR_PATTERNS:
+    error_patterns = _ERROR_PATTERNS
+    if rel.endswith(".py"):
+        # TS `any` doesn't exist in Python; `lambda: any(...)` uses the
+        # builtin function and must not be flagged as a type annotation.
+        error_patterns = [p for p in _ERROR_PATTERNS if p[1] != "TS any usage"]
+    for pattern, label in error_patterns:
         for match in pattern.finditer(text):
             add("error", f"{label}: {match.group(0).strip()[:60]}")
 
