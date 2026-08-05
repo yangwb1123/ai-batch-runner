@@ -40,6 +40,7 @@ DEFAULT_EXCLUDES = {
     "node_modules", "dist", "build", "out", ".git", ".venv", "venv",
     "coverage", ".pi-batch", "logs", "docs", "__pycache__", "vendor",
     "target", "generated", "migrations",
+    ".dart_tool", ".next", ".nuxt",  # frontend build artifacts in hybrid repos
 }
 
 MAX_FILE_LINES = 400

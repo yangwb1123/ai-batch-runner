@@ -66,7 +66,7 @@ DEFAULT_EXTS = (".tsx", ".jsx", ".ts", ".js", ".dart", ".vue")
 DEFAULT_EXCLUDES = {
     "node_modules", "dist", "build", "out", ".git", ".dart_tool",
     ".next", ".nuxt", "coverage", ".pi-batch", ".venv", "venv",
-    "logs", "docs", "__pycache__",
+    "logs", "docs", "__pycache__", "test", "tests", "spec", "e2e",
 }
 
 
