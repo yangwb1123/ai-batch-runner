@@ -35,6 +35,13 @@ from .text_io import read_text_bounded
 TIER_ORDER = {"demo": 0, "standard": 1, "production": 2}
 DEFAULT_TIER = "standard"
 
+# Domain -> registry location (selected by the classified task type).
+DOMAIN_REGISTRIES = {
+    "backend": ["backend-specs/rules.yaml"],
+    "frontend_ui": ["ui-specs/rules.yaml"],
+}
+DEFAULT_DOMAIN = "frontend_ui"
+
 _DEFAULT_REGISTRY = {
     "scale": {
         "demo": ["demo", "示例", "演示", "原型", "prototype", "小demo"],
@@ -49,6 +56,9 @@ _DEFAULT_REGISTRY = {
         "auth": ["登录", "注册", "login", "register"],
     },
     "risk": {"high": ["支付", "审批", "删除", "提交", "作废", "订单", "payment", "approve", "delete"]},
+    "signals": {},
+    "signal_weights": {},
+    "use_case_types": {},
     "rules": {
         "visual-core": {"files": ["ui-specs/spacing.md", "ui-specs/anti-patterns.md"],
                         "min_tier": "demo", "required": True,
@@ -61,17 +71,32 @@ _DEFAULT_REGISTRY = {
 }
 
 
-def _default_registry_paths() -> list:
-    return [Path(__file__).resolve().parent.parent / "ui-specs" / "rules.yaml",
-            Path("ui-specs/rules.yaml")]
+def domain_for(text: str, classification: Optional[TaskClassification] = None) -> str:
+    """Which spec domain a task belongs to (backend vs frontend)."""
+    cls = classification or classify_text(text)
+    if cls.task_type == "backend":
+        return "backend"
+    return DEFAULT_DOMAIN
 
 
-def load_registry(path: str = "") -> dict:
-    """Load ui-specs/rules.yaml; YAML sections extend the built-in defaults."""
+def _default_registry_paths(domain: str) -> list:
+    rels = DOMAIN_REGISTRIES.get(domain, DOMAIN_REGISTRIES[DEFAULT_DOMAIN])
+    return ([Path(__file__).resolve().parent.parent / rel for rel in rels]
+            + [Path(rel) for rel in rels])
+
+
+def load_registry(path: str = "", domain: str = "") -> dict:
+    """Load the rule registry for a domain (default: frontend). YAML
+    sections extend the built-in defaults; a missing backend registry
+    degrades to an empty rule set (fail closed, never the frontend rules)."""
     merged = {section: dict(value) for section, value in _DEFAULT_REGISTRY.items()}
+    if domain == "backend":
+        merged = {"scale": {}, "signals": {}, "signal_weights": {},
+                  "page_types": {}, "use_case_types": {},
+                  "risk": {}, "rules": {}}
     if not yaml:
         return merged
-    candidates = [Path(path)] if path else _default_registry_paths()
+    candidates = [Path(path)] if path else _default_registry_paths(domain or DEFAULT_DOMAIN)
     for candidate in candidates:
         try:
             data = yaml.safe_load(read_text_bounded(
@@ -82,8 +107,7 @@ def load_registry(path: str = "") -> dict:
             continue
         for section, value in data.items():
             if section in merged and isinstance(value, dict):
-                merged[section].update({str(k): v for k, v in value.items()
-                                        if isinstance(v, (dict, list))})
+                merged[section].update({str(k): v for k, v in value.items()})
     return merged
 
 
@@ -125,25 +149,30 @@ def _rule_skip_reason(rule: dict, tier_rank: int, page_types: list,
 
 def match_rules(text: str, classification: Optional[TaskClassification] = None,
                 registry: Optional[dict] = None) -> dict:
-    """Deterministic rule manifest for a task text.
+    """Deterministic rule manifest for a task text (domain-aware: the
+    registry is picked by the classified task type — backend tasks get the
+    backend-specs registry, everything else the ui-specs registry).
 
     Returns {tier, page_types, risk, rules: [{id, tier, evidence, files,
     description, required}], skipped: [{id, reason}]}.
     """
-    reg = registry or load_registry()
+    cls = classification or classify_text(text)
+    if registry is None:
+        registry = load_registry(domain=domain_for(text, cls))
     lowered = (text or "").lower()
-    tier, tier_evidence = detect_scale(text, reg)
-    page_hits = _best_hits(lowered, reg.get("page_types", {}), lowered)
-    risk_hits = _best_hits(lowered, reg.get("risk", {}), lowered)
+    tier, tier_evidence = detect_scale(text, registry)
+    # Backend registries declare use_case_types instead of page_types.
+    case_section = registry.get("use_case_types") or registry.get("page_types", {})
+    page_hits = _best_hits(lowered, case_section, lowered)
+    risk_hits = _best_hits(lowered, registry.get("risk", {}), lowered)
     page_types = [name for name, _ in page_hits]
     high_risk = bool(risk_hits)
     tier_rank = TIER_ORDER.get(tier, TIER_ORDER[DEFAULT_TIER])
 
-    classification = classification or classify_text(text)
-    profile = getattr(classification, "profile", "") or ""
+    profile = getattr(cls, "profile", "") or ""
 
     rules, skipped = [], []
-    for rule_id, rule in reg.get("rules", {}).items():
+    for rule_id, rule in registry.get("rules", {}).items():
         reason = _rule_skip_reason(rule, tier_rank, page_types, high_risk, profile)
         if reason:
             skipped.append({"id": rule_id, "reason": reason})
@@ -197,7 +226,7 @@ def summarize_task(text: str, registry: Optional[dict] = None,
     """Deterministic requirement compression: the salient classification
     axes, business terms, and a bounded tail of the original text — the
     input the LLM side of the two-sided rule check reads."""
-    reg = registry or load_registry()
+    reg = registry or load_registry(domain=domain_for(text))
     matched = match_rules(text, registry=reg)
     cls = classify_text(text)
     lines = [
@@ -220,7 +249,7 @@ def summarize_task(text: str, registry: Optional[dict] = None,
 def format_llm_prompt(text: str, registry: Optional[dict] = None) -> str:
     """The prompt for the LLM side of the check: compressed requirement +
     the algorithm manifest + a strict JSON output contract."""
-    reg = registry or load_registry()
+    reg = registry or load_registry(domain=domain_for(text))
     matched = match_rules(text, registry=reg)
     return (
         "You are the rule selector. Read the COMPRESSED requirement and the "
@@ -342,7 +371,7 @@ def rules_main(argv: list) -> None:
     parser.add_argument("--registry", default="", help="rule registry YAML override")
     args = parser.parse_args(argv)
     text = " ".join(args.task)
-    registry = load_registry(args.registry)
+    registry = load_registry(args.registry) if args.registry else None
     if args.summary:
         print(summarize_task(text, registry))
         return

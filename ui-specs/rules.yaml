@@ -17,6 +17,20 @@ scale:
   demo: [demo, 示例, 演示, 原型, prototype, playground, 练习, 小demo, test page]
   production: [生产, 上线, 正式, 企业, production, enterprise, prod, 公司]
 
+# Requirement complexity signals (assessor scale_signal): what counts as
+# real frontend complexity.
+signals:
+  form: [表单, 新建页, 编辑页, 填写, 提交页, form]
+  table: [表格, 列表, 分页, 批量, table, list]
+  flow: [审批流, 流程, 多步骤, 向导, 状态流转, workflow]
+  module: [工作台, 大屏, 多模块, 多角色, 多端, dashboard, portal]
+
+signal_weights:
+  form: 1
+  table: 1
+  flow: 2
+  module: 2
+
 page_types:
   form: [form, 表单, 新建, 编辑页, 提交页]
   table: [table, 表格, 列表, 分页, 批量, 查询页]

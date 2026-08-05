@@ -27,6 +27,8 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `pbatch/classifier.py` / `task_keywords.yaml` | 任务类型判断器：执行前双语关键词判定，前端任务自动路由到 UI 生成流水线（`--classify` / `classify` 子命令，零 LLM 成本） |
 | `pbatch/rule_matcher.py` / `ui-specs/rules.yaml` | 规则匹配器：按 scale（demo/standard/production）× page_type × risk 三轴算法式筛选适用规范；**双向校验**——算法 manifest 与 LLM 独立选择对比裁决（`rules --summary/--llm-json/--llm-prompt`），必选规则不可被 LLM 跳过（fail closed） |
 | `pbatch/assessor.py` | 需求评估器（`assess` 子命令）：资深经验式评审——8 维需求完整性检查、规模信号（S/M/L）克制处方（"企业登录页"不会全量上规则）、缺失维度建议、刻意未选用清单 |
+| `backend-specs/` | 后端规范资产（按 classify 的 backend 域自动选用）：architecture（模块组织/依赖方向/数据所有权）、design-patterns（模式决策表/过度设计红线/三次原则）、domain-modeling（状态机/不变量/事务边界）、evolution（重构触发/ADR/审查清单）+ `rules.yaml` 后端注册表 |
+| `scripts/check-backend-quality.py` | 后端工程门禁（纯 stdlib）：过度设计信号（单实现接口/Base 类/模糊命名）、上帝服务、状态直接赋值、domain→infra 反向依赖（`backendquality` 验证器） |
 | `ui-specs/` | AI UI 生成规范资产：8pt 间距 token、组件/布局/反例规范、业务风格 profile（ERP/CMS/OA…） |
 | `scripts/check-ui-spec.py` | 确定性 UI 门禁（纯标准库）：魔法间距/硬编码颜色/inline style 机械拦截（`uispacing`/`uicolor`/`uistyle` 产物验证器）；`--dir` 项目级扫描（`uicheck` 门禁，gofmt -l 风格，JSON 报告） |
 | `scripts/check-frontend-quality.py` | 前端工程门禁（纯标准库启发式）：console.log/any/不安全 html/测试 skip 恒失败，`--strict` 下上帝文件/复杂度预算失败（`uiquality` 验证器）；需推理的交给工程审查角色 |
@@ -360,6 +362,12 @@ python pi-batch.py classify tasks.yaml --json
 # 需求评估：像资深评审一样先评估需求，再开克制的最小处方
 pi-batch.py assess "企业订单管理：新建订单表单，含支付审批流程"
 pi-batch.py assess "企业登录页面"   # 一句话需求 → 处方档降为 demo，只给 2 条
+pi-batch.py assess "写一个订单创建接口，含支付审批，生产，go"  # 后端域自动选用 backend-specs
+# 后端架构/设计模式/领域建模/演进规范：backend-specs/（architecture、
+# design-patterns 决策表+过度设计红线、domain-modeling、evolution）
+# 门禁：backendquality（单实现接口/Base 类/状态散落/依赖方向）
+# 审查角色：backend_engineer、design_pattern_reviewer（默认假设每个模式有罪）
+# 审计流水线：pi-batch.py examples/backend-engineering-review.yaml
 # 评估内容：8 维完整性检查（缺失维度给建议）/ 规模信号 S/M/L /
 # 处方档 = min(关键词档, 规模档) / 刻意未选用清单（克制原则）/ 双向校验
 pi-batch.py assess "..." --json

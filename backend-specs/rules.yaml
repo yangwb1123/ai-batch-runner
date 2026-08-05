@@ -1,0 +1,60 @@
+# Rule registry: which backend-spec files apply to which task.
+#
+# Same contract as ui-specs/rules.yaml but for the backend domain
+# (pbatch/rule_matcher.py selects the registry by the classified task
+# type: frontend_ui -> ui-specs/rules.yaml, backend -> this file).
+#
+# Axes: scale (demo < standard < production), use-case type, risk.
+# The prescription tier is capped by the requirement scale signal
+# (pbatch/assessor.py reads `signals`/`signal_weights` from the registry).
+
+scale:
+  demo: [demo, 示例, 原型, prototype, playground, 练习, 小demo, crud, 简单接口]
+  production: [生产, 上线, 正式, 企业, 微服务, 分布式, production, enterprise,
+               高并发, 大规模]
+
+# Requirement complexity signals (assessor scale_signal): backend counts
+# use cases, entities, integrations and distribution needs.
+signals:
+  use_case: [用例, 流程, 下单, 结算, 审批, 取消, 退款, use case, workflow]
+  entity: [实体, 聚合, 领域模型, entity, aggregate, domain]
+  integration: [集成, 支付网关, 消息队列, 第三方, kafka, mq, webhook, 对接]
+  distribution: [微服务, 分布式, saga, 事件驱动, 多服务, event driven]
+
+signal_weights:
+  use_case: 1
+  entity: 1
+  integration: 2
+  distribution: 3
+
+# Use-case types (page_types analogue for backend tasks).
+use_case_types:
+  crud: [crud, 增删改查, 列表, 查询, 基础接口, 简单接口]
+  workflow: [审批, 状态机, 流程, 工单, 订单流转, 状态流转]
+  integration: [支付, 消息, 对接, 集成, webhook, 回调]
+  query: [报表, 统计, 查询, 只读, 分析]
+
+risk:
+  high: [支付, 资金, 订单, 审批, 幂等, 对账, 退款, 转账, 库存,
+         payment, money, idempotency, refund, approve]
+
+rules:
+  architecture:
+    description: 模块组织（业务能力优先）、依赖方向、数据所有权、组合优于继承
+    files: [backend-specs/architecture.md]
+    min_tier: demo
+    required: true
+  design-patterns:
+    description: 模式选择决策表、过度设计红线、三次原则
+    files: [backend-specs/design-patterns.md]
+    min_tier: standard
+  domain-modeling:
+    description: 领域对象保护状态、状态机集中定义、聚合与事务边界
+    files: [backend-specs/domain-modeling.md]
+    min_tier: standard
+    risk: [high]
+    required_when_risk: true
+  evolution:
+    description: 重构触发条件、渐进迁移、ADR、技术债、架构审查清单
+    files: [backend-specs/evolution.md]
+    min_tier: production

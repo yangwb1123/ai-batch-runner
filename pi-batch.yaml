@@ -111,6 +111,11 @@ validators:
   # (races, debounce policy, state placement) go to the engineering review
   # roles and ui-specs/engineering/defect-patterns.md.
   uiquality: "python {cwd}/scripts/check-frontend-quality.py --dir {cwd}/src --strict --json -o {cwd}/docs/ui/refactor/quality.json"
+  # Project-wide BACKEND engineering gate (gofmt -l style): over-engineering
+  # signals (single-implementation interfaces, Base classes, fuzzy names),
+  # god-service signals, scattered status assignment, domain->infra imports
+  # are mechanically enforced; pattern necessity goes to the review roles.
+  backendquality: "python {cwd}/scripts/check-backend-quality.py --dir {cwd}/src --strict --json -o {cwd}/docs/ui/refactor/backend-quality.json"
 
 # Task type classifier: runs BEFORE execution (--classify / `classify`
 # subcommand). Frontend UI tasks route to the UI generation pipeline, which

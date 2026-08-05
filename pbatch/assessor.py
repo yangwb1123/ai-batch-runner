@@ -35,8 +35,8 @@ from . import config
 from .classifier import classify_text
 from .config import log, yaml
 from .relevance import _keyword_hit
-from .rule_matcher import (TIER_ORDER, format_manifest, load_registry,
-                           match_rules, reconcile)
+from .rule_matcher import (TIER_ORDER, domain_for, format_manifest,
+                           load_registry, match_rules, reconcile)
 from .text_io import read_text_bounded
 
 # Requirement completeness dimensions (bilingual presence keywords).
@@ -67,13 +67,6 @@ DIMENSIONS = [
       "antd", "技术栈", "框架", "组件库"]),
 ]
 
-_SCALE_SIGNALS = {
-    "form": ["表单", "新建页", "编辑页", "填写", "提交页", "form"],
-    "table": ["表格", "列表", "分页", "批量", "table", "list"],
-    "flow": ["审批流", "流程", "多步骤", "向导", "状态流转", "workflow"],
-    "module": ["工作台", "大屏", "多模块", "多角色", "多端", "dashboard", "portal"],
-}
-_SCALE_WEIGHTS = {"form": 1, "table": 1, "flow": 2, "module": 2}
 _SCALE_TIERS = {"S": "demo", "M": "standard", "L": "production"}
 
 _SUGGESTIONS = {
@@ -94,13 +87,18 @@ def assess_dimensions(text: str) -> list:
             for name, label, terms in DIMENSIONS]
 
 
-def scale_signal(text: str) -> str:
-    """Requirement complexity → S / M / L (counts real forms/tables/flows)."""
+def scale_signal(text: str, registry: Optional[dict] = None) -> str:
+    """Requirement complexity → S / M / L. Signal keywords and weights come
+    from the domain registry (frontend: forms/tables/flows; backend:
+    use cases/entities/integrations/distribution)."""
+    reg = registry or load_registry()
+    signals = reg.get("signals", {})
+    weights = reg.get("signal_weights", {})
     lowered = (text or "").lower()
     score = 0
-    for kind, terms in _SCALE_SIGNALS.items():
+    for kind, terms in signals.items():
         if any(_keyword_hit(lowered, term) for term in terms):
-            score += _SCALE_WEIGHTS[kind]
+            score += int(weights.get(kind, 1))
     if score >= 4:
         return "L"
     if score >= 1:
@@ -115,10 +113,10 @@ def prescription(text: str, registry: Optional[dict] = None) -> dict:
     demo-tier even when the prompt mentions 企业; a one-off form does not
     pull architecture-budgets just because it says 生产.
     """
-    reg = registry or load_registry()
-    matched = match_rules(text, registry=reg)
+    reg = registry or load_registry(domain=domain_for(text))
+    matched = match_rules(text, classification=classify_text(text), registry=reg)
     cls = classify_text(text)
-    scale = scale_signal(text)
+    scale = scale_signal(text, reg)
     effective = _SCALE_TIERS.get(scale, "standard")
     rank = TIER_ORDER.get(effective, 1)
     selected, not_selected = [], []
@@ -198,7 +196,7 @@ def assess_main(argv: list) -> None:
     parser.add_argument("--registry", default="", help="rule registry YAML override")
     args = parser.parse_args(argv)
     text = " ".join(args.task)
-    registry = load_registry(args.registry)
+    registry = load_registry(args.registry) if args.registry else None
     assessment = prescription(text, registry)
     if args.llm_json:
         try:

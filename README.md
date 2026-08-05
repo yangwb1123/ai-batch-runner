@@ -216,6 +216,24 @@ tasks:
   flows force error-recovery + defect-patterns). Output is a bounded manifest
   (paths + why + skipped reasons); prompts inject ONLY the manifest and agents
   load files on demand (progressive disclosure).
+- **Backend architecture governance** (`backend-specs/` + `backendquality`): the
+  same layered machinery now covers backend work — the classifier already
+  separates backend tasks, and the rule matcher/assessor pick the backend
+  registry automatically (`backend-specs/rules.yaml`, signals: use
+  cases/entities/integrations/distribution). Specs: architecture (module
+  organization by business capability, Transport → Application → Domain ←
+  Infrastructure dependency direction, data ownership, composition over
+  inheritance), design-patterns (pattern selection DECISION TABLE keyed on
+  problems, over-engineering red lines — no interface per class, no factory
+  per object, no BaseService/Manager soup, rule of three), domain-modeling
+  (state machines centralized, domain objects protect invariants, UoW at the
+  use-case boundary), evolution (refactor triggers, ADR, tech debt, migration
+  windows). Roles `backend_engineer`/`design_pattern_reviewer` (default
+  stance: every pattern is guilty until it proves it solves a real problem).
+  `backendquality` validator mechanically enforces over-engineering signals
+  (single-implementation interfaces, Base classes, fuzzy names), god-service
+  signals, scattered status assignment, and domain→infrastructure imports;
+  `examples/backend-engineering-review.yaml` runs the audit loop.
 - **Requirement assessment** (`pi-batch assess`): rules are prescribed by an
   expert evaluation of the REQUIREMENT, not by keyword hits. Eight
   completeness dimensions are checked (goal/user role/main flow/data source/

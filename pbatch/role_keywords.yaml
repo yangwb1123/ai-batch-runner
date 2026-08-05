@@ -261,3 +261,28 @@ code_architecture_reviewer:
   - 依赖
   - 复杂度
   - 上帝文件
+backend_engineer:
+  - backend
+  - api
+  - service
+  - use case
+  - domain
+  - 后端
+  - 接口
+  - 服务
+  - 用例
+  - 领域
+  - 事务
+design_pattern_reviewer:
+  - design pattern
+  - factory
+  - strategy
+  - adapter
+  - repository
+  - interface
+  - 设计模式
+  - 工厂
+  - 策略
+  - 适配器
+  - 接口
+  - 过度设计
