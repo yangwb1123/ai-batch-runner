@@ -172,3 +172,14 @@ def test_learn_from_memory(tmp_path, monkeypatch, capsys):
     drafts = list(Path(tmp_path).glob("docs/rules/drafts/*.yaml"))
     assert drafts
     assert "重复" in drafts[0].read_text(encoding="utf-8")
+
+
+def test_check_subcommand_passes():
+    from pbatch.selfcheck import check_main
+    sys.argv = ["pi-batch.py", "check", "--skip-eval"]
+    try:
+        check_main(sys.argv[2:])
+        code = 0
+    except SystemExit as exc:
+        code = exc.code
+    assert code == 0

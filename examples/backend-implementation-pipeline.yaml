@@ -37,6 +37,10 @@ stages:
       - API contract + stable error model + idempotency strategy
       - test plan (five layers, backend-specs/testing.md)
       - change radius (backend-specs/agent-guardrails.md)
+      Also run the context router to load the project documents
+      this task touches (ADRs/contracts/security baselines):
+        pi-batch context "<original task>" [--paths <touched files>]
+      Load the matched documents before planning.
       Do NOT write implementation code yet.
     output: docs/backend/plan.md
     mode: serial

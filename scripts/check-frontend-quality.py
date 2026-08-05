@@ -103,6 +103,18 @@ def _effect_leak_warnings(text: str, rel: str) -> list:
     return []
 
 
+def _test_warnings(text: str, rel: str) -> list:
+    """Assertion-less test files (renders/exists checks prove nothing)."""
+    is_test = ".test." in rel or ".spec." in rel \
+        or rel.endswith(("_test.tsx", "_test.ts", ".test.tsx", ".spec.tsx", ".spec.ts"))
+    if not is_test:
+        return []
+    if not re.search(r"\b(expect|assert|should\.|toBe|toHave|vi\.|jest\.)\b", text):
+        return [f"test file without assertions (renders/exists checks do not "
+                f"prove behavior)"]
+    return []
+
+
 def _loop_await_warning(text: str) -> str:
     """N+1 signal: await inside a loop without Promise.all (frontend)."""
     for match in re.finditer(r"\bfor\s*\(", text):
@@ -155,6 +167,8 @@ def check_text(text: str, path: Path, strict: bool) -> list:
     loop_await = _loop_await_warning(text)
     if loop_await:
         add("warning", loop_await)
+    for message in _test_warnings(text, rel):
+        add("warning", message)
 
     if not strict:
         findings = [item for item in findings if item[0] == "error"]

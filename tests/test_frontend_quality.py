@@ -140,3 +140,15 @@ def test_loop_await_n_plus_one_warning(tmp_path):
     strict = _run("--strict", str(bad))
     assert strict.returncode == 1
     assert "N+1 request risk" in strict.stderr
+
+
+def test_assertion_less_test_warning(tmp_path):
+    bad = tmp_path / "x.test.tsx"
+    bad.write_text("it('renders', () => { render(<App />); });\n", encoding="utf-8")
+    strict = _run("--strict", str(bad))
+    assert strict.returncode == 1
+    assert "without assertions" in strict.stderr
+    good = tmp_path / "y.test.tsx"
+    good.write_text("it('adds', () => { expect(add(1,2)).toBe(3); });\n",
+                    encoding="utf-8")
+    assert _run("--strict", str(good)).returncode == 0

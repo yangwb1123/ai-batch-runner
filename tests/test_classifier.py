@@ -214,4 +214,5 @@ def test_frontend_implementation_pipeline_schema():
     plan = pipeline.stages[0].from_prompt
     assert "pi-batch assess" in plan
     assert "layout-patterns" in plan
+    assert "pi-batch context" in plan
     assert "component tree" in plan

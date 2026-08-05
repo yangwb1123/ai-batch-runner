@@ -49,6 +49,7 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `pipelines/` | SDLC 角色图与代码实现流水线（设计图） |
 | `examples/` | 可用案例：提案、SDLC、meta 分析、完整闭环与 repository campaign |
 | `tests/` | 222 个回归测试（`make ci`） |
+| `docs/SPEC_SYSTEM.md` | 规范体系总览：资产分层/注册表/决策链/门禁/角色/沉淀闭环/克制原则 |
 | `docs/` | 机制文档（`RUNNING_247.md`、`AUTOMATION_WORKFLOW_SUMMARY.md` 等） |
 | `pi-batch.yaml` | 声明式配置：agent 二进制、会话标志、6 个验证器（含 `pyquality`） |
 
@@ -352,6 +353,8 @@ bash scripts/full-auto.sh --skip-passed --max-directions 2
 ## 3. 命令速查
 
 ```bash
+# 一键自检（安装/改规则后验证环境）：quality + 注册表 schema + eval 套件
+pi-batch check
 # 安装为全局 CLI 命令（像 pi/codex 一样使用，任意目录可用）
 pip install -e .          # 或 pipx install . / uv tool install .
 pi-batch --help

@@ -45,6 +45,10 @@ stages:
         debounce vs submit-lock vs cancel, race prevention, idempotency)
       - change radius (backend-specs/agent-guardrails.md applies to all
         domains)
+      Also run the context router to load the project documents
+      this task touches (ADRs/contracts/security baselines):
+        pi-batch context "<original task>" [--paths <touched files>]
+      Load the matched documents before planning.
       Do NOT write implementation code yet.
     output: docs/ui/plan.md
     mode: serial

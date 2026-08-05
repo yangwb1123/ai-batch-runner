@@ -324,6 +324,7 @@ def test_backend_implementation_pipeline_schema():
     assert pipeline.stages[3].gate is True
     plan_prompt = pipeline.stages[0].from_prompt
     assert "Persistence Design" in plan_prompt
+    assert "pi-batch context" in plan_prompt
     assert "pi-batch assess" in plan_prompt
 
 
