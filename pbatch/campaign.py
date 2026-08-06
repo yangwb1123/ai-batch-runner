@@ -21,6 +21,7 @@ from .campaign_pipeline import (direction_fingerprint, parallel_ready,
 from .campaign_state import StateStore, git_snapshot, write_summary
 from .config import log, yaml
 from .lock import acquire_lock, release_lock
+from .registry import mark_running, unregister
 from .runner import kill_active_procs
 from .text_io import read_text_bounded
 
@@ -366,8 +367,14 @@ def main(argv: list[str] | None = None) -> None:
     store = StateStore(settings.path(root, settings.state_file), settings.state_line_max_bytes)
     excluded = _snapshot_excludes(root, settings, args)
     context = CampaignContext(root, settings, args, store, git_snapshot(root, excluded))
-    lock_path = acquire_lock(cwd=str(root), no_lock=args.no_lock or args.dry_run,
-                             wait_minutes=getattr(args, "wait_lock", 0))
+    _register_campaign_run(root, args)
+    try:
+        lock_path = acquire_lock(cwd=str(root), no_lock=args.no_lock or args.dry_run,
+                                 wait_minutes=getattr(args, "wait_lock", 0))
+        mark_running()
+    except SystemExit:
+        unregister()
+        raise
     try:
         code = run_campaign(context)
     except KeyboardInterrupt:
@@ -375,7 +382,17 @@ def main(argv: list[str] | None = None) -> None:
         code = 130
     finally:
         release_lock(lock_path)
+        unregister()
     raise SystemExit(code)
+
+
+def _register_campaign_run(root: Path, args) -> None:
+    """Publish the campaign in the global run registry."""
+    import atexit
+    from .registry import register_run, unregister
+    register_run(mode="campaign", repo=str(root),
+                 session_name=getattr(args, "session_name", "") or "")
+    atexit.register(unregister)
 
 
 def _campaign_sigterm(signum, frame) -> None:

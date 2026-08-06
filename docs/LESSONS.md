@@ -41,5 +41,7 @@
 
 1. `--wait-lock` 已内建 → `wait-for-run.sh` 可退役（保留为无锁工具的参考实现）
 2. "决策摘要 + 机械门禁"模式可推广为**通用结构化产物门禁**（任何任务可声明 JSON schema + 校验器）
-3. 运行可见性：多协作者共享机器时缺一个全局运行注册表（谁在哪个仓库跑什么）——`memory` 索引只有 agent 会话，运行级可见性是 gap
+3. ~~运行可见性 gap~~ **已实现**：`pi-batch ps` + 全局注册表
+   （`~/.pi-batch/runs/<pid>.json`，心跳 60s，退出注销，死进程标记/清理）——
+   谁在哪个仓库跑什么（mode/repo/session/status/age/argv），排队中显示 queued
 4. 环境依赖测试标注（B2）：建议为 test_advance 类测试加 `SKIP_IF_ENV_UNSTABLE` 机制或标记为 xfail-on-drift

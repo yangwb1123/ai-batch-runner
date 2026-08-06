@@ -141,7 +141,7 @@ def _wait_for_lock(lock_path: Path, wait_minutes: int) -> None:
             return
         log.info("LOCK: waiting for holder (pid=%s, age=%.1fm); %ds left",
                  holder.get("pid", "?") if holder else "?",
-                 (time.monotonic() - holder.get("start", time.time())) / 60 if holder else 0,
+                 (time.time() - holder.get("start", time.time())) / 60 if holder else 0,
                  int(deadline - time.monotonic()))
         time.sleep(30)
     raise SystemExit(5)
