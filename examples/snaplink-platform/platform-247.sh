@@ -20,12 +20,15 @@ shift 2 2>/dev/null || true
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PLATFORM_REPOS=(
-  "$HOME/workspace/demo/snaplink"
-  "$HOME/workspace/demo/snaplink-console"
-  "$HOME/workspace/demo/snaplink-audit-governance"
+  "$HOME/snaplink"
+  "$HOME/snaplink-console"
+  "$HOME/snaplink-audit-governance"
   "$HOME/aero-id"
   "$HOME/aero-vault"
   "$HOME/aero-im"
+  # ERP 场景（2026-08 增补）：sverpweb-stable 为第 7 仓（M4 前置 git init 后生效）；
+  # iris-ui 是 npm 上游依赖，不纳入轮巡（锁版本 + 升级门禁管理）。
+  "$HOME/workspace/job/sverpweb-stable"
 )
 if [ "$#" -gt 0 ]; then
   SELECTED=("$@")
