@@ -340,6 +340,15 @@ def format_manifest(matched: dict, limit: int = 8) -> str:
     """Human/markdown manifest for prompt injection (bounded)."""
     lines = [f"## Applicable UI rules (deterministic manifest, tier={matched['tier']}, "
              f"risk={matched['risk']}, profile={matched['profile'] or 'generic'})"]
+    # 信任感：system_type 证据透明（AI 建议带依据——认知负担 §7）
+    system_type = matched.get("system_type", "")
+    if system_type and system_type != "deterministic":
+        evidence = matched.get("rules", [])
+        src = next((x.get("evidence", {}).get("system_evidence", ())
+                    for x in evidence
+                    if x.get("id") == f"system-type-{system_type}"), ())
+        lines.append(f"System type: {system_type}"
+                     + (f" (evidence: {', '.join(src)})" if src else ""))
     lines.append("Apply ONLY these rules; load the listed files, do not load unrelated specs:")
     rules = matched["rules"]
     shown = rules[:limit]
