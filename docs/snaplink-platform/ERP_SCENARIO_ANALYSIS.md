@@ -7,6 +7,22 @@
 > 本文件所有结论标注证据等级；未核实项标 **Proposed**。路线图本身是提案，
 > 批准要求见 §6。
 
+## 0.1 实施进度（2026-08-06 更新，人工验证）
+
+| 里程碑 | 状态 | 证据 |
+|---|---|---|
+| M1 门禁转绿：tsc 31→0 | ✅ **达成** | sverpweb-stable `bunx tsc --noEmit` 0 错；`pnpm check` 9/9 全绿（134 api pass + web 115 pass） |
+| B2 修复（withActor 类型误用） | ✅ **达成** | `request-middleware.ts` 改为先 `withActor(operation)` 再 `newAuditEvent`；新增 B2 回归测试（先红后绿：红态 actorUserId=null → 绿） |
+| sso-client 声明解析（TS7016） | ✅ **达成** | snaplink `docs/sdks/typescript` v0.3.0：exports 指向 dist + 构建产物入库（commit d19838d8） |
+| forwarding.test.ts 6 类用例 | ✅ **达成** | 8 个用例：激活×2 / 下游错误 / 并发单飞 / 文件重启 / 空批 / 同 id 去重 / 幂等重试（`apps/api/src/audit/forwarding.test.ts`） |
+| M0 契约对拍 | ✅ **达成** | governance `internal/httpapi/erp_contract_test.go` 5 测试：202+Duplicate / 409×2 冲突分支 / 400 字段清单 / 批首错截断（commit 476d083） |
+| M4 前置：git init + 首次提交 | ✅ **达成** | sverpweb-stable `git init` + 基线快照（commit d546647）——B5 修复 |
+| M2 L2 试运行 | ⏳ 未开始 | 前置：governance 生产实例（owner #8 任命）+ schema 30 条注册 + 适配器 `governance-transport.ts` |
+
+**本轮额外发现**：audit_outbox 表已由隐式迁移创建（0 行，无版本戳）；
+governance 未注册 schema 返回 **422**（修订版 §2.2 permanent 分类已含）——
+适配器实现时须把 422 归入 permanent。
+
 ## 0. 场景定位
 
 - **平台六件套**（独立产品、标准协议组合，见 `COMBINATION_MODEL.md`）：
