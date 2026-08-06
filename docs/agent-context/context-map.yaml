@@ -6,10 +6,31 @@ routes:
   # 引擎/协调器代码
   - when:
       paths: ["pbatch/**", "pi-batch.py", "pi-batch.yaml"]
-      task_contains: ["pbatch", "runner", "pipeline", "classify", "评估", "规则"]
+      task_contains:
+        - pbatch
+        - runner
+        - pipeline
+        - classify
+        - 评估
+        - 规则
+        - check
+        - 门禁
+        - 验证器
+        - 检查器
+        - validator
+        - gate
     load:
       - AGENTS.md
       - docs/SPEC_SYSTEM.md
+      - README.md
+
+  # 检查器/门禁代码
+  - when:
+      paths: ["scripts/**", "checks/**"]
+      task_contains: ["检查器", "门禁", "check", "校验", "扫描", "gate", "验证器"]
+    load:
+      - AGENTS.md
+      - docs/CHECKS_REGISTRY.md
       - README.md
 
   # 后端规范域

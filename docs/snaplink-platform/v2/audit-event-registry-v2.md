@@ -39,6 +39,7 @@
 | F-3 | New §1.10: OIDC discovery truthfulness table (verified facts only); actor `user:<uid>` via OIDC auth-code flow and `auth_flow=oidc` marked `[PROPOSED]` | §1.3, §1.10, snaplink § |
 | F2 (carry-over) | Namespace note: event type `audit.event.*` (dot) ≠ scope `audit:event:*` (colon); ingest scope is `audit:event:write` (v2, scope-matrix-v2) | §1.1, sink § |
 | count fix | v1 §2 per-service counts 46/12 were transposed (actual 45/13); v2: snaplink 45, sink 15 (13 + 2 new); total 121 unchanged | §2 |
+| v2.1 (FB-003) | event_id 派生公式正文内联到 `audit-events-v2.md` §1.9（实施清单引用 §1.9 时不再仅外部引用；本节仍为 canonical）；B2-4/B3-3 行内联公式 | §1.9, audit-events-v2.md |
 
 ### 0.2 Anchors added in v2
 

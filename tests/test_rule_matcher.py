@@ -195,3 +195,34 @@ def test_interaction_patterns_rule_skipped_for_demo_auth():
     assert "interaction-patterns" not in ids
     skipped = {item["id"] for item in matched["skipped"]}
     assert "interaction-patterns" in skipped
+
+
+class TestSystemTypeRouting:
+    """哥德尔分类学落地：system_type 检测 → 方法论规范注入。"""
+
+    def _match(self, text):
+        from pbatch.classifier import classify_text
+        from pbatch.rule_matcher import match_rules
+        cls = classify_text(text)
+        return match_rules(text, classification=cls)
+
+    def test_state_machine_routes_lifecycle(self):
+        m = self._match("订单审批流，状态流转，审核流程")
+        st = [x for x in m["rules"] if x["id"].startswith("system-type-")]
+        assert st and st[0]["id"] == "system-type-state-machine"
+        assert any("domain-lifecycle" in f for f in st[0]["files"])
+
+    def test_knowledge_routes_datamodel(self):
+        m = self._match("知识库问答系统，文档检索")
+        st = [x for x in m["rules"] if x["id"].startswith("system-type-")]
+        assert st and any("ui-driven-data-model" in f for f in st[0]["files"])
+
+    def test_realtime_routes_architecture(self):
+        m = self._match("实时监控大屏，websocket 推送")
+        st = [x for x in m["rules"] if x["id"].startswith("system-type-")]
+        assert st and any("experience-architecture" in f for f in st[0]["files"])
+
+    def test_deterministic_no_routing(self):
+        m = self._match("做一个登录页 demo")
+        assert not [x for x in m["rules"] if x["id"].startswith("system-type-")]
+        assert m["system_type"] == "deterministic"

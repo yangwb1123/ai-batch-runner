@@ -1,6 +1,7 @@
 """Repository-level campaign coordinator: discover, analyze, select, implement."""
 
 from __future__ import annotations
+from pbatch.pipeline_status import PipelineStatus
 
 import argparse
 import logging
@@ -177,10 +178,10 @@ def run_campaign(context: CampaignContext) -> int:
     selected, selection_failures = _select(context, modules, directions)
     failures += selection_failures
     outcomes = _implement(context, selected)
-    failures += sum(1 for outcome in outcomes if outcome.status != "PASSED")
+    failures += sum(1 for outcome in outcomes if outcome.status != PipelineStatus.PASSED)
     write_summary(context.store, context.settings.path(context.root, context.settings.summary_file),
                   context.settings.name)
-    passed = sum(1 for outcome in outcomes if outcome.status == "PASSED")
+    passed = sum(1 for outcome in outcomes if outcome.status == PipelineStatus.PASSED)
     log.info("CAMPAIGN complete: %d passed, %d failed", passed, failures)
     return 1 if failures else 0
 
@@ -251,7 +252,7 @@ def _select(context: CampaignContext, modules: list[str],
             fp = direction_fingerprint(context.root, context.settings, direction, analysis,
                                        context.snapshot, context.args.model, context.args.provider)
             if (_reuse_enabled(context.args) and context.store.reusable(
-                    module, direction.direction_id, fp, ("PASSED",))):
+                    module, direction.direction_id, fp, (PipelineStatus.PASSED,))):
                 continue
             _direction_event(context, direction, "SELECTED", fp, analysis)
             selected_items.append((direction, analysis, fp))
@@ -332,7 +333,8 @@ def _reuse_enabled(args: argparse.Namespace) -> bool:
 def _print_plan(context: CampaignContext, modules: list[str]) -> None:
     analysis_sec = context.store.median_elapsed(("ANALYZED",), context.settings.analysis_minutes * 60)
     pipeline_sec = context.store.median_elapsed(
-        ("PASSED", "GATE_REJECTED", "PIPELINE_FAILED", "VALIDATION_FAILED"),
+        (PipelineStatus.PASSED, PipelineStatus.GATE_REJECTED,
+                 PipelineStatus.PIPELINE_FAILED, PipelineStatus.VALIDATION_FAILED),
         context.settings.pipeline_minutes * 60)
     analysis_wall = len(modules) * analysis_sec / context.settings.analysis_jobs
     pipeline_wall = (len(modules) * context.settings.max_directions * pipeline_sec /

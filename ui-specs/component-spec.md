@@ -57,6 +57,15 @@
 | 关键列 | 可固定；大数据量虚拟滚动 |
 | 批量选择 | 显示已选数量 + 批量操作栏 |
 
+### 表格列宽与测试字体（实战教训）
+
+- 列宽按测试字体估算：字符 ≈ 13px（Ahem 字体）——'Suspended' 9 字符
+  ≈ 117px + 图标 + 内边距，列宽 < 190 会溢出
+- 表头 label 包 Flexible + ellipsis（排序图标占位）
+- 状态徽章列预留 190px（含图标 + 双编码文字）
+- 单元格内容优先单行 ellipsis；长字段（路径/名称）允许 2 行
+- 横向滚动容器内 Column 不可用 stretch（无界宽度崩溃）——行容器定宽
+
 ## 6. 状态要求（所有组件）
 
 loading / skeleton / empty / error / disabled / hover / pressed /

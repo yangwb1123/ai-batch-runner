@@ -106,6 +106,9 @@ def _add_runtime_args(p: argparse.ArgumentParser) -> None:
 
 
 def _add_logging_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "-v", "--verbose", action="count", default=0,
+        help="渐进式输出：默认常用（INFO）；-v 详细（DEBUG）")
     p.add_argument("--log-file", default="",
                    help="Append run log to FILE for 24x7 supervision (rotated)")
     p.add_argument("--log-max-bytes", type=int, default=config.LOG_MAX_BYTES,
@@ -174,12 +177,22 @@ def _sigterm(signum, frame):
     raise KeyboardInterrupt()
 
 
+def _apply_verbosity(verbosity: int) -> None:
+    """渐进式展示（cognitive-load §3）：默认常用（INFO，含核心），
+    -v 显示详细（DEBUG）；--quiet 只在错误时输出。"""
+    level = logging.INFO
+    if verbosity >= 1:
+        level = logging.DEBUG
+    logging.getLogger("pi-batch").setLevel(level)
+
+
 def main() -> None:
     if _dispatch_subcommand():
         return
     parser = build_parser()
     args = parser.parse_args()
     _validate_runtime_values(parser, args)
+    _apply_verbosity(args.verbose)
     _wire_agent(args)
     if args.session_max_bytes != config.SESSION_MAX_BYTES:
         config.SESSION_MAX_BYTES = args.session_max_bytes
@@ -279,7 +292,7 @@ def _run_configured(args, lock_path) -> None:
 
 
 def _dispatch_subcommand() -> bool:
-    if len(sys.argv) <= 1 or sys.argv[1] not in ("memory", "campaign", "classify", "rules", "assess", "learn", "context", "eval", "check", "advance", "ps", "retro"):
+    if len(sys.argv) <= 1 or sys.argv[1] not in ("memory", "campaign", "classify", "rules", "assess", "learn", "context", "eval", "check", "advance", "ps", "retro", "health", "export-template"):
         return False
     if sys.argv[1] == "memory":
         from .memory import main as subcommand
@@ -303,6 +316,10 @@ def _dispatch_subcommand() -> bool:
         from .registry import ps_main as subcommand
     elif sys.argv[1] == "retro":
         from .retro import retro_main as subcommand
+    elif sys.argv[1] == "health":
+        from .health import health_main as subcommand
+    elif sys.argv[1] == "export-template":
+        from .export_template import export_main as subcommand
     else:
         from .campaign import main as subcommand
     subcommand(sys.argv[2:])

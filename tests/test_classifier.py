@@ -235,3 +235,42 @@ def test_classify_prompt_with_slashes_is_not_a_path(capsys):
     out = capsys.readouterr().out
     assert "code_engineering" in out
     assert "File not found" not in out
+
+
+class TestSystemType:
+    """问题系统分类学：prompt → 系统类型 → 方法论路由信号。"""
+
+    def test_state_machine_detected(self):
+        r = classify_text("订单审批流，状态流转，审核流程")
+        assert r.system_type == "state-machine"
+        assert r.system_evidence
+
+    def test_event_driven_detected(self):
+        r = classify_text("事件驱动的消息队列通知系统")
+        assert r.system_type == "event-driven"
+
+    def test_search_detected(self):
+        r = classify_text("客户搜索检索推荐，模糊匹配")
+        assert r.system_type == "search"
+
+    def test_optimization_detected(self):
+        r = classify_text("生产排程调度，资源分配优化")
+        assert r.system_type == "optimization"
+
+    def test_knowledge_detected(self):
+        r = classify_text("知识库问答系统，文档检索")
+        assert r.system_type == "knowledge"
+
+    def test_realtime_detected(self):
+        r = classify_text("实时监控大屏，websocket 推送告警")
+        assert r.system_type == "realtime"
+
+    def test_default_deterministic(self):
+        r = classify_text("做一个登录页 demo")
+        assert r.system_type == "deterministic"
+
+    def test_system_type_in_dict(self):
+        r = classify_text("审批流")
+        d = r.to_dict()
+        assert d["system_type"] == "state-machine"
+        assert isinstance(d["system_evidence"], list)

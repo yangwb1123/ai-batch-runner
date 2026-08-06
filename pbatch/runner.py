@@ -109,7 +109,10 @@ def _budget_gate(task: Task, key: str, workdir: str, session_name: str = "") -> 
     budget_try_consume is atomic, so parallel workers cannot overshoot the
     cap (round-4 finding M2/DS-4)."""
     if not budget_try_consume():
-        log.error("BUDGET: invocation limit reached; stopping (exit 3)")
+        log.error(
+            "BUDGET: invocation limit reached; stopping — 调整 "
+            "--max-rounds/limits 后可续跑（已保留现场）"
+        )
         record_event("budget_cap", task.prompt, "invocation limit", workdir, session_name)
         clear_marker(key, workdir)
         raise SystemExit(3)
@@ -160,7 +163,11 @@ def _spawn_agent(cmd: list, workdir: str, env: dict) -> subprocess.Popen:
 def _agent_not_found(task: Task) -> TaskResult:
     """The agent binary is missing from PATH: a permanent, non-retryable
     failure (never saved as an artifact)."""
-    log.error("'%s' not found in PATH. Is it installed? (configure agent.bin in pi-batch.yaml)", config.AGENT_BIN)
+    log.error(
+        "'%s' not found in PATH — 请先安装 agent 或在 pi-batch.yaml 配置 "
+        "agent.bin 后重试（本次任务未启动，无副作用）",
+        config.AGENT_BIN,
+    )
     return TaskResult(task=task, success=False, stderr=f"{config.AGENT_BIN} not found in PATH",
                       reason="agent binary not found")
 
@@ -877,14 +884,8 @@ def run_serial(tasks: list[Task], retries: int = 0, retry_delay: float = 10.0, b
 
 def run_parallel(tasks: list[Task], workers: int = 0, validate_cmd: str = "") -> list[TaskResult]:
     workers = workers or config.AGENT_DEFAULT_WORKERS
-    """Execute tasks concurrently with a thread pool and real-time output.
-    Each result passes the engineering validation gate before its output file
-    is committed; a non-zero validation exit leaves no artifact.
-
-    T8: the budget cap is enforced BEFORE submitting (pre-check) and in each
-    worker (atomic consume); when the cap trips, in-flight agent groups are
-    killed so the runner exits 3 promptly instead of waiting up to the task
-    timeout x workers (round-4 finding P1-1/M2/DS-4)."""
+    """Concurrent execution with per-result validation gates (fail-closed).
+    T8: budget cap pre-submit + atomic consume; cap trip exits 3 promptly."""
     total = len(tasks)
     log.info("PARALLEL x%d  (%d tasks)", workers, total)
     capped = False
@@ -906,7 +907,10 @@ def run_parallel(tasks: list[Task], workers: int = 0, validate_cmd: str = "") ->
         for i, t in enumerate(tasks, 1):
             if not budget_allows():
                 capped = True
-                log.error("BUDGET: invocation limit reached; stopping (exit 3)")
+                log.error(
+            "BUDGET: invocation limit reached; stopping — 调整 "
+            "--max-rounds/limits 后可续跑（已保留现场）"
+        )
                 break
             # Pass task_index so parallel output lines are prefixed
             fut_map[pool.submit(_run_one, t, i)] = t
@@ -914,7 +918,10 @@ def run_parallel(tasks: list[Task], workers: int = 0, validate_cmd: str = "") ->
             result = fut.result()
             if result is None:
                 capped = True
-                log.error("BUDGET: invocation limit reached; stopping (exit 3)")
+                log.error(
+            "BUDGET: invocation limit reached; stopping — 调整 "
+            "--max-rounds/limits 后可续跑（已保留现场）"
+        )
             else:
                 results.append(result)
                 log.info("PROGRESS: %d/%d done", len(results), total)
@@ -944,6 +951,13 @@ def print_summary(results: list[TaskResult]) -> None:
     print("  failed:    %d" % failed)
     print("  CPU time:  %.1fs" % total_elapsed)
     print("  wall time: %.1fs" % wall_time)
+    if total:
+        rate = 100.0 * succeeded / total
+        print("  成功率:    %.0f%%" % rate)
+    if failed:
+        print("  下一步:    重试用 --retries；被拒产物保留在 .pi-batch/rejected/ 可诊断")
+    elif succeeded:
+        print("  全部通过 ✓ — 可 --git-commit 落库或继续下一轮")
     print()
     for r in results:
         icon = "PASS" if r.success else "FAIL"

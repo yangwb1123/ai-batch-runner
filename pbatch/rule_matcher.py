@@ -153,6 +153,9 @@ def _rule_skip_reason(rule: dict, tier_rank: int, page_types: list,
     return ""
 
 
+from pbatch.system_type_methodology import SYSTEM_TYPE_METHODOLOGY
+
+
 def match_rules(text: str, classification: Optional[TaskClassification] = None,
                 registry: Optional[dict] = None) -> dict:
     """Deterministic rule manifest for a task text (domain-aware: the
@@ -195,10 +198,34 @@ def match_rules(text: str, classification: Optional[TaskClassification] = None,
                 "profile": profile,
             },
         })
+    _inject_system_type_methodology(cls, rules)
     rules.sort(key=lambda item: (0 if item["required"] else 1, item["tier"]))
     return {"tier": tier, "page_types": page_types, "risk": "high" if high_risk else "low",
             "profile": profile, "rules": rules, "skipped": skipped,
-            "domain": domain_for(text, cls)}
+            "domain": domain_for(text, cls),
+            "system_type": getattr(cls, "system_type", "") or "deterministic"}
+
+
+def _inject_system_type_methodology(cls, rules: list) -> None:
+    """哥德尔分类学路由：system_type 命中的方法论规范进入规则清单。"""
+    system_type = getattr(cls, "system_type", "") or "deterministic"
+    methodology_files = SYSTEM_TYPE_METHODOLOGY.get(system_type, [])
+    if not methodology_files:
+        return
+    rules.append({
+        "id": f"system-type-{system_type}",
+        "tier": "standard",
+        "required": True,
+        "description": (
+            f"问题系统分类学方法论（{system_type}）：先判定问题属于哪类"
+            "系统，再套用该类系统的方法论"
+        ),
+        "files": methodology_files,
+        "evidence": {
+            "system_type": system_type,
+            "system_evidence": list(getattr(cls, "system_evidence", ())),
+        },
+    })
 
 
 def _resolve_files(rule: dict, profile: str) -> list:
@@ -313,6 +340,15 @@ def format_manifest(matched: dict, limit: int = 8) -> str:
     """Human/markdown manifest for prompt injection (bounded)."""
     lines = [f"## Applicable UI rules (deterministic manifest, tier={matched['tier']}, "
              f"risk={matched['risk']}, profile={matched['profile'] or 'generic'})"]
+    # 信任感：system_type 证据透明（AI 建议带依据——认知负担 §7）
+    system_type = matched.get("system_type", "")
+    if system_type and system_type != "deterministic":
+        evidence = matched.get("rules", [])
+        src = next((x.get("evidence", {}).get("system_evidence", ())
+                    for x in evidence
+                    if x.get("id") == f"system-type-{system_type}"), ())
+        lines.append(f"System type: {system_type}"
+                     + (f" (evidence: {', '.join(src)})" if src else ""))
     lines.append("Apply ONLY these rules; load the listed files, do not load unrelated specs:")
     rules = matched["rules"]
     shown = rules[:limit]

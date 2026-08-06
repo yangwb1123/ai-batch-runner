@@ -1,0 +1,35 @@
+# Design Intelligence rule registry.
+
+# When do these rules apply?
+#   demo       - small demos/prototypes: product-thinking + info priority core
+#   standard   - normal pages: + color intelligence + cognitive load
+#   production - enterprise/go-live: + emotional/trust + data expression full
+#
+# The rule matcher (pbatch/rule_matcher.py) emits a bounded manifest; the
+# agent loads the listed files on demand.
+tiers:
+  demo:
+    - design-intelligence/01-product-thinking.md
+    - design-intelligence/03-information-priority.md
+  standard:
+    - design-intelligence/01-product-thinking.md
+    - design-intelligence/02-color-intelligence.md
+    - design-intelligence/03-information-priority.md
+    - design-intelligence/04-cognitive-load.md
+  production:
+    - design-intelligence/01-product-thinking.md
+    - design-intelligence/02-color-intelligence.md
+    - design-intelligence/03-information-priority.md
+    - design-intelligence/04-cognitive-load.md
+    - design-intelligence/05-emotional-design.md
+    - design-intelligence/06-data-expression.md
+
+# Required checks for any UI task (fail-closed when a checker exists).
+checks:
+  - id: design_intelligence
+    file: scripts/check-design-intelligence.py
+    description: >-
+      Deterministic gate: semantic colors come from tokens, KPI numbers
+      use emphasized styles, empty states guide action, status displays
+      are dual-encoded (icon/color + text). Catches the "flat database
+      dump" anti-pattern.

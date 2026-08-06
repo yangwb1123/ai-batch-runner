@@ -10,6 +10,24 @@ cannot see: whitespace, balance, hierarchy, density.
 
 {input_content}
 
+## Design Intelligence Review (mandatory)
+
+按 `ui-specs/design-intelligence/` 逐项审查并给出 **Visual Attention Score**
+（低于 80 判 FAIL）：
+
+| 维度 | 权重 | 检查 |
+|---|---|---|
+| 视觉焦点 | 20 | 页面 ≤3 个焦点；3 秒可理解页面价值 |
+| 信息层级 | 20 | 大数字/图表/表格/详情四级分明；无全等权重 |
+| 重点突出 | 20 | KPI 大数字+趋势；异常置顶；颜色强调 |
+| 数据表达 | 15 | 语义色图表；健康度图形化；决策建议 |
+| 布局合理 | 10 | 面积随价值分配（80/20） |
+| 美观程度 | 10 | 统一色彩语言；品牌气质；无滥用渐变 |
+| 创新性 | 5 | 数据故事化/注意力设计 |
+
+另检查：色彩智能（语义 token/双编码/深色提亮）、认知负担
+（渐进式/空状态教学/错误预防）、情绪设计（掌控感/完成感/信任）。
+
 ## Focus
 
 - White space: is the page crowded? Are sections breathing?

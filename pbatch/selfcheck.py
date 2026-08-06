@@ -37,13 +37,18 @@ def check_main(argv: list) -> None:
         description="One-command self-check: quality + registry schema + eval.")
     parser.add_argument("--skip-eval", action="store_true",
                         help="skip the eval suite (slowest step)")
+    parser.add_argument("--quick-eval", action="store_true",
+                        help="run only core eval cases (rules + classifier)")
     args = parser.parse_args(argv)
     steps = [
         ("quality", [sys.executable, str(Path("quality.py")), "--strict", "."]),
         ("registry", [sys.executable, "-m", "pbatch", "rules", "--check"]),
     ]
     if not args.skip_eval:
-        steps.append(("eval", [sys.executable, "-m", "pbatch", "eval"]))
+        cmd = [sys.executable, "-m", "pbatch", "eval"]
+        if args.quick_eval:
+            cmd.append("--quick")
+        steps.append(("eval", cmd))
     failed = [name for name, cmd in steps if not _run_step(name, cmd)]
     if failed:
         print(f"CHECK: failed: {', '.join(failed)}", file=sys.stderr)

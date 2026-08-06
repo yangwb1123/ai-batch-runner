@@ -103,6 +103,52 @@ rules:
                  耦合八型/爆炸半径/重试预算/一致性显式/契约演进/架构假设/15 问
     files: [backend-specs/architecture-constitution.md]
     min_tier: production
+  design-intelligence-api:
+    description: >-
+      体验驱动 API：页面交互决定接口形态（场景卡→聚合上下文端点），
+      交互模式→API 模式映射，聚合/领域/原子三层
+    files: [backend-specs/design-intelligence/01-experience-driven-api.md]
+    min_tier: standard
+    required: true
+  design-intelligence-lifecycle:
+    description: 业务生命周期与状态机（生命周期管道/状态机集中定义/事件驱动/规则位置）
+    files: [backend-specs/design-intelligence/02-domain-lifecycle.md]
+    min_tier: standard
+    risk: [high]
+    required_when_risk: true
+  design-intelligence-datamodel:
+    description: UI 驱动数据模型（页面数据需求→模型；派生三策略；审计历史；租户边界）
+    files: [backend-specs/design-intelligence/03-ui-driven-data-model.md]
+    min_tier: standard
+    required: true
+  design-intelligence-arch:
+    description: 体验架构（体验预算反推 CQRS/缓存/异步/事件流；长任务异步化）
+    files: [backend-specs/design-intelligence/04-experience-architecture.md]
+    min_tier: production
+  design-intelligence-ops:
+    description: 运营智能（埋点先行/行为分析/A-B/假设回测）
+    files: [backend-specs/design-intelligence/05-operation-intelligence.md]
+    min_tier: production
+  design-intelligence-pipeline:
+    description: 产品工程流水线（先考察再立项/循环验证/预判3年/Agent Phase 0-9）
+    files: [backend-specs/design-intelligence/06-product-pipeline.md]
+    min_tier: production
+  design-intelligence-maintenance:
+    description: >-
+      维护智能：模型-现实偏差、软件熵、真实性（Trust）、审计即信任、
+      六层维护（数据/业务模型/UX/架构/安全/知识）、演化设计、Maintenance Agent
+    files:
+      - backend-specs/design-intelligence/07-maintenance-intelligence.md
+      - docs/ENGINEERING_PHILOSOPHY.md
+    min_tier: production
+  design-intelligence-distribution:
+    description: >-
+      分发智能：传播路径设计（网络效应/生态）、AI 时代能力分发、
+      分发质量工程保障（可复现/自验证/可接手/可追溯）
+    files:
+      - backend-specs/design-intelligence/08-distribution-intelligence.md
+      - docs/ENGINEERING_PHILOSOPHY.md
+    min_tier: production
   testing:
     description: 五层测试策略、Bug 复现优先、属性/模糊测试、测试数据治理、防伪造
     files: [backend-specs/testing.md]

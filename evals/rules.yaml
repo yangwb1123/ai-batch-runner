@@ -51,3 +51,37 @@ cases:
     input: "做一个登录页 demo"
     assert:
       lacks_rule: [interaction-patterns]
+  - name: design-intelligence-production-workbench
+    input: "企业工作台：生产达成率 KPI + 异常列表 + 趋势图，生产"
+    expect:
+      tier: production
+      includes:
+        - design-intelligence-product
+        - design-intelligence-color
+        - design-intelligence-priority
+        - design-intelligence-cognitive
+        - design-intelligence-emotional
+        - design-intelligence-data
+  - name: design-intelligence-demo-login
+    input: "生成一个登录页 demo"
+    expect:
+      includes:
+        - design-intelligence-product
+        - design-intelligence-priority
+      excludes:
+        - design-intelligence-emotional
+  - name: design-intelligence-backend-production
+    input: "写一个订单创建接口，含支付审批流程，生产环境，go"
+    expect:
+      includes:
+        - design-intelligence-api
+        - design-intelligence-lifecycle
+        - design-intelligence-datamodel
+        - design-intelligence-arch
+        - design-intelligence-ops
+        - design-intelligence-pipeline
+  - name: system-type-methodology-routing
+    input: "订单审批流，状态流转，审核流程，生产"
+    expect:
+      includes:
+        - system-type-state-machine

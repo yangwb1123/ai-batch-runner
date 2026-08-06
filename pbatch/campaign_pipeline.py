@@ -1,6 +1,7 @@
 """Pipeline materialization and isolated implementation for campaigns."""
 
 from __future__ import annotations
+from pbatch.pipeline_status import PipelineStatus
 
 import json
 import os
@@ -231,7 +232,7 @@ def _atomic_yaml(path: Path, data: dict) -> None:
         try:
             os.unlink(name)
         except OSError:
-            pass
+            pass  # stale worktree cleanup best-effort
 
 
 def run_direction(root: Path, settings: CampaignSettings, direction: Direction,
@@ -270,13 +271,13 @@ def _artifact_evidence(pipeline_path: Path, results: list) -> list[str]:
 
 def classify_pipeline(results: list, failed: list[str], pipeline) -> tuple[str, str]:
     if not failed and all(result.success for result in results):
-        return "PASSED", ""
+        return PipelineStatus.PASSED, ""
     failed_set = set(failed)
     if any(stage.gate and stage.name in failed_set for stage in pipeline.stages):
-        return "GATE_REJECTED", "gate verdict was not PASS"
+        return PipelineStatus.GATE_REJECTED, "gate verdict was not PASS"
     if any(result.validation_ok is False for result in results):
-        return "VALIDATION_FAILED", "engineering validator rejected an artifact"
-    return "PIPELINE_FAILED", ", ".join(failed) or "one or more tasks failed"
+        return PipelineStatus.VALIDATION_FAILED, "engineering validator rejected an artifact"
+    return PipelineStatus.PIPELINE_FAILED, ", ".join(failed) or "one or more tasks failed"
 
 
 def parallel_ready(root: Path) -> tuple[bool, str]:
@@ -351,7 +352,7 @@ def _run_in_worktree(settings: CampaignSettings, direction: Direction, analysis_
         with _ACTIVE_LOCK:
             _ACTIVE_PIPELINES.discard(proc)
     commit = _git_text(worktree, ["rev-parse", "HEAD"])
-    status = "PIPELINE_FAILED" if timed_out else _isolated_status(returncode, logfile)
+    status = PipelineStatus.PIPELINE_FAILED if timed_out else _isolated_status(returncode, logfile)
     reason = (f"isolated pipeline timed out after {settings.pipeline_timeout}s"
               if timed_out else
               ("" if returncode == 0 else f"isolated pipeline exited {returncode}"))
@@ -362,16 +363,16 @@ def _run_in_worktree(settings: CampaignSettings, direction: Direction, analysis_
 
 def _isolated_status(returncode: int, logfile: Path) -> str:
     if returncode == 0:
-        return "PASSED"
+        return PipelineStatus.PASSED
     try:
         tail = logfile.read_text(encoding="utf-8")[-100_000:]
     except OSError:
         tail = ""
     if "GATE REJECTED" in tail:
-        return "GATE_REJECTED"
+        return PipelineStatus.GATE_REJECTED
     if "VALIDATION FAILED" in tail:
-        return "VALIDATION_FAILED"
-    return "PIPELINE_FAILED"
+        return PipelineStatus.VALIDATION_FAILED
+    return PipelineStatus.PIPELINE_FAILED
 
 
 def _ensure_worktree(root: Path, settings: CampaignSettings,

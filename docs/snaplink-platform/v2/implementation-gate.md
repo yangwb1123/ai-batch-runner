@@ -1,6 +1,6 @@
 实施分派完成。完整批次清单已写入 **`docs/snaplink-platform/v2/implementation-batches.md`**（13KB），以下为全量内容（可人工核对）。
 
-**批次模型**：COMPOSE-2026-017 为基线 → B1（sink P0）→ B2（aero-id）/ B3（aero-vault）→ B4（IdP）→ B5（aero-im）→ B6（console）。**两处归属校正**（按已验证代码）：① "dev-token 关闭"（S1）在 sink 仓库（`cmd/audit-api/main.go`）；② "discovery 真值化"（F-3）在 IdP **部署仓**（`interfaces/sso/server_discovery.go`/`server_discovery_config.go`）。**信任路径联合门禁**：B1-1 + B4-1 + B1-7 合并为"真实流量"P0 门禁（T-1.1/T-1.2/T-8a）。**gate 重审修正**（原位修订）：B4 全部钉到部署仓（SDK 树 `yangwb1123/snaplink`，HEAD `b3c839bb`；legacy 树 `github.com/opensso/sso` @ `ac5d367` 未部署、不引用）；"补 kid" 已存在并移除；F5 计数修正为 49 个 `_ =` 站点；新增 sink B1-8（tenant 一致性 422）与 gRPC 拓扑覆盖（B1-6）。
+**批次模型**：COMPOSE-2026-017 为基线 → B1（sink P0）→ B2（aero-id）/ B3（aero-vault）→ B4（IdP）→ B5（aero-im）→ B6（console）。**两处归属校正**（按已验证代码）：① "dev-token 关闭"（S1）在 sink 仓库（`cmd/audit-api/main.go`）；② "discovery 真值化"（F-3）在 IdP **部署仓**（`interfaces/sso/server_discovery.go`/`server_discovery_config.go`）。**信任路径联合门禁**：B1-1 + B4-1 + B1-7 合并为"真实流量"P0 门禁（T-1.1/T-1.2/T-8a）。**gate 重审修正**（原位修订）：B4 全部钉到部署仓（SDK 树 `yangwb1123/snaplink`，HEAD `b3c839bb`；legacy 树 `github.com/opensso/sso` @ `ac5d367` 未部署、不引用）；"补 kid" 已存在并移除；F5 计数改为门禁语义（`make check-audit-swallow`；实测基线 raw `_ =` 142 / 审计 Record 25，`[v2.1]` FB-001）；新增 sink B1-8（tenant 一致性 422）与 gRPC 拓扑覆盖（B1-6）。
 
 ---
 
@@ -20,7 +20,7 @@
 |---|---|---|---|---|---|
 | 1 | aero-vault | migration `0039_audit_governance_outbox` 扩展；`internal/auditgovernance/relay.go` `retryFact` | 死信终态（F3）：status/dead_at 列 + 部分索引；移植 sink `DeliveryError.Permanent` 分类（422/409/tenant mismatch/无效回执 → 终态 ≤1 次尝试）；瞬态有界重试 cap 300s；dead 行排除出 claim/lag | T-3：422 → 一个周期内终态；`Ready()` 含 dead 行 = true；批次继续 | B1 |
 | 2 | aero-vault | `internal/auditgovernance/runtime.go` `Ready()`；`cmd/server/audit_governance.go:52-59` | Ready 解耦（H1）：maxLag 翻转移除 → `degraded` + **maxLag×0.5（450s）告警**；终态行排除出 `OldestPending`；读路径超时降级非 503 | D1 drill：sink 停 60min → `/readyz` 200 + 450s 告警；无重启循环 | B3-1 |
-| 3 | aero-vault | `internal/auditgovernance/facts.go`（三构造点） | 确定性 fact ID（F4）：`SHA-256(source\|tenant\|event_type\|origin_kind\|origin_id\|time_bucket)[:32]`；gap reconcile 复用 | T-4：再生成 → sink Duplicate、`QueryEvents` 1 行 | B1 |
+| 3 | aero-vault | `internal/auditgovernance/facts.go`（三构造点） | 确定性 fact ID（F4）：`SHA-256(source\|tenant\|event_type\|origin_kind\|origin_id\|time_bucket)[:32]`（公式正文：registry v2 §1.9 / audit-events-v2 §1.9，`[v2.1]` FB-003 内联）；gap reconcile 复用 | T-4：再生成 → sink Duplicate、`QueryEvents` 1 行 | B1 |
 | 4 | aero-vault | `internal/auditgovernance/relay.go`/`runtime.go`（0 Observe） | Relay metrics（H6）：attempted/delivered/failed/dead/oldest-age | 指标可喂 H2 告警；stalled relay 可检测 | B3-1 |
 | 5 | aero-vault | `internal/auditgovernance/model.go` `RequiredScope`；`token.go` | scope 对齐（F2 收尾）：**无代码改动**（已 enforce `audit:event:write`）——保留 scope 拒绝测试 + 矩阵配给端到端验证 | 矩阵配给无 403；非 write scope 拒绝；grep 一致性检查绿 | B4-2 |
 | 6 | aero-vault | `internal/config/config_audit_governance.go`；部署清单 | 激活门（F-03）：`AUDIT_GOVERNANCE_ENABLED=true` + bindings 文件 + 首个事件验证 | 空 bindings + enabled → boot 失败；首个 `file.delete.admin` 事件到达 sink | B1, B4-1, B3-1..4 |
@@ -29,7 +29,7 @@
 
 | # | 仓库 | 文件或模块 | 改动 | 验收断言 | 依赖批次 |
 |---|---|---|---|---|---|
-| 1 | aero-id | `service/account.go:155,184`、`callback.go:160,221,247`、`audit_hold.go:59,74`、`legacy_cutover.go:88`（8 个 governance 调用点列明；全仓 **49 个 `_ =` 站点**，SEC-V2-7 实测 grep `internal/`+`service/`+`cmd/` @ `756b65b`） | in-tx（F5）：全部移入 `AppendInTx`；不可 in-tx → 失败可观测（`ObserveAuditIngestFailure` + 告警）；**`_ =` 禁止**（全仓 grep 门禁——覆盖 49 个站点，非仅 8 点） | T-5：mock 失败 → counter 递增或操作失败；无静默调用点 | 无（可先于 B1） |
+| 1 | aero-id | `service/account.go:155,184`、`callback.go:160,221,247`、`audit_hold.go:59,74`、`legacy_cutover.go:88`、`account_provision.go:168`（**9 个** governance 调用点列明，`[v2.1]` FB-002 补第 9 点，属 6+1 写路径；**门禁语义**：`make check-audit-swallow` 全仓禁止吞审计——实测基线 raw `_ =` 142 站点 / 审计 Record 25 站点，`[v2.1]` FB-001，精确计数不可复现不作契约） | in-tx（F5）：全部移入 `AppendInTx`；不可 in-tx → 失败可观测（`ObserveAuditIngestFailure` + 告警）；**`_ =` 禁止**（`make check-audit-swallow` 门禁，非精确计数；覆盖全部审计触达站点，非仅 9 个 governance 点） | T-5：mock 失败 → counter 递增或操作失败；`make check-audit-swallow` 绿 | 无（可先于 B1） |
 | 2 | aero-id | `audit_ledger.go` `Record`（inline publish） | 单一投递路径（F6）：删 inline publish 或 best-effort；outbox worker 唯一 | 单路径；sink 慢时请求 p99 不漂移（F6 drill）；2× 负载消除 | B2-1 |
 | 3 | aero-id | `connector/auditgovernance/oauth.go`、`publisher.go` | 401 → 失效（F8）：移植 vault 模式；scope-missing → alert | T-10.1：revoke 后立即刷新（调用计数断言），≤24h 停滞消除 | B1 |
 | 4 | aero-id | `service/account.go:155,184`、`audit_hold.go:59`、`legacy_cutover.go:88` | 稳定 event_id（F4）：按 §1.9 从 anchor 派生 | T-4 联合：再生成折叠 Duplicate | B1 |
@@ -45,9 +45,9 @@
 | 3 | sink | `migrations/001_control_plane.sql`（死代码）；`internal/store/` | Relational ledger 或容量预算（#7 决策）：migration-001 接线（per-tenant insert + receipt + segment 同事务）或 `BenchmarkIngest` envelope | 容量 envelope 记录；高容量类 cutover 门禁；`QueryEvents` 不再 O(ledger) | B1-2 |
 | 4 | sink | `internal/service/`（`adminAction` 扩展）+ governance handlers | Self-audit writer（F13）：治理操作 same-store-update 注册表事件；append 失败 → 中止 | 治理失败 → 回滚（无部分 legal hold）；事件完整信封入账 | 无 |
 | 5 | sink | `internal/service/service.go` `QueryEvents`/`getEvent`、export download | Read self-audit（F-06）：same-update 追加 `audit.event.read`/`audit.event.export` | T-12：查询后出现调用者 self-audit 行；直接 API 不可绕过 | B1-4 |
-| 6 | sink | `internal/grpcapi/server.go`（gRPC 入站）；`cmd/audit-outbox-relay`、`cmd/audit-kafka-consumer`、`internal/outbox/` | 拓扑收敛（F13）：**gRPC ingest（`cmd/audit-api/main.go` `--grpc-listen` 注册，Write/WriteBatch/WriteStream 走同一 `Service.Ingest`）声明为受支持入站**——与 HTTP 同一认证/校验/self-audit/tenant 一致性约束（DS-09）；接线或移除孤儿 relay/Kafka consumer | 契约声明覆盖全部活动入站；契约外无活动入站路径（grep 无 enqueue） | 无 |
+| 6 | sink | `internal/grpcapi/server.go`（gRPC 入站）；`cmd/audit-outbox-relay`、`cmd/audit-kafka-consumer`、`internal/outbox/`；`internal/kafka/replay.go`（孤儿原型，FB-005） | 拓扑收敛（F13）：**gRPC ingest（`cmd/audit-api/main.go` `--grpc-listen` 注册，Write/WriteBatch/WriteStream 走同一 `Service.Ingest`）声明为受支持入站**——与 HTTP 同一认证/校验/self-audit/tenant 一致性约束（DS-09）；接线或移除孤儿 relay/Kafka consumer；**实施第一动作（FB-005）**：修复或移除未提交孤儿原型 `internal/kafka/replay.go:205`（`python3 cli.py quality` FAIL：go vet 格式串 %s 绑 int），接线决策并入本任务；**OpenAPI 同步（FB-004 剩余缺口并入）**：文档 "Body tenant_id is ignored" 改 tenant 一致性 422 语义 | 契约声明覆盖全部活动入站；契约外无活动入站路径（grep 无 enqueue）；`python3 cli.py quality` 绿；OpenAPI 与 422 行为一致 | 无 |
 | 7 | sink | `test/e2e/fullstack.sh`；`scripts/mint-token.sh`（新） | 跨仓 e2e（T-1.2）：IdP token fixture 替换 dev token；`AUDIT_ALLOW_DEV_AUTH=false` | T-1.2：ingest 202 `ledgered` → read 200 → export 202 | B4-1, B1-1（联合门禁） |
-| 8 | sink | `internal/service/service.go:389`（Ingest 中 token/URL 解析 tenant 覆写点） | tenant 一致性强制（S2/DS-08/SRE-07）：envelope `tenant_id` ≠ token `tenant_id` claim → **422 拒绝入账**（scope-matrix Flow 3）；**禁止以 token/URL 解析 tenant 覆写 envelope**（现状 `event.TenantID = tenantID` 静默重标，与契约 422 直接矛盾） | T-13：envelope tenant-b + token tenant-a → 422、零入账、producer 侧 dead 终态；grep 无覆写赋值 | B1-2 |
+| 8 | sink | `internal/service/service.go:389,397-401`（Ingest tenant 一致性判定：`:397-399` 已判 mismatch→422，`:401` 仅空 envelope 盖章） | tenant 一致性强制（S2/DS-08/SRE-07；描述修正 `[v2.1]` FB-004）：envelope `tenant_id` ≠ token `tenant_id` claim → **422 拒绝入账**（scope-matrix Flow 3）——**已实现**（HTTP 422 + gRPC FailedPrecondition + 三层测试已钉），本任务收敛为契约对齐与回归钉死；**禁止以 token/URL 解析 tenant 覆写 envelope**（grep 门禁：无 `event.TenantID = tenantID` 覆写赋值）；剩余缺口 = **OpenAPI 未同步**（仍写 "Body tenant_id is ignored"）→ 并入 B1-6 | T-13：envelope tenant-b + token tenant-a → 422、零入账、producer 侧 dead 终态；grep 无覆写赋值 | B1-2 |
 
 ## snaplink-console（审计时间线读路径接入）
 
@@ -67,16 +67,16 @@
 
 ## 批次门禁汇总
 
-| 门禁 | 内容 | 通过条件 |
-|---|---|---|
-| G0 | v2 三文档（契约批准） | 已随本系列完成（本清单不阻塞） |
-| G1（P0 信任路径） | B1-1 + B4-1 + B1-7 | T-1.1/T-1.2/T-8(a) 绿 + manifest 扫描绿 |
-| G2（B1） | B1-2..6 + B1-8 | T-6、T-12、T-13（tenant 422）、治理 fail-closed、拓扑收敛、容量 envelope |
-| G3（B2） | B2-1..6 | T-5、T-10.1/10.2、T-4 联合、首个事件 e2e |
-| G4（B3） | B3-1..6 | T-3、T-4、D1 drill、首个事件 e2e |
-| G5（B4） | B4-2..5 | T-2、T-8(b–e)、T-9、L0 持久化、P2 parity |
-| G6（B5） | B5-1..4 | 37/37、T-11、moderation 优先级 |
-| G7（B6） | B6-1..2 | T-12 联合、console 服务端记录 |
-| G8（生产 cutover） | 全部批次 + 迁移骨架 P1–P3 | 各仓 CI 全绿、首个事件验证、DLQ/alert 上线（H2/H6） |
+| 门禁 | 内容 | 通过条件 | 跨仓依赖跟踪 `[v2.1]`（FB-006） |
+|---|---|---|---|
+| G0 | v2 三文档（契约批准） | 已随本系列完成（本清单不阻塞） | — |
+| G1（P0 信任路径） | B1-1 + B4-1 + B1-7 | T-1.1/T-1.2/T-8(a) 绿 + manifest 扫描绿 | **B4-1（IdP 部署仓 claim 契约，HEAD `b3c839bb`）状态 → G1 状态**：B4-1 非 sink 仓可控，须在 IdP 部署仓单独跟踪；B4-1 未绿则 G1 不可达（即使 B1-1/B1-7 全绿） |
+| G2（B1） | B1-2..6 + B1-8 | T-6、T-12、T-13（tenant 422）、治理 fail-closed、拓扑收敛、容量 envelope | —（全部在 sink 仓内） |
+| G3（B2） | B2-1..6 | T-5、T-10.1/10.2、T-4 联合、首个事件 e2e | —（全部在 aero-id 仓内） |
+| G4（B3） | B3-1..6 | T-3、T-4、D1 drill、首个事件 e2e | —（全部在 aero-vault 仓内） |
+| G5（B4） | B4-2..5 | T-2、T-8(b–e)、T-9、L0 持久化、P2 parity | —（全部在 IdP 部署仓内） |
+| G6（B5） | B5-1..4 | 37/37、T-11、moderation 优先级 | B4-2（IdP scope registry）→ B5-2 配给（跨仓） |
+| G7（B6） | B6-1..2 | T-12 联合、console 服务端记录 | B1-5（sink read self-audit）→ B6-1（console，跨仓） |
+| G8（生产 cutover） | 全部批次 + 迁移骨架 P1–P3 | 各仓 CI 全绿、首个事件验证、DLQ/alert 上线（H2/H6） | 全部批次跨仓状态汇总（G1 为最先可能阻塞项） |
 
-**要点**：① 批次间严格按 v2 rollout 顺序（sink → aero-id → aero-vault → IdP → aero-im → console），仅 B4-3/B4-4 与 B2/B3 可并行；② 所有验收断言均映射审查测试编号（T-1.1 至 T-12）与 drill（D1），可逐条回归；③ aero-vault B3-5 与 aero-im B5-2 的"scope 对齐/配给"依赖 B4-2（IdP scope registry），这是 F2 契约修订后的唯一剩余依赖链。
+**要点**：① 批次间严格按 v2 rollout 顺序（sink → aero-id → aero-vault → IdP → aero-im → console），仅 B4-3/B4-4 与 B2/B3 可并行；② 所有验收断言均映射审查测试编号（T-1.1 至 T-12）与 drill（D1），可逐条回归；③ aero-vault B3-5 与 aero-im B5-2 的"scope 对齐/配给"依赖 B4-2（IdP scope registry），这是 F2 契约修订后的唯一剩余依赖链；④ **G1 为跨仓联合门禁（sink B1-1/B1-7 + IdP B4-1）**：B4-1 状态须在 IdP 部署仓跟踪，未绿则 G1 不可达（FB-006）；B1-6 实施第一动作 = 修复或移除 kafka replay 孤儿（FB-005）。

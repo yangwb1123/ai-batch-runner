@@ -1,0 +1,63 @@
+# 审计契约 v2.1 修订流水线（合并实施反馈 FB-001..006）
+#
+# 输入：docs/snaplink-platform/v2/contract-feedback.md（6 项实施反向校验发现）
+# 修订对象（原位，v2 目录）：
+#   audit-events-v2.md     FB-001（F5 计数语义）、FB-003（event_id 公式内联）
+#   integration-design-v2.md FB-004（B1-8 描述修正 + OpenAPI 同步任务）
+#   implementation-gate.md FB-002（第 9 点）、FB-005（kafka 孤儿）、
+#                          FB-006（G1 跨仓依赖跟踪列）
+# 输出：v21-fix-log.md（逐项改前→改后）+ v21-gate.md（VERDICT 重裁）
+#
+# 运行：python3 pi-batch.py examples/snaplink-platform/audit-v21-pipeline.yaml
+
+git_commit: false
+decision_log: docs/DECISIONS.md
+
+stages:
+  - name: apply_feedback
+    from_prompt: |
+      你是契约修订者。阅读实施反馈清单：
+      @docs/snaplink-platform/v2/contract-feedback.md
+      以及 v2 三份草案（原位修订）：
+      @docs/snaplink-platform/v2/audit-events-v2.md
+      @docs/snaplink-platform/v2/integration-design-v2.md
+      @docs/snaplink-platform/v2/implementation-gate.md
+
+      逐项落实 6 项反馈：
+      FB-001：F5 计数从"49 个站点"改为可复现门禁语义（make
+        check-audit-swallow：全仓禁止吞审计；raw `_ =` 142 站点、
+        审计 Record 25 站点为实测基线），契约/清单/修订日志同步
+      FB-002：B2-1 范围补入第 9 点 account_provision.go:168（6+1 写路径）
+      FB-003：event_id 派生公式正文内联进 audit-events-v2.md（§1.9），
+        不再仅外部引用
+      FB-004：B1-8 描述修正（service.go:397-399 已 422 判拒，非静默重标；
+        剩余缺口 = OpenAPI 同步任务并入 B1-6）
+      FB-005：kafka replay 孤儿（internal/kafka/replay.go:205 破坏
+        cli.py quality 门禁）列为实施第一动作（修复或移除）
+      FB-006：G1 门禁表增加跨仓依赖跟踪列（B4-1 状态 → G1 状态）
+      输出 v21-fix-log.md：每项 = 改了哪个文件哪个小节、改前 → 改后。
+      不改代码。
+    output: docs/snaplink-platform/v2/v21-fix-log.md
+    validate_cmd: "python3 {cwd}/scripts/check-no-refusal.py {output}"
+
+  - name: v21_gate
+    from_outputs: apply_feedback
+    aggregate: true
+    gate: true
+    mode: serial
+    tasks:
+      - prompt: |
+          你是独立 gatekeeper。阅读 {input_content}（fix-log + 修订后产物）。
+          逐项核对 FB-001..006 是否落实：
+          1. FB-001：计数已改门禁语义（可复现 grep 定义）
+          2. FB-002：B2-1 含 9 点
+          3. FB-003：公式正文已内联
+          4. FB-004：描述已修正 + OpenAPI 任务并入 B1-6
+          5. FB-005：kafka 孤儿为实施第一动作
+          6. FB-006：G1 跨仓依赖列存在
+          FORAMT：最终行必须以纯文本 VERDICT: 开头（禁止加粗/代码块/缩进）。
+          End with exactly one line:
+          VERDICT: PASS - <v2.1 完成，可提交人工批准>
+          or
+          VERDICT: FAIL - <剩余问题>
+        output: docs/snaplink-platform/v2/v21-gate.md
