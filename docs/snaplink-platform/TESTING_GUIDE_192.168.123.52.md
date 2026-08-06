@@ -87,3 +87,14 @@ curl -s "http://127.0.0.1:13018/api/v1/events?tenant_id=sverp&source_system=sver
 - BFF 代理聚合（浏览器不接触服务凭据；OAuth client_credentials 自动换 token）
 - 页面路由/菜单由 Snaplink 权限控制（system:settings:read）
 - aero-vault 修复了 access 禁用时的 PUT nil-panic（commit c0ce6db）
+
+## 8. 集成页增强（2026-08-06 第二轮）
+
+- **Vault presign 直传**：页面上传走 presign PUT（BFF 只签发签名 URL，文件
+  流不经过 BFF 内存）——路线图 M3 最佳实践；下载为 presign GET 直链；列表可删除
+- **质检单自动通知**（M5 最小版）：创建质检单 → aero-im "SVERP Integration"
+  频道自动消息（操作人/款号/数量），best_effort 失败不阻塞业务（审计仍入账）；
+  实测 NOTIFY-TEST-001/002 均在 8s 内送达
+- **M3 遗留**：snaplink-console 审计页仍为本地管理操作记录
+  （audit_log_service.dart + LocalStorage），未接 governance 账本——统一审计
+  时间线需 Flutter 侧改动（console 仓库）
