@@ -10,6 +10,12 @@ cd "$ROOT"
 # 防御：确认确实是 sverpweb-stable 仓库
 test -f apps/web/package.json || { echo "FAIL: apps/web/package.json not found — not sverpweb-stable?"; exit 1; }
 
+echo "==> pnpm --filter @sverp/api typecheck"
+pnpm --filter @sverp/api typecheck
+
+echo "==> pnpm --filter @sverp/api test"
+pnpm --filter @sverp/api test
+
 echo "==> pnpm --filter @sverp/web typecheck"
 pnpm --filter @sverp/web typecheck
 
@@ -19,4 +25,4 @@ pnpm --filter @sverp/web test
 echo "==> pnpm --filter @sverp/web build"
 pnpm --filter @sverp/web build
 
-echo "PASS: sverpweb-stable apps/web gates (typecheck + test + build)"
+echo "PASS: sverpweb-stable gates (api typecheck+test, web typecheck+test+build)"
