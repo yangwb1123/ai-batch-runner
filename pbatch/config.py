@@ -7,8 +7,9 @@ import logging
 import os
 import re
 import sys
+from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+from typing import NamedTuple, Optional
 
 try:
     import yaml
@@ -123,6 +124,99 @@ def _float_setting(section: dict, key: str, default: float,
 
 
 _AGENT_CFG = _section("agent")
+# Optional per-agent override sections: agent.agents.<bin>.* win over the
+# global agent.* settings for that binary (G line: claude/codex/gemini have
+# different failure signatures and session-flag syntax).
+_AGENTS_CFG = _AGENT_CFG.get("agents")
+if not isinstance(_AGENTS_CFG, dict):
+    _AGENTS_CFG = {}
+
+
+def _agent_section(bin_name: str) -> dict:
+    """Per-agent config section for a binary name (agent.agents.<bin>),
+    or {} when the section is absent/malformed."""
+    if not bin_name:
+        return {}
+    section = _AGENTS_CFG.get(bin_name)
+    return section if isinstance(section, dict) else {}
+
+
+# Default provider/CLI failure signatures (G line). Per-agent overrides:
+#   agent.error_patterns: [...]      (all agents)
+#   agent.agents.<bin>.error_patterns: [...]   (one binary)
+# Empty list disables signature rejection for that agent.
+_DEFAULT_ERROR_PATTERNS = (
+    # provider error codes (quota, rate limit, billing, auth)
+    r"rate_?limit_?error",
+    r"insufficient_?quota",
+    r"quota_?exceeded",
+    r"credit_?balance_?too_?low",
+    r"insufficient\s+(?:balance|funds)",
+    r"billing_?error",
+    r"payment_?required",
+    r"invalid_?api_?key",
+    r"authentication_?error",
+    r"context_?length_?exceeded",
+    r"overloaded_?error",
+    r"429 too many requests",
+    # network connectivity failures (offline, DNS, TLS, proxy)
+    r"network is unreachable",
+    r"no route to host",
+    r"temporary failure in name resolution",
+    r"name or service not known",
+    r"dns resolution failed",
+    r"getaddrinfo",
+    r"max retries exceeded",
+    r"certificate verify failed",
+    r"connectionerror",
+    r"sslerror",
+    r"proxyerror",
+    r"econnrefused",
+    r"econnreset",
+    r"etimedout",
+    r"curl: \(\d+\)",
+    r"connection timed out",
+    r"connect timed out",
+    r"operation timed out",
+    r"connection refused",
+    r"connection reset",
+    r"connection closed",
+    r"broken pipe",
+    r"failed to connect",
+    r"unable to connect",
+    r"could not connect",
+    # CLI-level failure banners (inline (?im) adds MULTILINE to IGNORECASE)
+    r"(?im)^\[?error\]?:",
+    r"(?im)^fatal:",
+)
+
+
+@lru_cache(maxsize=16)
+def _compile_patterns(patterns: tuple) -> tuple:
+    return tuple(re.compile(pattern, re.IGNORECASE) for pattern in patterns)
+
+
+def agent_error_patterns(bin_name: str = "") -> tuple:
+    """Failure-signature patterns for the current agent binary: per-agent
+    override (agent.agents.<bin>.error_patterns) > global override
+    (agent.error_patterns) > built-in defaults. Reads config.AGENT_BIN at
+    call time so a --agent-bin CLI override is honored."""
+    name = bin_name or AGENT_BIN
+    raw = _agent_section(name).get("error_patterns")
+    if raw is None:
+        raw = _AGENT_CFG.get("error_patterns")
+    if raw is None:
+        raw = _DEFAULT_ERROR_PATTERNS
+    if isinstance(raw, str):
+        raw = (raw,)
+    if not isinstance(raw, (list, tuple)):
+        log.warning("Config 'error_patterns' must be a string list; using defaults")
+        raw = _DEFAULT_ERROR_PATTERNS
+    patterns = tuple(str(p) for p in raw if str(p).strip())
+    if not patterns:
+        # explicit empty list disables signature rejection for this agent
+        return ()
+    return _compile_patterns(patterns)
 _COMMIT_CFG = _section("commit")
 _LOGGING_CFG = _section("logging")
 _SESSION_CFG = _section("session")
@@ -243,11 +337,16 @@ _DEFAULT_SESSION_FLAGS = {
 }
 
 
-def _session_flags(key: str, session_id: str, session_name: str) -> list:
-    """Resolve the configured session flags for a call (start or continue),
-    replacing {session} and {name} placeholders. Falls back to pi-style
-    flags when the config does not define agent.session_flags."""
-    configured = _AGENT_CFG.get("session_flags")
+def agent_session_flags(key: str, session_id: str, session_name: str,
+                        bin_name: str = "") -> list:
+    """Resolve session flags for a call (start/continue/fork), replacing
+    {session} and {name} placeholders. Per-agent override
+    (agent.agents.<bin>.session_flags) wins over agent.session_flags,
+    then pi-style defaults — so a non-pi agent CLI can point these at its
+    own continue-session flags without touching shared config (G line)."""
+    configured = _agent_section(bin_name or AGENT_BIN).get("session_flags")
+    if configured is None:
+        configured = _AGENT_CFG.get("session_flags")
     cfg = configured if isinstance(configured, dict) else {}
     flags = cfg.get(key)
     if (not isinstance(flags, (list, tuple)) or not flags
@@ -256,6 +355,11 @@ def _session_flags(key: str, session_id: str, session_name: str) -> list:
             log.warning("Config session_flags.%s must be a string list; using defaults", key)
         flags = _DEFAULT_SESSION_FLAGS[key]
     return [f.replace("{session}", session_id).replace("{name}", session_name) for f in flags]
+
+
+def _session_flags(key: str, session_id: str, session_name: str) -> list:
+    """Backward-compatible alias resolving flags for the configured bin."""
+    return agent_session_flags(key, session_id, session_name)
 
 
 def _load_validators() -> dict:
@@ -272,11 +376,57 @@ def _load_validators() -> dict:
 VALIDATORS = _load_validators()
 
 
-def _resolve_validators(value: str) -> list:
-    """Expand a comma-separated list into validation commands: registry names
-    are replaced by their pi-batch.yaml command, anything else is used as a
-    raw shell command. Empty value -> no validation."""
+class ValidatorSpec(NamedTuple):
+    """One resolved validator entry.
+
+    cmd:   shell command ({output}/{cwd} placeholders)
+    judge: when True, the gate parses a VERDICT: PASS|FAIL - <reason> line
+           from stdout (fail closed on missing/bare verdict) instead of
+           trusting the exit code alone — LLM-as-judge protocol (H line)
+    scope: "file" = run per artifact before it is committed (default);
+           "repo" = full-tree gate deferred to stage end / batch end so it
+           never races concurrent role agents writing the tree (N2)
+    """
+    cmd: str
+    judge: bool = False
+    scope: str = "file"
+
+
+def _validator_spec(entry) -> Optional[ValidatorSpec]:
+    """Normalize one registry entry: a string command, or a mapping with
+    cmd/judge/scope keys. Malformed entries fall back to a raw command so a
+    typo fails deterministically at execution, not at import."""
+    if isinstance(entry, str):
+        return ValidatorSpec(cmd=entry)
+    if isinstance(entry, dict):
+        cmd = entry.get("cmd")
+        if isinstance(cmd, str) and cmd.strip():
+            judge = bool(entry.get("judge", False))
+            scope = str(entry.get("scope", "file")).lower()
+            if scope not in ("file", "repo"):
+                log.warning("Validator scope '%s' must be file or repo; using file", scope)
+                scope = "file"
+            return ValidatorSpec(cmd=cmd.strip(), judge=judge, scope=scope)
+    log.warning("Validator entry must be a command string or a {cmd, judge, scope} "
+                "mapping; skipping %r", entry)
+    return None
+
+
+VALIDATOR_SPECS: dict = {name: spec for name, entry in VALIDATORS.items()
+                         if (spec := _validator_spec(entry)) is not None}
+
+
+def _resolve_validator_specs(value: str) -> list:
+    """Expand a comma-separated list into ValidatorSpecs: registry names are
+    replaced by their pi-batch.yaml spec (cmd/judge/scope), anything else is
+    used as a raw file-scoped shell command. Empty value -> no validation."""
     out = []
     for item in [x.strip() for x in (value or "").split(",") if x.strip()]:
-        out.append(VALIDATORS.get(item, item))
+        spec = VALIDATOR_SPECS.get(item)
+        out.append(spec if spec is not None else ValidatorSpec(cmd=item))
     return out
+
+
+def _resolve_validators(value: str) -> list:
+    """Backward-compatible alias: command strings only (judge/scope ignored)."""
+    return [spec.cmd for spec in _resolve_validator_specs(value)]

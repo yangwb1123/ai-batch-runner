@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import NamedTuple, Optional
 
 from . import config
-from .config import AGENT_BIN, AGENT_DEFAULT_WORKERS, _resolve_validators, _session_flags, log
+from .config import AGENT_BIN, AGENT_DEFAULT_WORKERS, _resolve_validator_specs, _resolve_validators, _session_flags, log
 from .models import Task, TaskResult
 from . import metering
 from .metering import budget_allows, budget_try_consume, record_event
@@ -84,62 +84,18 @@ def _read_stream(stream, prefix: str, collector: list, cap: int = 0,
         stream.close()
 
 
-_AGENT_ERROR_PATTERNS = (
-    # provider error codes (quota, rate limit, billing, auth)
-    re.compile(r"rate_?limit_?error", re.IGNORECASE),
-    re.compile(r"insufficient_?quota", re.IGNORECASE),
-    re.compile(r"quota_?exceeded", re.IGNORECASE),
-    re.compile(r"credit_?balance_?too_?low", re.IGNORECASE),
-    re.compile(r"insufficient\s+(?:balance|funds)", re.IGNORECASE),
-    re.compile(r"billing_?error", re.IGNORECASE),
-    re.compile(r"payment_?required", re.IGNORECASE),
-    re.compile(r"invalid_?api_?key", re.IGNORECASE),
-    re.compile(r"authentication_?error", re.IGNORECASE),
-    re.compile(r"context_?length_?exceeded", re.IGNORECASE),
-    re.compile(r"overloaded_?error", re.IGNORECASE),
-    re.compile(r"429 too many requests", re.IGNORECASE),
-    # network connectivity failures (offline, DNS, TLS, proxy)
-    re.compile(r"network is unreachable", re.IGNORECASE),
-    re.compile(r"no route to host", re.IGNORECASE),
-    re.compile(r"temporary failure in name resolution", re.IGNORECASE),
-    re.compile(r"name or service not known", re.IGNORECASE),
-    re.compile(r"dns resolution failed", re.IGNORECASE),
-    re.compile(r"getaddrinfo", re.IGNORECASE),
-    re.compile(r"max retries exceeded", re.IGNORECASE),
-    re.compile(r"certificate verify failed", re.IGNORECASE),
-    re.compile(r"connectionerror", re.IGNORECASE),
-    re.compile(r"sslerror", re.IGNORECASE),
-    re.compile(r"proxyerror", re.IGNORECASE),
-    re.compile(r"econnrefused", re.IGNORECASE),
-    re.compile(r"econnreset", re.IGNORECASE),
-    re.compile(r"etimedout", re.IGNORECASE),
-    re.compile(r"curl: \(\d+\)", re.IGNORECASE),
-    re.compile(r"connection timed out", re.IGNORECASE),
-    re.compile(r"connect timed out", re.IGNORECASE),
-    re.compile(r"operation timed out", re.IGNORECASE),
-    re.compile(r"connection refused", re.IGNORECASE),
-    re.compile(r"connection reset", re.IGNORECASE),
-    re.compile(r"connection closed", re.IGNORECASE),
-    re.compile(r"broken pipe", re.IGNORECASE),
-    re.compile(r"failed to connect", re.IGNORECASE),
-    re.compile(r"unable to connect", re.IGNORECASE),
-    re.compile(r"could not connect", re.IGNORECASE),
-    # CLI-level failure banners
-    re.compile(r"^\[?error\]?:", re.IGNORECASE | re.MULTILINE),
-    re.compile(r"^fatal:", re.IGNORECASE | re.MULTILINE),
-)
-
-
 def agent_failure_reason(returncode: int, output: str) -> str:
     """Return a short reason when the agent result must be discarded, or ''
     when the output is a usable result. Non-zero exit, empty output, and
     provider/CLI failure signatures (quota, rate limit, auth, billing) all
-    reject the result so error replies are never saved as task outputs."""
+    reject the result so error replies are never saved as task outputs.
+    Signatures are per-agent (agent.agents.<bin>.error_patterns can replace
+    the built-in table for claude/codex/... — G line)."""
     if returncode != 0:
         return f"agent exited {returncode}"
     if not output or not output.strip():
         return "agent produced no output"
-    for pattern in _AGENT_ERROR_PATTERNS:
+    for pattern in config.agent_error_patterns():
         if pattern.search(output):
             return f"agent reported provider failure ({pattern.pattern})"
     return ""
@@ -241,6 +197,10 @@ def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = F
     try:
         proc = _spawn_agent(cmd, workdir, env)
         _register_proc(proc)
+        # GAP-3 (N1): record the AGENT pid in the start marker so a killed
+        # runner's residue scan can tell operators whether the orphaned
+        # agent is still running (double-billing risk) and which pid to kill.
+        write_marker(key, workdir, agent_pid=proc.pid)
         streamed = _stream_output_enabled()
         stdout_lines, stderr_lines, overflow = _stream_proc(proc, prefix, start,
                                                             task.timeout, streamed)
@@ -454,23 +414,33 @@ def _apply_gate_commands(tmp: Path, task: Task, commands: list, result: TaskResu
     a failure deletes the artifact, records the outcome on the result
     (T2 feedback fields) and returns False. T12a: a validator may reply
     with a JSON status line -- {"status":"warn"} is allowed with a
-    warning, {"status":"fail"} rejects regardless of exit code."""
-    for raw in commands:
-        cmd = raw.replace("{output}", shlex.quote(str(tmp))).replace("{cwd}", shlex.quote(task.workdir()))
+    warning, {"status":"fail"} rejects regardless of exit code. H line:
+    judge validators (spec.judge) must emit VERDICT: PASS|FAIL - <reason>
+    (fail closed on missing/bare verdict). Repo-scoped validators are
+    deferred to the stage/batch end (N2) and skipped here."""
+    for spec in commands:
+        if spec.scope == "repo":
+            log.info("VALIDATE: %s deferred (repo scope -> stage end)", spec.cmd)
+            continue
+        cmd = spec.cmd.replace("{output}", shlex.quote(str(tmp))).replace("{cwd}", shlex.quote(task.workdir()))
         log.info("VALIDATE: %s", cmd)
         v = run_validation(cmd, task.workdir())
         result.validation_ok = v.ok
         result.validation_exit = v.exit_code
         result.validation_stderr = _cap_feedback(v.stderr or "")
-        if v.ok and _json_status(v.stdout) == "warn":
-            log.warning("VALIDATE WARN: %s (output saved with warning)", cmd)
-            continue
-        if v.ok and _json_status(v.stdout) == "fail":
-            tmp.unlink(missing_ok=True)
-            log.warning("VALIDATION FAILED (JSON status=fail): %s; output NOT saved", cmd)
+        if not _gate_spec_passed(spec, cmd, tmp, result, v):
             return False
-        if v.ok:
-            continue
+    result.validation_ok = True
+    result.validation_exit = 0
+    return True
+
+
+def _gate_spec_passed(spec, cmd: str, tmp: Path, result: TaskResult, v) -> bool:
+    """Decide whether one gate command passed: exit 0, optional JSON status
+    (T12a) and judge VERDICT protocol (fail closed on missing/bare verdict).
+    Records failure feedback on the result, deletes the temp artifact and
+    returns False on rejection."""
+    if not v.ok:
         tmp.unlink(missing_ok=True)
         log.warning("VALIDATION FAILED%s: %s; output NOT saved",
                     " (timeout)" if v.timed_out else f" (exit={v.exit_code})", cmd)
@@ -479,8 +449,29 @@ def _apply_gate_commands(tmp: Path, task: Task, commands: list, result: TaskResu
         for line in (v.stderr or "").strip().splitlines()[-10:]:
             log.warning("  | %s", line)
         return False
-    result.validation_ok = True
-    result.validation_exit = 0
+    if _json_status(v.stdout) == "warn":
+        log.warning("VALIDATE WARN: %s (output saved with warning)", cmd)
+        return True
+    if _json_status(v.stdout) == "fail":
+        tmp.unlink(missing_ok=True)
+        log.warning("VALIDATION FAILED (JSON status=fail): %s; output NOT saved", cmd)
+        return False
+    if spec.judge:
+        verdict = judge_verdict(v.stdout)
+        if verdict in ("FAIL", "REJECT"):
+            line = next((ln.strip() for ln in (v.stdout or "").splitlines()
+                         if ln.strip().upper().startswith("VERDICT:")), "")
+            result.validation_stderr = _cap_feedback(f"judge {verdict}: {line}")
+            tmp.unlink(missing_ok=True)
+            log.warning("VALIDATION FAILED (judge verdict=%s): %s; output NOT saved", verdict, cmd)
+            return False
+        if verdict is None:
+            result.validation_stderr = _cap_feedback(
+                "judge produced no VERDICT: PASS|FAIL - <reason> line")
+            tmp.unlink(missing_ok=True)
+            log.warning("VALIDATION FAILED (judge: no verdict): %s; output NOT saved", cmd)
+            return False
+        log.info("VALIDATE JUDGE PASS: %s", cmd)
     return True
 
 
@@ -494,7 +485,7 @@ def _save_validated(task: Task, result: TaskResult, validate_cmd: str) -> bool:
     commands (see _resolve_validators). Returns True when saved."""
     if not result.success:
         return False
-    commands = _resolve_validators(validate_cmd)
+    commands = _resolve_validator_specs(validate_cmd)
     if not commands:
         save_result(task, result)
         return True
@@ -544,6 +535,31 @@ def _json_status(stdout: str) -> str:
     return ""
 
 
+_JUDGE_VERDICT_RE = re.compile(r"^\s*VERDICT\s*:\s*(PASS|FAIL|REJECT)\b",
+                               re.IGNORECASE | re.MULTILINE)
+
+
+def judge_verdict(text: str) -> Optional[str]:
+    """H line (LLM-as-judge protocol): extract a VERDICT: PASS|FAIL|REJECT
+    line from a judge validator's stdout. A verdict must carry a reason on
+    the same line (bare verdicts fail closed — T12b semantics); any FAIL/
+    REJECT wins over an earlier PASS. None = no usable verdict."""
+    first = None
+    for m in _JUDGE_VERDICT_RE.finditer(text or ""):
+        line_end = text.find("\n", m.end())
+        if line_end == -1:
+            line_end = len(text)
+        rest = text[m.end():line_end].strip()
+        if not rest:
+            continue  # bare verdict without a reason: not a usable judgment
+        verdict = m.group(1).upper()
+        if verdict in ("FAIL", "REJECT"):
+            return verdict
+        if first is None:
+            first = verdict
+    return first
+
+
 def _cap_feedback(text: str, max_chars: int = 4000, max_lines: int = 40) -> str:
     """Cap validator stderr for retry feedback (decision D4): 4000 chars /
     40 lines, keeping the head of the output (where CLI banners land)."""
@@ -587,26 +603,30 @@ def revalidate_existing(path: Path, validate_cmd: Optional[str], workdir: str = 
         return False  # vanished between is_file and stat: fail closed
     if empty:
         return False
-    commands = _resolve_validators(validate_cmd)
+    commands = _resolve_validator_specs(validate_cmd)
     if not commands:
         return True
     wd = workdir or os.getcwd()
-    for raw in commands:
-        cmd = raw.replace("{output}", shlex.quote(str(path))).replace("{cwd}", shlex.quote(wd))
-        log.info("REVALIDATE: %s", cmd)
-        v = run_validation(cmd, wd)
-        if v.ok:
-            # T12a: the JSON status protocol applies on the reuse path too —
-            # an exit-0 validator reporting {"status":"fail"} must not
-            # promote the artifact when the fresh-save path would reject it
-            # (round-4 finding M3/P2-4).
-            status = _json_status(v.stdout)
-            if status == "fail":
-                log.warning("REVALIDATION FAILED (JSON status=fail): %s; %s NOT reusable", cmd, path)
-                return False
-            if status == "warn":
-                log.warning("REVALIDATE WARN: %s (artifact reusable with warning)", cmd)
+    for spec in commands:
+        if spec.scope == "repo":
+            # N2: full-tree gates run once at stage/batch end, not here
             continue
+        if not _revalidate_one(spec, path, wd):
+            return False
+    log.info("REVALIDATED %s", path)
+    return True
+
+
+def _revalidate_one(spec, path: Path, wd: str) -> bool:
+    """Re-run a single validator spec against an existing artifact. T12a:
+    the JSON status protocol applies on the reuse path too — an exit-0
+    validator reporting {"status":"fail"} must not promote the artifact
+    when the fresh-save path would reject it (round-4 finding M3/P2-4).
+    H line: judge validators apply the same fail-closed verdict protocol."""
+    cmd = spec.cmd.replace("{output}", shlex.quote(str(path))).replace("{cwd}", shlex.quote(wd))
+    log.info("REVALIDATE: %s", cmd)
+    v = run_validation(cmd, wd)
+    if not v.ok:
         log.warning("REVALIDATION FAILED%s: %s; %s NOT reusable",
                     " (timeout)" if v.timed_out else f" (exit={v.exit_code})", cmd, path)
         for line in (v.stdout or "").strip().splitlines()[-10:]:
@@ -614,7 +634,22 @@ def revalidate_existing(path: Path, validate_cmd: Optional[str], workdir: str = 
         for line in (v.stderr or "").strip().splitlines()[-10:]:
             log.warning("  | %s", line)
         return False
-    log.info("REVALIDATED %s", path)
+    status = _json_status(v.stdout)
+    if status == "fail":
+        log.warning("REVALIDATION FAILED (JSON status=fail): %s; %s NOT reusable", cmd, path)
+        return False
+    if status == "warn":
+        log.warning("REVALIDATE WARN: %s (artifact reusable with warning)", cmd)
+    if spec.judge:
+        verdict = judge_verdict(v.stdout)
+        if verdict in ("FAIL", "REJECT"):
+            log.warning("REVALIDATION FAILED (judge verdict=%s): %s; %s NOT reusable",
+                        verdict, cmd, path)
+            return False
+        if verdict is None:
+            log.warning("REVALIDATION FAILED (judge: no verdict): %s; %s NOT reusable",
+                        cmd, path)
+            return False
     return True
 
 

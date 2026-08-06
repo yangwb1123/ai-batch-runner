@@ -4,11 +4,13 @@ single-batch / pipeline dispatch."""
 from __future__ import annotations
 
 import argparse
+import hashlib
 import logging
 import logging.handlers
 import math
 import os
 import re
+import shlex
 import signal
 import sys
 import time
@@ -16,16 +18,17 @@ from pathlib import Path
 from typing import Optional
 
 from . import config
-from .config import (AGENT_BIN, AGENT_DEFAULT_WORKERS, COMMIT_PREFIX_DEFAULT, log, yaml)
+from .config import (AGENT_BIN, AGENT_DEFAULT_WORKERS, COMMIT_PREFIX_DEFAULT,
+                     _resolve_validator_specs, log, yaml)
 from .models import Pipeline, Task
 from .reuse import (reuse_decision, reuse_fingerprint, sidecar_path, write_sidecar)
 from .lock import LOCK_EXIT_CODE, acquire_lock, release_lock, verify_held
 from .triage import (STALL_EXIT_CODE, Circuit, StallDetector, env_signature,
-                     residue_markers, task_key)
+                     kill_orphan, marker_info, pid_alive, residue_markers, task_key)
 from .pipeline import (_append_decision_log, _archive_outputs, load_pipeline,
                        load_tasks, load_tasks_from_dir, run_pipeline)
-from .runner import (kill_active_procs, print_summary, run_argv,
-                     run_parallel, run_serial)
+from .runner import (judge_verdict, kill_active_procs, print_summary, run_argv,
+                     run_parallel, run_serial, run_validation)
 from .text_io import read_text_bounded
 
 def build_parser() -> argparse.ArgumentParser:
@@ -84,12 +87,12 @@ def _add_runtime_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--session-name", default="",
                    help="Reproducible session base name (default: task source file stem); shared sessions continue across runs")
     _add_memory_arg(p)
-    p.add_argument("--validate", default="",
-                   help="Named validators from pi-batch.yaml validators registry, comma-separated (e.g. 'quick,gofmt'); AND semantics. Unknown names are treated as raw shell commands")
-    p.add_argument("--validate-cmd", default="",
-                   help="Engineering gate run against every agent result BEFORE its output is saved (e.g. 'go build ./... && go vet ./...', 'python cli.py check'); {output} and {cwd} placeholders are substituted. Non-zero exit rejects the result and leaves no file")
+    _add_validate_args(p)
     p.add_argument("--no-lock", action="store_true",
                    help="skip the single-instance lock (T4 escape hatch)")
+    p.add_argument("--kill-orphans", action="store_true",
+                   help="GAP-3: kill orphaned agent process groups found in residue markers "
+                        "(agents left running by a SIGKILLed runner — double-billing risk)")
     p.add_argument("--approve-file", default="",
                    help="T12c: file whose existence approves approval: true stages (CI-friendly)")
     p.add_argument("--circuit-max", type=int, default=5,
@@ -117,6 +120,13 @@ def _add_logging_args(p: argparse.ArgumentParser) -> None:
 def _add_memory_arg(p: argparse.ArgumentParser) -> None:
     p.add_argument("--memory-mode", choices=["auto", "on", "off"], default=config.MEMORY_MODE,
                    help="Progressive message memory: auto for configured agents; on/off override")
+
+
+def _add_validate_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--validate", default="",
+                   help="Named validators from pi-batch.yaml validators registry, comma-separated (e.g. 'quick,gofmt'); AND semantics. Unknown names are treated as raw shell commands")
+    p.add_argument("--validate-cmd", default="",
+                   help="Engineering gate run against every agent result BEFORE its output is saved (e.g. 'go build ./... && go vet ./...', 'python cli.py check'); {output} and {cwd} placeholders are substituted. Non-zero exit rejects the result and leaves no file")
 
 
 def _add_batch_args(p: argparse.ArgumentParser) -> None:
@@ -293,15 +303,17 @@ def _verify_round_lock(lock_path: Optional[Path]) -> None:
         sys.exit(LOCK_EXIT_CODE)
 
 
-def _warn_round_residue(pipeline: Optional[Pipeline]) -> None:
+def _warn_round_residue(pipeline: Optional[Pipeline], kill_orphans: bool = False) -> None:
     """T5: warn about residue markers left by a killed run. Markers are
     written under each task's cwd, so cwd-aware tasks' orphans are scanned
-    in their own dirs too (round-4 L6)."""
+    in their own dirs too (round-4 L6). GAP-3/N1: markers now carry the
+    agent pid — a still-running orphan is warned about with a kill hint
+    (double-billing risk); --kill-orphans kills them."""
     if pipeline is not None:
         dirs = [os.getcwd()] + [s.from_dir for s in pipeline.stages if s.from_dir]
-        _warn_residue_markers(dirs)
+        _warn_residue_markers(dirs, kill_orphans)
     else:
-        _warn_residue_markers()
+        _warn_residue_markers(kill_orphans=kill_orphans)
 
 
 def _run_rounds(args, pipeline: Optional[Pipeline], session_name: str, cli_validate: str, timeout_override: int,
@@ -333,7 +345,7 @@ def _run_rounds(args, pipeline: Optional[Pipeline], session_name: str, cli_valid
         log.info("=" * 60)
 
         _verify_round_lock(lock_path)
-        _warn_round_residue(pipeline)
+        _warn_round_residue(pipeline, args.kill_orphans)
         round_failed, failed_keys = _execute_round(args, pipeline, stdin_tasks, session_name,
                                                    cli_validate, timeout_override, circuit, round_no)
 
@@ -375,14 +387,35 @@ def _execute_round(args, pipeline: Optional[Pipeline], stdin_tasks, session_name
                             args.max_rounds, round_no, circuit)
 
 
-def _warn_residue_markers(dirs: Optional[list] = None) -> None:
+def _warn_residue_markers(dirs: Optional[list] = None, kill_orphans: bool = False) -> None:
     """T5: start markers surviving a previous (killed) run are warned about;
     the current round regenerates them instead of trusting them silently.
     Markers are written under the TASK cwd, so cwd-aware tasks' orphans must
-    be scanned in their own dirs, not just the process cwd (round-4 L6)."""
+    be scanned in their own dirs, not just the process cwd (round-4 L6).
+
+    GAP-3 (N1): a marker whose AGENT pid is still alive means the SIGKILLed
+    runner left an orphaned agent running — the call is still billing while
+    the restart will rerun it (double billing). Warn with a kill hint, and
+    kill the orphan process group when --kill-orphans is set."""
+    from . import metering
     for d in dict.fromkeys(dirs or [os.getcwd()]):
         for r in residue_markers(d):
-            log.warning("RESIDUE: stale start marker %s in %s (previous run was killed); regenerating", r.name, d)
+            info = marker_info(r)
+            agent = info.get("agent_pid") or 0
+            alive = pid_alive(agent) if agent else False
+            if alive:
+                log.warning(
+                    "RESIDUE: orphaned agent pid %d from marker %s in %s is STILL RUNNING "
+                    "(previous run was killed; this call is still billing). "
+                    "Kill it with: kill -9 %d  (or rerun with --kill-orphans)",
+                    agent, r.name, d, agent)
+                metering.record_event("orphan_detected", r.name,
+                                      f"agent pid {agent} still running", d)
+                if kill_orphans:
+                    kill_orphan(agent)
+                    log.warning("RESIDUE: killed orphaned agent pid %d", agent)
+            else:
+                log.warning("RESIDUE: stale start marker %s in %s (previous run was killed); regenerating", r.name, d)
 
 
 def _circuit_all_stopped(circuit: Circuit, failed_keys: set) -> bool:
@@ -631,8 +664,9 @@ def _run_batch_round(args, stdin_tasks, session_name: str, cli_validate: str, ma
 
     # T5: residue markers are written under each task's cwd; orphan markers
     # from a killed run must be warned about there too (round-4 finding L6).
+    # GAP-3: --kill-orphans kills still-running orphaned agents.
     for d in {t.workdir() for t in tasks if t.cwd}:
-        _warn_residue_markers([d])
+        _warn_residue_markers([d], args.kill_orphans)
 
     if not tasks:
         log.error("No tasks to execute: a YAML source must contain a 'tasks' list (pipelines use 'stages' and are auto-detected)")
@@ -650,16 +684,29 @@ def _run_batch_round(args, stdin_tasks, session_name: str, cli_validate: str, ma
         return False, set()
 
     results, round_failed = _execute_batch(tasks, args, session_name, cli_validate)
+    # GAP-4 (N2): repo-scoped validators never run per artifact (they would
+    # race other writers); run them once at batch end. A failure fails the
+    # round so the 7x24 loop retries (and the circuit can isolate it).
+    repo_keys = _run_batch_repo_validators(tasks, cli_validate)
+    if repo_keys:
+        round_failed = True
+    return _finish_batch_round(args, tasks, results, round_failed, repo_keys,
+                               circuit, cli_validate)
+
+
+def _finish_batch_round(args, tasks: list, results: list, round_failed: bool,
+                        repo_keys: set, circuit: Circuit, cli_validate: str) -> tuple[bool, set]:
+    """Tail of a single-batch round: decision log, fingerprint sidecars,
+    failure keys, circuit feedback and the environment-signature stall
+    check (T5: identical validator stderr across >=2 tasks halts the loop)."""
     _finalize_batch_round(args, results, round_failed)
     if args.reuse_fingerprint:
         _write_sidecars(args, tasks, results, cli_validate)
-    failed_keys = {task_key(r.task) for r in results if not r.success}
+    failed_keys = {task_key(r.task) for r in results if not r.success} | repo_keys
     if circuit is not None:
         for r in results:
             if not r.success:
                 circuit.register_failure(task_key(r.task), r.reason or "")
-    # T5: identical validator stderr across >=2 tasks = environment-class
-    # failure (broken gate, not per-task); halt instead of retrying.
     if round_failed and env_signature(results):
         log.error("ENVIRONMENT: identical validator failure across >=2 tasks; "
                   "stopping loop (exit %d)", STALL_EXIT_CODE)
@@ -707,6 +754,55 @@ def _git_commit_single_batch(args, outputs: list) -> None:
             log.info("GIT COMMIT: %s (files: %d)", msg, len(outputs))
     except Exception as e:
         log.warning("Git commit skipped: %s", e)
+
+
+def _run_batch_repo_validators(tasks: list, cli_validate: str) -> set:
+    """GAP-4 (N2): execute repo-scoped validators once per batch round
+    (single-batch equivalent of the pipeline stage-end deferral). Specs are
+    collected from the CLI gate plus every task's per-task validate field;
+    each gate runs once against the repo root. Returns the set of synthetic
+    failure keys (task_key-shaped) so the round loop retries and the
+    circuit can isolate a persistently broken full-tree gate."""
+    specs: list = []
+    seen = set()
+    for raw in [cli_validate] + [t.validate for t in tasks if t.validate]:
+        for spec in _resolve_validator_specs(raw or ""):
+            if spec.scope == "repo" and spec.cmd not in seen:
+                seen.add(spec.cmd)
+                specs.append(spec)
+    if not specs:
+        return set()
+    wd = os.getcwd()
+    failed: set = set()
+    for spec in specs:
+        key = _run_batch_repo_spec(spec, wd)
+        if key is not None:
+            failed.add(key)
+    return failed
+
+
+def _run_batch_repo_spec(spec, wd: str):
+    """Run one repo-scoped validator once against the repo root. Returns
+    the synthetic failure key (task_key-shaped) or None on success."""
+    from . import metering
+    cmd = spec.cmd.replace("{cwd}", shlex.quote(wd))
+    log.info("REPO VALIDATE (batch): %s", cmd)
+    v = run_validation(cmd, wd)
+    ok = v.ok
+    if ok and spec.judge:
+        verdict = judge_verdict(v.stdout)
+        if verdict in ("FAIL", "REJECT") or verdict is None:
+            ok = False
+    if ok:
+        return None
+    key = hashlib.sha1(f"repo-validator:{spec.cmd}".encode("utf-8")).hexdigest()[:16]
+    log.error("REPO VALIDATE FAILED%s: %s (batch round failed)",
+              " (timeout)" if v.timed_out else f" (exit={v.exit_code})", cmd)
+    for line in (v.stderr or "").strip().splitlines()[-10:]:
+        log.error("  | %s", line)
+    metering.record_event("repo_gate_fail", spec.cmd[:120],
+                          v.stderr[:300] or f"exit {v.exit_code}", wd)
+    return key
 
 
 def _finalize_batch_round(args, results: list, round_failed: bool) -> None:

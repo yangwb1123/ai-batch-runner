@@ -18,6 +18,23 @@ agent:
   session_flags:
     start: ["--session-id", "{session}", "--name", "{name}"]
     continue: ["--session-id", "{session}"]
+  # G line: failure signatures that reject agent output (quota/rate-limit/
+  # auth/network/CLI banners). Defaults cover pi/OpenAI-compatible providers;
+  # override globally (below) or per binary (agents.<bin>.*). Empty list
+  # disables signature rejection for that agent.
+  # error_patterns:
+  #   - "rate.?limit"
+  #   - "^(?i)error:"
+  # Per-agent overrides (win over the global agent.* keys): claude/codex/
+  # gemini have different session-flag syntax and failure signatures.
+  # agents:
+  #   claude:
+  #     session_flags:
+  #       start: ["--continue", "--session-id", "{session}"]
+  #       continue: ["--session-id", "{session}"]
+  #     error_patterns:
+  #       - "anthropic.*rate limit"
+  #       - "context window exceeded"
 
 # Preserve pi's original JSONL messages, but inject only a small metadata
 # manifest. The current LLM decides whether to call `pi-batch.py memory`
@@ -80,6 +97,18 @@ commands:
 # task/stage validate field. Commands run against each generated artifact
 # before it is committed; {output} and {cwd} placeholders are substituted at
 # run time. Add project gates here instead of repeating shell strings.
+#
+# Entries may be a command string (as below) or a mapping:
+#   cmd:   shell command with {output}/{cwd} placeholders
+#   judge: true = LLM-as-judge protocol — the gate must reply with
+#          'VERDICT: PASS|FAIL - <reason>' (bare PASS or no verdict fails
+#          closed). Use scripts/judge.py to wrap an agent call, or any
+#          command that emits VERDICT lines.
+#   scope: 'file' (default) = run per artifact before commit;
+#          'repo' = full-tree gate (go build ./..., quality.py, uicheck)
+#          deferred to the END of the stage/batch so it never races
+#          concurrent role agents writing the tree (N2). Repo gates see
+#          the finished stage; use {cwd}, not {output}, in their commands.
 validators:
   quick: "python cli.py check"
   gofmt: 'test -z "$(gofmt -l {output})"'
@@ -119,6 +148,15 @@ validators:
   # Definition-of-Done gate: the artifact must carry an honest completion
   # report (commands executed vs not_executed, no fabricated passes).
   completion: "python {cwd}/scripts/check-completion-report.py {output}"
+  # H line (LLM-as-judge): a judge gate must answer VERDICT: PASS|FAIL - reason;
+  # fail closed on bare/missing verdicts. scripts/judge.py wraps the agent.
+  # quality_judge:
+  #   cmd: 'python {cwd}/scripts/judge.py -p "Does the design meet the rubric? VERDICT: PASS|FAIL - reason." {output}'
+  #   judge: true
+  # N2 (repo scope): full-tree gates run once at stage/batch end, never per
+  # artifact mid-stage (they would race concurrent writers). Repo gates use
+  # {cwd}; {output} is substituted with the stage's output directory.
+  # gofullbuild: {cmd: "go build ./... && go vet ./...", scope: repo}
 
 # Task type classifier: runs BEFORE execution (--classify / `classify`
 # subcommand). Frontend UI tasks route to the UI generation pipeline, which

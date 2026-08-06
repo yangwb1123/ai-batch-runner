@@ -21,7 +21,9 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import time
 from pathlib import Path
+from typing import Optional
 
 from .config import log
 
@@ -44,13 +46,17 @@ def marker_path(key: str, cwd: str = "") -> Path:
     return Path(cwd or os.getcwd()) / STATE_DIR / f"{key}.start"
 
 
-def write_marker(key: str, cwd: str = "") -> None:
+def write_marker(key: str, cwd: str = "", agent_pid: Optional[int] = None) -> None:
     """Per-task start marker; a surviving marker after the run signals an
-    orphaned (SIGKILLed) agent invocation (zero pi dependency)."""
+    orphaned (SIGKILLed) agent invocation (zero pi dependency). Content:
+    runner pid, agent pid (when known), start epoch — so a residue scan can
+    tell whether the orphaned agent is still running (GAP-3/N1)."""
     p = marker_path(key, cwd)
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(str(os.getpid()), encoding="utf-8")
+        p.write_text("%s\n%s\n%d\n" % (
+            os.getpid(), agent_pid if agent_pid is not None else "",
+            int(time.time())), encoding="utf-8")
     except OSError:
         pass  # state dir unwritable: residue detection degrades silently
 
@@ -68,6 +74,58 @@ def residue_markers(cwd: str = "") -> list:
     if not d.is_dir():
         return []
     return sorted(d.glob("*.start"))
+
+
+def marker_info(path: Path) -> dict:
+    """Parse a start marker into {"runner_pid", "agent_pid", "started"};
+    fields absent in old single-line markers are empty/0. Never raises."""
+    info = {"runner_pid": 0, "agent_pid": 0, "started": 0}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return info
+    if not lines:
+        return info
+    try:
+        info["runner_pid"] = int(lines[0])
+    except ValueError:
+        pass
+    if len(lines) >= 2 and lines[1].strip():
+        try:
+            info["agent_pid"] = int(lines[1])
+        except ValueError:
+            pass
+    if len(lines) >= 3 and lines[2].strip():
+        try:
+            info["started"] = int(lines[2])
+        except ValueError:
+            pass
+    return info
+
+
+def pid_alive(pid: int) -> bool:
+    """True when the pid is a live process in this host's pid namespace."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+
+
+def kill_orphan(pid: int) -> None:
+    """Kill an orphaned agent's whole process group (agents are spawned with
+    start_new_session=True so pgid == pid). Best-effort, never raises."""
+    if pid <= 0:
+        return
+    try:
+        os.killpg(pid, 9)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            os.kill(pid, 9)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
 
 
 def classify_reason(reason: str) -> str:

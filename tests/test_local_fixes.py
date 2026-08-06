@@ -144,11 +144,11 @@ class TestMissingPyYaml:
         mod = load_batch()
         tasks_yaml = tmp_path / "tasks.yaml"
         tasks_yaml.write_text("tasks:\n  - prompt: t1\n", encoding="utf-8")
-        monkeypatch.setattr(mod.pipeline, "yaml", None)
+        monkeypatch.setattr(mod.task_loading, "yaml", None)
         with pytest.raises(SystemExit) as exc:
             mod.load_tasks(str(tasks_yaml))
         assert exc.value.code == 1
-        monkeypatch.setattr(mod.pipeline, "yaml", __import__("yaml"))
+        monkeypatch.setattr(mod.task_loading, "yaml", __import__("yaml"))
         tasks_yaml.write_text("tasks:\n  - prompt: [not, a, string]\n", encoding="utf-8")
         with pytest.raises(SystemExit) as malformed:
             mod.load_tasks(str(tasks_yaml))
