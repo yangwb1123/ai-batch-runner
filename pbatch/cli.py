@@ -690,7 +690,8 @@ def _run_pipeline_round(args, pipeline: Pipeline, session_name: str, cli_validat
                                               session_mode=args.session_mode, session_name=session_name, validate_cmd=cli_validate,
                                               decision_log=args.decision_log, archive_dir=args.archive_dir,
                                               reuse_legacy=args.reuse_legacy, fingerprint_mode=args.reuse_fingerprint,
-                                              approval_file=args.approve_file)
+                                              approval_file=args.approve_file,
+                                              original_prompt=args.prompt or "")
     print_summary(all_results)
     if failed_stages or any(not r.success for r in all_results):
         failed_keys = {task_key(r.task) for r in all_results if not r.success}
