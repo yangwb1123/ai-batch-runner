@@ -109,6 +109,51 @@ def run_suite(suite: dict, only_id: str = "") -> list:
     return results
 
 
+def _count_cases(suite: dict) -> int:
+    """Case count for a suite."""
+    cases = suite.get("cases")
+    if isinstance(cases, list):
+        return len(cases)
+    return 0
+
+
+def _suite_domains(suite: dict) -> list:
+    """Domains exercised by a suite (from case expect fields)."""
+    domains = []
+    cases = suite.get("cases")
+    if not isinstance(cases, list):
+        return []
+    for case in cases:
+        if not isinstance(case, dict):
+            continue
+        expect = case.get("expect", {})
+        for key in ("task_type", "system_type", "domain", "tier",
+                   "matched_tier", "effective_tier"):
+            value = expect.get(key) if isinstance(expect, dict) else None
+            if value and str(value) not in domains:
+                domains.append(str(value))
+    return domains[:5]
+
+
+def _print_coverage(total: int, failed: list) -> None:
+    """Per-suite case counts + domain coverage (data-expression)."""
+    coverage = []
+    for suite in load_eval_files():
+        coverage.append({"suite": suite.get("name", "?"),
+                         "cases": _count_cases(suite),
+                         "domains": _suite_domains(suite)})
+    if "--json" in sys.argv:
+        print(json.dumps({"total": total, "failed": len(failed),
+                          "failures": failed, "coverage": coverage},
+                         ensure_ascii=False, indent=2))
+    else:
+        print("## Eval 域覆盖")
+        for item in coverage:
+            print(f"- {item['suite']}: {item['cases']} 用例"
+                  f" (域: {', '.join(item['domains']) or 'n/a'})")
+        print(f"总计 {total} 用例 / {len(coverage)} 套件")
+
+
 def eval_main(argv: list) -> None:
     """`pi-batch eval [--filter CASE_ID] [--json]` — run the rule-system
     regression suite."""
@@ -121,6 +166,9 @@ def eval_main(argv: list) -> None:
         "--quick", action="store_true",
         help="run only core regression cases (rules + classifier domains)")
     parser.add_argument("--json", action="store_true", help="machine-readable output")
+    parser.add_argument(
+        "--coverage", action="store_true",
+        help="print per-suite case counts and domain coverage")
     args = parser.parse_args(argv)
     total, failed = 0, []
     for suite in load_eval_files():
@@ -133,6 +181,9 @@ def eval_main(argv: list) -> None:
             if not ok:
                 failed.append(f"{suite['name']}/{case_id}: {detail}")
                 log.error("EVAL %s/%s FAIL: %s", suite["name"], case_id, detail)
+    if args.coverage:
+        _print_coverage(total, failed)
+        return
     if args.json:
         print(json.dumps({"total": total, "failed": len(failed),
                           "failures": failed}, ensure_ascii=False, indent=2))
