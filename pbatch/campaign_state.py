@@ -212,9 +212,13 @@ def write_summary(store: StateStore, path: Path, campaign_name: str) -> None:
         elif event.get("status") == "ANALYSIS_FAILED":
             rows.append(dict(event, direction="(module analysis)"))
     counts = {}
+    per_campaign: dict[str, dict] = {}
     for event in rows:
         status = str(event.get("status", "UNKNOWN"))
         counts[status] = counts.get(status, 0) + 1
+        campaign = str(event.get("campaign", "?"))
+        bucket = per_campaign.setdefault(campaign, {})
+        bucket[status] = bucket.get(status, 0) + 1
     lines = [f"# Campaign summary: {campaign_name}", "",
              f"Generated: {utc_now()}", "",
              "| Module | Direction | Status | Reason | Evidence |",
@@ -226,6 +230,14 @@ def write_summary(store: StateStore, path: Path, campaign_name: str) -> None:
             _cell(event.get("status", "")), _cell(event.get("reason", "")), _cell(evidence)))
     lines.extend(["", "## Counts", ""])
     lines.extend(f"- {key}: {counts[key]}" for key in sorted(counts))
+    # Per-campaign breakdown: multiple campaigns share one state file
+    # (real-world lesson: my round loop and the user's compose queue
+    # interleave events in docs/auto/state.jsonl).
+    if len(per_campaign) > 1:
+        for campaign in sorted(per_campaign):
+            bucket = per_campaign[campaign]
+            lines.extend(["", f"### {campaign}", ""])
+            lines.extend(f"- {key}: {bucket[key]}" for key in sorted(bucket))
     _atomic_text(path, "\n".join(lines) + "\n")
 
 

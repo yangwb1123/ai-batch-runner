@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 import sys
@@ -528,6 +529,98 @@ def test_campaign_end_to_end_and_fingerprint_reuse(tmp_path):
                             capture_output=True, text=True, timeout=60)
     assert second.returncode == 0, second.stderr
     assert len((tmp_path / "calls.log").read_text(encoding="utf-8").splitlines()) == 3
+
+
+def test_campaign_rounds_reuse_between_rounds(tmp_path):
+    """--rounds 2 runs the campaign twice; when the repo snapshot is
+    unchanged between rounds, round 2 reuses everything via fingerprints
+    (no extra agent calls), so 'run it N times' is first-class instead of
+    an external bash loop (real-world lesson: aero-vault 10x)."""
+    _campaign_fixture(tmp_path)
+    # log calls under docs/auto/ (excluded from the repo snapshot) so the
+    # working tree stays clean between rounds and reuse can actually match
+    calls = tmp_path / "docs" / "auto" / "calls.log"
+    agent = tmp_path / "agent.sh"
+    candidate = json.dumps([{
+        "title": "Harden current API", "problem": "No explicit contract", "value": 9,
+        "risk_reduction": 8, "effort": 2, "confidence": 9,
+        "evidence": ["src/mod/code.py"], "acceptance": ["contract test passes"],
+    }])
+    agent.write_text(
+        "#!/bin/sh\n"
+        f"printf 'call\\n' >> '{calls}'\n"
+        "case \"$2\" in\n"
+        f"  *'Return ONLY a JSON array'*) printf '%s\\n' '{candidate}' ;;\n"
+        "  *'VERDICT: PASS'*) printf '%s\\n' 'VERDICT: PASS - requirements are satisfied' ;;\n"
+        "  *) printf '%s\\n' '## Requirements complete' ;;\n"
+        "esac\n", encoding="utf-8")
+    agent.chmod(0o755)
+    # --skip-passed enables fingerprint reuse between rounds; without it
+    # every round is a fresh full pass by design (fresh evidence)
+    command = [sys.executable, str(PI_BATCH), "campaign", "--config", "campaign.yaml",
+               "--agent-bin", str(agent), "--no-lock", "--log-file", "",
+               "--rounds", "2", "--round-delay", "0", "--skip-passed"]
+    first = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=120)
+    assert first.returncode == 0, first.stderr
+    combined = first.stdout + first.stderr
+    assert "CAMPAIGN ROUND 1/2" in combined
+    assert "CAMPAIGN ROUND 2/2" in combined
+    assert len(calls.read_text(encoding="utf-8").splitlines()) == 3  # round 2 reused all
+
+
+def test_campaign_rounds_rejects_negative_and_nonfinite(tmp_path):
+    _campaign_fixture(tmp_path)
+    for flag, value in (("--rounds", "-1"), ("--round-delay", "nan"),
+                        ("--round-delay", "-5")):
+        command = [sys.executable, str(PI_BATCH), "campaign", "--config", "campaign.yaml",
+                   "--agent-bin", str(tmp_path / "agent.sh"), "--no-lock",
+                   "--rounds", "1", "--round-delay", "0", "--dry-run"]
+        # rebuild with the offending value in place
+        command = [sys.executable, str(PI_BATCH), "campaign", "--config", "campaign.yaml",
+                   "--agent-bin", str(tmp_path / "agent.sh"), "--no-lock", "--dry-run",
+                   flag, value]
+        r = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=60)
+        assert r.returncode == 2, (flag, value, r.stderr[-300:])
+
+
+def test_round_commit_commits_and_skips_clean(tmp_path, monkeypatch):
+    """--round-commit: after a round, non-ignored changes are committed;
+    a clean tree is skipped without error (advisory semantics)."""
+    from pbatch import campaign as C
+    from pbatch.campaign_models import CampaignSettings
+    from pbatch.campaign_state import StateStore
+
+    _init_git(tmp_path)
+    settings = CampaignSettings(output_dir="docs/auto",
+                                state_file="docs/auto/state.jsonl",
+                                summary_file="docs/auto/SUMMARY.md")
+    store = StateStore(tmp_path / "docs" / "auto" / "state.jsonl")
+    args = argparse.Namespace()
+    ctx = C.CampaignContext(tmp_path, settings, args, store, {})
+    # dirty tree -> committed
+    (tmp_path / "source.py").write_text("changed\n", encoding="utf-8")
+    C._round_commit(ctx, 1)
+    head = subprocess.run(["git", "-C", str(tmp_path), "log", "--oneline", "-1"],
+                          capture_output=True, text=True, check=True).stdout
+    assert "[pi-batch] campaign round 1" in head
+    # ignored changes -> skipped without a new commit
+    (tmp_path / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", ".gitignore"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "ignore"], check=True, capture_output=True)
+    (tmp_path / "ignored.txt").write_text("nope", encoding="utf-8")
+    before = subprocess.run(["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+                            capture_output=True, text=True, check=True).stdout
+    C._round_commit(ctx, 3)
+    after = subprocess.run(["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+                           capture_output=True, text=True, check=True).stdout
+    assert before == after
+    # clean tree -> skipped too
+    before2 = subprocess.run(["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+                             capture_output=True, text=True, check=True).stdout
+    C._round_commit(ctx, 2)
+    after2 = subprocess.run(["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+                            capture_output=True, text=True, check=True).stdout
+    assert before2 == after2
 
 
 def test_default_six_stage_pipeline_runs_meta_gates_validator_and_archive(monkeypatch, tmp_path):

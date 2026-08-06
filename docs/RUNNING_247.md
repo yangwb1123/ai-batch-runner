@@ -314,10 +314,28 @@ campaign。规则：
 - **排队用内建 `--wait-lock MINUTES`**（campaign 与单批 CLI 均支持）：30s
   轮询、stale 锁立即破除、预算耗尽 exit 5。shell 版 `wait-for-run.sh`（
   examples/snaplink-platform/）留给非 pi-batch 命令，同样带 stale 检测。
-- 多个 campaign 可共享 `docs/auto/state.jsonl`（事件按 campaign 名区分），
-  但不要并发写同一工作树——`--no-lock` 只用于故意分叉（不同 worktree）。
+- 多个 campaign 可共享 `docs/auto/state.jsonl`（事件按 campaign 名区分，
+  SUMMARY.md 的 Counts 按 campaign 拆分），但不要并发写同一工作树——
+  `--no-lock` 只用于故意分叉（不同 worktree）。
 - 每次 campaign 启动会记录 `TOOL_VERSION` 事件（工具代码 digest + 工具仓库
   HEAD）：运行中工具被升级会失效旧指纹并可见，防止旧代码静默产出。
+
+### 轮循环：--rounds N
+
+"跑 N 次"是一等特性，无需外部 bash 循环：
+
+```bash
+python pi-batch.py campaign --rounds 10 --round-delay 60 \
+  --round-commit --reuse --retry-failed --wait-lock 10080
+```
+
+- `--rounds N`（0 = 无限）：每轮重新发现模块；配合 `--reuse/--skip-passed`，
+  指纹使后轮增量——已 PASSED 的分析/方向直接复用，只有被上一轮改动的模块
+  重新分析（新鲜证据）。不带复用标志时每轮都是全量新跑。
+- `--round-delay SECONDS`：轮间节流。
+- `--round-commit`：每轮结束后 `git add -A` + 提交（尊重 .gitignore，提交
+  失败只告警不影响轮次）；轮间工作树保持干净。
+- dry-run 始终单次（规划不循环）；负值/NaN 在启动前拒绝（exit 2）。
 
 ### 超时配置（campaign 流水线）
 
