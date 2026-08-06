@@ -130,6 +130,7 @@ validators:
   pyquality: "python {cwd}/quality.py {cwd}"
   designintelligence: "python {cwd}/scripts/check-design-intelligence.py --dir {cwd} --json --skip .dart_tool,test,build,ephemeral" 
   backendexperience: "python {cwd}/scripts/check-backend-experience.py --dir {cwd} --json --skip .dart_tool,test,build,ephemeral,vendor"
+  knowledge: "python {cwd}/scripts/check-knowledge-freshness.py --dir {cwd} --json --skip .git,.dart_tool,test,build,vendor --skip-modules pbatch,checks,scripts,tools"
   # T12f: reject artifacts containing likely secrets (registry hook, not a
   # built-in scanner). Adapt the patterns to the project's secret formats.
   secretscan: 'grep -nE "(api[_-]?key|secret|password|token|private[_-]?key)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_./+-]{8,}" {output} && exit 1 || exit 0' 

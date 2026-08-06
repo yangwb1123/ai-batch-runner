@@ -135,3 +135,23 @@ frontend_engineer 已注入）。
 需求 → 场景/角色/JTBD → 体验原型 → 信息优先级+色彩智能 → 体验预算
 → 领域模型/状态机 → 数据模型 → 体验驱动 API → 前端组件 → 后端领域
 → 门禁（designintelligence + backendexperience）→ 埋点 → 假设回测。
+
+## 哲学层与维护智能（2026-08 新增）
+
+- `docs/ENGINEERING_PHILOSOPHY.md`：软件工程哲学总纲——软件是认知外化
+  （SmartFunction）、人类六大缺口、维护的本质（模型-现实偏差/软件熵/
+  真实性/审计即信任）、五个变化源、六层维护、AI 时代定位（Agent 补充
+  人类的四件事）、Problem Solving Intelligence。
+- `backend-specs/design-intelligence/07-maintenance-intelligence.md`：
+  维护智能规范——六层维护（数据/业务模型/UX/架构/安全/知识）、
+  数据易错来源（人类行为不确定性）、Maintenance Agent 职责、
+  与工具机制映射（advance/learn/eval/context/campaign）。
+- 执行门禁 `scripts/check-knowledge-freshness.py`（注册为 `knowledge`
+  验证器）：模块文档缺失（知识维护）、ADR 缺失（决策记录）、
+  关键金额/库存字段无审计信号（信任）。
+
+体系全链（前端+后端+维护）：
+需求 → 哲学定位（软件为何存在）→ 场景/角色/JTBD → 体验原型 →
+信息优先级+色彩智能 → 体验预算 → 领域模型/状态机 → 数据模型 →
+体验驱动 API → 前端组件 → 后端领域 → 门禁（designintelligence +
+backendexperience + knowledge）→ 埋点 → 假设回测 → 维护演化。

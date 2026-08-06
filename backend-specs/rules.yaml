@@ -133,6 +133,14 @@ rules:
     description: 产品工程流水线（先考察再立项/循环验证/预判3年/Agent Phase 0-9）
     files: [backend-specs/design-intelligence/06-product-pipeline.md]
     min_tier: production
+  design-intelligence-maintenance:
+    description: >-
+      维护智能：模型-现实偏差、软件熵、真实性（Trust）、审计即信任、
+      六层维护（数据/业务模型/UX/架构/安全/知识）、演化设计、Maintenance Agent
+    files:
+      - backend-specs/design-intelligence/07-maintenance-intelligence.md
+      - docs/ENGINEERING_PHILOSOPHY.md
+    min_tier: production
   testing:
     description: 五层测试策略、Bug 复现优先、属性/模糊测试、测试数据治理、防伪造
     files: [backend-specs/testing.md]
