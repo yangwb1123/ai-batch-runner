@@ -148,3 +148,15 @@
 ## 2026-08-06 00:04:28 — stage 'fix_gate' — PASS (gate verdict: PASS)
 - task docs/snaplink-platform/v2/fix-gate.md [ok]
 - evidence: docs/snaplink-platform/v2/fix-gate.md
+
+## 2026-08-06 06:40:18 — stage 'apply_feedback' — PASS
+- task docs/snaplink-platform/v2/v21-fix-log.md [ok]: 修订摘要: **FB-001 — F5 计数 → 可复现门禁语义**
+- evidence: docs/snaplink-platform/v2/v21-fix-log.md
+
+## 2026-08-06 06:40:18 — stage 'v21_gate' — FAIL (gate verdict: FAIL)
+- task docs/snaplink-platform/v2/v21-gate.md [FAILED: agent binary not found]
+- evidence: docs/snaplink-platform/v2/v21-gate.md
+
+## 2026-08-06 06:57:00 — stage 'v21_gate' — PASS (gate verdict: PASS)
+- task docs/snaplink-platform/v2/v21-gate.md [ok]
+- evidence: docs/snaplink-platform/v2/v21-gate.md

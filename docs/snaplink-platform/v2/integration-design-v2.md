@@ -36,3 +36,11 @@
 - 现状缺口：契约声明 "HTTP ingest API + self-audit writer" 为唯一受支持入站，但 `cmd/audit-api/main.go` `--grpc-listen` 注册 `internal/grpcapi/server.go`（Write/WriteBatch/WriteStream 走同一 `Service.Ingest`）——活动入站未声明（DS-09）。
 - 修订：gRPC ingest（`--grpc-listen`）**声明为受支持入站路径**，与 HTTP 同一认证/校验/self-audit/tenant 一致性约束；拓扑收敛任务相应改为 "gRPC 声明支持 + relay/Kafka 接线或移除（grep 门禁）"；B1-6 已同步。
 - 验收：拓扑声明覆盖全部活动入站；契约外无活动入站路径（grep 无 enqueue）。
+
+---
+
+## v2.1 修正附注（contract-feedback FB-001/002/004/005，2026-08-06）
+
+- **F5 计数**：上文 "49 个 `_ =` 站点" 的精确计数不可复现（SEC-V2-7 原始 grep 无存档）——v2.1 改为门禁语义 `make check-audit-swallow`（全仓禁止吞审计），实测基线 raw `_ =` = 142 站点、审计 Record = 25 站点（FB-001）；governance 调用点 8 → 9（补 `account_provision.go:168`，FB-002，属 6+1 写路径）。
+- **B1-8 描述**：sink `service.go:397-399` 已判 mismatch→422（`:401` 仅空 envelope 盖章），非静默重标；剩余缺口 = OpenAPI 同步（仍写 "Body tenant_id is ignored"），并入 B1-6 契约声明（FB-004）。
+- **kafka replay 孤儿**（`internal/kafka/replay.go:205`，未提交、`python3 cli.py quality` FAIL：go vet 格式串 %s 绑 int）：列为实施第一动作（修复或移除），接线决策进 B1-6（FB-005）。

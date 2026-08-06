@@ -34,3 +34,48 @@ v2 新增（预期 2）: audit.event.read, audit.event.export      ← 已加入
 ```
 
 修订中另将 v1 §2 的每服务计数笔误（snaplink 46 / sink 12 对调，实际 45/13）在修订日志与清单中显式纠正。剩余待办：open question #8（time_bucket 粒度与 L1 阈值联动）与 #9（roles claim 内容，依赖 IdP scope registry P0-3）保留为待决策项。
+
+---
+
+## v2.1 修订附注（contract-feedback FB-001..006，2026-08-06）
+
+**F5 计数修正（FB-001）**：上文 "49 个 `_ =` 站点" 的精确计数不可复现（SEC-V2-7 原始 grep 无存档），v2.1 改为**门禁语义**——`make check-audit-swallow`（aero-id 仓，全仓禁止吞审计，grep 模式即门禁定义）；实测基线：raw `_ =` = **142 站点**、审计触达 `_ = s.audit.Record/Log(` = **25 站点**。governance 调用点 8 → **9**（补 `account_provision.go:168`，FB-002，属 6+1 写路径）。
+
+## §1.9 event_id 派生公式（v2.1 内联正文，FB-003）
+
+> 公式正文自 `audit-event-registry-v2.md` §1.9 同步内联到本文件。实施清单
+> （B2-4/B3-3）引用 §1.9 时不再依赖外部契约仓，直接以本节为正文；
+> registry v2 §1.9 仍为 canonical。
+
+**确定性 `event_id` 派生**：
+
+```
+event_id = SHA-256(source_service | tenant_id | event_type | resource_id | time_bucket)[:32]
+```
+
+| 输入 | 定义 |
+|---|---|
+| `source_service` | producer 身份（注册 client_id） |
+| `tenant_id` | envelope tenant（§1.2 REQUIRED，v2.1 不变量） |
+| `event_type` | registry id（如 `file.delete.admin`） |
+| `resource_id` | 稳定业务锚点：`file_id|version`、`account_id`、`message_id|edit_seq`、`share_id`、`room_id|member_uid`、`session_id`（auth）、`request_id`（admin/console ops） |
+| `time_bucket` | 发生窗口，per-event-type 粒度（默认分钟） |
+
+**Distinct-occurrence 规则**：同 `(source_service, tenant_id, event_type, resource_id)`
+在同一 `time_bucket` 内多次发生（如同一文件两次下载）必须扩展 per-occurrence 分量
+（`request_id` / occurrence counter），桶粒度按事件类型选择使不同发生永不碰撞。
+
+**去重键（四层显式）**：producer outbox `UNIQUE (service, event_id)` / aero-id
+`UNIQUE (tenant_id, source, event_id)`、`UNIQUE (fact_id)` / aero-vault
+`UNIQUE (origin_kind, origin_id)`（再生锚）/ sink `(source_service, tenant_id,
+event_id)` + tenant-scoped `idempotency_key`（同 digest → 202 Duplicate，异 digest → 409）。
+
+**规则**：
+1. 重试复用同一 `event_id`——绝不每次重生成。
+2. **再生**（gap-reconcile / 重放 / row-clear 重建）必须复用原 `event_id`；
+   为同一发生铸新 ID 即违约（vault `(origin_kind, origin_id)` 与 aero-id
+   `(tenant_id, source, event_id)` 为锚）。
+3. **防 squatting**：`time_bucket`（发生时间）入哈希且不可预测；sink 另以
+   claim-then-verify 后盾（同 ID 异 digest → 409，已实现，Verified）。
+4. **过渡条款**：随机 UUID 期间 sink dedup 仅覆盖同行重试（对再生空转）；
+   确定性 ID 为 P2 双写 cutover 前置。
