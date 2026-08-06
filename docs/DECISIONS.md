@@ -82,3 +82,28 @@
 ## 2026-08-05 18:02:07 — stage 'approval_note' — PASS
 - task docs/snaplink-platform/decisions/APPROVAL.md [ok]
 - evidence: docs/snaplink-platform/decisions/APPROVAL.md
+
+## 2026-08-05 22:34:08 — stage 'audit_requirements' — PASS
+- task docs/snaplink-platform/audit-events.md [ok]
+- evidence: docs/snaplink-platform/audit-events.md
+
+## 2026-08-05 22:35:34 — stage 'scope_matrix' — PASS
+- task docs/snaplink-platform/scope-matrix.md [ok]
+- evidence: docs/snaplink-platform/scope-matrix.md
+
+## 2026-08-05 22:37:05 — stage 'integration_design' — PASS
+- task docs/snaplink-platform/integration-design.md [ok]
+- evidence: docs/snaplink-platform/integration-design.md
+
+## 2026-08-05 23:05:09 — stage 'adversarial_review' — PASS
+- task docs/snaplink-platform/reviews/protocol_expert.md [ok]: What I did: 1. **Applied `prompts/README.md`**: current behavior established from executable code in the four codebases that realize; Headline findings: - **Critical F-1**: Sink dev-token auth (`dev:tenant:roles`) is **on by default** (`AUDIT_ALLOW_DEV_AUTH` defaults true)
+- task docs/snaplink-platform/reviews/distributed_engineer.md [ok]: Headline results: **Verified anchors held, but the draft's "reference pattern" is not what it describes.** Both connectors exist and are w
+- task docs/snaplink-platform/reviews/database_architect.md [ok]: Store inventory (hot vs durable, stock wiring): | Service | Store | Durable? | Stock binary wires it? |; Key findings (top severity): - **F-01 High**: The sink keeps the **entire ledger in one JSON snapshot** — every ingest is an O(ledger-size) read-modi
+- task docs/snaplink-platform/reviews/qa_lead.md [ok]: What I ran (measured, this revision): - **sink** (`snaplink-audit-governance`): `go test ./...` → **157 pass**; `-race` on outbox/service → pass; all Postgres; Key QA findings (13, in the report): - **T-1 Critical**: no test exercises the production trust path — all 157 sink tests + e2e run on forged `dev:` tokens w
+- task docs/snaplink-platform/reviews/sre_engineer.md [ok]: What I verified: Read executable code, configs, and deploy assets across all six repos (snaplink IdP + audit-svc, aero-id, aero-vault, ae; Headline findings: **High (7):**
+- task docs/snaplink-platform/reviews/security_engineer.md [ok]: What I did: Applied `prompts/README.md` evidence rules: every finding traced to executable code, plus an **empirical exploit harness; Headline findings (15 total, 2 Critical / 4 High): 1. **S1 Critical — dev-token auth on by default, no trust source required** (`AUDIT_ALLOW_DEV_AUTH` defaults true; `Vali
+- evidence: docs/snaplink-platform/reviews/protocol_expert.md, docs/snaplink-platform/reviews/distributed_engineer.md, docs/snaplink-platform/reviews/database_architect.md, docs/snaplink-platform/reviews/qa_lead.md, docs/snaplink-platform/reviews/sre_engineer.md, docs/snaplink-platform/reviews/security_engineer.md
+
+## 2026-08-05 23:06:52 — stage 'audit_gate' — PASS (gate verdict: FAIL)
+- task docs/snaplink-platform/audit-gate.md [ok]
+- evidence: docs/snaplink-platform/audit-gate.md
