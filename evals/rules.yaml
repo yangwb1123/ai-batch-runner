@@ -70,3 +70,13 @@ cases:
         - design-intelligence-priority
       excludes:
         - design-intelligence-emotional
+  - name: design-intelligence-backend-production
+    input: "写一个订单创建接口，含支付审批流程，生产环境，go"
+    expect:
+      includes:
+        - design-intelligence-api
+        - design-intelligence-lifecycle
+        - design-intelligence-datamodel
+        - design-intelligence-arch
+        - design-intelligence-ops
+        - design-intelligence-pipeline

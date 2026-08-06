@@ -112,3 +112,26 @@ pi-batch learn "失败描述"           # RCA→规则草案
 设计链：需求 → Who/Why/What/How → 信息优先级 → 色彩 token →
 认知负担 → 组件 → 代码（prompts/ui_designer、visual_reviewer、
 frontend_engineer 已注入）。
+
+## 后端设计智能层（业务闭环，2026-08 新增）
+
+`backend-specs/design-intelligence/` 把"体验→模型→架构→运营"完整链沉淀为
+后端最高层规范——前后端不是接口连接，是业务闭环：
+
+| 规范 | 内容 | 最低档位 |
+|---|---|---|
+| 01-experience-driven-api | 体验驱动 API：场景卡→聚合上下文端点、交互模式→API 映射 | standard（必选） |
+| 02-domain-lifecycle | 业务生命周期与状态机：管道模式、集中状态机、事件驱动 | standard（高风险必选） |
+| 03-ui-driven-data-model | UI 驱动数据模型：页面需求→模型、派生三策略、审计历史、租户边界 | standard（必选） |
+| 04-experience-architecture | 体验架构：体验预算反推 CQRS/缓存/异步/事件流 | production |
+| 05-operation-intelligence | 运营智能：埋点先行、行为分析、A/B、假设回测 | production |
+| 06-product-pipeline | 产品工程流水线：先考察再立项、循环验证、预判 3 年、Phase 0-9 | production |
+
+执行门禁 `scripts/check-backend-experience.py`（注册为 `backendexperience`
+验证器）：状态机纪律（散落状态字面量 vs 集中集合）、写操作审计信号、
+长任务异步生命周期、搜索端点聚合上下文。
+
+完整设计链（前后端统一）：
+需求 → 场景/角色/JTBD → 体验原型 → 信息优先级+色彩智能 → 体验预算
+→ 领域模型/状态机 → 数据模型 → 体验驱动 API → 前端组件 → 后端领域
+→ 门禁（designintelligence + backendexperience）→ 埋点 → 假设回测。
