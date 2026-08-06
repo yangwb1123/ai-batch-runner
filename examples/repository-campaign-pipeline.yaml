@@ -22,6 +22,7 @@ stages:
   - name: adversarial_review
     from_outputs: design
     meta: true
+    meta_timeout: 1500  # long review docs exceed the 900s default (retro F4)
     role_dir: prompts
     role_keywords: pbatch/role_keywords.yaml
     output_dir: docs/auto/reviews

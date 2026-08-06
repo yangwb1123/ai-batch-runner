@@ -112,12 +112,32 @@ def fmt_durations(durations: list) -> dict:
     }
 
 
+FAILURE_CATEGORIES = {"agent_rejected", "task_failed", "validation_failed",
+                       "stage_failed", "stage_halted", "gate_rejected",
+                       "gate_no_verdict", "timeout", "lock_refused",
+                       "circuit_isolate", "refusal", "revalidate_fail",
+                       "environment_stall"}
+
+
+def _filter_failures(counts: Counter, evidence: dict, durations: list):
+    """Keep only failure categories (--failures-only mode)."""
+    for name in list(counts):
+        if name not in FAILURE_CATEGORIES:
+            del counts[name]
+    for name in list(evidence):
+        if name not in FAILURE_CATEGORIES:
+            del evidence[name]
+    return counts, evidence, []
+
+
 def retro_main(argv: list | None = None) -> int:
     parser = argparse.ArgumentParser(prog="pi-batch.py retro", description=__doc__)
     parser.add_argument("targets", nargs="+", help="log files or directories")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--top-evidence", type=int, default=6,
                         help="max evidence lines per category (default: 6)")
+    parser.add_argument("--failures-only", action="store_true",
+                        help="only failure categories (feed to pi-batch learn)")
     args = parser.parse_args(argv)
 
     all_counts: Counter = Counter()
@@ -130,6 +150,9 @@ def retro_main(argv: list | None = None) -> int:
             all_evidence[k].extend(v)
         all_durations.extend(durations)
 
+    if args.failures_only:
+        all_counts, all_evidence, all_durations = _filter_failures(
+            all_counts, all_evidence, all_durations)
     report = {
         "files": len([p for t in args.targets for p in
                       (Path(t).rglob("*.log") if Path(t).is_dir() else [Path(t)])]),
