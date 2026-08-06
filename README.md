@@ -483,6 +483,19 @@ tasks:
 - **Gate stages** (`gate: true`): a stage whose deliverables must contain a `VERDICT: PASS`
   line with a reason — anything else (bare PASS, FAIL, missing verdict) fails closed and
   halts the pipeline.
+- **Judge validators** (H line): a validator entry may be a mapping
+  `{cmd, judge: true, scope: "file|repo"}`. `judge: true` runs the LLM-as-judge protocol —
+  the gate must reply `VERDICT: PASS|FAIL - <reason>` (bare or missing verdicts fail
+  closed, FAIL/REJECT rejects the artifact); `scripts/judge.py` wraps an agent call for
+  this. `scope: repo` defers full-tree gates (`go build ./...`, `quality.py`, `uicheck`)
+  to the end of the stage/batch so they never race concurrent role agents mid-write.
+- **Per-agent failure signatures** (G line): `agent.error_patterns` overrides the built-in
+  provider/network/CLI signature table for all agents, `agent.agents.<bin>.error_patterns`
+  for one binary (claude/codex/... have different failure replies); `agent.agents.<bin>.session_flags`
+  likewise overrides session continuation flags per binary.
+- **Orphan detection** (`--kill-orphans`): start markers now carry the agent pid; a residue
+  scan after a SIGKILLed runner warns when the orphaned agent is still running (double-
+  billing risk) and can kill its process group.
 - **Decision log** (`decision_log:` pipeline key or `--decision-log FILE`): one structured
   record per finished stage — status, extracted decision points (markdown headings) and
   evidence, gate verdicts.
@@ -559,8 +572,10 @@ See `docs/CHECKS_REGISTRY.md` for the full registry.
 
 ## Known open issues
 
-- no license chosen yet (needs compatibility check against the upstream snaplink/ai-dev
-  license before picking; `engineering.yaml` already allows a root `LICENSE` file)
+- LICENSE added (MIT) — but the upstream snaplink/ai-dev license was not publicly
+  reachable when it was chosen; if that license is later published and is more
+  restrictive than MIT, re-check compatibility before further distribution (see
+  the note in `LICENSE`).
 
 Resolved by self-iteration round 1 (see Local fixes above): `output_path()` ignoring
 `task.cwd`, git-commit exit codes unchecked, PyYAML silent degradation, the stale
