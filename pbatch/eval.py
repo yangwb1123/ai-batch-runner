@@ -117,10 +117,15 @@ def eval_main(argv: list) -> None:
         prog="pi-batch.py eval",
         description="Run the rule-system regression suite (evals/*.yaml).")
     parser.add_argument("--filter", default="", help="run only this case id")
+    parser.add_argument(
+        "--quick", action="store_true",
+        help="run only core regression cases (rules + classifier domains)")
     parser.add_argument("--json", action="store_true", help="machine-readable output")
     args = parser.parse_args(argv)
     total, failed = 0, []
     for suite in load_eval_files():
+        if args.quick and suite.get("name") not in {"rules", "classifier"}:
+            continue
         for case_id, ok, detail in run_suite(suite, args.filter):
             total += 1
             status = "PASS" if ok else "FAIL"

@@ -37,6 +37,9 @@ from pathlib import Path
 
 DEFAULT_EXTS = (".ts", ".tsx", ".js", ".go", ".py", ".java", ".php", ".rs", ".sql")
 DEFAULT_EXCLUDES = {
+    # Tooling dirs are not business services (their own gates are tests).
+    "scripts", "tools", "checks", "tests", "harness", "ai",
+
     "node_modules", "dist", "build", "out", ".git", ".venv", "venv",
     "coverage", ".pi-batch", "logs", "docs", "__pycache__", "vendor",
     "target", "generated", "migrations",
@@ -122,13 +125,28 @@ def _ddl_warnings(text: str, rel: str) -> list:
     """Dangerous DDL outside migration files (data-loss risk)."""
     if any(part in rel.lower() for part in ("migration", "migrate", "seed")):
         return []
+    path = Path(rel)
+    is_test_file = (
+        ".test." in rel.lower()
+        or path.name.lower().endswith(("_test.rs", "_tests.rs", "_test.py", "_spec.ts", "_test.go", "_test.ts"))
+        or any(part in ("test", "tests", "spec", "e2e") for part in path.parts[:-1])
+    )
+    if is_test_file:
+        # Test files embed DDL in string literals (rollback assertions,
+        # throwaway schemas) — those never touch a production database.
+        return []
     matches = re.findall(
         r"\b(DROP\s+TABLE|DROP\s+COLUMN|TRUNCATE\s+TABLE)\b|ALTER\s+TABLE[^;]{0,80}?\bDROP\b",
         text, re.IGNORECASE)
-    return [("error", f"{rel}: dangerous DDL outside a migration file: "
-                      f"{matches[0][0] or matches[0][1] or 'ALTER ... DROP'} "
-                      f"(data-loss risk; migrations must be versioned)")] \
-        if matches else []
+    # findall with a single capture group returns the group text (empty string
+    # when only the non-capturing ALTER ... DROP alternative matched); never
+    # index into an empty match (""[0] raises IndexError on real projects).
+    if matches:
+        display = matches[0] or "ALTER TABLE ... DROP"
+        return [("error", f"{rel}: dangerous DDL outside a migration file: "
+                          f"{display} "
+                          f"(data-loss risk; migrations must be versioned)")]
+    return []
 
 
 def _test_warnings(text: str, rel: str) -> list:
@@ -258,15 +276,29 @@ def check_text(text: str, path: Path, strict: bool) -> list:
         findings.append((severity, f"{rel}: {message}"))
 
     error_patterns = _ERROR_PATTERNS
-    if rel.endswith(".py"):
-        # TS `any` doesn't exist in Python; `lambda: any(...)` uses the
-        # builtin function and must not be flagged as a type annotation.
+    if rel.endswith((".py", ".rs", ".sql", ".go", ".java", ".php")):
+        # TS `any` only exists in TypeScript: Python `lambda: any(...)` uses
+        # the builtin, Rust `Box<dyn Any>`/`.downcast_ref::<T>()` and Go
+        # `interface{}`-style patterns are legitimate — none is a type
+        # annotation leak from the TS world.
         error_patterns = [p for p in _ERROR_PATTERNS if p[1] != "TS any usage"]
+    if not rel.endswith((".html", ".tsx", ".jsx", ".js", ".ts", ".vue",
+                         ".dart", ".htm", ".hbs", ".ejs", ".jinja", ".liquid")):
+        # innerHTML/v-html/html: template injection only exists in frontend
+        # template languages; Rust struct fields like `html: &'static str`
+        # and Python dict keys are legitimate data, not DOM sinks.
+        error_patterns = [p for p in error_patterns if p[1] != "unsafe innerHTML/v-html"]
+    if rel.endswith(".rs"):
+        # Rust has no property setters: `task.status = "x"` inside a builder
+        # or update fn is the idiomatic mutation path, not a bypass.
+        error_patterns = [p for p in error_patterns if p[1] != "direct status assignment"]
     for pattern, label in error_patterns:
         for match in pattern.finditer(text):
             add("error", f"{label}: {match.group(0).strip()[:60]}")
 
-    if _DIRECT_STATUS_RE.search(text):
+    if not rel.endswith(".rs") and _DIRECT_STATUS_RE.search(text):
+        # Rust has no property setters: `task.status = "x"` inside a builder
+        # or update fn is the idiomatic mutation path, not a bypass.
         add("error", "direct status assignment (bypasses domain methods): "
             + _DIRECT_STATUS_RE.search(text).group(0).strip()[:60])
     if "/domain/" in rel and _DOMAIN_IMPORT_RE.search(text):
