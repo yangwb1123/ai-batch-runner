@@ -81,10 +81,14 @@ Scoped Execution：各产品仓库 campaign 按摘要实施（只改受影响项
 ## 6. 落地清单
 
 - [x] `platform-map.yaml` — 机器可读项目地图（能力目录/数据所有权/依赖规则/审计分级/端口）
-- [x] `scripts/check-decision-summary.py` — 决策门机械校验（9 组必填维度 + 项目引用 + 失败策略）
+- [x] `scripts/check-decision-summary.py` — 决策门机械校验（9 组必填维度 + 项目引用 + 失败策略 + 命名规范）
 - [x] `scripts/check-change-manifest.py` — 变更清单门禁
 - [x] `examples/decision-summary.example.json` / `change-manifest.example.yaml` — 合法示例
-- [x] `requirement-pipeline.yaml` — 8 阶段强制决策流水线（含决策门）
+- [x] `requirement-pipeline.yaml` — 8 阶段强制决策流水线（含决策门；真实需求端到端跑通，4 次校准已固化）
 - [x] `prompts/requirement_interpreter.md` / `capability_architect.md` / `composition_reviewer.md` + role_keywords
-- [ ] 每产品仓库 `docs/agent-context/` 落地（契约引用 + 本产品责任边界）
+- [x] 真实运行校准：@file 需求注入、拒绝检测、命名规范、VERDICT 正则（全部机械强制）
+- [x] 工具同步 6 仓库（`sync-tool.sh`，每仓库薄壳 + pbatch/ + quality.py + 按语言验证器）
+- [x] snaplink-suite 组合仓库实例化（~/workspace/demo/snaplink-suite，suite-check PASS）
+- [x] COMPOSE-2026-017 分仓实施配置（campaign-aero-vault.yaml + tasks-compose-2026-017.yaml，dry-run 验证）
+- [ ] 各仓库 campaign 实际运行（需人工批准提案后执行）
 - [ ] suite 仓库 E2E 按摘要验收（20 项边界场景）
