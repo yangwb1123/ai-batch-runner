@@ -1,0 +1,29 @@
+# 完整组合：6 服务 + 集成依赖（审计 L2、通知 aero-im、存储 vault）
+include:
+  - _services.skeleton.yml
+
+services:
+  snaplink:
+    ports: ["8080:8080"]
+  snaplink-console:
+    ports: ["8090:8090"]
+  aero-id:
+    ports: ["8081:8080", "9090:9090"]
+  aero-vault:
+    ports: ["8082:8080"]
+  aero-im:
+    ports: ["8083:8080"]
+  snaplink-audit-governance:
+    ports: ["8084:8080"]
+    environment:
+      AUDIT_POSTGRES_DSN: postgres://suite:suite@postgres:5432/audit?sslmode=disable
+    depends_on:
+      - postgres
+      - minio
+      - nats
+  minio:
+    ports: ["9000:9000", "9001:9001"]
+  postgres:
+    ports: ["5432:5432"]
+  nats:
+    ports: ["4222:4222"]

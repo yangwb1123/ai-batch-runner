@@ -1,0 +1,15 @@
+# 身份认证组合：snaplink + aero-id + console
+include:
+  - _services.skeleton.yml
+
+services:
+  snaplink:
+    ports: ["8080:8080"]
+  aero-id:
+    depends_on:
+      - snaplink
+      - postgres
+  snaplink-console:
+    depends_on:
+      - snaplink
+      - aero-id

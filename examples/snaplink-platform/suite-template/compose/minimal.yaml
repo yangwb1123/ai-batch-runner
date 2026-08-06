@@ -1,0 +1,7 @@
+# 最小认证组合：业务系统 + snaplink（仅认证授权）
+include:
+  - _services.skeleton.yml
+
+services:
+  snaplink:
+    ports: ["8080:8080"]

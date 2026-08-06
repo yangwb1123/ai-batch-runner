@@ -1,0 +1,15 @@
+# 标准协议组合示例：任意 OIDC Provider + aero-vault（不要求 Snaplink 特有协议）
+include:
+  - _services.skeleton.yml
+
+services:
+  aero-vault:
+    environment:
+      AERO_VAULT_OIDC_ISSUER: http://keycloak:8080
+  keycloak:
+    image: quay.io/keycloak/keycloak:latest
+    ports: ["8180:8080"]
+  minio:
+    ports: ["9000:9000"]
+  postgres:
+    ports: ["5432:5432"]

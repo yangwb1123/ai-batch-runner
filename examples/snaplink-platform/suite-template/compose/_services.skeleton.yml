@@ -1,0 +1,62 @@
+# 部署拓扑（骨架示例，供组合验证与门禁使用）
+#
+# 每个拓扑文件必须定义 compatibility.yaml 中 topologies.<name>.components
+# 列出的全部服务名（suite-check.py 校验），可带本地集成依赖。
+# 注意：这是开发/验证拓扑，生产部署按各产品仓库 DEPLOY.md 独立编排。
+
+services:
+  snaplink:
+    image: snaplink:local
+    build: ../snaplink
+    ports: ["8080:8080"]
+    environment:
+      SNAPLINK_CONFIG: /etc/snaplink/config.yaml
+    volumes:
+      - ../configs/snaplink.yaml:/etc/snaplink/config.yaml:ro
+
+  snaplink-console:
+    image: snaplink-console:local
+    build: ../snaplink-console
+    ports: ["8090:8090"]
+    depends_on:
+      - snaplink
+
+  aero-id:
+    image: aero-id:local
+    build: ../aero-id
+    ports: ["8081:8080", "9090:9090"]
+    environment:
+      AERO_ID_SSO_ISSUER: http://snaplink:8080
+
+  aero-vault:
+    image: aero-vault:local
+    build: ../aero-vault
+    ports: ["8082:8080"]
+    environment:
+      AERO_VAULT_OIDC_ISSUER: http://snaplink:8080
+
+  aero-im:
+    image: aero-im:local
+    build: ../aero-im
+    ports: ["8083:8080"]
+    environment:
+      AERO_IM_OIDC_ISSUER: http://snaplink:8080
+
+  snaplink-audit-governance:
+    image: audit-governance:local
+    build: ../snaplink-audit-governance
+    ports: ["8084:8080"]
+
+  # 集成依赖（full 拓扑）
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports: ["9000:9000", "9001:9001"]
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: suite
+
+  nats:
+    image: nats:latest

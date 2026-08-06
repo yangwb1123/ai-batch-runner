@@ -1,0 +1,51 @@
+# Snaplink Suite 版本兼容矩阵（BOM）
+# 组件独立语义化版本，只有本矩阵钉窗口；suite 版本号 = 发布快照标识。
+suite_version: 2026.08
+
+components:
+  snaplink: ">=2.3 <3.0"
+  snaplink-console: ">=2.6 <3.0"
+  snaplink-audit-governance: ">=2.0 <3.0"
+  aero-id: ">=1.8 <2.0"
+  aero-vault: ">=3.1 <4.0"
+  aero-im: ">=1.4 <2.0"
+
+# 组合拓扑 → 需要的组件子集（compose 文件必须与之一致）
+topologies:
+  minimal:
+    compose: compose/minimal.yaml
+    components: [snaplink]
+  identity:
+    compose: compose/identity.yaml
+    components: [snaplink, aero-id, snaplink-console]
+  vault:
+    compose: compose/vault.yaml
+    components:
+      - aero-vault
+    note: 标准 OIDC Provider 组合（不要求 Snaplink 特有协议）
+  full:
+    compose: compose/full.yaml
+    components:
+      - snaplink
+      - snaplink-console
+      - snaplink-audit-governance
+      - aero-id
+      - aero-vault
+      - aero-im
+
+# 契约版本（跨组件共享的协议，独立于组件版本演进）
+contracts:
+  audit-event: v1
+  identity-context: v1
+  permission-naming: v1
+  error-format: v1
+  event-envelope: v1
+
+# 集成等级（full 拓扑的部署规则）
+integration_levels:
+  full:
+    authorization: snaplink            # L2 governance 适配器
+    audit: snaplink-audit-governance   # 所有治理相关业务操作汇入
+    notification: aero-im
+    storage: aero-vault
+    identity: aero-id

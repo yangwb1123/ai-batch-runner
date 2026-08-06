@@ -25,6 +25,9 @@
 
 ## 1. 架构定位建议（每个服务一句话）
 
+> 定位模型（见 COMBINATION_MODEL.md）：6 个项目是**独立产品**，通过标准
+> 协议按需组合。下图是 full 组合拓扑下的职责图，不是强制整体部署模型。
+
 ```
                     ┌─────────────────────────────────────────────┐
                     │          snaplink-console（平台控制面）        │
@@ -60,11 +63,16 @@
 - 事件 schema 注册表从 ADR 落到代码（ADR-0002）
 - 先让 snaplink 和 console 接入，跑通闭环，再铺到 aero-*
 
-### P0-2 审计接入完整性 = 平台红线（fail-closed）
-定义平台审计事件类型清单（平台级契约文档），每服务对照清单自检：
-- 必须记录：认证（登录/登出/撤销/MFA 变更）、授权变更（策略/RBAC/scope）、账户（创建/删除/导出/角色变更）、文件（上传/删除/共享/导出/下载）、消息（删除/封禁/审核裁决）、管理操作（console 全部写操作）
-- 统一接入模式：Outbox 表 + relay（aero-id 的 `connector/auditgovernance` 已是模板）→ audit API 幂等接入 → 死信可见
-- **门禁**：新增写操作/管理操作没有审计事件类型 = 评审 FAIL。此规则可沉淀进 learn 流程（Rule draft）进后端注册表，让 `backendquality` 类门禁自动拦截。
+### P0-2 审计接入按部署等级设计（full 组合的规则，不是产品硬编码）
+定义审计三级：L0 本地日志 / L1 标准事件协议 / L2 governance 适配器。
+**各项目核心只依赖 AuditPublisher 端口**；full 组合部署时统一切 L2 汇入
+audit-governance（即“所有审计操作都通过 audit-governance 管理记录”的
+正确实现方式）。事件类型清单（认证/授权变更/账户/文件/消息/管理操作）
+作为 suite 契约文档维护，每服务对照自检：
+- 统一接入模式：Outbox 表 + relay（aero-id 的 `connector/auditgovernance`
+  已是模板）→ audit API 幂等接入 → 死信可见；审计不阻塞业务主流程
+- **门禁（full 组合）**：新增写操作/管理操作没有审计事件类型 = 评审
+  FAIL。此规则可沉淀进 learn 流程（Rule draft）进后端注册表。
 
 ### P0-3 平台级 service-to-service 凭证与 scope 矩阵
 - 统一 client_credentials 流程（aero-vault 的 tokenSource 已是模式）
@@ -87,7 +95,10 @@
 
 ## 3. 风险与克制
 
-- **工作流风险分级：L3 平台产品**（合规、不可变账本、多租户）——所有变更走对抗审查 + gate；关键路径设审批点（`approval`）。
+- **防两种极端**：六项目互不理解（ID/Token/租户/权限名/审计无法关联）→
+  用最小共享契约（见 COMBINATION_MODEL.md 第 4 节）；六项目像单体互相绑定
+  （改一升全、单点拖垮、无法裁剪）→ 组合式架构 + 独立版本 + suite 矩阵。
+- **工作流风险分级：L3 平台产品**（合规、不可变账本、多租户）——关键变更走对抗审查 + gate；关键路径设审批点（`approval`）。
 - **产品化分级：L2-L3**。克制：tenant_id 进主查询/唯一索引、事件带组织上下文、API 版本化是**低成本预留（必做）**；Billing/插件市场是**高成本实现（禁止提前设计）**。
 - **AI 产出是提案**：audit 事件类型清单、scope 矩阵等文档先按证据标准（Verified/Partial/Missing/Proposed）标注再提升。
 - **不动仓库硬门禁**：每个仓库自己的 `make ci`/`cli.py check`/AGENTS.md 不变量优先于任何 AI 建议。
@@ -96,4 +107,4 @@
 
 1. 同步 ai-batch-runner 新版本到 aero-id / aero-vault（旧内嵌 pi-batch.py 落后；`pip install -e .` 或复制薄壳 + pbatch/ + pi-batch.yaml）。
 2. 用 `pi-batch.py assess` 把 P0-1/P0-2 需求过一遍评估（本场景评估结果见 OPERATIONS_PLAN.md 附录）。
-3. 用 campaign 对 audit-governance 跑第一轮方向发现（配置已就绪：`examples/snaplink-platform/campaign-audit-governance.yaml`）。
+3. 初始化 snaplink-suite 组合仓库（模板在 `examples/snaplink-platform/suite-template/`），用 campaign 对 audit-governance 跑第一轮方向发现（配置已就绪：`examples/snaplink-platform/campaign-audit-governance.yaml`）。

@@ -1,0 +1,21 @@
+# pi-batch 配置（组合仓库 ai-batch-runner）
+
+agent:
+  bin: pi
+  session_flags: ["--session-name", "{name}", "--mode", "browser", "--output-format", "text"]
+
+defaults:
+  timeout: 900
+  retries: 2
+
+# 组合仓库门禁：兼容矩阵一致性、拓扑文件完整性
+validators:
+  suite: "python scripts/suite-check.py {cwd}"
+  suitejson: "python scripts/suite-check.py {cwd} --json"
+
+evidence:
+  max_bytes: 65536
+  max_sources: 64
+
+prompt:
+  max_bytes: 122880
