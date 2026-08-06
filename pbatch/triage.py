@@ -125,7 +125,7 @@ def kill_orphan(pid: int) -> None:
         try:
             os.kill(pid, 9)
         except (ProcessLookupError, PermissionError, OSError):
-        pass  # state dir unwritable: marker best-effort
+            pass  # process already gone: best-effort kill
 
 
 def classify_reason(reason: str) -> str:
