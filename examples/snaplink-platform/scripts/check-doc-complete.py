@@ -59,6 +59,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("artifact")
     ap.add_argument("--min-lines", type=int, default=DEFAULT_MIN_LINES)
+    ap.add_argument("--markers", default="", help="marker overrides separated by ',' or ';' (default: phase-1 roadmap markers). Use ';' when wired through pi-batch validate_cmd (runner splits commands on commas)")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
     path = Path(args.artifact)
@@ -66,6 +67,8 @@ def main() -> int:
         msg = f"doccomplete: artifact missing: {path}"
         print(msg, file=sys.stderr)
         return 1
+    if args.markers:
+        check.REQUIRED_MARKERS = [m.strip() for m in re.split(r"[,;]", args.markers) if m.strip()]
     ok, problems = check(path, args.min_lines)
     if ok:
         print(f"doccomplete: PASS ({path})")

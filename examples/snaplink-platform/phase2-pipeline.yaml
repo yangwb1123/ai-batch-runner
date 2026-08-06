@@ -1,0 +1,77 @@
+# 第二阶段场景流水线 — 平台现状评估与剩余路线图（基于已实现部署）
+#
+# 第一轮（erp-scenario-pipeline.yaml）产出 P0-P2 路线图并终裁 PASS；随后 8 轮
+# 实现工作落地了 M0/M1/M2 + 集成页 + presign + IM 通知。本流水线基于当前
+# 实际状态（证据 05）重新评估：剩余路线图优先级、新发现的问题、生产硬化。
+#
+# 运行（从 ai-batch-runner 仓库根）：
+#   python pi-batch.py examples/snaplink-platform/phase2-pipeline.yaml \
+#     --session-mode per-stage --retries 2 --log-file logs/phase2.log \
+#     --decision-log docs/snaplink-platform/decisions/phase2.md
+#
+# 产出均为提案：人工核对后提升。
+
+git_commit: false
+
+stages:
+  # ── 阶段 1：证据归一 ──
+  - name: evidence
+    from_dir: docs/snaplink-platform/erp-inputs
+    mode: serial
+
+  # ── 阶段 2：第二阶段评估（aggregate 单任务）──
+  - name: kickoff
+    from_outputs: evidence
+    aggregate: true
+    validate_cmd: "python {cwd}/examples/snaplink-platform/scripts/check-doc-complete.py {output} --min-lines 60 --markers '第二阶段评估;里程碑表;不接清单'"
+    tasks:
+      - prompt: |
+          你是平台架构顾问。第一阶段路线图（M0-M5）的 M0/M1/M2 已实现并部署
+          （见证据 05：8 服务 systemctl 全 active、审计 L2 E2E 全通、集成测试页、
+          presign 直传、IM 自动通知）。请基于**当前实际状态**产出第二阶段评估：
+
+          A. 剩余路线图重排：M3（console 审计时间线/vault 数据迁移）、M5
+             （通知扩展）、aero-id 组织、生产硬化——按当前价值/成本重新定序，
+             每项给证据（现状文件/端口/账号）+ 验收标准。
+          B. 新发现的问题处置（证据 05 §4 逐条）：密钥轮换（HTTPS+JWKS 动态
+              vs timer 同步）、DEMO_PASSWORD 死配置、静态 token 残留、
+              console 审计页缺口、snaplink-console inactive 事件复盘。
+          C. 组合纪律核查：审计链路的真源裁定是否仍成立；新增的服务账号
+             （sso-admin/sverp-audit/sverp-vault）是否最小权限；测试体系
+             （test-platform.sh）的覆盖缺口。
+          D. 运营建议：7×24 巡检（platform-247.sh 扩展）、密钥管理、备份、
+             升级流程（snaplink 重启轮换密钥对停机窗口的影响）。
+          每条结论标注证据等级（Verified/Proposed）；克制原则保持（不接清单
+          是否仍成立）。产出完整文档（≥60 行，含小节标题），禁止自指空壳。
+          {input_content}
+        output: docs/snaplink-platform/phase2/kickoff.md
+    mode: serial
+
+  # ── 阶段 3：对抗审查（meta 动态角色）──
+  - name: review
+    from_outputs: kickoff
+    meta: true
+    role_dir: prompts
+    output_dir: docs/snaplink-platform/phase2/reviews
+    max_iterations: 2
+    max_roles_per_iteration: 3
+    relevance_min_score: 1
+    mode: serial
+
+  # ── 阶段 4：裁决门（fail closed）──
+  - name: gate
+    from_outputs:
+      - kickoff
+      - review
+    aggregate: true
+    gate: true
+    tasks:
+      - prompt: >-
+          你是独立裁决者，对第二阶段评估做终裁。标准：(1) 剩余路线图定序有
+          证据支撑且可执行（验收标准明确）；(2) 新发现问题逐条有处置；(3) 组合
+          纪律与克制原则保持；(4) 对抗审查阻塞项已处理或带证据驳回。
+          满足 → "VERDICT: PASS - <理由>"；否则 "VERDICT: FAIL - <理由>"。
+          必须带具体理由，禁止裸 PASS。
+          {input_content}
+        output: docs/snaplink-platform/phase2/gate.md
+    mode: serial
