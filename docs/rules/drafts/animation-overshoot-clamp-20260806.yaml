@@ -1,0 +1,26 @@
+id: animation-overshoot-clamp
+title: easeOutBack 回弹曲线用于 opacity 时 overshoot 超 1 导致动画断言崩溃
+category: frontend
+severity: error
+scope:
+  languages: []
+  paths:
+  - src/**
+trigger:
+  operations: []
+rationale: 'Observed failure: easeOutBack 回弹曲线用于 opacity 时 overshoot 超 1 导致动画断言崩溃.
+  Root-cause analysis is required before this draft can be promoted (edit requirements/forbidden/verification
+  with the actual RCA).'
+requirements: []
+forbidden: []
+exceptions:
+- condition: ''
+verification:
+  static: []
+  tests: []
+examples:
+  good: []
+  bad: []
+owner: ''
+version: 0.1.0
+status: draft

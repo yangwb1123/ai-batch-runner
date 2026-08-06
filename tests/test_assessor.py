@@ -39,6 +39,7 @@ def test_prescription_is_restrained_by_scale():
         "visual-core",
         "design-intelligence-product",
         "design-intelligence-priority",
+        "animation-overshoot-clamp",
         "component-spec",
     ]
     excluded = {item["id"] for item in assessment["not_selected"]}

@@ -97,6 +97,13 @@ rules:
     files: [ui-specs/design-intelligence/06-data-expression.md]
     min_tier: standard
     page_types: [workbench, table]
+  animation-overshoot-clamp:
+    description: >-
+      回弹曲线（easeOutBack/elastic）overshoot 值域纪律：用于 opacity/布局
+      必须 clamp(0,1)；scale 可保留回弹。实战：StatusChip 弹入动画崩溃
+    files: [ui-specs/design-intelligence/05-emotional-design.md]
+    min_tier: demo
+    required: true
   async-data:
     description: 防抖/节流决策表、竞态、幂等、重试矩阵
     files: [ui-specs/engineering/async-data.md]
