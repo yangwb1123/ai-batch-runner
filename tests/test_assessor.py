@@ -33,10 +33,18 @@ def test_prescription_is_restrained_by_scale():
     assert assessment["matched_tier"] == "production"
     assert assessment["effective_tier"] == "demo"
     ids = [item["id"] for item in assessment["prescription"]]
-    assert ids == ["visual-core", "component-spec"]
+    # Demo tier keeps the design-intelligence core (product thinking +
+    # information priority are mandatory at every scale) plus visual core.
+    assert ids == [
+        "visual-core",
+        "design-intelligence-product",
+        "design-intelligence-priority",
+        "component-spec",
+    ]
     excluded = {item["id"] for item in assessment["not_selected"]}
     assert "async-data" in excluded
     assert "architecture-budgets" in excluded
+    assert "design-intelligence-emotional" in excluded
 
 
 def test_prescription_full_requirement():

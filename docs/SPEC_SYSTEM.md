@@ -89,3 +89,26 @@ pi-batch context "任务" --paths ...   # 项目文档路由
 pi-batch eval                       # 规则回归套件
 pi-batch learn "失败描述"           # RCA→规则草案
 ```
+
+## Design Intelligence 层（认知驱动设计，2026-08 新增）
+
+`ui-specs/design-intelligence/` 把"产品设计大脑"沉淀为最高层规范——
+组件驱动是代码执行，认知驱动才是产品设计：
+
+| 规范 | 内容 | 最低档位 |
+|---|---|---|
+| 01-product-thinking | Who→Why→What→How、角色模型、JTBD、Attention Ranking、异常优先 | demo（必选） |
+| 02-color-intelligence | 色彩智能：场景→心理→信息权重→色彩语言；企业/SaaS/AI/大屏/Dark 范式；Design Token；双编码 | standard（必选） |
+| 03-information-priority | 信息优先级：视觉焦点、KPI 大数字、数据价值决定面积、3 秒规则、Visual Attention Score | demo（必选） |
+| 04-cognitive-load | 认知负担：渐进式展示、错误预防、空状态教学、信任、心流 | standard |
+| 05-emotional-design | 情绪设计：本能/行为/反思层、掌控感、完成感、品牌气质 | production |
+| 06-data-expression | 数据表达：大数字/健康度/语义色图表/决策建议 | standard（workbench） |
+
+配套执行门禁 `scripts/check-design-intelligence.py`（注册为
+`designintelligence` 验证器）：语义色 token 化、KPI 强调、空状态教学、
+状态双编码——确定性拦截"数据库展示"反模式。已在 snaplink-console
+实测：183 → 0 违规（含真实修复 ProgressRing 裸 amber）。
+
+设计链：需求 → Who/Why/What/How → 信息优先级 → 色彩 token →
+认知负担 → 组件 → 代码（prompts/ui_designer、visual_reviewer、
+frontend_engineer 已注入）。

@@ -63,6 +63,40 @@ rules:
     files_template: ui-specs/business-profiles/{profile}.md
     min_tier: demo
     profiles: [erp, cms, oa, dashboard, immersive, marketing, mobile]
+  design-intelligence-product:
+    description: >-
+      产品思维（Who→Why→What→How、角色模型、JTBD、异常优先、Attention
+      Ranking、3 秒规则）
+    files: [ui-specs/design-intelligence/01-product-thinking.md]
+    min_tier: demo
+    required: true
+  design-intelligence-color:
+    description: >-
+      色彩智能（场景→心理→信息权重→色彩语言；企业/SaaS/AI/大屏/Dark 范式；
+      Design Token；Icon+Color 联合语义；禁止随机色/默认蓝/滥用渐变）
+    files: [ui-specs/design-intelligence/02-color-intelligence.md]
+    min_tier: standard
+    required: true
+  design-intelligence-priority:
+    description: >-
+      信息优先级（视觉焦点、KPI 大数字、异常优先、数据价值决定面积、
+      3 秒理解页面价值）
+    files: [ui-specs/design-intelligence/03-information-priority.md]
+    min_tier: demo
+    required: true
+  design-intelligence-cognitive:
+    description: 认知负担与心理模型（渐进式展示/错误预防/空状态教学/信任）
+    files: [ui-specs/design-intelligence/04-cognitive-load.md]
+    min_tier: standard
+  design-intelligence-emotional:
+    description: 情绪设计（本能/行为/反思层、掌控感、完成感、品牌气质）
+    files: [ui-specs/design-intelligence/05-emotional-design.md]
+    min_tier: production
+  design-intelligence-data:
+    description: 数据表达（大数字/健康度/语义色图表/决策建议）
+    files: [ui-specs/design-intelligence/06-data-expression.md]
+    min_tier: standard
+    page_types: [workbench, table]
   async-data:
     description: 防抖/节流决策表、竞态、幂等、重试矩阵
     files: [ui-specs/engineering/async-data.md]
