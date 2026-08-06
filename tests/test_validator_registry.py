@@ -25,7 +25,8 @@ def test_registry_has_expected_validators():
 
 def test_every_validator_script_exists():
     """Commands referencing scripts/... must point at real files."""
-    for name, command in VALIDATORS.items():
+    for name, spec in VALIDATORS.items():
+        command = spec if isinstance(spec, str) else spec.get("cmd", "")
         normalized = command.replace("{cwd}", ".").replace("{output}", ".")
         for match in re.finditer(r"([\w./-]*scripts/[\w./-]+\.py)", normalized):
             path = Path(match.group(1))
@@ -38,7 +39,8 @@ def test_every_validator_script_exists():
 def test_validator_commands_parse():
     """Every command must keep {output}/{cwd} substitutable (no quoting
     breakage) and compile as a shell line."""
-    for name, command in VALIDATORS.items():
+    for name, spec in VALIDATORS.items():
+        command = spec if isinstance(spec, str) else spec.get("cmd", "")
         resolved = command.replace("{output}", "/tmp/artifact.md") \
                           .replace("{cwd}", str(Path.cwd()))
         assert "{output}" not in resolved and "{cwd}" not in resolved, \
