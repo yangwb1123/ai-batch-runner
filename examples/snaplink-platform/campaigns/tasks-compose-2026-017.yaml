@@ -1,0 +1,47 @@
+# COMPOSE-2026-017 协作仓库任务文件（已批准摘要 → 明确方向）
+# 用法（仓库内）: python3 pi-batch.py tasks.yaml --session-mode shared
+# 每个任务输出为提案文档；代码实施由各仓库 campaign / 工程师按提案执行。
+
+tasks:
+  - prompt: |
+      已批准的组合变更 COMPOSE-2026-017（管理员删除文件 → 通知所有者 → 审计）。
+      本仓库（snaplink）的协作职责：
+      1. permission-catalog 注册 vault.file.delete（<domain>.<resource>.<action>
+         命名规范，domain 白名单含 vault）
+      2. authorization-check 支持该 action 的 fail_closed 判定（无权限 403，
+         返回 decision_id 供审计关联）
+      3. 审计：删除操作的授权决策事件（decision_id/policy_id/decision）通过
+         AuditSink 端口异步入 snaplink-audit-governance（durable_async，
+         不阻塞主流程；L0/L1/L2 分级，不硬编码）
+      输出提案文档：API/权限变更、审计事件类型、兼容性分析、部署顺序。
+      不修改代码。
+    output: docs/proposals/compose-2026-017-snaplink.md
+    validate: completion
+
+  - prompt: |
+      已批准的组合变更 COMPOSE-2026-017。本仓库（snaplink-console）职责：
+      文件管理删除入口（能力清单驱动，不猜接口）+ 删除原因填写 + 结果反馈
+      （成功/失败/回收站去向），以及审计时间线页展示 vault.file.deleted 事件。
+      输出提案文档：UI 变更（页面/组件/状态）、API 契约引用、审计展示字段、
+      前端门禁（uispacing/uicolor/uistyle/uicheck）自检清单。不修改代码。
+    output: docs/proposals/compose-2026-017-console.md
+    validate: completion
+
+  - prompt: |
+      已批准的组合变更 COMPOSE-2026-017。本仓库（aero-im）职责：
+      消费 vault.file.notify@1.1（自包含载荷）→ 站内通知送达文件所有者；
+      通知失败 best_effort_async（delivery-status 记录，不回滚删除）。
+      输出提案文档：事件消费契约（schema 版本/幂等键/重试/死信）、通知模板、
+      与既有附件/审核消息链路的关系。不修改代码。
+    output: docs/proposals/compose-2026-017-aero-im.md
+    validate: completion
+
+  - prompt: |
+      已批准的组合变更 COMPOSE-2026-017。本仓库（snaplink-audit-governance）
+      评估职责：事件类型 vault.file.deleted@1.1 与 vault.file.notify@1.1 的
+      接入评估——若通用 ingest 已支持任意事件 schema 则可能零修改；
+      输出评估结论（Verified/Partial/Missing）+ 需要的适配（如有）：
+      schema 注册、幂等键约定、留存分级、敏感字段（文件路径/原因）脱敏。
+      输出提案文档，不修改代码。
+    output: docs/proposals/compose-2026-017-audit-governance.md
+    validate: completion
