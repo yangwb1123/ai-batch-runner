@@ -226,7 +226,31 @@ def format_assessment(assessment: dict) -> str:
             lines.append(f"- {item['id']}: {item['reason']}")
     for suggestion in assessment["suggestions"]:
         lines.append(f"建议补充: {suggestion}")
+    lines.append(_focus_advice(assessment))
     return "\n".join(lines)
+
+
+def _focus_advice(assessment: dict) -> str:
+    """产品思维 Attention Ranking：按需求形态给出 3 秒视觉焦点建议。
+
+    源自 design-intelligence/01（Who→Why→What→How）与 /03
+    （信息优先级：核心指标→异常→趋势→详细）。
+    """
+    text = (assessment.get("requirement") or "").lower()
+    system_type = assessment["classification"].get("system_type", "")
+    focus = "核心指标大数字 + 趋势（如达成率/金额，headline 大字号 + 环比）"
+    if system_type == "state-machine":
+        focus = "待办/异常置顶（如待审批 N 项，色编码 + 处理入口）"
+    elif system_type == "realtime":
+        focus = "实时状态色块（正常/警告/异常大色区，语义色）"
+    elif system_type == "search":
+        focus = "搜索框 + 即时聚合上下文（名称/数量/风险）"
+    elif system_type == "optimization":
+        focus = "目标指标大数字 + 约束/瓶颈摘要"
+    elif "审批" in text or "工作台" in text or "dashboard" in text:
+        focus = "异常优先：异常/待办置顶 + 大数字核心指标"
+    return (f"视觉焦点建议（3 秒规则）: {focus} —— 重要数据占大空间、"
+            "高对比；异常优先置顶；普通数据降权（design-intelligence/03）")
 
 
 def format_execution_prompt(assessment: dict) -> str:
