@@ -27,10 +27,10 @@
 | 04-composition: audit + notify events generated in the same transaction as the file delete; outbox sits inside vault's transaction | `decisions/04-composition.md` (Verified decision) |
 | Event envelope: id/type/version/source/tenant_id/time/trace_id/correlation_id/data (CloudEvents style); ingest idempotent by `event_id`; tenant consistency check | `COMBINATION_MODEL.md` §4; `scope-matrix-v2.md` Flow 3 (Proposed, cited) |
 | **Ingest scope is `audit:event:write`** in every implementation (sink `require()`, aero-id `validOAuthBinding`, vault `RequiredScope`) `[v2]` | Verified (F2) |
-| Access-token claim contract: `kid`/`iss`/`aud`/`scope`/`client_id`/`azp`/`tenant_id`/`roles` — sink `parseJWT` consumes these; IdP does not yet mint them `[v2]` | Verified (partial) — security S2, protocol F-2 |
+| Access-token claim contract: `kid`/`iss`/`aud`/`scope`/`client_id`/`azp`/`tenant_id`/`roles` — sink `parseJWT` consumes these; IdP does not yet mint them `[v2]` | Verified (partial) — security SEC-V2-2（部署仓 SDK 树实测）；protocol F-2（legacy 树证据，已被 SEC-V2-2 取代） |
 | Sink dev-token auth defaults ON (`AUDIT_ALLOW_DEV_AUTH` true); only exercised trust path `[v2]` | Verified (S1) |
 | aero-vault relay: no dead state, retries forever; `Ready()` fails on backlog > 900s or poison row → 503 `[v2]` | Verified (F3/H1) |
-| aero-id: 8 post-commit `_ = Record(...)` discard sites (silent loss); inline publish double-delivers `[v2]` | Verified (F5/F6) |
+| aero-id: **49 个 `_ =` 站点**（SEC-V2-7 实测，grep `internal/`+`service/`+`cmd/` @ HEAD `756b65b`，全部 audit 触达行；其中 8 个 governance `_ = Record(...)` discard sites 列明）+ inline publish double-delivers `[v2]` | Verified (F5/F6, SEC-V2-7) |
 | Sink store: whole-snapshot RMW, `ErrSnapshotConflict` → bare 500, no retry; file backend no fsync; relational `ledger_events` schema unused `[v2]` | Verified (F-01/H5) |
 | Deterministic `event_id` per registry v2 §1.9: `SHA-256(source_service \| tenant_id \| event_type \| resource_id \| time_bucket)[:32]` `[v2]` | Proposed (F4) |
 | Self-audit writer + read-path self-audit (`audit.event.read`/`audit.event.export`) — Missing in implementation; sink P0 `[v2]` | Verified gap (F13/F-06) |
@@ -45,10 +45,11 @@
 | F2 | Scope name `audit:event:ingest` → `audit:event:write` (all occurrences) | §1.2, sink §, aero-im § |
 | F3/H1 | §1.4 normative dead-letter: poison rows MUST reach dead state with retry cap; readiness decoupling clause (degraded + alert at maxLag×0.5, never 503); vault task list | §1.4, vault § |
 | F4 | §1.3 rewritten to reference registry v2 §1.9 (deterministic ID + dedup keys + regeneration rule + anti-squatting) | §1.3 |
-| F5 | aero-id path inventory (in-tx vs 8 post-commit sites); mandate: move into business tx or observable failure; inline publish removed | aero-id § |
+| F5 | aero-id path inventory（in-tx vs **49 个 `_ =` 站点**，SEC-V2-7 实测；8 个 governance `_ = Record(...)` 点逐一列明）；mandate: move into business tx or observable failure; inline publish removed | aero-id § |
 | F-01 | Sink §: optimistic-lock conflict retry (bounded jitter), `statusForError` maps conflict, fsync or documented loss window, `/readyz` store probe, relational-ledger-or-budget decision | sink § |
 | F-06/F13 | Console re-labeled local-only; sink self-audit writer + read self-audit normative P0; supported topology declared | console §, sink § |
 | F-3 | snaplink §: discovery fix task (endpoints truthfulness + conformance test) | snaplink § |
+| 重审（gate FAIL） | DS-08：sink **禁覆写 envelope `tenant_id`**、冲突 422 拒绝入账，任务入 sink 清单（T-13）+ B1-8；DS-09：**gRPC 入站声明为受支持拓扑**（同一契约约束，B1-6）；F5 计数 8 → **49**（SEC-V2-7）；B4 重钉部署仓路径（`kid` 已存在，legacy 树不再引用）；B6-1 console 路径 `lib/api/portal_api.dart` | sink §, aero-id §, snaplink §, console § |
 | F12 | §1.2 batch/backoff stated as per-service operational parameters, not contract constants | §1.2 |
 | — | Implementation-prerequisite task lists per service (repo/change/acceptance) | each service § |
 
@@ -271,10 +272,10 @@ provisioner/billing, not `cmd/sso-server`. This section is entirely
 
 | 任务 | 仓库/位置 | 验收断言 |
 |---|---|---|
-| Access-token claim 契约落地（tenant_id + roles + kid + iss） | snaplink `infrastructure/defaultimpl/issue_payload.go` `buildAccessPayload`；`token/jwt/generator.go:52-55` header | T-8 row (a)：`POST /token` 响应 header 含 kid、claims 含 iss/scope/tenant_id/roles/client_id；T-1.2 e2e 全绿 |
-| Scope registry（P0-3） | snaplink token endpoint scope 校验 | T-8 row (d)：未注册 scope → 400 |
-| OIDC discovery 真值化 | snaplink `cmd/server/routes.go:63-77,663-684`；`routes_test.go:41` 重写 | T-2：discovery sweep 全绿；`token_endpoint == "/token"`；无广告端点 404 |
-| 治理连接器（outbox+relay，新 cmd wiring） | snaplink `cmd/`（现有 `audit.Sink`/`BatchSink` 接口可复用） | P2 双写 parity 检查；`auth.token.issue` L1 聚合生效 |
+| Access-token claim 契约落地（tenant_id + roles + iss；**kid 已存在**） | snaplink（部署仓 SDK 树）`infrastructure/defaultimpl/issue_payload.go:26` `buildAccessPayload`；`shared/core/spi.go:171` `Subject.TenantID`；`interfaces/sso/server_token.go:17`；header kid 已存在（`ed25519_issue.go:33`，SEC-V2-2 复核，不再补） | T-8 row (a)：`POST /token` 响应 header 含 kid、claims 含 iss/scope/tenant_id/roles/client_id；T-1.2 e2e 全绿 |
+| Scope registry（P0-3） | snaplink（部署仓）`interfaces/sso/server_token.go:122` scope 拆分 + 新 scope 注册存储 | T-8 row (d)：未注册 scope → 400 |
+| OIDC discovery 真值化（**删除/重写两个 legacy 缺陷回归锁测试**） | snaplink（部署仓）`interfaces/sso/server_discovery.go` + `server_discovery_config.go:61,142`；测试 `test/oidc_discovery_test.go` + `interfaces/sso/rootcov_discovery_test.go` 补 sweep；legacy `TestOIDCDiscovery`（`routes_test.go:41`，断言 `/authenticate`）与 `TestOIDCDiscoveryEndpoint`（`routes_test.go:497`，断言 `8080:0` 端口 bug）删除/重写、不得带入 | T-2：discovery sweep 全绿；`token_endpoint == "/token"`；无广告端点 404 |
+| 治理连接器（outbox+relay 接线） | snaplink（部署仓）`infrastructure/auditgovernance/`（`managed_relay.go`/`oauth_token_source.go`/`provisioner.go` 已存在）+ `platform/audit/`（`sqlite`/`chainer`）+ `cmd/snaplink-audit-provisioner/` | P2 双写 parity 检查；`auth.token.issue` L1 聚合生效 |
 
 ---
 
@@ -307,7 +308,7 @@ via the sink read API) is the **target state**.
 
 | 任务 | 仓库/位置 | 验收断言 |
 |---|---|---|
-| 审计页接 sink 读 API（替换 localStorage ring 展示） | snaplink-console `lib/services/audit_log_service.dart` + `portal_api.dart` | T-12：查询后 sink 出现调用者的 `audit.event.read` 行；console 只显示服务端记录（localStorage 不再作为证据） |
+| 审计页接 sink 读 API（替换 localStorage ring 展示） | snaplink-console `lib/services/audit_log_service.dart` + `lib/api/portal_api.dart`（实际路径，QA F-11 实测；**非** `lib/services/`） | T-12：查询后 sink 出现调用者的 `audit.event.read` 行；console 只显示服务端记录（localStorage 不再作为证据） |
 | 依赖：sink read self-audit 先落地 | sink（P0，见下） | 依赖门禁：sink T-12 先绿 |
 
 ---
@@ -331,9 +332,7 @@ ops; uses a **self-audit writer** (normative P0, `[v2]` F13).
 - **Read-path self-audit `[v2]` (F-06)**: `QueryEvents`/`getEvent`/
   `downloadExport` append `audit.event.read` / `audit.event.export` in
   the same store update as the served query (actor = caller).
-- **Supported ingest topology `[v2]`**: HTTP ingest API + self-audit
-  writer. The sink's outbox relay / Kafka consumer are **unwired** and
-  are NOT a supported ingest path in this contract (wire or remove).
+- **Supported ingest topology `[v2]`**: HTTP ingest API + **gRPC ingest** (`cmd/audit-api/main.go` `--grpc-listen` registers `internal/grpcapi/server.go` Write/WriteBatch/WriteStream — **active inbound, DS-09**) + self-audit writer. gRPC is a supported path **only under the same auth/validation/self-audit/tenant-consistency constraints as HTTP**. The sink's outbox relay / Kafka consumer are **unwired** and are NOT a supported ingest path in this contract (wire or remove).
 - **Trust `[v2]` (S1)**: `AUDIT_ALLOW_DEV_AUTH` default **false**;
   dev-only config refused at startup; manifests scanned in CI; production
   verification path = IdP JWT per claim contract.
@@ -362,6 +361,10 @@ ops; uses a **self-audit writer** (normative P0, `[v2]` F13).
     row dead).
   - Tenant consistency: envelope `tenant_id` must match publisher token
     `tenant_id` claim (S2) `[v2]`; mismatch → 422 (scope-matrix Flow 3).
+    **The sink MUST NOT overwrite the envelope `tenant_id` with the
+    token/URL-resolved tenant** (today `internal/service/service.go:389`
+    `event.TenantID = tenantID` silently relabels — DS-08/SRE-07);
+    conflict → 422 reject, zero rows ledgered.
   - Skew: `occurred_at` >5min in future → reject; >5min past → annotate.
 - **DLQ**: sink-side rejections are the producer's DLQ trigger; ledger
   itself has no DLQ.
@@ -382,7 +385,8 @@ ops; uses a **self-audit writer** (normative P0, `[v2]` F13).
 | Relational ledger（migration-001）或显式容量预算 | sink `internal/store/` | `BenchmarkIngest` 记录 envelope（events/sec + p99）；高容量类 cutover 门禁 |
 | Self-audit writer（治理操作 same-tx，fail-closed） | sink `internal/service/`（复用 `adminAction` 原子模式） | 治理 append 失败 → 操作回滚；`audit.legalhold.apply` 等事件入账 |
 | Read-path self-audit（`audit.event.read`/`audit.event.export`） | sink `internal/service/service.go` `QueryEvents`/export 路径 | T-12：查询后出现调用者 self-audit 行 |
-| 拓扑收敛：接线或移除 outbox relay / Kafka consumer | sink `cmd/audit-outbox-relay`、`cmd/audit-kafka-consumer`、`internal/outbox/` | 契约声明外无活动入站路径 |
+| 拓扑收敛：**gRPC 入站声明支持（同一契约约束）** + 接线或移除 outbox relay / Kafka consumer | sink `internal/grpcapi/server.go`（gRPC 入站，DS-09 活动路径）、`cmd/audit-outbox-relay`、`cmd/audit-kafka-consumer`、`internal/outbox/` | 契约声明覆盖全部活动入站；契约声明外无活动入站路径（grep 无 enqueue） |
+| tenant 一致性强制（**禁覆写**） | sink `internal/service/service.go:389`（Ingest tenant 解析） | T-13：envelope tenant-b + token tenant-a → 422、零入账；grep 无 `event.TenantID = tenantID` 覆写 |
 | 跨仓 e2e（生产 token 路径） | sink `test/e2e/fullstack.sh`（替换 dev token） | T-1.2：`AUDIT_ALLOW_DEV_AUTH=false` + IdP 签发 token → ingest 202 ledgered / read 200 / export 202 |
 
 ---
@@ -404,6 +408,14 @@ ops; uses a **self-audit writer** (normative P0, `[v2]` F13).
   | `callback.go:160,221,247` | post-commit discard | same |
   | `audit_hold.go:59,74` | post-commit discard | same |
   | `legacy_cutover.go:88` | post-commit discard | same |
+
+  **Scope note `[v2]`**: full-repo grep at aero-id HEAD `756b65b` finds
+  **49 `_ =` lines touching audit** (`internal/`+`service/`+`cmd/`), mostly
+  `audit.Log` generic-channel drops (`ban.go` ×2, `admin.go` ×2, `block.go` ×2,
+  `internal/comment/service.go:431`, `internal/middleware/idempotency.go:45`,
+  `internal/file/service_share.go` ×2, `internal/block/block.go` ×2 …) — the
+  F5 batch covers **all of them** (in-tx or observable failure), not just the
+  8 governance sites above (SEC-V2-7).
 
 - **Single delivery path `[v2]` (F6)**: the outbox worker is the ONLY
   delivery path; remove the inline `publisher.Publish` in `Record` (or
@@ -440,7 +452,7 @@ ops; uses a **self-audit writer** (normative P0, `[v2]` F13).
 
 | 任务 | 仓库/位置 | 验收断言 |
 |---|---|---|
-| 8 个 post-commit 调用点移入业务事务（`AppendInTx`）或可观测失败 | aero-id `service/account.go:155,184`、`callback.go:160,221,247`、`audit_hold.go:59,74`、`legacy_cutover.go:88` | T-5：mock `Record` 失败 → `ObserveAuditIngestFailure` 递增或操作失败；无 `_ =` 调用点 |
+| 49 个 `_ =` 站点移入业务事务（`AppendInTx`）或可观测失败 | aero-id（SEC-V2-7：全仓 `internal/`+`service/`+`cmd/` grep @ `756b65b` 实测 49 站点；8 个 governance 调用点列明：`service/account.go:155,184`、`callback.go:160,221,247`、`audit_hold.go:59,74`、`legacy_cutover.go:88`） | T-5：mock `Record` 失败 → `ObserveAuditIngestFailure` 递增或操作失败；grep 门禁覆盖全量 49 站点，无 `_ =` 调用点 |
 | 单一投递路径（删 inline publish） | aero-id `audit_ledger.go` `Record` | 同一事件仅一条投递路径；请求路径无 sink 延迟（F6 drill） |
 | 401 → token 失效 | aero-id `connector/auditgovernance/oauth.go` | T-10.1：revoke 后下一次 publish 立即刷新（不等到 TTL） |
 | 稳定 event_id（3 个无 EventID 调用点） | aero-id `service/account.go:155,184`、`audit_hold.go:59`、`legacy_cutover.go:88` | T-4（与 vault 联合）：再生成 fact 在 sink 折叠为 Duplicate |

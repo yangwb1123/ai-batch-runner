@@ -140,3 +140,11 @@
 ## 2026-08-05 23:50:59 — stage 'revision_gate' — PASS (gate verdict: FAIL)
 - task docs/snaplink-platform/v2/revision-gate.md [ok]: 逐项核对: - 契约层：**已修订** ✓ — ingestion v2 §1.7 生产信任姿态（默认 false、dev-only 拒绝启动、manifest CI 扫描）。; S1（dev-token 默认关闭）: - 契约层：**已修订** ✓ — ingestion v2 §1.7 生产信任姿态（默认 false、dev-only 拒绝启动、manifest CI 扫描）。; S2（IdP token 带 tenant_id/roles）: - 契约层：**已修订（要求正确）** ✓ — registry v2 §1.2 必填字段 + scope-matrix v2 Flow 2 claim 契约。; F2（scope 名对齐）: - 契约层：**已修订** ✓ — scope-matrix v2 六处全改 `audit:event:write`（机械校验：旧名仅剩删除说明）+ registry v2 命名空间注释 + ingestion v2 全改。; F3/H1（vault 死信 + Ready 解耦）: - 契约层：**已修订** ✓ — ingestion v2 §1.4 normative（终态 ≤1 次、重试 cap、dead 行排除）+ readiness 解耦条款（degraded + maxLag×0.5，绝不 503）。
 - evidence: docs/snaplink-platform/v2/revision-gate.md
+
+## 2026-08-06 00:03:32 — stage 'apply_fixes' — PASS
+- task docs/snaplink-platform/v2/fix-log.md [ok]: ① B4 重钉（部署仓 vs legacy 树）＋ ② tenant_id 覆写 ＋ ③ F5 计数 ＋ ④ gRPC 拓扑 ＋ ⑤ B6-1/B4-3; 文件 1：`docs/snaplink-platform/v2/implementation-gate.md`: | 小节 | 改前 → 改后 |; 文件 2：`docs/snaplink-platform/v2/implementation-batches.md`（与上完全同步）: | 小节 | 改前 → 改后 |; 文件 3：`docs/snaplink-platform/v2/integration-design-v2.md`（接入设计摘要）: | 小节 | 改前 → 改后 |; 文件 4：`docs/snaplink-platform/v2/audit-ingestion-design-v2.md`（接入设计契约本体）: | 小节 | 改前 → 改后 |
+- evidence: docs/snaplink-platform/v2/fix-log.md
+
+## 2026-08-06 00:04:28 — stage 'fix_gate' — PASS (gate verdict: PASS)
+- task docs/snaplink-platform/v2/fix-gate.md [ok]
+- evidence: docs/snaplink-platform/v2/fix-gate.md

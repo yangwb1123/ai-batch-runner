@@ -11,7 +11,12 @@
 > **各仓实施任务**，逐批挂验收断言门禁，不阻塞契约批准，阻塞生产 cutover。
 > **两处归属校正**（按已验证代码）：①"dev-token 关闭"（S1）在 **sink**
 > 仓库（`cmd/audit-api/main.go`），不在 IdP；②"discovery 元数据真实化"
-> （F-3）在 **snaplink (IdP)** 仓库（`cmd/server/routes.go`），不在 sink。
+> （F-3）在 **snaplink (IdP)** **部署仓**（`interfaces/sso/server_discovery.go`/
+> `server_discovery_config.go`），不在 sink。
+> **gate 重审修正**（原位修订）：B4 全部钉到部署仓（SDK 树 `yangwb1123/snaplink`，
+> HEAD `b3c839bb`；legacy 树 `github.com/opensso/sso` @ `ac5d367` 未部署、不引用）；
+> "补 kid" 已存在并移除；F5 计数修正为 49 个 `_ =` 站点；新增 sink B1-8
+> （tenant 一致性 422）与 gRPC 拓扑覆盖（B1-6）。
 > 下文按真实归属分派。
 
 ## 批次定义
@@ -37,11 +42,11 @@
 
 | # | 仓库 | 文件或模块 | 改动 | 验收断言 | 依赖批次 |
 |---|---|---|---|---|---|
-| 1 | snaplink (sso-server) | `infrastructure/defaultimpl/issue_payload.go` `buildAccessPayload`（ed25519/ecdsa/rsa 三 issuer 共用）；`token/jwt/generator.go:52-55`；`sso.go:894-960` | Access-token claim 契约落地：`buildAccessPayload` 增加 **`tenant_id`**（client 绑定解析）与 **`roles`**；JOSE header 补 **`kid`**；`iss` 配置化（allowlist，禁 Host 派生）；`/token` 读取并校验 `scope`（RFC 6749 §3.3） | T-8 row (a)：`POST /token`（client_credentials，`resource=audit-governance`）→ 200，header 含 kid，claims 含 iss/aud/scope/client_id/tenant_id/roles；T-1.2 联合 e2e（见 B1-7） | B1（联合验收） |
-| 2 | snaplink | `cmd/server/routes.go` token handler + scope 注册存储（client 绑定 allowlist） | Scope registry（P0-3）：注册 scope-matrix-v2 全表（`audit:event:write`、`vault:blob:read/write`、`snaplink:token:validate`、admin scopes…）；未注册 scope 请求 → 400 `invalid_scope` | T-8 row (d)：未注册 scope → 400；按 scope-matrix-v2 配给后 vault/aero-id 端到端无 403（与 B3-5/B2 联合） | B4-1（同批） |
-| 3 | snaplink | `cmd/server/routes.go:63-77,663-684`（OIDC discovery）；`routes_test.go:41`（TestOIDCDiscovery 重写） | Discovery 真值化（F-3）：`token_endpoint=/token`；无 `/authorize` 则删除 authorization_endpoint/response_types/authorization_code 广告；`/revoke` 实现或移除；认证方法收敛到 `client_secret_post`（实现 Basic 前不广告）；device grant 广告必须含 `device_authorization_endpoint`；issuer 来自配置 allowlist | T-2：discovery sweep 全绿（每个广告端点 2xx/405，绝不 404）；`metadata.token_endpoint == "/token"`；issuer 非 Host 派生 | 无（可并行） |
-| 4 | snaplink | `cmd/server/routes.go:247-300`（/token）、`sso.go:909`（secret 比较）、`/introspect` handler | 端点加固（F-4/F-5/F-6/F-7/F-13）：仅 body 解析（禁 query-string 凭据）；Content-Type 强制 form-urlencoded；introspection 调用方认证（RFC 7662 §2.1）；constant-time secret 比较；cc 响应省略 `refresh_token` + `Cache-Control: no-store` | T-8 rows (b)(c)(e)：query 凭据 → 400、非 form Content-Type → 400、无 refresh_token + no-store；T-9：introspect 无凭据 → 401 | 无（与 1–3 同批） |
-| 5 | snaplink | `cmd/` 新 wiring（复用 `audit.Sink`/`BatchSink`/AsyncSink）；`config_audit.go`（audit backend 默认） | 治理连接器（P2 级）：`audit_outbox` 表 + auth.* 行 in-tx 写入（login 失败行 post-commit keyed by request_id，唯一许可的 post-commit 类）+ Go relay（aero-id publisher 模式）+ `auth.token.issue` L1 聚合；stock `audit.backend` 从 memory 改 sqlite/postgres + `hash_chain: true`（F-02/F11） | 重启后 L0 不丢（10 logins → sqlite 10 行）；P2 parity 检查（audit_events vs outbox）；`auth.token.issue` 只出 L1 摘要 | B1, B4-1..4 |
+| 1 | snaplink（部署仓 SDK 树，HEAD `b3c839bb`） | `infrastructure/defaultimpl/issue_payload.go:26` `buildAccessPayload`（ed25519/ecdsa/rsa 三 issuer 共用）；`shared/core/spi.go:171` `Subject.TenantID`（claim 来源）；`interfaces/sso/server_token.go:17`（`/token` handler）；`interfaces/sso/server_token_clientauth.go:193`（client 绑定解析） | Access-token claim 契约落地：`buildAccessPayload` 增加 **`tenant_id`**（client 绑定解析）与 **`roles`**；**JOSE header `kid` 已存在**（`ed25519_issue.go:33` header `{alg,typ,kid}`；`ed25519_types.go:12`/`ecdsa_jwt_issuer.go:439`/`rsa_jwt_issuer.go:436`——SEC-V2-2 复核，**不再补**）；`iss` 配置化（allowlist，禁 Host 派生；`resolveIssuer` `interfaces/sso/server_discovery.go:251` + WithIssuer 覆盖）；`/token` 读取并校验 `scope`（RFC 6749 §3.3；per-client allowlist 校验已存在，SEC-V2-2 复核） | T-8 row (a)：`POST /token`（client_credentials，`resource=audit-governance`）→ 200，header 含 kid，claims 含 iss/aud/scope/client_id/tenant_id/roles；T-1.2 联合 e2e（见 B1-7） | B1（联合验收） |
+| 2 | snaplink（部署仓） | `interfaces/sso/server_token.go:122`（scope 拆分解析）+ 新 scope 注册存储（interfaces/sso/ 或 infrastructure/defaultimpl/；client 绑定 allowlist 已存在） | Scope registry（P0-3）：注册 scope-matrix-v2 全表（`audit:event:write`、`vault:blob:read/write`、`snaplink:token:validate`、admin scopes…）；未注册 scope 请求 → 400 `invalid_scope` | T-8 row (d)：未注册 scope → 400；按 scope-matrix-v2 配给后 vault/aero-id 端到端无 403（与 B3-5/B2 联合） | B4-1（同批） |
+| 3 | snaplink（部署仓） | `interfaces/sso/server_discovery.go` + `server_discovery_config.go:61,142`（`handleOIDCDiscovery`/`buildBaseMetadata`：`token_endpoint=base+PathToken`、`authorization_endpoint=base+PathLogin`、`revocation=base+PathRevoke`、`introspection=base+PathIntrospect`，路径常量 `shared/core/consts.go:9,21-23`）；`resolveIssuer` allowlist（`server_discovery.go:251` + WithIssuer） | Discovery 真值化（F-3）：`token_endpoint=/token`；无 `/authorize` 则删除 authorization_endpoint/response_types/authorization_code 广告；`/revoke` 实现或移除；认证方法收敛到 `client_secret_post`（实现 Basic 前不广告）；device grant 广告必须含 `device_authorization_endpoint`；issuer 来自配置 allowlist；**删除/重写两个 legacy 缺陷回归锁测试**——`TestOIDCDiscovery`（legacy `routes_test.go:41`，断言 `/authenticate`、`/login`）与 `TestOIDCDiscoveryEndpoint`（legacy `routes_test.go:497`，断言 `8080:0` 端口 bug），**不得带入部署仓**；部署仓测试 `test/oidc_discovery_test.go`（TestDiscovery_*）+ `interfaces/sso/rootcov_discovery_test.go`（TestRcovDisc_*）补 sweep/真值断言 | T-2：discovery sweep 全绿（每个广告端点 2xx/405，绝不 404）；`metadata.token_endpoint == "/token"`；issuer 非 Host 派生 | 无（可并行） |
+| 4 | snaplink（部署仓） | `interfaces/sso/server_token.go:17`（`/token` handler：`tokenNoStoreHeaders` 先行、`bindOAuthParams` 仅 body 解析 `protocols/oauth/oauthwire/bind.go:28`）；`interfaces/sso/server_token_clientauth.go:193,239`（client 认证）；路由接线 `interfaces/sso/server_resource.go:255-257`（`PathIntrospect`/`PathRevoke`/`PathRevokeAll`）；`internal/handler/tokengrant/token_client_credentials.go:21` | 端点加固（F-4/F-5/F-6/F-7/F-13）：**仅 body 解析已存在**（`bind.go:28` 用 `r.PostForm`/body，禁 query 凭据）；**introspection 调用方认证已存在**（部署仓 401 `invalid_client`，SEC-V2-11 复核）；**cc 省略 `refresh_token` + no-store 已存在**（`token_client_credentials.go:21` 无 refresh、`handleToken` 先行 no-store）；剩余：Content-Type 强制 form-urlencoded（禁 JSON）、constant-time secret 比较 | T-8 rows (b)(c)(e)：query 凭据 → 400、非 form Content-Type → 400、无 refresh_token + no-store；T-9：introspect 无凭据 → 401（回归保留） | 无（与 1–3 同批） |
+| 5 | snaplink（部署仓） | `infrastructure/auditgovernance/`（`managed_relay.go`/`oauth_token_source.go`/`provisioner.go` 已存在）；`platform/audit/`（`auditsink`/`auditspi`/`auditexport`/`sqlite`/`chainer`）；`cmd/snaplink-audit-provisioner/`（`main.go`/`config.go`/`run.go`） | 治理连接器（P2 级）：接线 `audit_outbox` 表 + auth.* 行 in-tx 写入（login 失败行 post-commit keyed by request_id，唯一许可的 post-commit 类）+ Go relay（复用已有 `managed_relay.go`，aero-id publisher 模式）+ `auth.token.issue` L1 聚合；stock `audit.backend` 从 memory 改 sqlite/postgres + `hash_chain: true`（F-02/F11；部署配置已 PG + hash_chain，security 复核） | 重启后 L0 不丢（10 logins → sqlite 10 行）；P2 parity 检查（audit_events vs outbox）；`auth.token.issue` 只出 L1 摘要 | B1, B4-1..4 |
 
 ---
 
@@ -62,7 +67,7 @@
 
 | # | 仓库 | 文件或模块 | 改动 | 验收断言 | 依赖批次 |
 |---|---|---|---|---|---|
-| 1 | aero-id | `service/account.go:155,184`、`callback.go:160,221,247`、`audit_hold.go:59,74`、`legacy_cutover.go:88`（8 个 post-commit 调用点） | in-tx 审计（F5）：全部移入业务事务（`AppendInTx`，repository 模式）；无法 in-tx 的路径必须失败可观测（`ObserveAuditIngestFailure` + 告警），**`_ =` 静默丢弃明令禁止**（grep 门禁） | T-5：mock `Record` 失败 → counter 递增或操作失败；全仓无 `_ = s.audit.Record(...)` 调用点 | 无（独立，可先于 B1） |
+| 1 | aero-id | `service/account.go:155,184`、`callback.go:160,221,247`、`audit_hold.go:59,74`、`legacy_cutover.go:88`（8 个 governance 调用点列明；全仓 **49 个 `_ =` 站点**，SEC-V2-7 实测 grep `internal/`+`service/`+`cmd/` @ `756b65b`） | in-tx 审计（F5）：全部移入业务事务（`AppendInTx`，repository 模式）；无法 in-tx 的路径必须失败可观测（`ObserveAuditIngestFailure` + 告警），**`_ =` 静默丢弃明令禁止**（全仓 grep 门禁——覆盖 49 个站点，非仅 8 点） | T-5：mock `Record` 失败 → counter 递增或操作失败；全仓无 `_ = s.audit.Record(...)` 调用点 | 无（独立，可先于 B1） |
 | 2 | aero-id | `audit_ledger.go` `Record`（inline `publisher.Publish`） | 单一投递路径（F6）：删除 inline publish 或降级 best-effort（独立短超时）；outbox worker 为唯一投递路径；sink dedup 保留为后盾 | 同一事件仅一条投递路径；sink 慢时请求路径无 5s 延迟（F6 drill：p99 不随 sink 延迟漂移）；sink 收到 2× 负载消除 | B2-1 |
 | 3 | aero-id | `connector/auditgovernance/oauth.go`、`publisher.go` | 401 → token 失效（F8）：移植 vault 的 401 invalidation；scope-missing → alert（§1.2） | T-10.1：AS revoke 后下一次 publish 立即刷新（token-source 调用计数断言），不等 TTL（≤24h 停滞消除） | B1（sink 401 语义） |
 | 4 | aero-id | `service/account.go:155,184`、`audit_hold.go:59`、`legacy_cutover.go:88`（无 EventID 调用点） | 稳定 event_id（F4 部分）：按 registry v2 §1.9 从业务 anchor 派生，重试/再生成复用 | T-4 联合：再生成 fact 在 sink 折叠为 Duplicate、ledger 1 行 | B1 |
@@ -80,8 +85,9 @@
 | 3 | snaplink-audit-governance | `migrations/001_control_plane.sql`（`ledger_events` 等，当前死代码）；`internal/store/` | Relational ledger 或显式容量预算（F-01 决策 #7）：migration-001 表接线（per-tenant insert + receipt + segment sealing 同事务，`FOR UPDATE` on `ledger_streams`），**或** `BenchmarkIngest` 记录容量 envelope | 容量 envelope 记录（events/sec + p99 vs ledger 大小曲线）；高容量类（‡/L1）cutover 以本决策为门禁；`QueryEvents` 不再 O(ledger) 全扫（relational 路径） | B1-2 |
 | 4 | snaplink-audit-governance | `internal/service/`（`adminAction` 原子模式扩展）+ governance handlers | Self-audit writer（F13，normative P0）：治理操作（legalhold/export/retention/checkpoint/integrity）以注册表事件 same-store-update 写入；append 失败 → 操作中止（fail-closed） | 治理 append 失败 → 操作回滚（无部分 legal hold）；`audit.legalhold.apply` 等事件以完整信封入账；`audit.ledger.checkpoint` 由 checkpoint 任务写入 | 无 |
 | 5 | snaplink-audit-governance | `internal/service/service.go` `QueryEvents`/`getEvent`、export download 路径 | Read-path self-audit（F-06）：同一 store update 追加 `audit.event.read` / `audit.event.export`（actor = 调用者、query_filter/result_count/request_id） | T-12：查询后出现调用者的 `audit.event.read` 行；直接 API 调用不可绕过（S9 场景关闭） | B1-4（同模式） |
-| 6 | snaplink-audit-governance | `cmd/audit-outbox-relay`、`cmd/audit-kafka-consumer`、`internal/outbox/` | 拓扑收敛（F13）：接线或移除孤儿 outbox relay / Kafka consumer；契约声明"HTTP ingest API + self-audit writer"为唯一受支持入站路径 | 契约声明外无活动入站路径（grep：无生产者 enqueue audit_outbox）；移除或文档化孤儿组件 | 无 |
+| 6 | snaplink-audit-governance | `internal/grpcapi/server.go`（gRPC 入站）；`cmd/audit-outbox-relay`、`cmd/audit-kafka-consumer`、`internal/outbox/` | 拓扑收敛（F13）：**gRPC ingest（`cmd/audit-api/main.go` `--grpc-listen` 注册，Write/WriteBatch/WriteStream 走同一 `Service.Ingest`）声明为受支持入站路径**——与 HTTP 同一认证/校验/self-audit/tenant 一致性约束（DS-09）；接线或移除孤儿 outbox relay / Kafka consumer；契约声明覆盖全部活动入站 | 契约声明外无活动入站路径（grep：无生产者 enqueue audit_outbox）；移除或文档化孤儿组件 | 无 |
 | 7 | snaplink-audit-governance | `test/e2e/fullstack.sh`（dev token → IdP token fixture）；`scripts/mint-token.sh`（新） | 跨仓 e2e（T-1.2）：token fixture 替换 dev token；`AUDIT_ALLOW_DEV_AUTH=false` 跑通 | T-1.2：`POST /token`（cc, `audit:event:write`）→ ingest 202 `ledgered` → `GET /events` 200（tenant 上下文）→ `POST /exports` 202 | B4-1（IdP claims）、B1-1；与 B4 联合门禁 |
+| 8 | snaplink-audit-governance | `internal/service/service.go:389`（Ingest 中 token/URL 解析 tenant 覆写点） | tenant 一致性强制（S2/DS-08/SRE-07）：envelope `tenant_id` ≠ token `tenant_id` claim → **422 拒绝入账**（scope-matrix Flow 3）；**禁止以 token/URL 解析 tenant 覆写 envelope**（现状 `event.TenantID = tenantID` 静默重标，与契约 422 直接矛盾） | T-13：envelope tenant-b + token tenant-a → 422、零入账、producer 侧 dead 终态；grep 无覆写赋值 | B1-2 |
 
 ---
 
@@ -89,7 +95,7 @@
 
 | # | 仓库 | 文件或模块 | 改动 | 验收断言 | 依赖批次 |
 |---|---|---|---|---|---|
-| 1 | snaplink-console | `lib/services/audit_log_service.dart`（localStorage 1000-ring → sink 读 API）；`lib/services/portal_api.dart`（新增 audit 调用）；审计页 UI | 审计时间线读路径接入（F-06）：审计页改调 sink 读 API（携带 tenant_id + trace_id，经 BFF）；localStorage ring 降级为本地调试记录（不再作为证据展示）；展示服务端 `audit.event.read` 记录 | T-12 联合：查询触发 sink self-audit 行；devtools 伪造/清空 localStorage 不再构成证据（S9/O 场景关闭）；查询携带 tenant 上下文 | B1-5（read self-audit 先落地） |
+| 1 | snaplink-console | `lib/services/audit_log_service.dart`（localStorage 1000-ring → sink 读 API）；`lib/api/portal_api.dart`（实际路径，QA F-11 实测；**非** `lib/services/`）；审计页 UI | 审计时间线读路径接入（F-06）：审计页改调 sink 读 API（携带 tenant_id + trace_id，经 BFF）；localStorage ring 降级为本地调试记录（不再作为证据展示）；展示服务端 `audit.event.read` 记录 | T-12 联合：查询触发 sink self-audit 行；devtools 伪造/清空 localStorage 不再构成证据（S9/O 场景关闭）；查询携带 tenant 上下文 | B1-5（read self-audit 先落地） |
 | 2 | snaplink-console | `lib/`（console 原生事件） | console 原生事实走边缘生成（login → snaplink `auth.login.*` with `client_id=console`），无 outbox；随 B4 连接器落地后验证 | 控制台登录在 sink 出现 `auth.login.success`（client_id=console）；无重复事件 | B4-5 |
 
 ---
@@ -111,7 +117,7 @@
 |---|---|---|
 | G0（契约批准） | v2 三文档（registry/scope-matrix/ingestion-design） | 已随本系列修订完成（本清单不阻塞） |
 | G1（信任路径，P0） | B1-1 + B4-1 + B1-7 | T-1.1、T-1.2、T-8(a) 全绿；`AUDIT_ALLOW_DEV_AUTH=false` 生产 manifest 扫描绿 |
-| G2（B1 完成） | B1-2..6 | T-6、T-12、治理 fail-closed、拓扑收敛、容量 envelope 记录 |
+| G2（B1 完成） | B1-2..6 + B1-8 | T-6、T-12、T-13（tenant 422）、治理 fail-closed、拓扑收敛、容量 envelope 记录 |
 | G3（B2 完成） | B2-1..6 | T-5、T-10.1/10.2、T-4 联合、首个事件 e2e |
 | G4（B3 完成） | B3-1..6 | T-3、T-4、D1 drill、首个事件 e2e |
 | G5（B4 完成） | B4-2..5 | T-2、T-8(b–e)、T-9、L0 持久化、P2 parity |
