@@ -108,7 +108,7 @@ def _add_runtime_args(p: argparse.ArgumentParser) -> None:
 def _add_logging_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "-v", "--verbose", action="count", default=0,
-        help="渐进式输出：-v 常用（INFO）/ -vv 详细（DEBUG）；默认只显示核心（WARNING+）")
+        help="渐进式输出：默认常用（INFO）；-v 详细（DEBUG）")
     p.add_argument("--log-file", default="",
                    help="Append run log to FILE for 24x7 supervision (rotated)")
     p.add_argument("--log-max-bytes", type=int, default=config.LOG_MAX_BYTES,
@@ -178,13 +178,11 @@ def _sigterm(signum, frame):
 
 
 def _apply_verbosity(verbosity: int) -> None:
-    """渐进式展示（cognitive-load §3）：默认只显示核心（WARNING+），
-    -v 显示常用（INFO），-vv 显示详细（DEBUG）。"""
-    level = logging.WARNING
-    if verbosity >= 2:
+    """渐进式展示（cognitive-load §3）：默认常用（INFO，含核心），
+    -v 显示详细（DEBUG）；--quiet 只在错误时输出。"""
+    level = logging.INFO
+    if verbosity >= 1:
         level = logging.DEBUG
-    elif verbosity == 1:
-        level = logging.INFO
     logging.getLogger("pi-batch").setLevel(level)
 
 
