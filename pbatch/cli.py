@@ -279,7 +279,7 @@ def _run_configured(args, lock_path) -> None:
 
 
 def _dispatch_subcommand() -> bool:
-    if len(sys.argv) <= 1 or sys.argv[1] not in ("memory", "campaign", "classify", "rules", "assess", "learn", "context", "eval", "check", "advance", "ps", "retro", "health"):
+    if len(sys.argv) <= 1 or sys.argv[1] not in ("memory", "campaign", "classify", "rules", "assess", "learn", "context", "eval", "check", "advance", "ps", "retro", "health", "export-template"):
         return False
     if sys.argv[1] == "memory":
         from .memory import main as subcommand
@@ -305,6 +305,8 @@ def _dispatch_subcommand() -> bool:
         from .retro import retro_main as subcommand
     elif sys.argv[1] == "health":
         from .health import health_main as subcommand
+    elif sys.argv[1] == "export-template":
+        from .export_template import export_main as subcommand
     else:
         from .campaign import main as subcommand
     subcommand(sys.argv[2:])
