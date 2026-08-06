@@ -44,6 +44,16 @@ curl -s "http://127.0.0.1:13018/api/v1/events?tenant_id=sverp&source_system=sver
   -H "Authorization: Bearer $POLICY" | python3 -m json.tool | head -30
 ```
 
+## 4.1 测试账号
+
+| 账号 | 密码 | 权限 | 用途 |
+|---|---|---|---|
+| `admin` | `Admin-075b62a730d76a59` | sso-admin（SSO 管理）+ sverp-web admin（全权限） | 管理端 + 全功能测试 |
+| `tester` | 见 `/home/ywb/.platform-test/accounts.txt` | **质检员最小权限**（quality:inspection:read/write、media:read/write、aps:schedule:read） | 日常功能测试 |
+
+权限边界已验证：tester 可访问质检列表/创建质检单（200/201），系统用户/路由/内容管理全部 403。
+创建质检单同样产生审计事件（outbox published → governance 账本）。
+
 ## 5. 常见问题
 
 | 现象 | 原因 | 处理 |
