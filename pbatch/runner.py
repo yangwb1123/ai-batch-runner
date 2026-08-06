@@ -951,6 +951,13 @@ def print_summary(results: list[TaskResult]) -> None:
     print("  failed:    %d" % failed)
     print("  CPU time:  %.1fs" % total_elapsed)
     print("  wall time: %.1fs" % wall_time)
+    if total:
+        rate = 100.0 * succeeded / total
+        print("  成功率:    %.0f%%" % rate)
+    if failed:
+        print("  下一步:    重试用 --retries；被拒产物保留在 .pi-batch/rejected/ 可诊断")
+    elif succeeded:
+        print("  全部通过 ✓ — 可 --git-commit 落库或继续下一轮")
     print()
     for r in results:
         icon = "PASS" if r.success else "FAIL"
