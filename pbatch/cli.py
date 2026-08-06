@@ -87,9 +87,8 @@ def _add_runtime_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--session-name", default="",
                    help="Reproducible session base name (default: task source file stem); shared sessions continue across runs")
     _add_memory_arg(p)
+    _add_lock_args(p)
     _add_validate_args(p)
-    p.add_argument("--no-lock", action="store_true",
-                   help="skip the single-instance lock (T4 escape hatch)")
     p.add_argument("--kill-orphans", action="store_true",
                    help="GAP-3: kill orphaned agent process groups found in residue markers "
                         "(agents left running by a SIGKILLed runner — double-billing risk)")
@@ -120,6 +119,14 @@ def _add_logging_args(p: argparse.ArgumentParser) -> None:
 def _add_memory_arg(p: argparse.ArgumentParser) -> None:
     p.add_argument("--memory-mode", choices=["auto", "on", "off"], default=config.MEMORY_MODE,
                    help="Progressive message memory: auto for configured agents; on/off override")
+
+
+def _add_lock_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--no-lock", action="store_true",
+                   help="skip the single-instance lock (T4 escape hatch)")
+    p.add_argument("--wait-lock", type=int, default=0, metavar="MINUTES",
+                   help="queue behind a held lock: poll every 30s up to MINUTES "
+                        "instead of exiting 5 (shared-machine workflows)")
 
 
 def _add_validate_args(p: argparse.ArgumentParser) -> None:
@@ -183,7 +190,8 @@ def main() -> None:
     _auto_detect_pipeline(args)
     _maybe_classify_route(args)
     handler = _configure_run_log(args)
-    lock_path = acquire_lock(no_lock=args.no_lock or args.dry_run)
+    lock_path = acquire_lock(no_lock=args.no_lock or args.dry_run,
+                             wait_minutes=getattr(args, "wait_lock", 0))
     try:
         _run_configured(args, lock_path)
     except KeyboardInterrupt:

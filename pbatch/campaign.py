@@ -63,6 +63,8 @@ def build_campaign_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stream-output", choices=["auto", "full", "none"],
                         default=config.STREAM_OUTPUT)
     parser.add_argument("--no-lock", action="store_true")
+    parser.add_argument("--wait-lock", type=int, default=0, metavar="MINUTES",
+                        help="queue behind a held lock (poll 30s up to MINUTES) instead of exit 5")
     parser.add_argument("--memory-mode", choices=["auto", "on", "off"], default=config.MEMORY_MODE)
     _add_metering_args(parser)
     return parser
@@ -364,7 +366,8 @@ def main(argv: list[str] | None = None) -> None:
     store = StateStore(settings.path(root, settings.state_file), settings.state_line_max_bytes)
     excluded = _snapshot_excludes(root, settings, args)
     context = CampaignContext(root, settings, args, store, git_snapshot(root, excluded))
-    lock_path = acquire_lock(cwd=str(root), no_lock=args.no_lock or args.dry_run)
+    lock_path = acquire_lock(cwd=str(root), no_lock=args.no_lock or args.dry_run,
+                             wait_minutes=getattr(args, "wait_lock", 0))
     try:
         code = run_campaign(context)
     except KeyboardInterrupt:
