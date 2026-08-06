@@ -138,6 +138,66 @@ class TestGitCommitFailure:
         assert ok is True
         assert any("GIT COMMIT:" in r.message for r in caplog.records)
 
+    def test_ignored_outputs_skip_commit_silently(self, tmp_path, monkeypatch, caplog):
+        """Real-world lesson (aero-vault campaign): gitignored output dirs
+        (docs/auto/) made every stage commit fail with a noisy warning.
+        Ignored outputs must be filtered silently, not fail the stage."""
+        mod = load_batch()
+        repo, env = _git_repo(tmp_path)
+        subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True, capture_output=True)
+        (repo / ".gitignore").write_text("docs/auto/\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", ".gitignore"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True)
+        for k, v in env.items():
+            monkeypatch.setenv(k, v)
+        monkeypatch.chdir(repo)  # git runs from the process cwd
+        ignored = repo / "docs" / "auto" / "state.jsonl"
+        ignored.parent.mkdir(parents=True)
+        ignored.write_text("{}", encoding="utf-8")
+        tracked = repo / "report.md"
+        tracked.write_text("x", encoding="utf-8")
+        stage = mod.Stage(name="s0", git_commit=True, commit_message="msg")
+        with caplog.at_level("INFO"):
+            ok = mod.pipeline._git_commit_stage(stage, [str(ignored), str(tracked)])
+        assert ok is True
+        # the tracked deliverable is committed; the ignored one is skipped
+        log_lines = "\n".join(r.message for r in caplog.records)
+        assert "GIT COMMIT:" in log_lines
+        assert "gitignored" not in log_lines
+        head = subprocess.run(["git", "-C", str(repo), "log", "--oneline", "-1"],
+                              capture_output=True, text=True, check=True).stdout
+        assert "report.md" in subprocess.run(
+            ["git", "-C", str(repo), "show", "--stat", "--oneline", "HEAD"],
+            capture_output=True, text=True, check=True).stdout
+        assert "state.jsonl" not in subprocess.run(
+            ["git", "-C", str(repo), "show", "--stat", "HEAD"],
+            capture_output=True, text=True, check=True).stdout
+
+    def test_all_outputs_ignored_skips_cleanly(self, tmp_path, monkeypatch, caplog):
+        """When every output is gitignored, no commit is attempted and the
+        stage stays green (no more per-stage 'git add failed' noise)."""
+        mod = load_batch()
+        repo, env = _git_repo(tmp_path)
+        subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t"], check=True, capture_output=True)
+        (repo / ".gitignore").write_text("*.md\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", ".gitignore"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], check=True, capture_output=True)
+        for k, v in env.items():
+            monkeypatch.setenv(k, v)
+        monkeypatch.chdir(repo)  # git runs from the process cwd
+        out = repo / "docs" / "auto" / "out.md"
+        out.parent.mkdir(parents=True)
+        out.write_text("x", encoding="utf-8")
+        stage = mod.Stage(name="s0", git_commit=True, commit_message="msg")
+        with caplog.at_level("INFO"):
+            ok = mod.pipeline._git_commit_stage(stage, [str(out)])
+        assert ok is True
+        log_lines = "\n".join(r.message for r in caplog.records)
+        assert "all 1 output(s) gitignored" in log_lines
+        assert "git add failed" not in log_lines
+
 
 # -- P0-3: PyYAML missing fails loud --------------------------------------
 class TestMissingPyYaml:

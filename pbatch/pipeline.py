@@ -652,7 +652,17 @@ def _git_commit_stage(stage: Stage, outputs: list) -> bool:
         if not run_argv(["git", "rev-parse", "--git-dir"], git_cwd, timeout=10).ok:
             log.warning("Not a git repository, skipping git commit")
             return False
-        add = run_argv(["git", "add"] + outputs, git_cwd, timeout=10)
+        # Real-world lesson (aero-vault campaign): docs/auto/ (the campaign
+        # evidence dir) is gitignored, so `git add` of every stage output
+        # failed with a noisy per-stage warning. Filter ignored outputs
+        # silently; only tracked-worthy deliverables are committed.
+        staged = [out for out in outputs
+                  if run_argv(["git", "check-ignore", "-q", "--", out],
+                              git_cwd, timeout=10).exit_code != 0]
+        if not staged:
+            log.info("GIT COMMIT: all %d output(s) gitignored — skipping", len(outputs))
+            return True
+        add = run_argv(["git", "add"] + staged, git_cwd, timeout=10)
         if not add.ok:
             log.warning("git add failed (exit=%d): %s", add.exit_code,
                         (add.stderr or "").strip()[:500])
