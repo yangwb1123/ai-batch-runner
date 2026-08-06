@@ -152,11 +152,17 @@ def _block_body(text: str, brace_start: int) -> str:
 
 def _loop_await_warning(text: str) -> str:
     """N+1 signal: await inside the actual balanced loop body — map
-    comprehensions, dispose loops and same-function later awaits are not."""
+    comprehensions, dispose loops, same-function later awaits, and
+    documented retry/probe loops (a // comment right before the for)
+    are not."""
     for match in re.finditer(r"\bfor\s*\([^)]*\)\s*\{", text):
         body = _block_body(text, text.index("{", match.start()))
         if not body:
             continue
+        line_start = text.rfind("\n", 0, match.start()) + 1
+        before = text[max(0, line_start - 200):line_start]
+        if re.search(r"//[^\n]*(retry|probe|intentional|bounded)", before):
+            continue  # documented retry/probe loop, not N+1
         if re.search(r"\bawait\s+\w+", body) and \
                 not re.search(r"(Future\.wait|Promise\.all)", body):
             return f"await inside loop body near char {match.start()} " \
