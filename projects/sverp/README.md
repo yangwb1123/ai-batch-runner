@@ -66,3 +66,19 @@ bash scripts/sverp/check-no-dist-edit.sh ~/workspace/job/iris-ui
   2. 消费者直接改返回的 raw `stack` 时响应式 state 失步（价值 7）
   3. 推入 live/reactive 对象时的快照别名风险（proposed，价值 6）
 - 该分析同时验证了双仓库门禁脚本与流水线 schema 全部通过。
+
+## 首个完整修复（2025-08，iris-fix-publish-pipeline）
+
+对冒烟分析方向 1（useUndoStack 状态失步）跑完整修复闭环
+（diagnose → fix → review → gate，约 6 分钟，全部 PASS）：
+
+- **根因**：`packages/vue/src/undo/useUndoStack.ts:73/79` 用返回值
+  是否为 undefined 判断 no-op，但泛型 T 允许 `undefined` 作为合法快照。
+- **修复**：`undo()/redo()` 无条件 `sync()`（no-op 时写入相同值无害），
+  API 完全兼容；回归测试用真实 DOM 绑定验证 canUndo/canRedo/index。
+- **门禁**：typecheck + 1326 tests（134 文件）+ build 全绿；
+  无 dist 产物（source-first 红线守住）。
+- **待跟进**：react/solid/svelte 三个 bridge 的 `useUndoStack` 存在
+  同类守卫缺陷（诊断阶段发现），后续按同一流程修复。
+- **发布**：gate PASS 后运行 `iris-publish.sh` 即可发布 0.2.19 并升级
+  sverpweb-stable（当前修复仍留在 iris-ui 工作树，未提交）。
