@@ -1,0 +1,30 @@
+change_id: COMPOSE-2026-017
+title: Admin deletes file, notify owner, record audit
+primary_project: aero-vault
+affected_projects:
+  - aero-vault
+  - snaplink
+  - aero-im
+  - snaplink-audit-governance
+  - snaplink-console
+unaffected_projects:
+  - aero-id
+contracts:
+  produced_events:
+    - vault.file.deleted@1.1
+    - vault.file.notify@1.1
+  consumed_events:
+    - none
+permissions:
+  - vault.file.delete
+failure_policy:
+  audit: durable_async
+  notification: best_effort_async
+  authorization: fail_closed
+compatibility:
+  backward_compatible: true
+tests:
+  - aero-vault unit (delete + outbox)
+  - event schema contract (vault.file.deleted@1.1)
+  - audit consumer contract (governance ingest)
+  - composition e2e (console -> authz -> delete -> audit -> notify)

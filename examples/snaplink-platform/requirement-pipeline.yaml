@@ -28,7 +28,7 @@ stages:
   - name: intake
     from_prompt: |
       You are the Product Discovery Agent. The user's original prompt is:
-      "{user_prompt}"
+      @docs/snaplink-platform/requirements/current.md
 
       Do NOT design APIs or modify code. Interpret the request:
       1. interpreted_goal: the real user goal (not the literal operations)
@@ -41,6 +41,7 @@ stages:
       technical assumptions as the final design. Output a markdown document
       with sections: ## Interpreted Goal / ## User Roles / ## Scope Priority.
     output: docs/snaplink-platform/decisions/01-intake.md
+    validate_cmd: "python {cwd}/examples/snaplink-platform/scripts/check-no-refusal.py {output}"
     mode: serial
 
   # ── L2 完整场景建模 ──
@@ -110,15 +111,22 @@ stages:
         output: docs/snaplink-platform/decisions/05-changes.md
 
   # ── L7：决策摘要（结构化，机器可校验）──
+  # validate_cmd 挂在这里：产物就是 summary.json，校验失败 → 摘要不落盘
+  # → 后续 gate 无输入 → 流水线阻断（fail closed）。
   - name: decision_summary
-    from_outputs: change_design
+    from_outputs:
+      - composition_design
+      - change_design
     aggregate: true
     mode: serial
+    validate_cmd: "python {cwd}/examples/snaplink-platform/scripts/check-decision-summary.py {output} --map {cwd}/examples/snaplink-platform/platform-map.yaml"
     tasks:
       - prompt: |
           You are the final decision synthesizer. Read {input_content}
-          (all prior stages). Output ONLY a JSON object with EXACTLY this
-          schema (no markdown fence, no commentary):
+          (all prior stages). Output ONLY raw JSON with EXACTLY this
+          schema — no markdown fence (no ```json), no commentary, no
+          extra text. The first character must be { and the last must
+          be }:
           {"requirement": {"original_prompt": "", "interpreted_goal": "",
             "user_roles": [], "success_outcome": ""},
            "scope": {"type": "project|integration|composition",
@@ -141,24 +149,41 @@ stages:
           Project names MUST match platform-map.yaml exactly. Every mutating
           operation needs failure_policies entries. Do not leave required
           fields empty unless genuinely inapplicable (then use []).
+          Naming rules: permissions MUST be lowercase dotted
+          <domain>.<resource>.<action> (e.g. vault.file.delete,
+          audit.event.read — domain from: vault, identity, auth, im,
+          audit, governance, admin, platform, session, account, file);
+          events MUST be <domain>.<resource>.<action>@vN (e.g.
+          vault.file.deleted@1.1). No Chinese or spaces inside names.
+          STRICTLY FORBIDDEN inside names: parentheses, commas,
+          semicolons, comments, explanations, quotes. Examples of
+          REJECTED names: file.file.delete (bad domain repetition),
+          file.delete.admin (missing domain), vault.file.deleted@1.1
+          (audit, actor ref) (comments attached).
+          collaborating_projects and unaffected_projects must have
+          ZERO overlap: a project that only consumes existing read APIs
+          is unaffected, not collaborating.
         output: docs/snaplink-platform/decisions/summary.json
 
-  # ── 决策门：机械校验 + 独立裁决（fail closed）──
+  # ── 决策门：独立裁决（fail closed；摘要结构校验已在上一阶段完成）──
   - name: decision_gate
-    from_outputs: decision_summary
+    from_outputs:
+      - decision_summary
+      - composition_design
+      - change_design
     aggregate: true
     gate: true
-    validate_cmd: "python {cwd}/examples/snaplink-platform/scripts/check-decision-summary.py {output} --map {cwd}/examples/snaplink-platform/platform-map.yaml"
     mode: serial
     tasks:
       - prompt: |
           You are the independent gatekeeper. Read {input_content} (the
           decision summary JSON plus stage drafts). Verify: (1) the summary
-          is complete per the required schema, (2) the primary project
-          matches the capability ownership, (3) no project is both
-          collaborating and unaffected, (4) failure policies are explicit,
-          (5) the scope does not silently exceed P0/P1. End with exactly
-          one line:
+          is complete per the required schema (it already passed the
+          mechanical validator on the summary.json artifact), (2) the
+          primary project matches the capability ownership, (3) no project
+          is both collaborating and unaffected, (4) failure policies are
+          explicit, (5) the scope does not silently exceed P0/P1. End with
+          exactly one line:
           VERDICT: PASS - <why this plan is ready for human approval>
           or
           VERDICT: FAIL - <blocking issues>

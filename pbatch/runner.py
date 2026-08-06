@@ -556,7 +556,7 @@ def _json_status(stdout: str) -> str:
     return ""
 
 
-_JUDGE_VERDICT_RE = re.compile(r"^\s*VERDICT\s*:\s*(PASS|FAIL|REJECT)\b",
+_JUDGE_VERDICT_RE = re.compile(r"^\s*\*{0,2}VERDICT\s*:\s*\*{0,2}(PASS|FAIL|REJECT)\b",
                                re.IGNORECASE | re.MULTILINE)
 
 

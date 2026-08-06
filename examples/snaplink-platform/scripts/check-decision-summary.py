@@ -13,6 +13,7 @@ platform-map、项目引用非法、组合类型无协作项目 → 校验失败
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -35,6 +36,12 @@ REQUIRED_SECTIONS = {
                 "deployment_order", "rollback_plan"],
 }
 TOP_LEVEL_FIELDS = ["open_risks"]
+# 权限/事件命名规范：<domain>.<resource>.<action>[.sub]（至少 3 段点分）
+# 事件须带 @vN 版本。首段必须是已知域（防六套标准漂移，fail closed）。
+PERMISSION_RE = re.compile(r"^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*){2,}$")
+EVENT_RE = re.compile(r"^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*){2,}@v?\d+(\.\d+){0,2}$")
+KNOWN_DOMAINS = {"vault", "identity", "auth", "im", "audit", "governance",
+                 "admin", "platform", "session", "account", "file"}
 SCOPE_TYPES = ("project", "integration", "composition")
 LIST_FIELDS = {"collaborating_projects", "unaffected_projects", "existing",
                "extend", "create", "excluded", "happy_path", "failure_paths",
@@ -63,8 +70,29 @@ def check_summary(summary: dict, pmap: dict) -> list:
     scope_type = (summary.get("scope") or {}).get("type")
     if scope_type not in SCOPE_TYPES:
         errors.append(f"scope.type: must be one of {SCOPE_TYPES}")
+    _check_naming(summary, errors)
     _check_projects(summary, pmap, errors)
     return errors
+
+
+def _check_naming(summary: dict, errors: list):
+    """校验权限与事件命名规范（<domain>.<resource>.<action>[@vN]）。"""
+    for name in (summary.get("changes") or {}).get("permissions") or []:
+        if not isinstance(name, str) or not PERMISSION_RE.match(name):
+            errors.append(f"changes.permissions: '{name}' must match "
+                          f"<domain>.<resource>.<action> (lowercase dotted)")
+            continue
+        if name.split(".")[0] not in KNOWN_DOMAINS:
+            errors.append(f"changes.permissions: '{name}' has unknown domain "
+                          f"(known: {sorted(KNOWN_DOMAINS)})")
+    for name in (summary.get("changes") or {}).get("events") or []:
+        if not isinstance(name, str) or not EVENT_RE.match(name):
+            errors.append(f"changes.events: '{name}' must match "
+                          f"<domain>.<resource>.<action>@vN")
+            continue
+        if name.split(".")[0] not in KNOWN_DOMAINS:
+            errors.append(f"changes.events: '{name}' has unknown domain "
+                          f"(known: {sorted(KNOWN_DOMAINS)})")
 
 
 def _check_project_refs(ownership: dict, known: set, errors: list) -> None:
@@ -113,6 +141,7 @@ def load_summary(path: Path) -> dict:
         raw = path.read_text(encoding="utf-8")
     except OSError as exc:
         raise ValueError(f"cannot read summary: {exc}") from exc
+    raw = _strip_fence(raw)
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -120,6 +149,16 @@ def load_summary(path: Path) -> dict:
     if not isinstance(data, dict):
         raise ValueError("summary must be a JSON object")
     return data
+
+
+def _strip_fence(raw: str) -> str:
+    """容忍 LLM 常见的 ```json ... ``` 包裹：提取首个 fence 块。"""
+    text = raw.strip()
+    if text.startswith("```"):
+        match = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
+        if match:
+            return match.group(1).strip()
+    return text
 
 
 def main() -> int:

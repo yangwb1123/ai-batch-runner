@@ -229,6 +229,13 @@ def _stage_from_prompt_tasks(stage: Stage, reuse: bool, model_override: str, tim
         return [], []
     task = Task(prompt=stage.from_prompt, output=stage.output, model=stage.model,
                 provider=stage.provider, cwd=stage.cwd)
+    # from_prompt supports @file references (same semantics as task files):
+    # the pipeline can inject an external requirement without YAML editing.
+    try:
+        task.prompt = task.resolve_prompt("")
+    except ValueError as exc:
+        log.error("Stage '%s': prompt reference rejected: %s", stage.name, exc)
+        return [], []
     if model_override:
         task.model = model_override
     if timeout_override:
@@ -646,7 +653,7 @@ def _git_commit_stage(stage: Stage, outputs: list) -> bool:
     return True
 
 
-_GATE_VERDICT_RE = re.compile(r"^\s*VERDICT\s*:\s*(PASS|FAIL|REJECT)\b", re.IGNORECASE | re.MULTILINE)
+_GATE_VERDICT_RE = re.compile(r"^\s*\*{0,2}VERDICT\s*:\s*\*{0,2}(PASS|FAIL|REJECT)\b", re.IGNORECASE | re.MULTILINE)
 
 
 def _archive_outputs(outputs: list, archive_dir: str, label: str) -> list:
