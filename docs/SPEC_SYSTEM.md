@@ -155,3 +155,22 @@ frontend_engineer 已注入）。
 信息优先级+色彩智能 → 体验预算 → 领域模型/状态机 → 数据模型 →
 体验驱动 API → 前端组件 → 后端领域 → 门禁（designintelligence +
 backendexperience + knowledge）→ 埋点 → 假设回测 → 维护演化。
+
+## 分发、进化与系统分类学（2026-08 新增）
+
+- `docs/ENGINEERING_PHILOSOPHY.md` 扩展三章：
+  - **分发本质**：软件是"信息能量"——传播降低不确定性的能力与控制能力；
+    物理（光传播能量）/信息论（降熵）/控制论（感知-判断-行动）/生物学
+    （数字基因）四视角；网络效应与生态是设计的一部分；AI 时代
+    "软件→能力"分发。
+  - **进化闭环**：Agent 自我迭代 = 控制论反馈（Goal→Observe→Reason→
+    Act→Feedback→Update）；四层学习数据（Observation/Outcome/Reasoning/
+    Knowledge）；Error→Rule Pipeline；Reflection 复盘；Agent Governance
+    规则等级（L0 不可违反 → L3 实验）。
+  - **问题系统分类学**（哥德尔启发）：没有一个系统能解决所有问题——
+    先判定 prompt 属于哪类系统（状态机/事件/实时/搜索/优化/知识/批量/
+    自适应/协作/确定性），再选该类方法论。
+- `classifier` 新增 `system_type` 维度（零 LLM 成本关键词判定，YAML 可配）：
+  `pi-batch.py classify "订单审批流" --json` → `system_type: state-machine`。
+- `backend-specs/design-intelligence/08-distribution-intelligence.md`：
+  分发智能规范（传播路径设计/能力分发/分发质量工程保障）。

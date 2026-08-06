@@ -141,6 +141,14 @@ rules:
       - backend-specs/design-intelligence/07-maintenance-intelligence.md
       - docs/ENGINEERING_PHILOSOPHY.md
     min_tier: production
+  design-intelligence-distribution:
+    description: >-
+      分发智能：传播路径设计（网络效应/生态）、AI 时代能力分发、
+      分发质量工程保障（可复现/自验证/可接手/可追溯）
+    files:
+      - backend-specs/design-intelligence/08-distribution-intelligence.md
+      - docs/ENGINEERING_PHILOSOPHY.md
+    min_tier: production
   testing:
     description: 五层测试策略、Bug 复现优先、属性/模糊测试、测试数据治理、防伪造
     files: [backend-specs/testing.md]
