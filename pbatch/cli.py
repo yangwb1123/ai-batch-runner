@@ -279,7 +279,7 @@ def _run_configured(args, lock_path) -> None:
 
 
 def _dispatch_subcommand() -> bool:
-    if len(sys.argv) <= 1 or sys.argv[1] not in ("memory", "campaign", "classify", "rules", "assess", "learn", "context", "eval", "check", "advance", "ps"):
+    if len(sys.argv) <= 1 or sys.argv[1] not in ("memory", "campaign", "classify", "rules", "assess", "learn", "context", "eval", "check", "advance", "ps", "retro"):
         return False
     if sys.argv[1] == "memory":
         from .memory import main as subcommand
@@ -301,6 +301,8 @@ def _dispatch_subcommand() -> bool:
         from .advance import advance_main as subcommand
     elif sys.argv[1] == "ps":
         from .registry import ps_main as subcommand
+    elif sys.argv[1] == "retro":
+        from .retro import retro_main as subcommand
     else:
         from .campaign import main as subcommand
     subcommand(sys.argv[2:])
