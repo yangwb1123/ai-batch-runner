@@ -76,17 +76,7 @@ def build_contract(name: str, pmap: dict) -> str:
         mark = "**本仓库**" if owner == name else owner
         lines.append(f"| {data} | {mark} |")
     lines.append("")
-    lines.append("## 同步依赖规则")
-    lines.append(f"- 同步链上限：{pmap.get('dependency_rules', {}).get('max_sync_chain', '?')}")
-    for rule in pmap.get("dependency_rules", {}).get("allowed_sync", []):
-        lines.append(f"- 允许：{rule}")
-    for rule in pmap.get("dependency_rules", {}).get("forbidden", []):
-        lines.append(f"- 禁止：{rule}")
-    lines.append("")
-    lines.append("## 审计集成（L0/L1/L2 分级，full 组合部署用 L2）")
-    levels = pmap.get("audit_levels", {})
-    for level, desc in levels.items():
-        lines.append(f"- {level}: {desc}")
+    lines.extend(_dependency_sections(pmap))
     lines.append("")
     lines.append("## 命名规范（跨服务统一，防六套标准）")
     lines.append("- 权限：`<domain>.<resource>.<action>`（如 vault.file.delete）")
@@ -97,6 +87,20 @@ def build_contract(name: str, pmap: dict) -> str:
     lines.append("- 单项目需求只改本仓库；跨项目变更必须同时改变双方契约并有 Change Manifest")
     lines.append("- AI 产出是提案：按 Verified/Partial/Missing/Proposed 核对后提升")
     return "\n".join(lines)
+
+
+def _dependency_sections(pmap: dict) -> list[str]:
+    """同步依赖 + 审计集成段落（独立成函数以控制 build_contract 行数）。"""
+    lines = ["## 同步依赖规则", f"- 同步链上限：{pmap.get('dependency_rules', {}).get('max_sync_chain', '?')}"]
+    for rule in pmap.get("dependency_rules", {}).get("allowed_sync", []):
+        lines.append(f"- 允许：{rule}")
+    for rule in pmap.get("dependency_rules", {}).get("forbidden", []):
+        lines.append(f"- 禁止：{rule}")
+    lines.append("")
+    lines.append("## 审计集成（L0/L1/L2 分级，full 组合部署用 L2）")
+    for level, desc in (pmap.get("audit_levels") or {}).items():
+        lines.append(f"- {level}: {desc}")
+    return lines
 
 
 def gen(name: str, pmap: dict) -> None:

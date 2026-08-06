@@ -64,6 +64,34 @@ def git_snapshot(root: Path, excludes: tuple[str, ...] = ()) -> dict:
     return {"head": head.strip(), "dirty": digest([status, diff])}
 
 
+def tool_digest() -> str:
+    """Digest of the tool's own code (pbatch package + entry script + config).
+
+    Real-world lesson (aero-vault round 1): the tool repo was fixed
+    mid-campaign; the running process kept the old parser and rejected all
+    9 directions, but no fingerprint recorded which tool version produced
+    them. Including the tool digest makes reuse decisions invalidate when
+    the tool itself changes and makes the drift visible in state events.
+    """
+    pkg = Path(__file__).resolve().parent
+    root = pkg.parent
+    records: list[tuple[str, str]] = [(pkg.name, tree_digest(pkg, excludes=("__pycache__",)))]
+    entry = root / "pi-batch.py"
+    if entry.is_file():
+        records.append((entry.name, file_digest(entry)))
+    for candidate in (root / "pi-batch.yaml", pkg / "pi-batch.yaml"):
+        if candidate.is_file():
+            records.append((candidate.name, file_digest(candidate)))
+            break
+    return digest(records)
+
+
+def tool_head() -> str:
+    """Git HEAD of the tool's own repository ('' when not a git checkout)."""
+    root = Path(__file__).resolve().parent.parent
+    return (_git_output(root, ["rev-parse", "HEAD"]) or "not-a-git-repository").strip()
+
+
 def _filtered_status(status: str, excludes: tuple[str, ...]) -> str:
     lines = []
     prefixes = tuple(item.rstrip("/") + "/" for item in excludes)

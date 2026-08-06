@@ -18,7 +18,7 @@ from .campaign_analysis import (analysis_fingerprint, build_analysis_task,
 from .campaign_models import CampaignSettings, Direction
 from .campaign_pipeline import (direction_fingerprint, parallel_ready,
                                 run_direction, run_directions_isolated)
-from .campaign_state import StateStore, git_snapshot, write_summary
+from .campaign_state import StateStore, git_snapshot, tool_digest, tool_head, write_summary
 from .config import log, yaml
 from .lock import acquire_lock, release_lock
 from .registry import mark_running, unregister
@@ -157,6 +157,10 @@ def run_campaign(context: CampaignContext) -> int:
     if context.args.dry_run:
         _print_plan(context, modules)
         return 0
+    _event(context, "__tool__", "__tool__", "", "TOOL_VERSION",
+           tool_digest(), [tool_head()],
+           reason="tool code digest (pbatch + pi-batch.py + pi-batch.yaml); "
+                  "invalidates analysis/direction reuse when the tool changes")
     directions, failures = _analyze_modules(context, modules)
     selected, selection_failures = _select(context, modules, directions)
     failures += selection_failures
@@ -227,9 +231,8 @@ def _select(context: CampaignContext, modules: list[str],
         selected, rejected = select_directions(
             context.root, candidates, context.settings.max_directions, context.settings.minimum_score)
         analysis = _analysis_path(context, module)
-        for direction in rejected:
-            _direction_event(context, direction, "DIRECTION_REJECTED", "", analysis,
-                             "duplicate, low score, missing evidence, or missing acceptance checks")
+        for direction, reason in rejected:
+            _direction_event(context, direction, "DIRECTION_REJECTED", "", analysis, reason)
         if candidates and not selected:
             failures += 1
         for direction in selected:

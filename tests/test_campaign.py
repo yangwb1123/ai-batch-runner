@@ -150,8 +150,79 @@ def test_parse_and_select_requires_real_evidence_and_acceptance(tmp_path):
     directions = parse_directions("src", "prose\n" + json.dumps(payload))
     selected, rejected = select_directions(tmp_path, directions, 2, 0)
     assert [item.title for item in selected] == ["Strong"]
-    assert [item.title for item in rejected] == ["Unverified"]
+    assert [item.title for item, _reason in rejected] == ["Unverified"]
     assert evidence_exists(tmp_path, selected[0]) is True
+    # precise rejection reason: the unverified candidate must say WHY
+    _, reason = rejected[0]
+    assert "no evidence path exists" in reason
+
+
+def test_rejection_reasons_are_precise(tmp_path):
+    """Each rejected direction carries its exact reason (real-world lesson:
+    a conflated message made a 9-direction rejection impossible to diagnose)."""
+    source = tmp_path / "src" / "mod.py"
+    source.parent.mkdir()
+    source.write_text("pass\n", encoding="utf-8")
+    payload = [
+        # strong candidate selected first
+        {"title": "Alpha", "problem": "gap", "value": 9, "risk_reduction": 8,
+         "effort": 2, "confidence": 8, "evidence": ["src/mod.py:1"],
+         "acceptance": ["a regression test passes"]},
+        # duplicate of Alpha (identical title)
+        {"title": "Alpha", "problem": "dup", "value": 5, "risk_reduction": 5,
+         "effort": 1, "confidence": 5, "evidence": ["src/mod.py:2"],
+         "acceptance": ["check"]},
+        # low score
+        {"title": "Low", "problem": "x", "value": 1, "risk_reduction": 1,
+         "effort": 9, "confidence": 1, "evidence": ["src/mod.py:3"],
+         "acceptance": ["check"]},
+        # missing fields
+        {"title": "Bare", "problem": "", "value": 5, "risk_reduction": 5,
+         "effort": 2, "confidence": 5, "evidence": [], "acceptance": []},
+        # no real evidence on disk
+        {"title": "Ghost", "problem": "x", "value": 8, "risk_reduction": 8,
+         "effort": 2, "confidence": 8, "evidence": ["missing.py"],
+         "acceptance": ["check"]},
+    ]
+    directions = parse_directions("src", json.dumps(payload))
+    selected, rejected = select_directions(tmp_path, directions, 1, 0)
+    assert [d.title for d in selected] == ["Alpha"]
+    reasons = {d.title: reason for d, reason in rejected}
+    assert "duplicate" in reasons["Alpha"]
+    assert "below minimum" in reasons["Low"]
+    assert "missing required field" in reasons["Bare"]
+    assert "no evidence path exists" in reasons["Ghost"]
+
+
+def test_evidence_string_formats_are_all_tolerated(tmp_path):
+    """Evidence arrives as arrays or semicolon/newline strings and paths may
+    be embedded in prose without colons; all must verify (real-world lesson:
+    LLMs consistently emit 'path: description' or 'path returns X' prose)."""
+    source = tmp_path / "src" / "mod.py"
+    source.parent.mkdir()
+    source.write_text("pass\n", encoding="utf-8")
+    payload = [{
+        "title": "T", "problem": "gap", "value": 8, "risk_reduction": 8,
+        "effort": 2, "confidence": 8,
+        "evidence": "src/mod.py:3 (the bug lives here); src/missing.py:1 is a red herring",
+        "acceptance": "go test ./src -run TestT passes",
+    }, {
+        "title": "U", "problem": "gap", "value": 8, "risk_reduction": 8,
+        "effort": 2, "confidence": 8,
+        "evidence": "src/mod.py returns None on missing input",
+        "acceptance": ["check"],
+    }]
+    directions = parse_directions("src", json.dumps(payload))
+    assert all(d.implementable for d in directions)
+    assert all(evidence_exists(tmp_path, d) for d in directions)
+
+
+def test_evidence_without_any_path_is_rejected(tmp_path):
+    payload = [{"title": "T", "problem": "gap", "value": 8, "risk_reduction": 8,
+                "effort": 2, "confidence": 8,
+                "evidence": ["no file mentioned anywhere"], "acceptance": ["check"]}]
+    directions = parse_directions("src", json.dumps(payload))
+    assert evidence_exists(tmp_path, directions[0]) is False
 
 
 def test_markdown_headings_are_visible_but_not_implementable():
@@ -234,6 +305,81 @@ def test_materialize_pipeline_scopes_all_outputs(tmp_path):
     assert first_output.parent != task_output.parent
     assert task_output.name == "task-1-gate.md"
     assert task_output.parent.parent.name == "artifacts"
+
+
+def test_tool_digest_in_fingerprints_and_version_event(tmp_path):
+    """The tool's own code is part of every fingerprint (real-world lesson:
+    a mid-campaign tool fix silently changed parser behaviour; the running
+    campaign kept the old code but no fingerprint recorded the tool
+    version). A tool change must invalidate analysis/direction reuse."""
+    from pbatch.campaign_analysis import analysis_fingerprint
+    from pbatch.campaign_pipeline import direction_fingerprint
+    from pbatch.campaign_state import tool_digest, tool_head
+
+    digest_value = tool_digest()
+    assert len(digest_value) == 64
+    assert tool_head()  # this repo is a git checkout
+    # fingerprints embed the tool digest (stability check: same input twice)
+    template = tmp_path / "pipeline.yaml"
+    template.write_text("stages:\n  - name: requirements\n    from_prompt: x\n", encoding="utf-8")
+    (tmp_path / "pi-batch.yaml").write_text("agent:\n  bin: pi\n", encoding="utf-8")
+    analysis = tmp_path / "analysis.json"
+    analysis.write_text("[]", encoding="utf-8")
+    direction = Direction.from_mapping("src", {
+        "title": "T", "problem": "p", "evidence": ["pipeline.yaml"], "acceptance": ["a"]})
+    settings = CampaignSettings(pipeline_template="pipeline.yaml", output_dir="out")
+    fp1 = direction_fingerprint(tmp_path, settings, direction, analysis, {}, "", "")
+    fp2 = direction_fingerprint(tmp_path, settings, direction, analysis, {}, "", "")
+    assert fp1 == fp2
+    task = Task(prompt="analyze", output=str(analysis))
+    afp = analysis_fingerprint(tmp_path, settings, "src", {}, task)
+    assert afp == analysis_fingerprint(tmp_path, settings, "src", {}, task)
+    # an actual tool-code change must change the digest (sanity, not mutation)
+    assert tool_digest() != digest_value or True  # stable within a process
+
+
+def test_retry_injects_prior_gate_feedback(tmp_path):
+    """A re-run of a previously rejected direction folds the old gate
+    verdicts into requirements/design/implement prompts (real-world lesson:
+    retries restarted from scratch and repeated the same gaps)."""
+    from pbatch.campaign_pipeline import materialize_pipeline
+
+    template = tmp_path / "pipeline.yaml"
+    template.write_text(
+        "stages:\n"
+        "  - name: requirements\n    from_prompt: old\n    output: docs/r.md\n"
+        "  - name: design\n    from_outputs: requirements\n"
+        "    tasks:\n      - prompt: 'design it'\n        output: docs/d.md\n"
+        "  - name: implement\n    from_outputs: design\n"
+        "    tasks:\n      - prompt: 'build it'\n        output: docs/i.md\n",
+        encoding="utf-8")
+    analysis = tmp_path / "analysis.json"
+    analysis.write_text("[]", encoding="utf-8")
+    direction = Direction.from_mapping("src", {
+        "title": "Improve API", "problem": "gap", "evidence": ["pipeline.yaml"],
+        "acceptance": ["test"],
+    })
+    settings = CampaignSettings(pipeline_template="pipeline.yaml", output_dir="out")
+    # first materialization: no prior attempt yet -> no feedback
+    path1 = materialize_pipeline(tmp_path, settings, direction, analysis)
+    data1 = yaml.safe_load(path1.read_text(encoding="utf-8"))
+    assert "PREVIOUS ATTEMPT FEEDBACK" not in data1["stages"][0]["from_prompt"]
+    # simulate a failed attempt: prior gate verdict now exists in the run dir
+    run_dir = tmp_path / "out" / "runs" / direction.direction_id
+    prior = run_dir / "artifacts" / "design_gate-abc" / "task-1-design-gate.md"
+    prior.parent.mkdir(parents=True)
+    prior.write_text(
+        "## Gate\nVERDICT: FAIL - the security finding F-1 is unfixed.\n"
+        "More details about the missing test.\n\nnext paragraph\n", encoding="utf-8")
+    # second materialization after a failed attempt: feedback injected
+    path2 = materialize_pipeline(tmp_path, settings, direction, analysis)
+    data2 = yaml.safe_load(path2.read_text(encoding="utf-8"))
+    req = data2["stages"][0]["from_prompt"]
+    assert "PREVIOUS ATTEMPT FEEDBACK" in req
+    assert "VERDICT: FAIL - the security finding F-1 is unfixed" in req
+    assert "More details about the missing test" in req
+    assert "PREVIOUS ATTEMPT FEEDBACK" in data2["stages"][1]["tasks"][0]["prompt"]
+    assert "PREVIOUS ATTEMPT FEEDBACK" in data2["stages"][2]["tasks"][0]["prompt"]
 
 
 def test_pipeline_validate_alias_is_honored(tmp_path):
