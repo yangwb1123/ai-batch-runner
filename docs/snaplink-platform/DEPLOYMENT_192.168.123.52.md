@@ -56,3 +56,38 @@ ProtectHome=read-only / RestrictSUIDSGID / LockPersonality / ReadWritePaths 仅 
 2. aero-vault 目前仅 Snaplink verifier——需 snaplink token（含 ten claim）方可使用
 3. aero-im 通知渠道（SMTP/push）未配置（minimal 不含）
 4. 内存预算：新增 4 服务 GOMEMLIMIT 256–384MiB 有界，可用 ~4.5Gi，可容纳
+
+## 6. M2 接线完成（2026-08-06 更新，全链路 E2E 验证）
+
+**审计 L2 试运行已打通**：ERP 业务操作（质检单创建）→ emitAuditEvent → outbox
+→ 契约适配器（governance-transport.ts）→ snaplink token 认证 → governance 账本
+（actor=admin 真实用户，账本恰好 1 条无重复）。
+
+### 完成的接线
+
+- snaplink 侧：`sso-admin` 客户端启用 client_credentials + 重置 secret + sso-admin
+  角色分配（admin API 403 排查：授权查 user 权限而非 token scope，需
+  permissions_assignments + permissions_roles 双表按 client_id 精确匹配）；
+  新建 `sverp-audit` 客户端（client_credentials + audit:event:write +
+  audit:policy:write）
+- audit-governance：`AUDIT_ALLOW_DEV_AUTH=false` + snaplink Ed25519 公钥（密钥轮换
+  后重新导出——kid 9WQoSnawsm4 → gwvKK02OO-g）；注册 tenant=sverp、schema
+  sverp.purchase_request.created.v1 / sverp.quality_inspection.created.v1、
+  source sverp-web ↔ sverp-audit 绑定
+- sverpweb-stable：AUDIT_APP_URL/INGEST_PATH/SOURCE/APP_TOKEN 配置；部署新 dist
+  （含 §2.2 终态机制 + 适配器）；E2E 验证三分支语义 + 幂等 + 噪音过滤
+  （http.request.* 跳过投递）
+
+### 关键修复（E2E 中发现）
+
+- classifyByReceipts 交叉校验曾用映射后对象取 id（undefined）→ 误判 event_id
+  mismatch → 改为原始 AuditEvent.id 列表（commit 0e9ac9d）
+- sverpweb 服务器 dist 曾为 8/4 旧构建（无审计机制）→ 重新部署
+
+### 遗留
+
+- sverpweb AUDIT_APP_TOKEN 为静态 token（1h 过期）→ 需 client_credentials
+  自动换 token（长期改进）；当前过期会 401 → retryable（幂等安全网兜底）
+- console 审计页接入（M3）；aero-im 通知（M5）未做
+- 生产注意：sso-admin/sverp-audit secret、admin 密码已重置并记录于部署者本地
+  （/tmp/deploy-build/），应轮换并移入密钥管理
