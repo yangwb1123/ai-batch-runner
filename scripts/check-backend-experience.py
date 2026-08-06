@@ -45,6 +45,9 @@ _STATUS_LITERAL = re.compile(
 _ASYNC_STATE_NAMES = {
     "queued", "processing", "done", "failed", "pending",
     "succeeded", "completed", "ready", "running", "error",
+    # Process lifecycle states (infrastructure, not business state
+    # machines): runner registry tracks worker processes.
+    "dead", "alive", "starting", "stopped", "cancelled", "skipped",
 }
 # A defined status set: enum / const declarations with status members.
 _STATUS_SET = re.compile(
@@ -90,6 +93,12 @@ _NESTED_RETURN = re.compile(
 _INFRA_FILE = re.compile(
     r"(migration|schema|config|Dockerfile|Makefile|\.sql$)",
     re.IGNORECASE,
+)
+# Tooling directories (CLI scripts, checkers, harness internals) are not
+# business services — long-op/audit/state-machine rules target service
+# backends, not dev tooling.
+_TOOLING_DIR = re.compile(
+    r"(?:^|/)(scripts|tools|cli|tests?|checks?|harness)/",
 )
 
 
@@ -157,7 +166,7 @@ def _check_search_context(rel: str, source: str) -> list[dict]:
 
 def _check_file(path: Path, source: str) -> list[dict]:
     rel = str(path)
-    if _INFRA_FILE.search(rel):
+    if _INFRA_FILE.search(rel) or _TOOLING_DIR.search(rel):
         return []
     findings: list[dict] = []
     findings.extend(_check_state_machine(rel, source))
