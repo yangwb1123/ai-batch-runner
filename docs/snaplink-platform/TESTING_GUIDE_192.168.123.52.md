@@ -71,3 +71,19 @@ curl -s "http://127.0.0.1:13018/api/v1/events?tenant_id=sverp&source_system=sver
 | 测试凭据 | `/home/ywb/.platform-test/keys.txt`（line1=sso-admin secret, line2=admin 密码, line3=sverp-audit secret） |
 | 公钥同步 | `/home/ywb/sync-sso-key.sh` + `sync-sso-key.timer`（每 2 分钟） |
 | outbox 检查 | `python3 /tmp/check-outbox.py` |
+
+## 7. 平台集成测试页（sverpweb-stable 内置）
+
+登录 ERP 后，系统管理 → **平台集成测试**（4 个页面，admin 可见）：
+
+| 页面 | 路径 | 验证内容 |
+|---|---|---|
+| 集成总览 | `/integrations/status` | 三服务健康 + 配置状态 |
+| 文件存储 (Vault) | `/integrations/vault` | BFF 代理上传/列表（sverp-vault 服务账号自动换 token） |
+| 消息 (Aero IM) | `/integrations/im` | 发消息到 "SVERP Integration" 频道 + 读回 |
+| 审计账本 | `/integrations/audit` | 查询 sverp-web 来源的账本事件（actor/outcome） |
+
+实现要点（最小最佳实践）：
+- BFF 代理聚合（浏览器不接触服务凭据；OAuth client_credentials 自动换 token）
+- 页面路由/菜单由 Snaplink 权限控制（system:settings:read）
+- aero-vault 修复了 access 禁用时的 PUT nil-panic（commit c0ce6db）
