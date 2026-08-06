@@ -55,11 +55,11 @@ stages:
           manifest (scale × page_type × risk decides the rule set — a demo
           task loads only the visual core, a production task also loads the
           engineering specs):
-            1. pi-batch rules --summary "<original task>"   # compressed
+            1. pi-batch rules --summary "{prompt}"   # compressed
                requirement + algorithm manifest
             2. As the LLM side, output your own selection JSON
                {"apply": [...], "skip": [...], "reason": "..."}
-            3. pi-batch rules "<original task>" --llm-json '<your json>'
+            3. pi-batch rules "{prompt}" --llm-json '<your json>'
                # two-sided check: agreed rules stay, REQUIRED rules are
                # veto-protected, your additions are admitted with provenance
           Load the files listed in the FINAL manifest; do not load

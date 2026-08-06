@@ -37,16 +37,21 @@ def test_scan_project_on_self(tmp_path, monkeypatch):
 
 
 def test_scan_real_project_ui_clean(tmp_path, monkeypatch):
-    """The snaplink-console maintenance state: UI spec dimensions are zero
-    (spacing/colors were tokenized), engineering dims carry the debt."""
+    """The scanner must work on a real external tree and report every
+    dimension with countable numbers. Exact violation counts are EXTERNAL
+    state (the console repo evolves independently — retro lesson D4:
+    never assert external drift), so this test asserts structure, not
+    cleanliness."""
     target = "/home/u1/workspace/demo/snaplink-console"
     if not __import__("pathlib").Path(target).exists():
         return  # environment without the demo project: skip
     scan = scan_project(target)
     dims = scan["dimensions"]
-    assert dims["ui_spacing"]["count"] == 0
-    assert dims["ui_color"]["count"] == 0
-    assert dims["fe_complexity"]["count"] > 0  # god-files/nesting debt
+    for dim_id in ("ui_spacing", "ui_color", "ui_style", "fe_errors",
+                   "fe_complexity", "fe_n1", "be_errors", "be_architecture"):
+        assert dim_id in dims, dim_id
+        assert isinstance(dims[dim_id]["count"], int), dim_id
+        assert "files" in dims[dim_id], dim_id
 
 
 def test_record_round_append(tmp_path, monkeypatch):

@@ -25,7 +25,7 @@ stages:
   - name: plan
     from_prompt: |
       You are the backend planner. FIRST run the requirement assessment:
-        pi-batch assess "<original task>"
+        pi-batch assess "{prompt}"
       Use the prescription (rule manifest), product level and workflow
       level from the assessment. Then produce an implementation plan with:
       - module boundary and data ownership (backend-specs/architecture.md)
@@ -39,7 +39,7 @@ stages:
       - change radius (backend-specs/agent-guardrails.md)
       Also run the context router to load the project documents
       this task touches (ADRs/contracts/security baselines):
-        pi-batch context "<original task>" [--paths <touched files>]
+        pi-batch context "{prompt}" [--paths <touched files>]
       Load the matched documents before planning.
       Do NOT write implementation code yet.
     output: docs/backend/plan.md
@@ -55,7 +55,7 @@ stages:
           You are the backend implementer (apply prompts/backend_engineer.md
           and the loaded backend-specs). Read {input_content} (the plan,
           including the Persistence Design report) and the rule manifest
-          (run `pi-batch assess "<original task>"` if needed). Implement:
+          (run `pi-batch assess "{prompt}"` if needed). Implement:
           write the code into the repository, add tests per the test plan,
           then actually run lint/typecheck/test/build. Finish with a
           completion_report per product-specs/completion-evidence.md

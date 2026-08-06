@@ -303,6 +303,72 @@ default) is a wall-clock ceiling for each isolated direction; expiry kills the
 whole child pipeline group and records a failed outcome. The Bash
 `scripts/full-auto.sh` entry is only a compatibility wrapper.
 
+### 多 campaign 串行协作（同仓库锁 + 排队）
+
+实战教训（aero-vault 维护）：多个维护者/自动队列可能同时想跑同一仓库的
+campaign。规则：
+
+- **锁是仓库级的**（`.pi-batch.lock`，含 pid/start/host/argv/token）。活 PID
+  的锁永不打破（7×24 运行可远超 24h）；死 PID 的 stale 锁由下一个实例自动
+  破除；不可解析锁 fail-closed。
+- **排队用内建 `--wait-lock MINUTES`**（campaign 与单批 CLI 均支持）：30s
+  轮询、stale 锁立即破除、预算耗尽 exit 5。shell 版 `wait-for-run.sh`（
+  examples/snaplink-platform/）留给非 pi-batch 命令，同样带 stale 检测。
+- 多个 campaign 可共享 `docs/auto/state.jsonl`（事件按 campaign 名区分，
+  SUMMARY.md 的 Counts 按 campaign 拆分），但不要并发写同一工作树——
+  `--no-lock` 只用于故意分叉（不同 worktree）。
+- 每次 campaign 启动会记录 `TOOL_VERSION` 事件（工具代码 digest + 工具仓库
+  HEAD）：运行中工具被升级会失效旧指纹并可见，防止旧代码静默产出。
+
+### 轮循环：--rounds N
+
+"跑 N 次"是一等特性，无需外部 bash 循环：
+
+```bash
+python pi-batch.py campaign --rounds 10 --round-delay 60 \
+  --round-commit --reuse --retry-failed --wait-lock 10080
+```
+
+- `--rounds N`（0 = 无限）：每轮重新发现模块；配合 `--reuse/--skip-passed`，
+  指纹使后轮增量——已 PASSED 的分析/方向直接复用，只有被上一轮改动的模块
+  重新分析（新鲜证据）。不带复用标志时每轮都是全量新跑。
+- `--round-delay SECONDS`：轮间节流。
+- `--round-commit`：每轮结束后 `git add -A` + 提交（尊重 .gitignore，提交
+  失败只告警不影响轮次）；轮间工作树保持干净。
+- dry-run 始终单次（规划不循环）；负值/NaN 在启动前拒绝（exit 2）。
+
+### 超时配置（campaign 流水线）
+
+实战教训（compose-017）：900s 默认超时对真实仓库的实现/审查任务偏紧，
+56 个方向的 implement 阶段几乎全部超时失败。按阶段配置：
+
+```yaml
+# 模板示例：examples/repository-campaign-pipeline.yaml
+stages:
+  - name: adversarial_review
+    meta: true
+    meta_timeout: 2400   # meta 角色任务 + 编排者超时（读大代码库）
+  - name: implement
+    tasks:
+      - prompt: "..."
+        timeout: 1800    # 单任务超时（实现 + 全仓库门禁）
+```
+
+`--timeout N`（CLI）覆盖所有任务超时；`meta_timeout` > `--timeout`（meta
+阶段专用）。
+
+### 模块粒度建议
+
+Go 仓库 `internal/` 下推荐 `max_depth: 2`（拆到 `internal/api/rest` 级）：
+`max_depth: 1` 会把 rest+s3compat+webdav 捆成一个巨型模块，分析粗糙、方向
+过宽。`fallback_top_level: true` 适合无固定层级的小仓库。
+
+### 重试反馈闭环
+
+被 `design_gate`/`acceptance` 拒的方向重跑时，`materialize_pipeline` 会把
+上次 run_dir 里的 VERDICT 全文（≤24KiB、≤6 文件）折进 requirements/design/
+implement prompt，重试必须逐条处置上次发现（裁决门会复查）。
+
 ## One session, many steps
 
 By default every call starts a fresh agent session. When later steps should

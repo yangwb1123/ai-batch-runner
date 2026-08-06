@@ -1,0 +1,145 @@
+# 审计契约修订流水线（v1 GATE REJECTED 后的迭代轮）
+#
+# 输入：docs/snaplink-platform/audit-gate.md（10 个阻断项 + 六步解锁路径）
+#       + v1 三份草案（audit-event-registry-draft.md / scope-matrix.md /
+#         integration-design.md）
+# 输出（docs/snaplink-platform/v2/，与 v1 分离保留迭代历史）：
+#   revision-plan.md        阻断项 → 契约修订 + 实现前置 的映射
+#   audit-events-v2.md      修订后事件注册表（schema 必填/确定性 ID/自审计）
+#   scope-matrix-v2.md      scope 命名与实现对齐（audit:event:write）
+#   integration-design-v2.md 接入设计（死信/持久账本/readiness 解耦/in-tx）
+#   implementation-gate.md  各仓库实现前置清单（代码层阻断项分派）
+#   revision-gate.md        VERDICT 重裁（PASS 才进入人工批准）
+#
+# 运行：python3 pi-batch.py examples/snaplink-platform/audit-revision-pipeline.yaml
+
+git_commit: false
+decision_log: docs/DECISIONS.md
+
+stages:
+  - name: revision_plan
+    from_prompt: |
+      你是契约修订规划者。阅读阻断项清单：
+      @docs/snaplink-platform/audit-gate.md
+      以及 v1 草案（需要时阅读）：
+      @docs/snaplink-platform/audit-event-registry-draft.md
+      @docs/snaplink-platform/scope-matrix.md
+      @docs/snaplink-platform/integration-design.md
+
+      对每个阻断项（S1/S2/F2/F3/F4/F5/F-01/F-06/F13/F-3）输出：
+      ## <阻断项ID>：分类（契约修订 | 实现前置）
+      - 契约修订内容（若为契约层：具体改什么 schema/命名/条目）
+      - 实现前置要求（若为实现层：哪个仓库改什么、验收断言）
+      - 是否阻塞本轮契约批准（实现前置项记录但不阻塞 v2 契约？需判断——
+        契约可以先批准"目标态"，实现前置作为各仓库实施任务）
+      最后输出六步解锁路径的完成矩阵（每步：已覆盖/部分/未覆盖）。
+    output: docs/snaplink-platform/v2/revision-plan.md
+    validate_cmd: "python3 {cwd}/scripts/check-no-refusal.py {output}"
+
+  - name: revise_registry
+    from_outputs: revision_plan
+    mode: serial
+    tasks:
+      - prompt: |
+          你是审计契约修订者。阅读修订计划与阻断项：
+          {input_content}
+          修订审计事件注册表（从 v1 全量 121 事件类型出发，需要时阅读
+          @docs/snaplink-platform/audit-event-registry-draft.md），强制落实：
+          1. S2：事件 schema 中 tenant_id / subject.roles 为必填（除系统级事件）
+          2. F4：事实 ID 用确定性 ID（event_id = hash(source, tenant, action,
+             资源 ID, 时间桶) 方案），去重键显式化
+          3. F-06/F13：新增 sink 读路径审计与自审计事件类型
+          4. F-3：OIDC discovery 相关元数据条目只列已验证事实，标 [PROPOSED]
+          5. 保留 v1 的溯源格式（Verified/[PROPOSED]），修订处标注 v2
+          输出完整修订版注册表（可被人工核对），不修改代码。
+        output: docs/snaplink-platform/v2/audit-events-v2.md
+        validate_cmd: "python3 {cwd}/scripts/check-no-refusal.py {output}"
+
+  - name: revise_scope
+    from_outputs: revise_registry
+    mode: serial
+    tasks:
+      - prompt: |
+          你是 scope 矩阵修订者。阅读 {input_content} 与 v1 scope 矩阵
+          （@docs/snaplink-platform/scope-matrix.md）。强制落实 F2：
+          1. 全矩阵 scope 命名与实现对齐：统一为 audit:event:write
+             （sink require()/aero-id validOAuthBinding/vault RequiredScope
+             均强制此名），删除 audit:event:ingest
+          2. 每个 scope 行补充"实现强制点"列（哪个文件 enforce）
+          3. 保留最小权限形状（deny 列表/客户端绑定/无通配符）
+          输出修订版 scope 矩阵。
+        output: docs/snaplink-platform/v2/scope-matrix-v2.md
+        validate_cmd: "python3 {cwd}/scripts/check-no-refusal.py {output}"
+
+  - name: revise_design
+    from_outputs: revise_scope
+    aggregate: true
+    mode: serial
+    tasks:
+      - prompt: |
+          你是接入设计修订者。阅读 {input_content} 与 v1 接入设计
+          （@docs/snaplink-platform/integration-design.md）。强制落实：
+          1. F3/H1：aero-vault 毒事件/死信状态设计——poison 行必须有
+             dead 状态与重试上限，Ready() 与 sink 可用性解耦（读超时
+             降级而非 503）
+          2. F5：aero-id 审计记录移入业务事务（同事务 Outbox，消除
+             静默丢失）
+          3. F-01：sink 快照存储加乐观锁冲突重试
+          4. S1：dev-token 默认关闭，信任路径 = IdP 签发 token（含
+             tenant_id/roles）
+          5. 每个服务输出"实现前置任务清单"（仓库/改动/验收断言）
+          输出修订版接入设计。
+        output: docs/snaplink-platform/v2/integration-design-v2.md
+        validate_cmd: "python3 {cwd}/scripts/check-no-refusal.py {output}"
+
+  - name: implementation_gate
+    from_outputs: revise_design
+    aggregate: true
+    mode: serial
+    tasks:
+      - prompt: |
+          你是实施分派员。阅读 {input_content}（修订计划 + 三份 v2 草案）。
+          输出各仓库实现前置任务清单（COMPOSE-2026-017 之后的实施批次）：
+          ## snaplink（dev-token 关闭、IdP token 带 tenant_id/roles、scope 注册）
+          ## aero-vault（死信状态、Ready 解耦、scope 对齐）
+          ## aero-id（in-tx 审计记录）
+          ## snaplink-audit-governance（持久账本冲突重试、读/自审计、
+          ##   discovery 元数据真实化）
+          ## snaplink-console（审计时间线读路径接入）
+          ## aero-im（事件消费对齐）
+          每项：仓库 / 文件或模块 / 改动 / 验收断言 / 依赖批次。
+        output: docs/snaplink-platform/v2/implementation-gate.md
+        validate_cmd: "python3 {cwd}/scripts/check-no-refusal.py {output}"
+
+  - name: adversarial_review
+    from_outputs: implementation_gate
+    meta: true
+    meta_timeout: 1500
+    role_dir: prompts
+    output_dir: docs/snaplink-platform/v2/reviews
+    max_iterations: 2
+    max_roles_per_iteration: 3
+    relevance_enabled: true
+    relevance_min_score: 2
+    mode: serial
+
+  - name: revision_gate
+    from_outputs:
+      - implementation_gate
+      - adversarial_review
+    aggregate: true
+    gate: true
+    mode: serial
+    tasks:
+      - prompt: |
+          你是独立 gatekeeper。阅读 {input_content}（v2 三份草案 +
+          修订计划 + 实施清单 + 对抗审查）。逐项核对 10 个阻断项
+          （S1/S2/F2/F3/F4/F5/F-01/F-06/F13/F-3）：
+          契约层阻断项必须在 v2 中已修订（可验证）；实现前置阻断项
+          必须已进入实施清单（不再声称已完成）。FORAMT：最终行必须
+          以纯文本 VERDICT: 开头（禁止加粗/代码块/缩进）。End with
+          exactly one line:
+          VERDICT: PASS - <v2 契约可进入人工批准>
+          or
+          VERDICT: FAIL - <剩余阻断项>
+        output: docs/snaplink-platform/v2/revision-gate.md

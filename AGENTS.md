@@ -80,6 +80,10 @@ CLI 的负数/零值和 NaN/Inf 延迟同样在创建日志、锁或子进程之
 选中的多个来源公平分配预算；截断标记保留完整产物路径，省略标记保留计数，
 LLM 可在确有需要时按需读取，
 meta 每轮从产物清单重建上下文而不是递归复制旧 prompt。
+`{prompt}` 占位符可在 pipeline 的 `from_prompt`、任务模板和 `meta_prompt`
+中使用：`-p "任务" --classify` 路由到实现流水线时，原始任务提示会被注入
+（此前 `<original task>` 是字面量、从不替换——aero-id 维护 R5 复盘修复）；
+未带原始提示运行时替换为空串，模板不会泄露裸占位符。
 最终 prompt 还受 `prompt.max_bytes`（默认 120KiB）硬门约束，以低于 Linux 常见
 128KiB 单 argv 上限；超限在启动 agent 前明确失败，避免不可诊断的 `E2BIG`。
 
@@ -102,6 +106,10 @@ agent 回复**不是正确输出时一律不落盘**：
 - stdout/stderr 以固定 8KiB 字符块排空；即使 agent 输出超长无换行单行，
   也不会在 `OUTPUT_MAX_BYTES` 截断判断前由 `readline()` 全量载入内存
 - 拒绝 = 无产物文件；任务失败 → 可自动重试/下轮重跑
+- 被拒产物保留**有界摘录**（默认 64KiB）到任务 cwd 的
+  `.pi-batch/rejected/<name>-<时间戳>.rejected.md` 并在日志指出路径——
+  交付物路径保持零残留，但人工/重试可诊断"验证器到底拒绝了什么"
+  （aero-id 维护 R5 复盘修复：completion 门禁两次拒绝均无明细可查）
 
 ### 2.3 工程质量验证
 
@@ -133,7 +141,7 @@ validators:
 
 | 参数 | 作用 |
 |---|---|
-| `--reuse` | 当前 validator 复验已有输出；通过才复用，stage `commands` 仍重跑 |
+| `--reuse` | 当前 validator 复验已有输出；通过才复用，stage `commands` 仍重跑；**gate 阶段例外**——含 `VERDICT: FAIL/REJECT`（或无裁决）的产物永不复用（裁决绑定仓库状态，fingerprint 看不见代码变化；修复后被拒 gate 会被删除并重审，PASS 裁决复用会显式告警），aero-id 维护 R5e 复盘修复 |
 | `--retries N` | 任务失败自动重试，指数退避；速率/网络类至少等 30s |
 | `--max-rounds N`（0=无限） | 轮循环直到全部通过，`--round-delay` 轮间休息 |
 | `--min-interval` | 成功任务间节流 |

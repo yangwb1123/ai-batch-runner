@@ -105,7 +105,9 @@ stages:
       - prompt: |
           You are the QA lead. Read {input_content} and verify each
           improvement's acceptance check is covered by the plan.
-          Output the verdict on the last line:
+          FORMAT: the final line MUST start with VERDICT: in plain text (no
+          bold, no code fence, no quote, no indentation). Output the verdict on
+          the last line:
           VERDICT: PASS - <why every acceptance check is covered>
           or
           VERDICT: FAIL - <missing coverage>

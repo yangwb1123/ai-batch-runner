@@ -8,6 +8,7 @@ import logging.handlers
 import math
 import signal
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,10 +19,11 @@ from .campaign_analysis import (analysis_fingerprint, build_analysis_task,
 from .campaign_models import CampaignSettings, Direction
 from .campaign_pipeline import (direction_fingerprint, parallel_ready,
                                 run_direction, run_directions_isolated)
-from .campaign_state import StateStore, git_snapshot, write_summary
+from .campaign_state import StateStore, _git_output, git_snapshot, tool_digest, tool_head, write_summary
 from .config import log, yaml
 from .lock import acquire_lock, release_lock
-from .runner import kill_active_procs
+from .registry import mark_running, unregister
+from .runner import kill_active_procs, run_argv
 from .text_io import read_text_bounded
 
 
@@ -62,7 +64,17 @@ def build_campaign_parser() -> argparse.ArgumentParser:
     parser.add_argument("--log-file", default="logs/full-auto.log")
     parser.add_argument("--stream-output", choices=["auto", "full", "none"],
                         default=config.STREAM_OUTPUT)
+    parser.add_argument("--rounds", type=int, default=1,
+                        help="repeat the campaign up to N times (0 = infinite; "
+                             "fingerprint reuse makes later rounds incremental)")
+    parser.add_argument("--round-delay", type=float, default=0, metavar="SECONDS",
+                        help="pause between campaign rounds (pacing/rate limit)")
+    parser.add_argument("--round-commit", action="store_true",
+                        help="git add -A + commit all changes after each round "
+                             "(respects .gitignore; advisory, never fails the round)")
     parser.add_argument("--no-lock", action="store_true")
+    parser.add_argument("--wait-lock", type=int, default=0, metavar="MINUTES",
+                        help="queue behind a held lock (poll 30s up to MINUTES) instead of exit 5")
     parser.add_argument("--memory-mode", choices=["auto", "on", "off"], default=config.MEMORY_MODE)
     _add_metering_args(parser)
     return parser
@@ -102,9 +114,12 @@ def load_settings(root: Path, args: argparse.Namespace) -> CampaignSettings:
 
 def _validate_runtime_args(args: argparse.Namespace) -> None:
     values = {"timeout": args.timeout, "retry-delay": args.retry_delay,
-              "budget-max": args.budget_max, "daily-budget": args.daily_budget}
+              "budget-max": args.budget_max, "daily-budget": args.daily_budget,
+              "round-delay": args.round_delay}
     invalid = [name for name, value in values.items()
                if not math.isfinite(float(value)) or value < 0]
+    if args.rounds < 0:
+        invalid.append("rounds")
     if not str(args.agent_bin).strip():
         invalid.append("agent-bin")
     if invalid:
@@ -154,6 +169,10 @@ def run_campaign(context: CampaignContext) -> int:
     if context.args.dry_run:
         _print_plan(context, modules)
         return 0
+    _event(context, "__tool__", "__tool__", "", "TOOL_VERSION",
+           tool_digest(), [tool_head()],
+           reason="tool code digest (pbatch + pi-batch.py + pi-batch.yaml); "
+                  "invalidates analysis/direction reuse when the tool changes")
     directions, failures = _analyze_modules(context, modules)
     selected, selection_failures = _select(context, modules, directions)
     failures += selection_failures
@@ -224,9 +243,8 @@ def _select(context: CampaignContext, modules: list[str],
         selected, rejected = select_directions(
             context.root, candidates, context.settings.max_directions, context.settings.minimum_score)
         analysis = _analysis_path(context, module)
-        for direction in rejected:
-            _direction_event(context, direction, "DIRECTION_REJECTED", "", analysis,
-                             "duplicate, low score, missing evidence, or missing acceptance checks")
+        for direction, reason in rejected:
+            _direction_event(context, direction, "DIRECTION_REJECTED", "", analysis, reason)
         if candidates and not selected:
             failures += 1
         for direction in selected:
@@ -364,15 +382,90 @@ def main(argv: list[str] | None = None) -> None:
     store = StateStore(settings.path(root, settings.state_file), settings.state_line_max_bytes)
     excluded = _snapshot_excludes(root, settings, args)
     context = CampaignContext(root, settings, args, store, git_snapshot(root, excluded))
-    lock_path = acquire_lock(cwd=str(root), no_lock=args.no_lock or args.dry_run)
+    _register_campaign_run(root, args)
     try:
-        code = run_campaign(context)
+        lock_path = acquire_lock(cwd=str(root), no_lock=args.no_lock or args.dry_run,
+                                 wait_minutes=getattr(args, "wait_lock", 0))
+        mark_running()
+    except SystemExit:
+        unregister()
+        raise
+    try:
+        code = run_campaign_loop(context)
     except KeyboardInterrupt:
         log.warning("CAMPAIGN interrupted; rerun with --reuse --retry-failed")
         code = 130
     finally:
         release_lock(lock_path)
+        unregister()
     raise SystemExit(code)
+
+
+def run_campaign_loop(context: CampaignContext) -> int:
+    """Run the campaign `--rounds` times (0 = infinite). Later rounds are
+    incremental: fingerprint reuse skips PASSED analyses/directions, so a
+    round only re-does what the previous round changed (real-world lesson:
+    'run it 10 times' previously required an external bash loop)."""
+    if context.args.dry_run:
+        return run_campaign(context)  # planning is single-shot
+    rounds = context.args.rounds
+    code = 0
+    round_no = 1
+    while True:
+        if rounds > 0 and round_no > rounds:
+            break
+        label = str(rounds) if rounds else "\u221e"
+        log.info("")
+        log.info("========== CAMPAIGN ROUND %d/%s ==========", round_no, label)
+        rc = run_campaign(context)
+        if rc and code == 0:
+            code = rc
+        if rounds > 0 and round_no >= rounds:
+            break
+        if context.args.round_commit:
+            _round_commit(context, round_no)
+        if context.args.round_delay > 0:
+            log.info("ROUND DELAY: sleeping %.0fs before round %d",
+                     context.args.round_delay, round_no + 1)
+            time.sleep(context.args.round_delay)
+        round_no += 1
+    return code
+
+
+def _round_commit(context: CampaignContext, round_no: int) -> None:
+    """Commit all non-ignored changes after a round (advisory: a commit
+    problem must not fail the round; respects .gitignore via git add -A)."""
+    root = context.root
+    if not run_argv(["git", "rev-parse", "--git-dir"], str(root), timeout=10).ok:
+        log.info("ROUND %d: not a git repository, skipping round commit", round_no)
+        return
+    status = _git_output(root, ["status", "--porcelain=v1"])
+    if not status.strip():
+        log.info("ROUND %d: no uncommitted changes", round_no)
+        return
+    msg = ("[pi-batch] campaign round %d: implemented directions "
+           "(see %s)" % (round_no, context.settings.summary_file))
+    add = run_argv(["git", "add", "-A"], str(root), timeout=30)
+    if not add.ok:
+        log.warning("ROUND %d: git add -A failed (exit=%d): %s", round_no,
+                    add.exit_code, (add.stderr or "").strip()[:300])
+        return
+    commit = run_argv(["git", "commit", "-m", msg], str(root), timeout=30)
+    if not commit.ok:
+        log.warning("ROUND %d: git commit failed (exit=%d): %s", round_no,
+                    commit.exit_code, (commit.stderr or "").strip()[:300])
+        return
+    log.info("ROUND %d: committed %d changed file(s): %s",
+             round_no, len(status.splitlines()), msg)
+
+
+def _register_campaign_run(root: Path, args) -> None:
+    """Publish the campaign in the global run registry."""
+    import atexit
+    from .registry import register_run, unregister
+    register_run(mode="campaign", repo=str(root),
+                 session_name=getattr(args, "session_name", "") or "")
+    atexit.register(unregister)
 
 
 def _campaign_sigterm(signum, frame) -> None:

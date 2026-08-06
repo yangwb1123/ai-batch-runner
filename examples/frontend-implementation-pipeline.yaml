@@ -31,7 +31,7 @@ stages:
   - name: plan
     from_prompt: |
       You are the frontend planner. FIRST run the requirement assessment:
-        pi-batch assess "<original task>"
+        pi-batch assess "{prompt}"
       Use the prescription (rule manifest — visual core, engineering specs,
       business profile by scale × page_type × risk), the product level and
       the workflow level from the assessment. Then produce an
@@ -47,7 +47,7 @@ stages:
         domains)
       Also run the context router to load the project documents
       this task touches (ADRs/contracts/security baselines):
-        pi-batch context "<original task>" [--paths <touched files>]
+        pi-batch context "{prompt}" [--paths <touched files>]
       Load the matched documents before planning.
       Do NOT write implementation code yet.
     output: docs/ui/plan.md
@@ -62,7 +62,7 @@ stages:
       - prompt: |
           You are the frontend implementer (apply prompts/frontend_engineer.md
           and the loaded ui-specs). Read {input_content} (the plan) and the
-          rule manifest (run `pi-batch assess "<original task>"` if needed).
+          rule manifest (run `pi-batch assess "{prompt}"` if needed).
           Implement the page/component in the project's real frontend
           sources (e.g. src/), following the plan exactly: layout pattern,
           component tree, state placement, interaction chain with loading/

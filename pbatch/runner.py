@@ -430,6 +430,39 @@ def _run_bounded_process(cmd, cwd: str, timeout: float, output_cap: int,
                             stdout=stdout, stderr=stderr, timed_out=False)
 
 
+REJECTED_EXCERPT_MAX_BYTES = 65536  # bounded diagnostics, never the deliverable
+
+
+def _save_rejected_excerpt(tmp: Path, workdir: str, cmd: str, reason: str) -> Optional[str]:
+    """Keep a bounded excerpt of a validator-rejected artifact under
+    .pi-batch/rejected/ so humans and retry prompts can diagnose WHY the
+    gate refused it (the deliverable path itself stays clean — zero
+    residue at the output location, aero-id maintenance R5 finding).
+    Returns the excerpt path ("" when the artifact was already gone)."""
+    try:
+        text = tmp.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    excerpt = text[:REJECTED_EXCERPT_MAX_BYTES]
+    if len(text) > REJECTED_EXCERPT_MAX_BYTES:
+        excerpt += "\n... (excerpt truncated at %d bytes)" % REJECTED_EXCERPT_MAX_BYTES
+    rej_dir = Path(workdir) / ".pi-batch" / "rejected"
+    try:
+        rej_dir.mkdir(parents=True, exist_ok=True)
+        name = tmp.name.removesuffix(".tmp") + "-" + time.strftime("%Y%m%d-%H%M%S") + ".rejected.md"
+        out = rej_dir / name
+        header = (
+            "# Rejected artifact excerpt (diagnostics only; NOT the deliverable)\n\n"
+            "- validator: %s\n- reason: %s\n- original output: %s\n\n---\n\n"
+            % (cmd, reason, tmp.name)
+        )
+        out.write_text(header + excerpt, encoding="utf-8")
+        return str(out)
+    except OSError as exc:
+        log.warning("could not keep rejected excerpt: %s", exc)
+        return ""
+
+
 def _apply_gate_commands(tmp: Path, task: Task, commands: list, result: TaskResult) -> bool:
     """Run every gate command against the temp artifact (AND semantics);
     a failure deletes the artifact, records the outcome on the result
@@ -449,33 +482,45 @@ def _apply_gate_commands(tmp: Path, task: Task, commands: list, result: TaskResu
         result.validation_ok = v.ok
         result.validation_exit = v.exit_code
         result.validation_stderr = _cap_feedback(v.stderr or "")
-        if not _gate_spec_passed(spec, cmd, tmp, result, v):
+        if not _gate_spec_passed(spec, cmd, tmp, result, v, task.workdir()):
             return False
     result.validation_ok = True
     result.validation_exit = 0
     return True
 
 
-def _gate_spec_passed(spec, cmd: str, tmp: Path, result: TaskResult, v) -> bool:
+def _reject_artifact(tmp: Path, workdir: str, cmd: str, reason: str,
+                     stdout: str = "", stderr: str = "") -> None:
+    """Fail-closed disposal of a gate-rejected artifact: keep a bounded
+    excerpt under .pi-batch/rejected/ for diagnosis, delete the temp file
+    (zero residue at the output path), log the validator output tails."""
+    rej = _save_rejected_excerpt(tmp, workdir, cmd, reason)
+    if rej:
+        log.warning("REJECTED EXCERPT: %s", rej)
+    tmp.unlink(missing_ok=True)
+    log.warning("VALIDATION FAILED (%s): %s; output NOT saved", reason, cmd)
+    for line in (stdout or "").strip().splitlines()[-10:]:
+        log.warning("  | %s", line)
+    for line in (stderr or "").strip().splitlines()[-10:]:
+        log.warning("  | %s", line)
+
+
+def _gate_spec_passed(spec, cmd: str, tmp: Path, result: TaskResult, v, workdir: str = "") -> bool:
     """Decide whether one gate command passed: exit 0, optional JSON status
     (T12a) and judge VERDICT protocol (fail closed on missing/bare verdict).
     Records failure feedback on the result, deletes the temp artifact and
-    returns False on rejection."""
+    returns False on rejection. Rejected artifacts keep a bounded excerpt
+    under .pi-batch/rejected/ for diagnosis (never at the output path)."""
     if not v.ok:
-        tmp.unlink(missing_ok=True)
-        log.warning("VALIDATION FAILED%s: %s; output NOT saved",
-                    " (timeout)" if v.timed_out else f" (exit={v.exit_code})", cmd)
-        for line in (v.stdout or "").strip().splitlines()[-10:]:
-            log.warning("  | %s", line)
-        for line in (v.stderr or "").strip().splitlines()[-10:]:
-            log.warning("  | %s", line)
+        _reject_artifact(tmp, workdir, cmd,
+                         "exit=%d%s" % (v.exit_code, " (timeout)" if v.timed_out else ""),
+                         v.stdout, v.stderr)
         return False
     if _json_status(v.stdout) == "warn":
         log.warning("VALIDATE WARN: %s (output saved with warning)", cmd)
         return True
     if _json_status(v.stdout) == "fail":
-        tmp.unlink(missing_ok=True)
-        log.warning("VALIDATION FAILED (JSON status=fail): %s; output NOT saved", cmd)
+        _reject_artifact(tmp, workdir, cmd, "JSON status=fail", v.stdout, v.stderr)
         return False
     if spec.judge:
         verdict = judge_verdict(v.stdout)
@@ -483,14 +528,12 @@ def _gate_spec_passed(spec, cmd: str, tmp: Path, result: TaskResult, v) -> bool:
             line = next((ln.strip() for ln in (v.stdout or "").splitlines()
                          if ln.strip().upper().startswith("VERDICT:")), "")
             result.validation_stderr = _cap_feedback(f"judge {verdict}: {line}")
-            tmp.unlink(missing_ok=True)
-            log.warning("VALIDATION FAILED (judge verdict=%s): %s; output NOT saved", verdict, cmd)
+            _reject_artifact(tmp, workdir, cmd, "judge verdict=%s" % verdict, v.stdout, v.stderr)
             return False
         if verdict is None:
             result.validation_stderr = _cap_feedback(
                 "judge produced no VERDICT: PASS|FAIL - <reason> line")
-            tmp.unlink(missing_ok=True)
-            log.warning("VALIDATION FAILED (judge: no verdict): %s; output NOT saved", cmd)
+            _reject_artifact(tmp, workdir, cmd, "judge: no verdict", v.stdout, v.stderr)
             return False
         log.info("VALIDATE JUDGE PASS: %s", cmd)
     return True
@@ -686,7 +729,11 @@ def _result_from_proc(task: Task, proc: subprocess.Popen, stdout_lines: list, st
     if success:
         log.info("OK  done  [%.1fs]  [output=%s]", elapsed, task.output or "(stdout)")
     else:
-        log.warning("FAIL  [code=%d]  [%.1fs]", proc.returncode, elapsed)
+        # F2 (retro finding): failures must carry a stderr tail so root
+        # causes are visible in run logs without reopening agent sessions.
+        tail = "\n".join((stderr_text or "").strip().splitlines()[-3:])[:400]
+        detail = f"\n  stderr: {tail}" if tail else ""
+        log.warning("FAIL  [code=%d]  [%.1fs]%s", proc.returncode, elapsed, detail)
     return TaskResult(
         task=task, success=success, stdout=stdout_text, stderr=stderr_text,
         elapsed=elapsed, returncode=proc.returncode, reason=reason or "",

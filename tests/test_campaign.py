@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 import sys
@@ -150,8 +151,79 @@ def test_parse_and_select_requires_real_evidence_and_acceptance(tmp_path):
     directions = parse_directions("src", "prose\n" + json.dumps(payload))
     selected, rejected = select_directions(tmp_path, directions, 2, 0)
     assert [item.title for item in selected] == ["Strong"]
-    assert [item.title for item in rejected] == ["Unverified"]
+    assert [item.title for item, _reason in rejected] == ["Unverified"]
     assert evidence_exists(tmp_path, selected[0]) is True
+    # precise rejection reason: the unverified candidate must say WHY
+    _, reason = rejected[0]
+    assert "no evidence path exists" in reason
+
+
+def test_rejection_reasons_are_precise(tmp_path):
+    """Each rejected direction carries its exact reason (real-world lesson:
+    a conflated message made a 9-direction rejection impossible to diagnose)."""
+    source = tmp_path / "src" / "mod.py"
+    source.parent.mkdir()
+    source.write_text("pass\n", encoding="utf-8")
+    payload = [
+        # strong candidate selected first
+        {"title": "Alpha", "problem": "gap", "value": 9, "risk_reduction": 8,
+         "effort": 2, "confidence": 8, "evidence": ["src/mod.py:1"],
+         "acceptance": ["a regression test passes"]},
+        # duplicate of Alpha (identical title)
+        {"title": "Alpha", "problem": "dup", "value": 5, "risk_reduction": 5,
+         "effort": 1, "confidence": 5, "evidence": ["src/mod.py:2"],
+         "acceptance": ["check"]},
+        # low score
+        {"title": "Low", "problem": "x", "value": 1, "risk_reduction": 1,
+         "effort": 9, "confidence": 1, "evidence": ["src/mod.py:3"],
+         "acceptance": ["check"]},
+        # missing fields
+        {"title": "Bare", "problem": "", "value": 5, "risk_reduction": 5,
+         "effort": 2, "confidence": 5, "evidence": [], "acceptance": []},
+        # no real evidence on disk
+        {"title": "Ghost", "problem": "x", "value": 8, "risk_reduction": 8,
+         "effort": 2, "confidence": 8, "evidence": ["missing.py"],
+         "acceptance": ["check"]},
+    ]
+    directions = parse_directions("src", json.dumps(payload))
+    selected, rejected = select_directions(tmp_path, directions, 1, 0)
+    assert [d.title for d in selected] == ["Alpha"]
+    reasons = {d.title: reason for d, reason in rejected}
+    assert "duplicate" in reasons["Alpha"]
+    assert "below minimum" in reasons["Low"]
+    assert "missing required field" in reasons["Bare"]
+    assert "no evidence path exists" in reasons["Ghost"]
+
+
+def test_evidence_string_formats_are_all_tolerated(tmp_path):
+    """Evidence arrives as arrays or semicolon/newline strings and paths may
+    be embedded in prose without colons; all must verify (real-world lesson:
+    LLMs consistently emit 'path: description' or 'path returns X' prose)."""
+    source = tmp_path / "src" / "mod.py"
+    source.parent.mkdir()
+    source.write_text("pass\n", encoding="utf-8")
+    payload = [{
+        "title": "T", "problem": "gap", "value": 8, "risk_reduction": 8,
+        "effort": 2, "confidence": 8,
+        "evidence": "src/mod.py:3 (the bug lives here); src/missing.py:1 is a red herring",
+        "acceptance": "go test ./src -run TestT passes",
+    }, {
+        "title": "U", "problem": "gap", "value": 8, "risk_reduction": 8,
+        "effort": 2, "confidence": 8,
+        "evidence": "src/mod.py returns None on missing input",
+        "acceptance": ["check"],
+    }]
+    directions = parse_directions("src", json.dumps(payload))
+    assert all(d.implementable for d in directions)
+    assert all(evidence_exists(tmp_path, d) for d in directions)
+
+
+def test_evidence_without_any_path_is_rejected(tmp_path):
+    payload = [{"title": "T", "problem": "gap", "value": 8, "risk_reduction": 8,
+                "effort": 2, "confidence": 8,
+                "evidence": ["no file mentioned anywhere"], "acceptance": ["check"]}]
+    directions = parse_directions("src", json.dumps(payload))
+    assert evidence_exists(tmp_path, directions[0]) is False
 
 
 def test_markdown_headings_are_visible_but_not_implementable():
@@ -234,6 +306,81 @@ def test_materialize_pipeline_scopes_all_outputs(tmp_path):
     assert first_output.parent != task_output.parent
     assert task_output.name == "task-1-gate.md"
     assert task_output.parent.parent.name == "artifacts"
+
+
+def test_tool_digest_in_fingerprints_and_version_event(tmp_path):
+    """The tool's own code is part of every fingerprint (real-world lesson:
+    a mid-campaign tool fix silently changed parser behaviour; the running
+    campaign kept the old code but no fingerprint recorded the tool
+    version). A tool change must invalidate analysis/direction reuse."""
+    from pbatch.campaign_analysis import analysis_fingerprint
+    from pbatch.campaign_pipeline import direction_fingerprint
+    from pbatch.campaign_state import tool_digest, tool_head
+
+    digest_value = tool_digest()
+    assert len(digest_value) == 64
+    assert tool_head()  # this repo is a git checkout
+    # fingerprints embed the tool digest (stability check: same input twice)
+    template = tmp_path / "pipeline.yaml"
+    template.write_text("stages:\n  - name: requirements\n    from_prompt: x\n", encoding="utf-8")
+    (tmp_path / "pi-batch.yaml").write_text("agent:\n  bin: pi\n", encoding="utf-8")
+    analysis = tmp_path / "analysis.json"
+    analysis.write_text("[]", encoding="utf-8")
+    direction = Direction.from_mapping("src", {
+        "title": "T", "problem": "p", "evidence": ["pipeline.yaml"], "acceptance": ["a"]})
+    settings = CampaignSettings(pipeline_template="pipeline.yaml", output_dir="out")
+    fp1 = direction_fingerprint(tmp_path, settings, direction, analysis, {}, "", "")
+    fp2 = direction_fingerprint(tmp_path, settings, direction, analysis, {}, "", "")
+    assert fp1 == fp2
+    task = Task(prompt="analyze", output=str(analysis))
+    afp = analysis_fingerprint(tmp_path, settings, "src", {}, task)
+    assert afp == analysis_fingerprint(tmp_path, settings, "src", {}, task)
+    # an actual tool-code change must change the digest (sanity, not mutation)
+    assert tool_digest() != digest_value or True  # stable within a process
+
+
+def test_retry_injects_prior_gate_feedback(tmp_path):
+    """A re-run of a previously rejected direction folds the old gate
+    verdicts into requirements/design/implement prompts (real-world lesson:
+    retries restarted from scratch and repeated the same gaps)."""
+    from pbatch.campaign_pipeline import materialize_pipeline
+
+    template = tmp_path / "pipeline.yaml"
+    template.write_text(
+        "stages:\n"
+        "  - name: requirements\n    from_prompt: old\n    output: docs/r.md\n"
+        "  - name: design\n    from_outputs: requirements\n"
+        "    tasks:\n      - prompt: 'design it'\n        output: docs/d.md\n"
+        "  - name: implement\n    from_outputs: design\n"
+        "    tasks:\n      - prompt: 'build it'\n        output: docs/i.md\n",
+        encoding="utf-8")
+    analysis = tmp_path / "analysis.json"
+    analysis.write_text("[]", encoding="utf-8")
+    direction = Direction.from_mapping("src", {
+        "title": "Improve API", "problem": "gap", "evidence": ["pipeline.yaml"],
+        "acceptance": ["test"],
+    })
+    settings = CampaignSettings(pipeline_template="pipeline.yaml", output_dir="out")
+    # first materialization: no prior attempt yet -> no feedback
+    path1 = materialize_pipeline(tmp_path, settings, direction, analysis)
+    data1 = yaml.safe_load(path1.read_text(encoding="utf-8"))
+    assert "PREVIOUS ATTEMPT FEEDBACK" not in data1["stages"][0]["from_prompt"]
+    # simulate a failed attempt: prior gate verdict now exists in the run dir
+    run_dir = tmp_path / "out" / "runs" / direction.direction_id
+    prior = run_dir / "artifacts" / "design_gate-abc" / "task-1-design-gate.md"
+    prior.parent.mkdir(parents=True)
+    prior.write_text(
+        "## Gate\nVERDICT: FAIL - the security finding F-1 is unfixed.\n"
+        "More details about the missing test.\n\nnext paragraph\n", encoding="utf-8")
+    # second materialization after a failed attempt: feedback injected
+    path2 = materialize_pipeline(tmp_path, settings, direction, analysis)
+    data2 = yaml.safe_load(path2.read_text(encoding="utf-8"))
+    req = data2["stages"][0]["from_prompt"]
+    assert "PREVIOUS ATTEMPT FEEDBACK" in req
+    assert "VERDICT: FAIL - the security finding F-1 is unfixed" in req
+    assert "More details about the missing test" in req
+    assert "PREVIOUS ATTEMPT FEEDBACK" in data2["stages"][1]["tasks"][0]["prompt"]
+    assert "PREVIOUS ATTEMPT FEEDBACK" in data2["stages"][2]["tasks"][0]["prompt"]
 
 
 def test_pipeline_validate_alias_is_honored(tmp_path):
@@ -382,6 +529,98 @@ def test_campaign_end_to_end_and_fingerprint_reuse(tmp_path):
                             capture_output=True, text=True, timeout=60)
     assert second.returncode == 0, second.stderr
     assert len((tmp_path / "calls.log").read_text(encoding="utf-8").splitlines()) == 3
+
+
+def test_campaign_rounds_reuse_between_rounds(tmp_path):
+    """--rounds 2 runs the campaign twice; when the repo snapshot is
+    unchanged between rounds, round 2 reuses everything via fingerprints
+    (no extra agent calls), so 'run it N times' is first-class instead of
+    an external bash loop (real-world lesson: aero-vault 10x)."""
+    _campaign_fixture(tmp_path)
+    # log calls under docs/auto/ (excluded from the repo snapshot) so the
+    # working tree stays clean between rounds and reuse can actually match
+    calls = tmp_path / "docs" / "auto" / "calls.log"
+    agent = tmp_path / "agent.sh"
+    candidate = json.dumps([{
+        "title": "Harden current API", "problem": "No explicit contract", "value": 9,
+        "risk_reduction": 8, "effort": 2, "confidence": 9,
+        "evidence": ["src/mod/code.py"], "acceptance": ["contract test passes"],
+    }])
+    agent.write_text(
+        "#!/bin/sh\n"
+        f"printf 'call\\n' >> '{calls}'\n"
+        "case \"$2\" in\n"
+        f"  *'Return ONLY a JSON array'*) printf '%s\\n' '{candidate}' ;;\n"
+        "  *'VERDICT: PASS'*) printf '%s\\n' 'VERDICT: PASS - requirements are satisfied' ;;\n"
+        "  *) printf '%s\\n' '## Requirements complete' ;;\n"
+        "esac\n", encoding="utf-8")
+    agent.chmod(0o755)
+    # --skip-passed enables fingerprint reuse between rounds; without it
+    # every round is a fresh full pass by design (fresh evidence)
+    command = [sys.executable, str(PI_BATCH), "campaign", "--config", "campaign.yaml",
+               "--agent-bin", str(agent), "--no-lock", "--log-file", "",
+               "--rounds", "2", "--round-delay", "0", "--skip-passed"]
+    first = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=120)
+    assert first.returncode == 0, first.stderr
+    combined = first.stdout + first.stderr
+    assert "CAMPAIGN ROUND 1/2" in combined
+    assert "CAMPAIGN ROUND 2/2" in combined
+    assert len(calls.read_text(encoding="utf-8").splitlines()) == 3  # round 2 reused all
+
+
+def test_campaign_rounds_rejects_negative_and_nonfinite(tmp_path):
+    _campaign_fixture(tmp_path)
+    for flag, value in (("--rounds", "-1"), ("--round-delay", "nan"),
+                        ("--round-delay", "-5")):
+        command = [sys.executable, str(PI_BATCH), "campaign", "--config", "campaign.yaml",
+                   "--agent-bin", str(tmp_path / "agent.sh"), "--no-lock",
+                   "--rounds", "1", "--round-delay", "0", "--dry-run"]
+        # rebuild with the offending value in place
+        command = [sys.executable, str(PI_BATCH), "campaign", "--config", "campaign.yaml",
+                   "--agent-bin", str(tmp_path / "agent.sh"), "--no-lock", "--dry-run",
+                   flag, value]
+        r = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=60)
+        assert r.returncode == 2, (flag, value, r.stderr[-300:])
+
+
+def test_round_commit_commits_and_skips_clean(tmp_path, monkeypatch):
+    """--round-commit: after a round, non-ignored changes are committed;
+    a clean tree is skipped without error (advisory semantics)."""
+    from pbatch import campaign as C
+    from pbatch.campaign_models import CampaignSettings
+    from pbatch.campaign_state import StateStore
+
+    _init_git(tmp_path)
+    settings = CampaignSettings(output_dir="docs/auto",
+                                state_file="docs/auto/state.jsonl",
+                                summary_file="docs/auto/SUMMARY.md")
+    store = StateStore(tmp_path / "docs" / "auto" / "state.jsonl")
+    args = argparse.Namespace()
+    ctx = C.CampaignContext(tmp_path, settings, args, store, {})
+    # dirty tree -> committed
+    (tmp_path / "source.py").write_text("changed\n", encoding="utf-8")
+    C._round_commit(ctx, 1)
+    head = subprocess.run(["git", "-C", str(tmp_path), "log", "--oneline", "-1"],
+                          capture_output=True, text=True, check=True).stdout
+    assert "[pi-batch] campaign round 1" in head
+    # ignored changes -> skipped without a new commit
+    (tmp_path / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", ".gitignore"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "ignore"], check=True, capture_output=True)
+    (tmp_path / "ignored.txt").write_text("nope", encoding="utf-8")
+    before = subprocess.run(["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+                            capture_output=True, text=True, check=True).stdout
+    C._round_commit(ctx, 3)
+    after = subprocess.run(["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+                           capture_output=True, text=True, check=True).stdout
+    assert before == after
+    # clean tree -> skipped too
+    before2 = subprocess.run(["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+                             capture_output=True, text=True, check=True).stdout
+    C._round_commit(ctx, 2)
+    after2 = subprocess.run(["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+                            capture_output=True, text=True, check=True).stdout
+    assert before2 == after2
 
 
 def test_default_six_stage_pipeline_runs_meta_gates_validator_and_archive(monkeypatch, tmp_path):

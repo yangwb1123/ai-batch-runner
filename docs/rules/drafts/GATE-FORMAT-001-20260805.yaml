@@ -1,0 +1,28 @@
+id: GATE-FORMAT-001
+title: gate stage produced no VERDICT line 20 times in full-auto campaign (36h run);
+  fa
+category: backend
+severity: error
+scope:
+  languages: []
+  paths:
+  - src/**
+trigger:
+  operations: []
+rationale: 'Observed failure: gate stage produced no VERDICT line 20 times in full-auto
+  campaign (36h run); fail-closed worked but burned retries — strengthen gate FORMAT
+  instruction in templates. Root-cause analysis is required before this draft can
+  be promoted (edit requirements/forbidden/verification with the actual RCA).'
+requirements: []
+forbidden: []
+exceptions:
+- condition: ''
+verification:
+  static: []
+  tests: []
+examples:
+  good: []
+  bad: []
+owner: ''
+version: 0.1.0
+status: draft

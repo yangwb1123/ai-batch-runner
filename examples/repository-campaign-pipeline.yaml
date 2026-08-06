@@ -22,6 +22,7 @@ stages:
   - name: adversarial_review
     from_outputs: design
     meta: true
+    meta_timeout: 1500  # long review docs exceed the 900s default (retro F4)
     role_dir: prompts
     role_keywords: pbatch/role_keywords.yaml
     output_dir: docs/auto/reviews
@@ -40,7 +41,9 @@ stages:
     tasks:
       - prompt: |
           Independently verify that blocking review findings are resolved or
-          explicitly rejected with evidence. End with one reasoned line:
+          explicitly rejected with evidence. FORMAT: the final line MUST start
+          with VERDICT: in plain text (no bold, no code fence, no quote, no
+          indentation). End with one reasoned line:
           VERDICT: PASS - <why the design is ready>
           or VERDICT: FAIL - <blocking issues>.
           {input_content}
@@ -68,6 +71,8 @@ stages:
           Do not commit. Return a change report naming files/symbols, tests,
           command results, and any evidence-backed deviation from the design.
           {input_content}
+        # Implementing + running full repo gates exceeds 900s on real repos.
+        timeout: 1800
         output: docs/auto/implementation.md
 
   - name: acceptance

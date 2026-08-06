@@ -1448,12 +1448,17 @@ def test_gate_verdict_blocks_later_stages(tmp_path):
     assert "GATE REJECTED at stage 'gate'" in result.stderr
     assert "Pipeline halted by gate: gate" in result.stderr
     # impl stage must not have run: switch to an agent that would emit the
-    # impl deliverable; it must never be invoked because the gate blocks it
+    # impl deliverable; it must never be invoked because the gate blocks it.
+    # A FAIL verdict is NEVER reusable (aero-id round R5e fix): the --reuse
+    # rerun must regenerate the gate deliverable instead of trusting the
+    # stale FAIL, and the rerun still fails closed (no verdict) so impl
+    # stays blocked either way.
     plan_result = subprocess.run(
         [sys.executable, str(PI_BATCH), str(pipeline), "--agent-bin", str(plan_agent), "--reuse"],
         capture_output=True, text=True, timeout=120, cwd=str(tmp_path),
     )
-    assert "GATE REJECTED" in plan_result.stderr
+    assert "never reusable" in plan_result.stderr
+    assert "failing closed" in plan_result.stderr
     assert "STAGE: impl" not in plan_result.stderr
     log_text = (tmp_path / "DECISIONS.md").read_text(encoding="utf-8")
     assert "stage 'gate'" in log_text
@@ -1648,3 +1653,172 @@ def test_pipeline_reports_failed_stage(tmp_path, fake_agent):
     assert failed == ["s0"]
     assert len(results) == 2  # tasks still ran; the stage is marked failed
     assert not (tmp_path / "downstream.md").exists()
+
+
+# ── aero-id 维护周期 R5e 复盘的三个修复 ──────────────────────────────
+# 1) gate 的 FAIL 裁决永不复用（裁决绑定仓库状态，fingerprint 看不见代码变化）
+# 2) from_prompt / 任务模板支持 {prompt} 注入原始任务提示（-p --classify 路由主路径）
+# 3) 验证器拒绝时保留有界摘录到 .pi-batch/rejected/（诊断可见性，输出路径零残留）
+
+
+@pytest.fixture()
+def counter_agent(tmp_path):
+    """Fake agent that appends its prompt to a log and replies with a
+    generic line, so tests can assert whether the agent was invoked."""
+    calls = tmp_path / "agent-calls.txt"
+    path = tmp_path / "counter-agent.sh"
+    path.write_text('#!/bin/sh\necho "$2" >> %s\necho "reply"\n' % calls)
+    path.chmod(0o755)
+    return path, calls
+
+
+def test_gate_fail_verdict_never_reused(tmp_path, counter_agent):
+    """A gate deliverable carrying VERDICT: FAIL must never be reused by
+    --reuse: the verdict binds repository state that evidence fingerprints
+    cannot see (a code fix after the FAIL does not change the evidence
+    docs — aero-id round R5e finding)."""
+    mod = load_batch()
+    agent, calls = counter_agent
+    mod.config.AGENT_BIN = str(agent)
+    gate_out = tmp_path / "gate.md"
+    gate_out.write_text("VERDICT: FAIL - blocking issue remains\n", encoding="utf-8")
+    upstream = tmp_path / "upstream.out.md"
+    upstream.write_text("design\n", encoding="utf-8")
+    stage = mod.Stage(
+        name="gate",
+        from_outputs="design",
+        aggregate=True,
+        gate=True,
+        tasks=[{"prompt": "verify:\n{input_content}", "output": str(gate_out)}],
+    )
+    results, ok = mod.execute_stage(stage, {"design": [str(upstream)]}, reuse=True)
+    assert ok is True
+    assert len(results) == 1            # regenerated, not reused
+    assert calls.read_text().strip()    # the agent really ran
+    # the stale FAIL artifact was deleted before the rerun, and the fresh
+    # deliverable replaced it
+    assert gate_out.exists()
+    assert "VERDICT: FAIL" not in gate_out.read_text()
+
+
+def test_gate_pass_verdict_reused(tmp_path, fake_agent):
+    """A PASS gate deliverable is still reusable when its evidence is
+    unchanged (validated reuse semantics preserved)."""
+    mod = load_batch()
+    mod.config.AGENT_BIN = str(fake_agent)
+    gate_out = tmp_path / "gate.md"
+    gate_out.write_text("VERDICT: PASS - all checks satisfied\n", encoding="utf-8")
+    upstream = tmp_path / "upstream.out.md"
+    upstream.write_text("design\n", encoding="utf-8")
+    stage = mod.Stage(
+        name="gate",
+        from_outputs="design",
+        aggregate=True,
+        gate=True,
+        tasks=[{"prompt": "verify:\n{input_content}", "output": str(gate_out)}],
+    )
+    results, ok = mod.execute_stage(stage, {"design": [str(upstream)]}, reuse=True)
+    assert ok is True
+    assert len(results) == 0            # reused
+    assert gate_out.read_text() == "VERDICT: PASS - all checks satisfied\n"
+
+
+def test_from_prompt_injects_original_prompt(tmp_path, fake_agent):
+    """{prompt} in a from_prompt stage is replaced with the original task
+    prompt that launched the pipeline (the -p --classify routing path)."""
+    mod = load_batch()
+    mod.config.AGENT_BIN = str(fake_agent)
+    out = tmp_path / "plan.md"
+    stage = mod.Stage(
+        name="plan",
+        from_prompt="Original task: {prompt}\nProduce a plan.",
+        output=str(out),
+    )
+    results, ok = mod.execute_stage(stage, {}, original_prompt="implement the widget")
+    assert ok is True
+    text = out.read_text()               # fake agent echoes the prompt
+    assert "implement the widget" in text
+    assert "Original task:" in text
+
+
+def test_from_prompt_without_original_strips_placeholder(tmp_path, fake_agent):
+    """Without an original prompt the {prompt} placeholder is replaced with
+    an empty string so templates do not leak raw placeholders to the agent."""
+    mod = load_batch()
+    mod.config.AGENT_BIN = str(fake_agent)
+    out = tmp_path / "plan.md"
+    stage = mod.Stage(
+        name="plan",
+        from_prompt="Original task: {prompt}\nProduce a plan.",
+        output=str(out),
+    )
+    results, ok = mod.execute_stage(stage, {})
+    assert ok is True
+    assert "{prompt}" not in out.read_text()
+
+
+def test_task_template_injects_original_prompt(tmp_path, fake_agent):
+    """{prompt} in an aggregate from_outputs task template is replaced with
+    the original task prompt."""
+    mod = load_batch()
+    mod.config.AGENT_BIN = str(fake_agent)
+    upstream = tmp_path / "upstream.out.md"
+    upstream.write_text("evidence\n", encoding="utf-8")
+    out = tmp_path / "combined.md"
+    stage = mod.Stage(
+        name="s1",
+        from_outputs="s0",
+        aggregate=True,
+        tasks=[{"prompt": "Original: {prompt}\n{input_content}", "output": str(out)}],
+    )
+    results, ok = mod.execute_stage(stage, {"s0": [str(upstream)]},
+                                    original_prompt="build auth")
+    assert ok is True
+    assert "build auth" in out.read_text()
+
+
+def test_rejected_excerpt_saved_for_diagnosis(tmp_path, fake_agent):
+    """A validator-rejected artifact keeps a bounded excerpt under
+    .pi-batch/rejected/ (diagnostics only) while the output path stays
+    clean — the aero-id completion-gate diagnosis finding."""
+    mod = load_batch()
+    mod.config.AGENT_BIN = str(fake_agent)
+    output = tmp_path / "report.md"
+    results = mod.run_serial([mod.Task(prompt="x", output=str(output), cwd=str(tmp_path))],
+                             validate_cmd="exit 7")
+    assert results[0].success is False
+    assert not output.exists()          # zero residue at the deliverable path
+    rej = tmp_path / ".pi-batch" / "rejected"
+    assert rej.is_dir()
+    files = list(rej.glob("*.rejected.md"))
+    assert len(files) == 1
+    text = files[0].read_text(encoding="utf-8")
+    assert "validator" in text and "reason" in text
+    assert "x" in text                  # the rejected content excerpt
+
+
+def test_meta_prompt_injects_original_prompt(tmp_path, counter_agent):
+    """{prompt} in a meta stage's custom orchestrator prompt is replaced
+    with the original task prompt (the orchestrator prompt actually sent
+    to the agent carries it)."""
+    mod = load_batch()
+    agent, calls = counter_agent
+    mod.config.AGENT_BIN = str(agent)
+    upstream = tmp_path / "upstream.out.md"
+    upstream.write_text("evidence\n", encoding="utf-8")
+    out_dir = tmp_path / "reviews"
+    out_dir.mkdir()
+    stage = mod.Stage(
+        name="review",
+        from_outputs="s0",
+        meta=True,
+        meta_prompt="Task: {prompt}\nChoose roles from {roles}.\n{input_content}",
+        output_dir=str(out_dir),
+        max_iterations=1,
+    )
+    results, ok = mod.execute_stage(stage, {"s0": [str(upstream)]},
+                                    original_prompt="harden auth")
+    assert ok is True
+    sent = calls.read_text(encoding="utf-8")
+    assert "harden auth" in sent          # {prompt} substituted in the sent prompt
+    assert "{prompt}" not in sent         # never leaked raw

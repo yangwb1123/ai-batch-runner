@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from .campaign_models import CampaignSettings, Direction
-from .campaign_state import digest, tree_digest
+from .campaign_state import digest, tool_digest, tree_digest
 from .meta import _extract_json_array
 from .models import Task, TaskResult
 from .runner import run_parallel
@@ -121,6 +121,7 @@ def analysis_fingerprint(root: Path, settings: CampaignSettings, module: str,
         "model": task.model,
         "provider": task.provider,
         "planning_history": _planning_history(root),
+        "tool": tool_digest(),
     })
 
 
@@ -176,24 +177,72 @@ def parse_directions(module: str, text: str) -> list[Direction]:
 
 def evidence_exists(root: Path, direction: Direction) -> bool:
     for evidence in direction.evidence:
-        candidate = evidence.split("#", 1)[0]
-        candidate = re.sub(r":\d+(?::\d+)?$", "", candidate)
-        if ":" in candidate:
-            prefix = candidate.split(":", 1)[0]
-            if (root / prefix).exists():
-                candidate = prefix
-        try:
-            path = _inside(root, root / candidate)
-        except ValueError:
-            continue
-        if path.exists():
-            return True
+        for candidate in _evidence_candidates(evidence):
+            if not candidate:
+                continue
+            try:
+                path = _inside(root, root / candidate)
+            except ValueError:
+                continue
+            if path.exists():
+                return True
     return False
 
 
+_EVIDENCE_TOKEN = re.compile(r"[A-Za-z0-9_./-]+")
+_EVIDENCE_EXT = (".go", ".py", ".js", ".ts", ".tsx", ".md", ".yaml", ".yml",
+                 ".json", ".mod", ".sum", ".toml", ".sh", ".sql", ".html", ".css")
+
+
+def _evidence_candidates(evidence: str) -> list[str]:
+    """Path-like candidates from one evidence string.
+
+    Real-world lesson (aero-vault campaign): LLMs mix formats —
+    "path/file.go:12 description", "path/file.go returns X on missing"
+    (no colon) and prose without any path. Extract path tokens first
+    (colon/file:line suffixes stripped), then fall back to the legacy
+    whole-string prefix so old behaviour is preserved.
+    """
+    candidates: list[str] = []
+    for token in _EVIDENCE_TOKEN.findall(evidence):
+        token = re.sub(r":\d+(?::\d+)?$", "", token)
+        token = token.strip("./")
+        if not token or token in (".", ".."):
+            continue
+        if "/" in token or token.endswith(_EVIDENCE_EXT):
+            candidates.append(token)
+    prefix = evidence.split("#", 1)[0].strip()
+    if prefix and prefix not in candidates:
+        candidates.append(prefix)
+    return candidates
+
+
+def rejection_reason(root: Path, direction: Direction, minimum_score: float,
+                     seen: list[Direction]) -> str:
+    """Precise reason a direction was not selected (real-world lesson:
+    a conflated "duplicate, low score, missing evidence..." string made
+    a 9-direction rejection impossible to diagnose)."""
+    if any(_similar_direction(direction, previous) for previous in seen):
+        return ("duplicate of a higher-ranked direction "
+                "(title overlap >= 0.75 or evidence overlap >= 0.8)")
+    if direction.score < minimum_score:
+        return f"score {direction.score:.1f} below minimum {minimum_score:g}"
+    missing = [name for name, value in (
+        ("title", direction.title), ("problem", direction.problem),
+        ("evidence", direction.evidence), ("acceptance", direction.acceptance))
+        if not value]
+    if missing:
+        return "missing required field(s): " + ", ".join(missing)
+    if not evidence_exists(root, direction):
+        shown = " | ".join(direction.evidence[:2])
+        return f"no evidence path exists in the repository (evidence: {shown})"
+    return "rejected because the selection quota was already filled"
+
+
 def select_directions(root: Path, directions: list[Direction], maximum: int,
-                      minimum_score: float) -> tuple[list[Direction], list[Direction]]:
-    """Dedupe, score, and reject candidates without implementable evidence."""
+                      minimum_score: float) -> tuple[list[Direction], list[tuple[Direction, str]]]:
+    """Dedupe, score, and reject candidates without implementable evidence.
+    Rejected items carry their precise reason (see rejection_reason)."""
     ordered = sorted(enumerate(directions), key=lambda item: (-item[1].score, item[0]))
     selected = []
     rejected = []
@@ -206,7 +255,7 @@ def select_directions(root: Path, directions: list[Direction], maximum: int,
         if valid and len(selected) < maximum:
             selected.append(direction)
         else:
-            rejected.append(direction)
+            rejected.append((direction, rejection_reason(root, direction, minimum_score, seen[:-1])))
     return selected, rejected
 
 

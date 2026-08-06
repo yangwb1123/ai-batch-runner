@@ -131,6 +131,20 @@ validators:
   # T12f: reject artifacts containing likely secrets (registry hook, not a
   # built-in scanner). Adapt the patterns to the project's secret formats.
   secretscan: 'grep -nE "(api[_-]?key|secret|password|token|private[_-]?key)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_./+-]{8,}" {output} && exit 1 || exit 0' 
+  # Go 项目（aero-id 等）：任务 cwd 为仓库根时直接可用
+  gobuild: "go build ./... && go vet ./..."
+  gotest: "go test ./... -count=1"
+  # aero-vault 等 Go 仓库的 repo-scope 门禁：阶段末尾对整树执行一次（N2），
+  # 避免与并发角色写入竞争。make check = gofmt+build+vet+test+filesize。
+  gorepo:
+    cmd: "make check"
+    scope: repo
+  clirepo:
+    cmd: "python3 cli.py check"
+    scope: repo
+  # 目标仓库无 scripts/check-completion-report.py 时用绝对路径指向本工具集。
+  completion_go:
+    cmd: "python /home/u1/ai-batch-runner/scripts/check-completion-report.py {output}"
 
   # UI generation gates: AI-generated TSX/Dart spacing/color/style problems
   # are specification problems, so these deterministic checks reject

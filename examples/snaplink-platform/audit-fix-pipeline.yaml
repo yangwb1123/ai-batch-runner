@@ -1,0 +1,59 @@
+# 审计契约 v2 修正轮（第三轮：gate 指令的 5 项精确修正 → 重裁）
+#
+# 输入：v2/revision-gate.md（5 项修正指令，每项可验证）
+# 输出（v2 原位修订，保留 gate 对比）：
+#   implementation-gate.md 修正（B4 重钉部署仓、B6-1 路径、B4-3 双测试、
+#                           增列 tenant_id 覆写任务、F5 计数 49）
+#   integration-design-v2.md 修正（tenant_id 覆写 422、gRPC 拓扑 F13）
+#   audit-events-v2.md 修正（F5 provenance 计数、discovery 测试引用）
+#   fix-gate.md         重裁 VERDICT
+#
+# 运行：python3 pi-batch.py examples/snaplink-platform/audit-fix-pipeline.yaml
+
+git_commit: false
+decision_log: docs/DECISIONS.md
+
+stages:
+  - name: apply_fixes
+    from_prompt: |
+      你是契约修正执行者。阅读 gate 指令：
+      @docs/snaplink-platform/v2/revision-gate.md
+      逐项修正 v2 产物（原位修订，不新增文件）：
+
+      1. **B4 重钉**：implementation-gate.md 中 B4 的 3/5 行指向未部署
+         legacy 树——改为指向部署仓正确路径；"补 kid"若已存在则标注
+         已存在并移除该子项；provenance 引用改为正确树
+      2. **tenant_id 覆写**：integration-design-v2.md 增加"契约 422 +
+         sink 不得覆写 tenant_id（冲突即拒绝入账）"的明确任务；
+         implementation-gate.md 增列对应仓库任务
+      3. **F5 计数**：audit-events-v2.md 的 F5 相关计数从 8 改为实测
+         49 个站点（"49 个 `_ =` 站点"），provenance 同步
+      4. **gRPC 拓扑**：integration-design-v2.md 的 F13 拓扑声明覆盖
+         活动 gRPC 入站（含 gate 指出的缺口）
+      5. **B6-1/B4-3**：修正 console 路径（B6-1）；B4-3 重写为两个
+         discovery 回归测试（引用正确文件与断言）
+      输出一份"修正清单"（每项：改了哪个文件哪个小节、改前 → 改后），
+      同时完成上述原位修订。不改代码。
+    output: docs/snaplink-platform/v2/fix-log.md
+    validate_cmd: "python3 {cwd}/scripts/check-no-refusal.py {output}"
+
+  - name: fix_gate
+    from_outputs: apply_fixes
+    aggregate: true
+    gate: true
+    mode: serial
+    tasks:
+      - prompt: |
+          你是独立 gatekeeper。阅读 {input_content}（fix-log + 修订后
+          产物）。逐项核对 v2 gate 的 5 项修正指令是否全部落实：
+          1. B4 部署仓路径正确、无"已存在"子项、provenance 正确
+          2. tenant_id 覆写 422 已入设计与任务清单
+          3. F5 计数 = 49
+          4. F13 拓扑覆盖 gRPC 入站
+          5. B6-1 路径正确、B4-3 双测试存在
+          FORAMT：最终行必须以纯文本 VERDICT: 开头（禁止加粗/代码块/
+          缩进）。End with exactly one line:
+          VERDICT: PASS - <v2 修正完成，可进入人工批准>
+          or
+          VERDICT: FAIL - <剩余问题>
+        output: docs/snaplink-platform/v2/fix-gate.md
