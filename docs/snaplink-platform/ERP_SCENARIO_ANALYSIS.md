@@ -11,7 +11,8 @@
 
 | 里程碑 | 状态 | 证据 |
 |---|---|---|
-| M1 门禁转绿：tsc 31→0 | ✅ **达成** | sverpweb-stable `bunx tsc --noEmit` 0 错；`pnpm check` 9/9 全绿（134 api pass + web 115 pass） |
+| M1 门禁转绿：tsc 31→0 | ✅ **达成** | sverpweb-stable `bunx tsc --noEmit` 0 错；`pnpm check` 9/9 全绿（154 api pass + web 115 pass） |
+| §2.2 终态机制（permanent + 毒丸隔离） | ✅ **达成** | permanent 列零重建迁移 + claim 排除；transport 逐事件 outcomes（202/409/4xx/5xx 分类 + event_id 交叉校验）；publisher 逐事件裁决；测试 +11（commit bf7f952） |
 | B2 修复（withActor 类型误用） | ✅ **达成** | `request-middleware.ts` 改为先 `withActor(operation)` 再 `newAuditEvent`；新增 B2 回归测试（先红后绿：红态 actorUserId=null → 绿） |
 | sso-client 声明解析（TS7016） | ✅ **达成** | snaplink `docs/sdks/typescript` v0.3.0：exports 指向 dist + 构建产物入库（commit d19838d8） |
 | forwarding.test.ts 6 类用例 | ✅ **达成** | 8 个用例：激活×2 / 下游错误 / 并发单飞 / 文件重启 / 空批 / 同 id 去重 / 幂等重试（`apps/api/src/audit/forwarding.test.ts`） |
