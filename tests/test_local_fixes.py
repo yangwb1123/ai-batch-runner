@@ -1171,3 +1171,222 @@ class TestStdinReusedAcrossRounds:
             input="analyze this\n", text=True, capture_output=True, timeout=120)
         assert result.returncode == 0, result.stderr
         assert counter.read_text(encoding="utf-8").count("x") == 2  # round1 fail + round2 pass
+
+
+class TestPerAgentErrorPatterns:
+    """G line (GAP-1): failure signatures are per agent binary —
+    agent.agents.<bin>.error_patterns wins over the built-in table."""
+
+    def test_default_patterns_reject_provider_failures(self):
+        mod = load_batch()
+        assert mod.runner.agent_failure_reason(0, "ERROR: insufficient_quota")
+        assert mod.runner.agent_failure_reason(0, "network is unreachable")
+        assert mod.runner.agent_failure_reason(0, "fatal: something broke")
+        assert not mod.runner.agent_failure_reason(0, "a thoughtful review of errors")
+
+    def test_per_agent_override_replaces_defaults(self, monkeypatch):
+        mod = load_batch()
+        monkeypatch.setattr(mod.config, "AGENT_BIN", "myclaude")
+        monkeypatch.setattr(mod.config, "_AGENTS_CFG",
+                            {"myclaude": {"error_patterns": ["custom-failure-mark"]}})
+        assert mod.runner.agent_failure_reason(0, "custom-failure-mark appeared")
+        # the built-in table no longer applies to this agent
+        assert not mod.runner.agent_failure_reason(0, "insufficient_quota")
+
+    def test_empty_list_disables_signature_rejection(self, monkeypatch):
+        mod = load_batch()
+        monkeypatch.setattr(mod.config, "AGENT_BIN", "permissive")
+        monkeypatch.setattr(mod.config, "_AGENTS_CFG",
+                            {"permissive": {"error_patterns": []}})
+        assert not mod.runner.agent_failure_reason(0, "insufficient_quota text")
+
+    def test_global_override_applies_to_all(self, monkeypatch):
+        mod = load_batch()
+        monkeypatch.setattr(mod.config, "AGENT_BIN", "anything")
+        monkeypatch.setattr(mod.config, "_AGENT_CFG",
+                            {"error_patterns": ["global-mark"]})
+        assert mod.runner.agent_failure_reason(0, "global-mark hit")
+
+
+class TestJudgeValidator:
+    """H line (GAP-2): judge validators must emit VERDICT: PASS|FAIL - reason;
+    bare/missing verdicts fail closed."""
+
+    def test_judge_verdict_parsing(self):
+        mod = load_batch()
+        judge = mod.runner.judge_verdict
+        assert judge("VERDICT: PASS - looks correct") == "PASS"
+        assert judge("VERDICT: FAIL - missing idempotency") == "FAIL"
+        assert judge("VERDICT: REJECT - violates the contract") == "REJECT"
+        # FAIL wins over an earlier PASS (order-independent)
+        assert judge("VERDICT: PASS - ok\nVERDICT: FAIL - but here") == "FAIL"
+        # bare verdict without a reason fails closed
+        assert judge("VERDICT: PASS") is None
+        assert judge("no verdict here") is None
+
+    def test_judge_pass_saves_artifact(self, tmp_path, monkeypatch):
+        mod = load_batch()
+        agent = tmp_path / "agent.sh"
+        agent.write_text("#!/bin/sh\necho done\n", encoding="utf-8")
+        agent.chmod(0o755)
+        mod.config.AGENT_BIN = str(agent)
+        monkeypatch.setattr(
+            mod.config, "VALIDATOR_SPECS",
+            {"judge_ok": mod.config.ValidatorSpec(
+                cmd="echo 'VERDICT: PASS - all good'", judge=True)})
+        out = tmp_path / "o.md"
+        result = mod.run_serial(
+            [mod.Task(prompt="p", output=str(out))],
+            validate_cmd="judge_ok")
+        assert result[0].success
+        assert out.exists()
+
+    def test_judge_fail_rejects_and_feedback(self, tmp_path, monkeypatch):
+        mod = load_batch()
+        agent = tmp_path / "agent.sh"
+        agent.write_text("#!/bin/sh\necho done\n", encoding="utf-8")
+        agent.chmod(0o755)
+        mod.config.AGENT_BIN = str(agent)
+        monkeypatch.setattr(
+            mod.config, "VALIDATOR_SPECS",
+            {"judge_bad": mod.config.ValidatorSpec(
+                cmd="echo 'VERDICT: FAIL - not ready'", judge=True)})
+        out = tmp_path / "o.md"
+        result = mod.run_serial(
+            [mod.Task(prompt="p", output=str(out))],
+            validate_cmd="judge_bad")
+        assert not result[0].success
+        assert not out.exists()  # zero residue
+        assert "judge" in (result[0].validation_stderr or "")
+
+    def test_judge_missing_verdict_fails_closed(self, tmp_path, monkeypatch):
+        mod = load_batch()
+        agent = tmp_path / "agent.sh"
+        agent.write_text("#!/bin/sh\necho done\n", encoding="utf-8")
+        agent.chmod(0o755)
+        mod.config.AGENT_BIN = str(agent)
+        monkeypatch.setattr(
+            mod.config, "VALIDATOR_SPECS",
+            {"judge_silent": mod.config.ValidatorSpec(
+                cmd="echo 'hmm, no verdict here'", judge=True)})
+        out = tmp_path / "o.md"
+        result = mod.run_serial(
+            [mod.Task(prompt="p", output=str(out))],
+            validate_cmd="judge_silent")
+        assert not result[0].success
+        assert not out.exists()
+
+
+class TestRepoScopeValidators:
+    """N2 (GAP-4): repo-scoped validators never run per artifact — they are
+    deferred to the batch round end / stage end."""
+
+    def test_repo_gate_skipped_per_task(self, tmp_path, monkeypatch):
+        mod = load_batch()
+        agent = tmp_path / "agent.sh"
+        agent.write_text("#!/bin/sh\necho done\n", encoding="utf-8")
+        agent.chmod(0o755)
+        mod.config.AGENT_BIN = str(agent)
+        monkeypatch.setattr(
+            mod.config, "VALIDATOR_SPECS",
+            {"repogate": mod.config.ValidatorSpec(
+                cmd="echo 'whole tree broken' >&2; exit 9", scope="repo")})
+        out = tmp_path / "o.md"
+        result = mod.run_serial(
+            [mod.Task(prompt="p", output=str(out))],
+            validate_cmd="repogate")
+        # the repo gate is deferred, so the artifact saves normally
+        assert result[0].success
+        assert out.exists()
+
+    def test_batch_end_repo_gate_failure_key(self, tmp_path, monkeypatch):
+        mod = load_batch()
+        monkeypatch.setattr(
+            mod.config, "VALIDATOR_SPECS",
+            {"repogate": mod.config.ValidatorSpec(
+                cmd="echo 'whole tree broken' >&2; exit 9", scope="repo")})
+        task = mod.Task(prompt="p", output=str(tmp_path / "o.md"))
+        keys = mod.cli._run_batch_repo_validators([task], "repogate")
+        assert keys  # synthetic failure key drives the round loop
+
+    def test_batch_end_repo_gate_pass(self, tmp_path, monkeypatch):
+        mod = load_batch()
+        monkeypatch.setattr(
+            mod.config, "VALIDATOR_SPECS",
+            {"repogate": mod.config.ValidatorSpec(cmd="true", scope="repo")})
+        task = mod.Task(prompt="p", output=str(tmp_path / "o.md"))
+        assert mod.cli._run_batch_repo_validators([task], "repogate") == set()
+
+
+class TestOrphanMarkers:
+    """GAP-3 (N1): start markers carry the agent pid; residue scans can tell
+    whether an orphaned agent is still running."""
+
+    def test_marker_info_roundtrip(self, tmp_path):
+        import pbatch.triage as triage
+        key = "deadbeef"
+        triage.write_marker(key, str(tmp_path), agent_pid=4242)
+        marker = triage.residue_markers(str(tmp_path))[0]
+        info = triage.marker_info(marker)
+        assert info["runner_pid"] == os.getpid()
+        assert info["agent_pid"] == 4242
+        assert info["started"] > 0
+        triage.clear_marker(key, str(tmp_path))
+
+    def test_old_single_line_marker_parses(self, tmp_path):
+        import pbatch.triage as triage
+        marker = Path(tmp_path) / triage.STATE_DIR / "old.start"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("12345\n", encoding="utf-8")
+        info = triage.marker_info(marker)
+        assert info["runner_pid"] == 12345
+        assert info["agent_pid"] == 0
+
+    def test_pid_alive_and_kill_orphan(self):
+        import pbatch.triage as triage
+        assert triage.pid_alive(os.getpid())
+        assert not triage.pid_alive(99999999)
+        triage.kill_orphan(99999999)  # must not raise
+
+
+class TestJudgeScript:
+    """H line (GAP-2): scripts/judge.py wraps the agent and enforces the
+    VERDICT protocol with exit codes (usable without judge: true too)."""
+
+    def _run_judge(self, tmp_path, agent_body, artifact_text="the artifact"):
+        agent = tmp_path / "judge-agent.sh"
+        agent.write_text("#!/bin/sh\n" + agent_body, encoding="utf-8")
+        agent.chmod(0o755)
+        artifact = tmp_path / "artifact.md"
+        artifact.write_text(artifact_text, encoding="utf-8")
+        return subprocess.run(
+            [sys.executable, "scripts/judge.py", "-p", "rubric",
+             "--agent-bin", str(agent), "--timeout", "30", str(artifact)],
+            capture_output=True, text=True, timeout=60, cwd=str(PI_BATCH.parent))
+
+    def test_judge_script_pass(self, tmp_path):
+        r = self._run_judge(tmp_path, "echo 'VERDICT: PASS - good'\n")
+        assert r.returncode == 0, r.stderr
+        assert "VERDICT: PASS" in r.stdout
+
+    def test_judge_script_fail(self, tmp_path):
+        r = self._run_judge(tmp_path, "echo 'VERDICT: FAIL - bad'\n")
+        assert r.returncode == 1
+        assert "VERDICT: FAIL" in r.stdout
+
+    def test_judge_script_missing_verdict(self, tmp_path):
+        r = self._run_judge(tmp_path, "echo 'no verdict at all'\n")
+        assert r.returncode == 1
+        assert "VERDICT: FAIL" in r.stdout
+
+    def test_judge_script_bare_pass_fails_closed(self, tmp_path):
+        r = self._run_judge(tmp_path, "echo 'VERDICT: PASS'\n")
+        assert r.returncode == 1
+
+    def test_judge_script_missing_artifact(self, tmp_path):
+        result = subprocess.run(
+            [sys.executable, "scripts/judge.py", "-p", "rubric",
+             str(tmp_path / "nope.md")],
+            capture_output=True, text=True, timeout=30, cwd=str(PI_BATCH.parent))
+        assert result.returncode == 1
+        assert "VERDICT: FAIL" in result.stdout

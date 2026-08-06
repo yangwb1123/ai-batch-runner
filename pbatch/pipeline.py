@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import shutil
 import sys
 import time
@@ -17,7 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import config
-from .config import AGENT_DEFAULT_TIMEOUT, AGENT_DEFAULT_WORKERS, _resolve_validator_specs, log, yaml
+from .config import AGENT_DEFAULT_TIMEOUT, AGENT_DEFAULT_WORKERS, log, yaml
 from .models import Pipeline, Stage, Task
 from .pipeline_schema import validate_pipeline
 from .evidence import combine_outputs, source_manifest
@@ -25,8 +24,8 @@ from .meta import run_meta_stage
 from .repo_gates import run_stage_repo_validators
 from .reuse import fingerprint as reuse_fp
 from .reuse import reuse_decision, write_sidecar
-from .runner import (_save_validated, judge_verdict, print_summary,
-                     run_parallel, run_argv, run_serial, run_task, run_validation)
+from .runner import (_save_validated, print_summary, run_parallel,
+                     run_argv, run_serial, run_task, run_validation)
 from .text_io import read_text_bounded
 from .task_loading import (load_tasks, load_tasks_from_dir, _task_data_error,
                            _task_string_error, _tasks_from_data)

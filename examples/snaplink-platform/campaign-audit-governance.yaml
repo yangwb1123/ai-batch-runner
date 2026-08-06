@@ -1,0 +1,71 @@
+# Snaplink Audit Governance 生产化 campaign（在 audit-governance 仓库运行）
+# 目标：把"架构设计期参考实现"推进到可被全平台依赖的生产基线。
+# 用法（仓库内）：python pi-batch.py campaign --config examples/snaplink-platform/campaign-audit-governance.yaml
+# 或复制本文件为仓库内 campaign.yaml 后：python pi-batch.py campaign --dry-run
+
+name: audit-governance-productionization
+
+discovery:
+  roots:
+    - internal
+    - cmd
+    - migrations
+    - deploy
+    - api
+  exclude:
+    - testdata
+    - gen
+    - generated
+    - mock
+    - tests
+    - docs
+    - examples
+    - logs
+    - vendor
+    - .git
+    - .pi-batch
+    - __pycache__
+  max_depth: 2
+  fallback_top_level: true
+
+analysis:
+  jobs: 4
+  retries: 2
+  candidate_limit: 3
+  prompt: |
+    Analyze module '{module}' at {module_path} of the Snaplink Audit
+    Governance service (multi-tenant audit ledger: Outbox ingestion,
+    hash-chained segments, signed checkpoints, legal hold, encrypted
+    export, integrity verification, retention). The whole platform
+    (snaplink, console, aero-id, aero-vault, aero-im) will depend on this
+    service as the single audit source of truth. Return ONLY a JSON array
+    with at most {candidate_limit} high-value productionization
+    directions, sorted by value. Each object must contain: title, problem,
+    value (1-10), risk_reduction (1-10), effort (1-10), confidence (1-10),
+    evidence (existing file/symbol paths), and acceptance (testable
+    checks). Prioritize: checkpoint key management, multi-replica
+    consistency, event schema registry, benchmark gates, idempotent
+    ingest, tenant isolation. Do not modify code. Claims without
+    repository evidence must be identified as proposed, not verified.
+
+selection:
+  max_directions: 2
+  minimum_score: 0
+
+implementation:
+  pipeline: examples/repository-campaign-pipeline.yaml
+  requirement_stage: requirements
+  concurrency: 1
+  # Hard wall-clock limit for each isolated direction pipeline.
+  timeout: 14400
+  worktree_root: .pi-batch/worktrees
+
+state:
+  output_dir: docs/auto
+  state_file: docs/auto/state.jsonl
+  summary_file: docs/auto/SUMMARY.md
+  line_max_bytes: 262144
+
+estimates:
+  analysis_minutes: 3
+  pipeline_minutes: 25

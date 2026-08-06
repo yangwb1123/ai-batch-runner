@@ -1,0 +1,110 @@
+# 平台级审计接入契约流水线（跨仓库，在主仓库运行）
+#
+# 场景：6 个服务（snaplink / snaplink-console / snaplink-audit-governance /
+# aero-id / aero-vault / aero-im）的所有管理操作通过 Outbox 发送审计事件，
+# console 统一查询，审计事实以 audit-governance 为唯一源。
+#
+# 产出（全部为提案，需人工按证据标准核对后提升为平台契约）：
+#   docs/snaplink-platform/audit-events.yaml     审计事件类型注册表（契约草案）
+#   docs/snaplink-platform/scope-matrix.md       平台 scope 与最小权限矩阵草案
+#   docs/snaplink-platform/integration-design.md 各服务接入设计（Outbox/relay/幂等）
+#   docs/snaplink-platform/audit-gate.md         VERDICT 裁决（FAIL 阻断后续）
+#
+# 运行：
+#   python pi-batch.py examples/snaplink-platform/audit-onboarding-pipeline.yaml \
+#     --retries 3 --log-file logs/platform-audit.log
+#
+# 建议先 --dry-run 预览；本流水线只产出文档，不修改任何仓库代码。
+# 落地实现由各仓库自己的 campaign / advance 完成。
+
+git_commit: true
+decision_log: docs/DECISIONS.md
+archive_dir: docs/archive
+
+stages:
+  - name: audit_requirements
+    from_prompt: |
+      You are analyzing the Snaplink platform audit architecture. The
+      platform consists of: snaplink (OAuth2/OIDC SSO + RBAC + policies),
+      snaplink-console (Flutter admin console), snaplink-audit-governance
+      (audit ledger with hash chain, legal hold, export, integrity
+      verification, Outbox relay), aero-id (account domain), aero-vault
+      (file platform REST/S3/WebDAV/MCP + RAG), aero-im (messaging/live).
+      Task: produce a platform audit EVENT TYPE REGISTRY draft. Every
+      management/security-sensitive operation of each service must map to
+      an event type. Organize by service, then by category (auth, policy,
+      account, file, message, admin). For each event type: id, trigger
+      operation, actor, tenant context, payload fields, retention class,
+      legal-hold sensitivity. Do NOT invent verified facts about the
+      codebases — mark anything unverified as [PROPOSED]. Use markdown
+      headings (## ...) for each service section.
+    output: docs/snaplink-platform/audit-events.md
+    mode: serial
+
+  - name: scope_matrix
+    from_outputs: audit_requirements
+    mode: serial
+    tasks:
+      - prompt: |
+          You are the platform security architect. Read {input_content}
+          (audit event registry) and the following service-to-service
+          flows: aero-im attachments -> aero-vault BlobStore via Snaplink
+          client_credentials; aero-id -> Snaplink gRPC token validation;
+          aero-vault/aero-im -> audit-governance event ingest; console ->
+          every service's admin API. Produce a platform SCOPE MATRIX
+          draft: for each service-to-service flow, the OAuth 2.0 scope(s)
+          needed, minimum permission set, and which scopes must NOT be
+          granted. Mark unverified parts [PROPOSED]. Use markdown
+          headings (## ...) per flow.
+        output: docs/snaplink-platform/scope-matrix.md
+
+  - name: integration_design
+    from_outputs: scope_matrix
+    aggregate: true
+    mode: serial
+    tasks:
+      - prompt: |
+          You are the integration architect. Read {input_content} (event
+          registry + scope matrix). Produce a per-service audit ingestion
+          design: Outbox table schema, relay/worker behavior, idempotency
+          keys, dead-letter handling, failure modes, and migration steps
+          for snaplink, snaplink-console, snaplink-audit-governance,
+          aero-id, aero-vault, aero-im. aero-id already has
+          internal/connector/auditgovernance (publisher/oauth) and
+          aero-vault has internal/auditgovernance/token.go — reference
+          them as the pattern. Note which services lack any connector
+          today [PROPOSED if unverified]. Markdown headings per service.
+        output: docs/snaplink-platform/integration-design.md
+
+  - name: adversarial_review
+    from_outputs: integration_design
+    meta: true
+    role_dir: prompts
+    output_dir: docs/snaplink-platform/reviews
+    max_iterations: 2
+    max_roles_per_iteration: 3
+    relevance_enabled: true
+    relevance_min_score: 2
+    mode: serial
+
+  - name: audit_gate
+    from_outputs:
+      - audit_requirements
+      - scope_matrix
+      - integration_design
+      - adversarial_review
+    aggregate: true
+    gate: true
+    mode: serial
+    tasks:
+      - prompt: |
+          You are the independent gatekeeper. Read {input_content}
+          (registry, scope matrix, integration design, adversarial
+          reviews). Verify: (1) every service has an ingestion path,
+          (2) scope matrix follows least privilege, (3) blocking review
+          findings are resolved or dismissed with evidence. End with
+          exactly one line:
+          VERDICT: PASS - <why the contract is ready>
+          or
+          VERDICT: FAIL - <blocking issues>
+        output: docs/snaplink-platform/audit-gate.md
