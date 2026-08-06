@@ -106,6 +106,9 @@ def _add_runtime_args(p: argparse.ArgumentParser) -> None:
 
 
 def _add_logging_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "-v", "--verbose", action="count", default=0,
+        help="渐进式输出：-v 常用（INFO）/ -vv 详细（DEBUG）；默认只显示核心（WARNING+）")
     p.add_argument("--log-file", default="",
                    help="Append run log to FILE for 24x7 supervision (rotated)")
     p.add_argument("--log-max-bytes", type=int, default=config.LOG_MAX_BYTES,
@@ -174,12 +177,24 @@ def _sigterm(signum, frame):
     raise KeyboardInterrupt()
 
 
+def _apply_verbosity(verbosity: int) -> None:
+    """渐进式展示（cognitive-load §3）：默认只显示核心（WARNING+），
+    -v 显示常用（INFO），-vv 显示详细（DEBUG）。"""
+    level = logging.WARNING
+    if verbosity >= 2:
+        level = logging.DEBUG
+    elif verbosity == 1:
+        level = logging.INFO
+    logging.getLogger("pi-batch").setLevel(level)
+
+
 def main() -> None:
     if _dispatch_subcommand():
         return
     parser = build_parser()
     args = parser.parse_args()
     _validate_runtime_values(parser, args)
+    _apply_verbosity(args.verbose)
     _wire_agent(args)
     if args.session_max_bytes != config.SESSION_MAX_BYTES:
         config.SESSION_MAX_BYTES = args.session_max_bytes
