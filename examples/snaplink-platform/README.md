@@ -10,6 +10,7 @@ aero-vault（文件平台）、aero-im（消息/通知）。组合式架构与�
 - **多项目联动模型**：`../../docs/snaplink-platform/MULTI_REPO_OPERATIONS.md`
 - **全特性运营方案**：`../../docs/snaplink-platform/OPERATIONS_PLAN.md`
 - **组合仓库模板**：`suite-template/`（snaplink-suite 骨架，含 suite-check 门禁）
+- **Agent 产品设计 Harness**：`../../docs/snaplink-platform/AGENT_HARNESS.md`（需求→决策摘要→决策门→分仓实施的强制流程）
 
 ## 配置清单
 
@@ -20,6 +21,11 @@ aero-vault（文件平台）、aero-im（消息/通知）。组合式架构与�
 | `platform-247.sh` | 6 仓库 7×24 轮巡：滚动分析 + 失败补跑 + 决策日志 + 归档 | 主仓库 |
 | `platform-status.sh` | 6 仓库状态看板（commit/脏文件/campaign 产物/决策历史） | 主仓库 |
 | `suite-template/` | snaplink-suite 组合仓库骨架：compose 多拓扑 + compatibility.yaml + suite-check.py 门禁 + E2E 清单 | 复制为 ~/workspace/demo/snaplink-suite |
+| `platform-map.yaml` | 机器可读项目地图：能力目录 / 数据所有权 / 依赖规则 / 审计分级 / 集成端口 | 主仓库（Agent 能力发现依据） |
+| `requirement-pipeline.yaml` | 组合需求强制决策流水线：目标→场景→能力→组合→变更→决策摘要→决策门→批准 | 主仓库 |
+| `scripts/check-decision-summary.py` | 决策门机械校验器（9 组必填维度，fail closed） | 主仓库（决策门 validate_cmd） |
+| `scripts/check-change-manifest.py` | Change Manifest 门禁（跨仓库变更边界校验） | 主仓库 |
+| `prompts/requirement_interpreter.md` 等 | 组合角色模板（requirement_interpreter / capability_architect / composition_reviewer）+ role_keywords | 主仓库 meta 编排 |
 
 ## 快速开始
 
@@ -37,11 +43,19 @@ cd ~/workspace/demo/snaplink-suite && python scripts/suite-check.py
 # 4. 跨仓库审计契约提案（LLM 流水线，先 dry-run）
 python pi-batch.py examples/snaplink-platform/audit-onboarding-pipeline.yaml --dry-run
 
-# 5. 每仓库同步 ai-batch-runner 后跑 campaign（先 dry-run）
+# 4. 组合需求（强制决策程序，产出提案）
+python pi-batch.py examples/snaplink-platform/requirement-pipeline.yaml \
+  -p "管理员删除文件后通知所有者，并记录审计" --dry-run
+
+# 5. 人工批准后：Change Manifest 门禁
+python examples/snaplink-platform/scripts/check-change-manifest.py \
+  docs/snaplink-platform/decisions/change-manifest.yaml
+
+# 6. 每仓库同步 ai-batch-runner 后跑 campaign（先 dry-run）
 cp -r pbatch pi-batch.py pi-batch.yaml <目标仓库>/
 cd <目标仓库> && python pi-batch.py campaign --dry-run --modules "internal,cmd,migrations"
 
-# 6. 7×24 轮巡 + 看板
+# 7. 7×24 轮巡 + 看板
 bash examples/snaplink-platform/platform-status.sh
 bash examples/snaplink-platform/platform-247.sh 3 300
 ```

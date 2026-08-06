@@ -1,0 +1,172 @@
+# 平台项目地图（机器可读，Agent 能力发现与责任判断的依据）
+#
+# 用途：组合需求流水线的能力发现/组合设计阶段强制读取；
+#       任何 Agent 在跨项目变更前必须先查此地图，而不是全文搜索代码。
+# 维护：与套件 compatibility.yaml 一起由人工批准变更；AI 产出为提案。
+
+schema_version: 1
+
+projects:
+  snaplink:
+    role: authn-authz-core
+    owns:
+      - session
+      - access-token
+      - refresh-token
+      - api-key
+      - role
+      - permission
+      - policy
+      - client-application
+      - tenant-context
+    capabilities:
+      - oidc-login
+      - token-issue
+      - token-introspection
+      - token-revocation
+      - authorization-check
+      - sso
+      - service-credentials
+    integrations:
+      authorization: AuthorizationProvider
+      audit: AuditSink
+
+  aero-id:
+    role: identity-account-core
+    owns:
+      - user-profile
+      - organization
+      - department
+      - position
+      - membership
+      - account-lifecycle
+      - external-identity-binding
+    capabilities:
+      - user-profile
+      - organization
+      - account-lifecycle
+      - identity-binding
+    integrations:
+      authorization: AuthorizationProvider
+      audit: AuditSink
+      notification: NotificationPort
+
+  aero-vault:
+    role: file-storage-core
+    owns:
+      - file-metadata
+      - folder
+      - file-version
+      - share-link
+      - retention
+      - object-storage
+      - recycle-bin
+    capabilities:
+      - upload
+      - download
+      - version
+      - sharing
+      - retention
+      - recovery
+      - rag-index
+    integrations:
+      authorization: AuthorizationProvider
+      audit: AuditSink
+      notification: NotificationPort
+
+  aero-im:
+    role: messaging-notification-core
+    owns:
+      - message
+      - room
+      - notification-preference
+      - template
+      - delivery-status
+      - live-stream
+    capabilities:
+      - in-app-message
+      - websocket-realtime
+      - email
+      - sms
+      - push
+      - webhook
+      - template
+      - notification-preference
+    integrations:
+      authorization: AuthorizationProvider
+      audit: AuditSink
+      storage: BlobStore
+
+  snaplink-audit-governance:
+    role: audit-governance-core
+    owns:
+      - audit-event
+      - hash-chain
+      - legal-hold
+      - retention-policy
+      - export
+      - risk-finding
+      - governance-approval
+    capabilities:
+      - event-ingest
+      - audit-query
+      - integrity-verification
+      - legal-hold
+      - compliance-export
+      - risk-detection
+      - governance-workflow
+    integrations: {}
+
+  snaplink-console:
+    role: admin-console
+    owns: [navigation-capability, admin-ux]
+    capabilities:
+      - capability-discovery
+      - admin-ux
+      - audit-timeline-view
+    integrations:
+      management: ManagementGateway
+    note: 不拥有业务数据；只聚合各服务管理 API
+
+# 数据权威源（唯一写入源；他项目只允许 ID 引用/缓存/快照/只读投影）
+data_ownership:
+  user-profile: aero-id
+  organization: aero-id
+  session: snaplink
+  role-binding: snaplink
+  permission-catalog: snaplink
+  file-metadata: aero-vault
+  share-link: aero-vault
+  message: aero-im
+  notification-preference: aero-im
+  audit-event: snaplink-audit-governance
+  legal-hold: snaplink-audit-governance
+
+# 同步依赖规则
+dependency_rules:
+  max_sync_chain: 3
+  allowed_sync:
+    - "business-service -> snaplink (authorization-check)"
+    - "console-bff -> any service (management api)"
+    - "service -> audit-governance (event-ingest, 仅异步允许)"
+  forbidden:
+    - direct-database-access
+    - bidirectional-sync
+    - audit-callback-into-business-service
+    - im-serial-fetch-context-on-send
+    - token-validation-calls-aero-id-per-request
+    - console-browser-bypasses-service-api
+
+# 审计分级（L2 是 full 组合部署规则，不是产品硬编码）
+audit_levels:
+  L0: local-log-or-db
+  L1: standard-event-protocol
+  L2: governance-adapter
+
+# 集成端口（各产品核心只依赖端口，不依赖兄弟项目类名）
+ports:
+  AuthorizationProvider: [LocalProvider, GenericOidcProvider, SnaplinkProvider]
+  AuditSink: [StructuredLogSink, EventBusSink, GovernanceSink]
+  NotificationPort: [NoopNotification, WebhookNotification, AeroImNotification]
+  BlobStore: [LocalFsStore, S3Store, VaultStore]
+  ManagementGateway: [SnaplinkAdminApi, AeroAdminApi]

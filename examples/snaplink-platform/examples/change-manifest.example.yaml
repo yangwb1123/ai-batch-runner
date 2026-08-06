@@ -1,0 +1,28 @@
+change_id: COMPOSE-2026-017
+title: Notify file owner after admin deletion
+primary_project: aero-vault
+affected_projects:
+  - aero-vault
+  - aero-im
+  - snaplink-audit-governance
+  - snaplink-console
+unaffected_projects:
+  - aero-id
+  - snaplink
+contracts:
+  produced_events:
+    - vault.file.deleted@1.1
+  consumed_events:
+    - none
+permissions:
+  - vault.file.delete
+failure_policy:
+  audit: durable_async
+  notification: best_effort_async
+compatibility:
+  backward_compatible: true
+tests:
+  - aero-vault unit
+  - event schema
+  - audit consumer contract
+  - full composition e2e

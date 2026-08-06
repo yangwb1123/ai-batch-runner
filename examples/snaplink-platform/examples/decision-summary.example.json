@@ -1,0 +1,159 @@
+{
+  "requirement": {
+    "original_prompt": "管理员删除文件后通知所有者，并记录审计",
+    "interpreted_goal": "管理员可以治理不应保留的文件，操作可追踪，文件所有者知道处理结果",
+    "user_roles": [
+      "admin",
+      "file-owner",
+      "auditor"
+    ],
+    "success_outcome": "管理员可删除文件；所有者收到通知；审计可查询完整证据；无权/跨租户被拒绝"
+  },
+  "scope": {
+    "type": "composition",
+    "priority": {
+      "p0": [
+        "server-side permission check",
+        "tenant isolation",
+        "audit persistence",
+        "result feedback"
+      ],
+      "p1": [
+        "recycle-bin",
+        "outbox on audit failure"
+      ],
+      "p2": [],
+      "p3": []
+    }
+  },
+  "scenario": {
+    "entry": "snaplink-console /admin 文件管理",
+    "preconditions": [
+      "admin 已登录",
+      "admin 有 vault.file.delete 权限"
+    ],
+    "happy_path": [
+      "console 发起删除",
+      "snaplink 授权检查",
+      "aero-vault 逻辑删除",
+      "audit 持久化",
+      "aero-im 通知所有者"
+    ],
+    "failure_paths": [
+      "授权失败 -> 停止",
+      "文件不存在 -> 明确错误",
+      "审计不可用 -> outbox"
+    ],
+    "follow_up": [
+      "所有者在门户看到删除原因",
+      "审计人员查询时间线"
+    ]
+  },
+  "capabilities": {
+    "existing": [
+      "authorization-check",
+      "file-lifecycle-delete",
+      "event-ingest",
+      "in-app-message"
+    ],
+    "extend": [
+      "admin-ux"
+    ],
+    "create": [],
+    "excluded": [
+      "物理删除自动化"
+    ]
+  },
+  "ownership": {
+    "primary_project": "aero-vault",
+    "collaborating_projects": [
+      "snaplink",
+      "snaplink-audit-governance",
+      "aero-im",
+      "snaplink-console"
+    ],
+    "unaffected_projects": [
+      "aero-id"
+    ],
+    "data_sources_of_truth": {
+      "file-metadata": "aero-vault",
+      "audit-event": "snaplink-audit-governance"
+    }
+  },
+  "integration": {
+    "synchronous_calls": [
+      "console-bff -> aero-vault delete",
+      "aero-vault -> snaplink authorization-check"
+    ],
+    "async_events": [
+      "vault.file.deleted@1.1",
+      "audit.event.ingested"
+    ],
+    "workflows": [],
+    "optional_dependencies": [
+      "aero-im notification"
+    ],
+    "failure_policies": {
+      "authorization": "fail_closed",
+      "audit": "local_queue",
+      "notification": "best_effort_async"
+    }
+  },
+  "changes": {
+    "apis": [
+      "aero-vault DELETE /v1/files/{id}"
+    ],
+    "events": [
+      "vault.file.deleted@1.1"
+    ],
+    "permissions": [
+      "vault.file.delete"
+    ],
+    "schemas": [
+      "audit-event v1.1"
+    ],
+    "migrations": [
+      "aero-vault: outbox table"
+    ],
+    "configurations": [
+      "aero-vault: integrations.audit.provider=governance"
+    ],
+    "ui": [
+      "console: 文件管理删除入口 + 原因填写"
+    ]
+  },
+  "quality": {
+    "security_requirements": [
+      "服务端权限校验",
+      "跨租户拒绝",
+      "敏感字段不落日志"
+    ],
+    "compatibility_requirements": [
+      "旧事件消费者兼容",
+      "新增字段可选"
+    ],
+    "observability_requirements": [
+      "trace_id 贯穿",
+      "删除操作有决策 id"
+    ],
+    "test_plan": [
+      "aero-vault unit",
+      "event schema contract",
+      "full composition e2e"
+    ],
+    "deployment_order": [
+      "audit-governance",
+      "snaplink",
+      "aero-vault",
+      "aero-im",
+      "snaplink-console"
+    ],
+    "rollback_plan": [
+      "feature flag 关闭删除入口",
+      "保留 v1 API"
+    ]
+  },
+  "open_risks": [
+    "物理删除与回收站策略待定"
+  ]
+}

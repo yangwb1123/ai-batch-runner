@@ -335,3 +335,33 @@ testing_reviewer:
   - 断言
   - 复现
   - 契约测试
+requirement_interpreter:
+  - requirement
+  - interpret
+  - user goal
+  - scope
+  - P0
+  - 需求
+  - 目标
+  - 范围
+  - 用户角色
+capability_architect:
+  - capability
+  - reuse
+  - composition
+  - capability map
+  - 能力
+  - 复用
+  - 组合
+  - 能力映射
+composition_reviewer:
+  - composition
+  - ownership
+  - primary project
+  - sync chain
+  - failure policy
+  - 组合
+  - 责任项目
+  - 同步链
+  - 失败策略
+  - 跨项目

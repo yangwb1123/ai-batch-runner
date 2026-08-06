@@ -1,0 +1,180 @@
+# 组合需求处理流水线（强制产品设计决策程序）
+#
+# 把 Agent 的默认链路从 "Prompt → 找代码 → 改代码" 提升为：
+#   Prompt → 目标理解 → 场景建模 → 能力发现 → 组合设计 → 决策摘要
+#   → 决策门（机械校验，fail closed）→ 人工批准 → 分仓实施 → 组合验证
+#
+# 本流水线只产出**决策摘要与变更计划**，不修改任何仓库代码。
+# 实施由各产品仓库的 campaign 按已批准摘要执行（Scoped Execution）。
+#
+# 运行（在主仓库，先 --dry-run）：
+#   python pi-batch.py examples/snaplink-platform/requirement-pipeline.yaml \
+#     --retries 3 --log-file logs/requirement.log
+# 需求通过 -p 传入：
+#   python pi-batch.py examples/snaplink-platform/requirement-pipeline.yaml \
+#     -p "管理员删除文件后通知所有者，并记录审计"
+#
+# 决策门（decision_gate 阶段）由 scripts/check-decision-summary.py 机械
+# 校验：缺任一必填维度 / 主责任项目不在平台地图 / 项目引用非法 /
+# 失败策略缺失 → 校验失败 → 摘要不落盘 → gate 无 VERDICT → 流水线阻断。
+# 这是强制流程，不是 Prompt 劝说。
+
+git_commit: true
+decision_log: docs/DECISIONS.md
+archive_dir: docs/archive
+
+stages:
+  # ── L1/L2：目标理解与场景建模（需求解释 Agent，无写权限）──
+  - name: intake
+    from_prompt: |
+      You are the Product Discovery Agent. The user's original prompt is:
+      "{user_prompt}"
+
+      Do NOT design APIs or modify code. Interpret the request:
+      1. interpreted_goal: the real user goal (not the literal operations)
+      2. user_roles: who initiates, who approves, who is affected, who queries
+      3. scope classification P0 (must)/P1 (strongly advised)/P2 (enhancement)/
+         P3 (future) — default implementation covers P0 + clearly-needed P1 only
+      4. The full scenario later stages will model; here just the goal.
+
+      Rules: do not inflate the requirement; do not accept the user's
+      technical assumptions as the final design. Output a markdown document
+      with sections: ## Interpreted Goal / ## User Roles / ## Scope Priority.
+    output: docs/snaplink-platform/decisions/01-intake.md
+    mode: serial
+
+  # ── L2 完整场景建模 ──
+  - name: scenario
+    from_outputs: intake
+    mode: serial
+    tasks:
+      - prompt: |
+          You are the Product Discovery Agent. Read {input_content} and
+          read examples/snaplink-platform/platform-map.yaml (the machine-
+          readable platform map). Model the FULL scenario, not a single API:
+          ## Scenario: entry, preconditions, happy path, failure paths,
+          follow-up flow, final business result. Check user experience:
+          does the user know progress/success/failure, can they retry,
+          can an auditor query the trail? Markdown headings required.
+        output: docs/snaplink-platform/decisions/02-scenario.md
+
+  # ── L3/L4：能力发现（Capability Architect，读能力目录）──
+  - name: capability_discovery
+    from_outputs: scenario
+    mode: serial
+    tasks:
+      - prompt: |
+          You are the Capability Architect Agent. Read {input_content} and
+          the platform map (examples/snaplink-platform/platform-map.yaml).
+          Identify the product capabilities the scenario needs — WITHOUT
+          project names first — then map each to existing projects:
+          ## Required Capabilities / ## Capability Map (capability ->
+          owning project -> reuse mode) / ## Classify each: reuse | adapt |
+          extend | create | exclude. Priority: reuse > adapter > extend >
+          new generic capability > new project. Markdown headings.
+        output: docs/snaplink-platform/decisions/03-capabilities.md
+
+  # ── L5：组合设计（System Composition Agent）──
+  - name: composition_design
+    from_outputs: capability_discovery
+    aggregate: true
+    mode: serial
+    tasks:
+      - prompt: |
+          You are the System Composition Agent. Read {input_content} and
+          the platform map. Produce the composition design:
+          ## Primary Project (exactly one) / ## Collaborating Projects /
+          ## Unaffected Projects (explicit!) / ## Data Sources of Truth /
+          ## Synchronous calls (max chain 3, per dependency_rules) /
+          ## Async events / ## Workflows / ## Optional dependencies with
+          failure policies (fail_closed | fail_open | local_queue |
+          best_effort_async | durable_async) / ## Forbidden dependencies
+          check (direct DB access, sync cycles). Markdown headings.
+        output: docs/snaplink-platform/decisions/04-composition.md
+
+  # ── L6：变更设计 ──
+  - name: change_design
+    from_outputs: composition_design
+    aggregate: true
+    mode: serial
+    tasks:
+      - prompt: |
+          You are the Contract Agent. Read {input_content}. Produce the
+          engineering change plan WITHOUT implementing: ## API changes /
+          ## Event changes (with version) / ## Permission changes
+          (<domain>.<resource>.<action>) / ## Schema changes / ## DB
+          migrations / ## Configurations / ## UI changes / ## Compatibility
+          analysis (backward compatible? old consumers?) / ## Deployment
+          order / ## Rollback plan / ## Test plan (unit, contract,
+          integration adapter, composition e2e). Markdown headings.
+        output: docs/snaplink-platform/decisions/05-changes.md
+
+  # ── L7：决策摘要（结构化，机器可校验）──
+  - name: decision_summary
+    from_outputs: change_design
+    aggregate: true
+    mode: serial
+    tasks:
+      - prompt: |
+          You are the final decision synthesizer. Read {input_content}
+          (all prior stages). Output ONLY a JSON object with EXACTLY this
+          schema (no markdown fence, no commentary):
+          {"requirement": {"original_prompt": "", "interpreted_goal": "",
+            "user_roles": [], "success_outcome": ""},
+           "scope": {"type": "project|integration|composition",
+            "priority": {"p0": [], "p1": [], "p2": [], "p3": []}},
+           "scenario": {"entry": "", "preconditions": [], "happy_path": [],
+            "failure_paths": [], "follow_up": []},
+           "capabilities": {"existing": [], "extend": [], "create": [],
+            "excluded": []},
+           "ownership": {"primary_project": "", "collaborating_projects": [],
+            "unaffected_projects": [], "data_sources_of_truth": {}},
+           "integration": {"synchronous_calls": [], "async_events": [],
+            "workflows": [], "optional_dependencies": [],
+            "failure_policies": {}},
+           "changes": {"apis": [], "events": [], "permissions": [],
+            "schemas": [], "migrations": [], "configurations": [], "ui": []},
+           "quality": {"security_requirements": [],
+            "compatibility_requirements": [], "observability_requirements": [],
+            "test_plan": [], "deployment_order": [], "rollback_plan": []},
+           "open_risks": []}
+          Project names MUST match platform-map.yaml exactly. Every mutating
+          operation needs failure_policies entries. Do not leave required
+          fields empty unless genuinely inapplicable (then use []).
+        output: docs/snaplink-platform/decisions/summary.json
+
+  # ── 决策门：机械校验 + 独立裁决（fail closed）──
+  - name: decision_gate
+    from_outputs: decision_summary
+    aggregate: true
+    gate: true
+    validate_cmd: "python {cwd}/examples/snaplink-platform/scripts/check-decision-summary.py {output} --map {cwd}/examples/snaplink-platform/platform-map.yaml"
+    mode: serial
+    tasks:
+      - prompt: |
+          You are the independent gatekeeper. Read {input_content} (the
+          decision summary JSON plus stage drafts). Verify: (1) the summary
+          is complete per the required schema, (2) the primary project
+          matches the capability ownership, (3) no project is both
+          collaborating and unaffected, (4) failure policies are explicit,
+          (5) the scope does not silently exceed P0/P1. End with exactly
+          one line:
+          VERDICT: PASS - <why this plan is ready for human approval>
+          or
+          VERDICT: FAIL - <blocking issues>
+        output: docs/snaplink-platform/decisions/gate.md
+
+  # ── 人工批准点：批准后各产品仓库按摘要实施 ──
+  - name: approval_note
+    from_outputs: decision_gate
+    aggregate: true
+    mode: serial
+    tasks:
+      - prompt: |
+          You are the release coordinator. Read {input_content}. Produce
+          docs/snaplink-platform/decisions/APPROVAL.md: change_id
+          (COMPOSE-YYYY-NNN), the affected repositories, the deployment
+          order, and the note that this plan is a PROPOSAL — human approval
+          is required before any repository implementation starts, and the
+          change manifest must be validated by check-change-manifest.py.
+        output: docs/snaplink-platform/decisions/APPROVAL.md
