@@ -22,3 +22,19 @@
 ## 流程
 - 每份批次提案完成后，实施者核对清单路径/计数/遗漏 → 追加本节
 - v2.1 修订流水线（audit-revision-pipeline 复用）合并本节全部条目 → gate 重裁
+
+## FB-004：B1-8 清单描述已过时（来源：sink B1 提案，工作树实测）
+- 清单称"service.go:389 静默重标 tenant"——实测 `service.go:397-399` 已判
+  mismatch→422（:401 仅为空 envelope 盖章），HTTP 422 + gRPC
+  FailedPrecondition + 三层测试已钉
+- 处置：v2.1 修正描述；剩余缺口 = OpenAPI 未同步（仍写 "Body tenant_id
+  is ignored"）→ B1-6 契约声明合并
+
+## FB-005：kafka replay 孤儿原型破坏工程门禁（来源：sink B1 提案）
+- `internal/kafka/replay.go:205` 未提交且 `python3 cli.py quality` FAIL
+  （go vet 格式串 %s 绑 int）
+- 处置：实施第一动作 = 修复或移除该原型；接线决策进 B1-6
+
+## FB-006：G1 联合门禁跨仓依赖显式化（来源：sink B1 提案）
+- G1（B1-1+B4-1+B1-7）依赖 IdP 部署仓 B4-1，非 sink 仓可控
+- 处置：v2.1 门禁表增加"跨仓依赖跟踪"列（B4-1 状态 → G1 状态）
