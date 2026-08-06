@@ -34,42 +34,60 @@ def parse_mini_yaml(text: str) -> dict:
     # container[mount_key] 是本层的惰性挂载点。
     stack = [(0, root, None)]
     for lineno, raw in enumerate(text.splitlines(), 1):
-        line = raw.split("#", 1)[0].rstrip()
-        if not line.strip():
+        entry = _clean_line(raw, lineno)
+        if entry is None:
             continue
-        indent = len(line) - len(line.lstrip(" "))
-        content = line.strip()
-        if indent % 2 != 0:
-            raise ValueError(f"line {lineno}: indent must be 2-space multiples")
-        while len(stack) > 1 and indent <= stack[-1][0]:
-            stack.pop()
-        if not stack:
-            raise ValueError(f"line {lineno}: inconsistent indentation")
-        _, container, mount_key = stack[-1]
-        target = _mount(container, mount_key)
-        if content.startswith("- "):
-            target = _append_item(target, container, mount_key, content, lineno)
-            continue
-        if ":" not in content:
-            raise ValueError(f"line {lineno}: expected 'key:' mapping entry")
-        key, _, value = content.partition(":")
-        key = key.strip()
-        value = value.strip()
-        if value.startswith("[") and value.endswith("]"):
-            _put_flow_list(target, key, value)
-            continue
-        value = value.strip('"')
-        if value:
-            _put_scalar(target, key, value, lineno)
-            continue
-        if isinstance(target, dict):
-            target[key] = None
-            stack.append((indent, target, key))
-        else:
-            new_container: dict = {}
-            target.append(new_container)
-            stack.append((indent, new_container, None))
+        indent, content = entry
+        _trim_stack(stack, indent, lineno)
+        _dispatch_line(stack, indent, content, lineno)
     return root
+
+
+def _clean_line(raw: str, lineno: int):
+    """去注释与首尾空白；返回 (indent, content) 或 None（空行）。"""
+    line = raw.split("#", 1)[0].rstrip()
+    if not line.strip():
+        return None
+    indent = len(line) - len(line.lstrip(" "))
+    if indent % 2 != 0:
+        raise ValueError(f"line {lineno}: indent must be 2-space multiples")
+    return indent, line.strip()
+
+
+def _trim_stack(stack: list, indent: int, lineno: int):
+    """弹出缩进 >= 当前行的层级；栈空说明结构不一致。"""
+    while len(stack) > 1 and indent <= stack[-1][0]:
+        stack.pop()
+    if not stack:
+        raise ValueError(f"line {lineno}: inconsistent indentation")
+
+
+def _dispatch_line(stack: list, indent: int, content: str, lineno: int):
+    """按行类型分派：列表项 / flow list / 标量 / 空值挂载点。"""
+    _, container, mount_key = stack[-1]
+    target = _mount(container, mount_key)
+    if content.startswith("- "):
+        _append_item(target, container, mount_key, content, lineno)
+        return
+    if ":" not in content:
+        raise ValueError(f"line {lineno}: expected 'key:' mapping entry")
+    key, _, value = content.partition(":")
+    key = key.strip()
+    value = value.strip()
+    if value.startswith("[") and value.endswith("]"):
+        _put_flow_list(target, key, value)
+        return
+    value = value.strip('"')
+    if value:
+        _put_scalar(target, key, value, lineno)
+        return
+    if isinstance(target, dict):
+        target[key] = None
+        stack.append((indent, target, key))
+    else:
+        new_container: dict = {}
+        target.append(new_container)
+        stack.append((indent, new_container, None))
 
 
 def _mount(container, mount_key):

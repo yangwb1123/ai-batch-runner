@@ -20,7 +20,8 @@ Usage:
 Example pi-batch.yaml entry (file-scoped, per-artifact):
     validators:
       quality_judge:
-        cmd: 'python {cwd}/scripts/judge.py -p "Is this design sound? Answer with VERDICT: PASS|FAIL - reason." {output}'
+        cmd: 'python {cwd}/scripts/judge.py -p "Is this design sound? " \
+             '"Answer with VERDICT: PASS|FAIL - reason." {output}'
         judge: true
 """
 from __future__ import annotations
@@ -48,7 +49,8 @@ def _parse_args(argv):
                    help="judge rubric (the agent is asked to answer with "
                         "VERDICT: PASS|FAIL - <reason>)")
     p.add_argument("artifact", help="artifact file to judge")
-    p.add_argument("--agent-bin", default="", help="agent binary (default: pi-batch.yaml agent.bin)")
+    p.add_argument("--agent-bin", default="",
+                   help="agent binary (default: pi-batch.yaml agent.bin)")
     p.add_argument("--model", default="", help="model override")
     p.add_argument("--timeout", type=int, default=600, help="agent timeout seconds (default: 600)")
     return p.parse_args(argv)
