@@ -5,7 +5,8 @@
 aero-vault（文件平台）、aero-im（消息/通知）。组合式架构与定位模型见
 `COMBINATION_MODEL.md`。
 
-- **场景分析与建议**：`../../docs/snaplink-platform/SCENARIO_ANALYSIS.md`
+- **场景分析与建议**：`../../docs/snaplink-platform/SCENARIO_ANALYSIS.md`（六件套）
+  / `../../docs/snaplink-platform/ERP_SCENARIO_ANALYSIS.md`（ERP 接入场景，五轮对抗后终裁 PASS）
 - **组合式架构建议**：`../../docs/snaplink-platform/COMBINATION_MODEL.md`
 - **多项目联动模型**：`../../docs/snaplink-platform/MULTI_REPO_OPERATIONS.md`
 - **全特性运营方案**：`../../docs/snaplink-platform/OPERATIONS_PLAN.md`
@@ -21,7 +22,9 @@ aero-vault（文件平台）、aero-im（消息/通知）。组合式架构与�
 | `platform-247.sh` | 6 仓库 7×24 轮巡：滚动分析 + 失败补跑 + 决策日志 + 归档 | 主仓库 |
 | `platform-status.sh` | 6 仓库状态看板（commit/脏文件/campaign 产物/决策历史） | 主仓库 |
 | `suite-template/` | snaplink-suite 组合仓库骨架：compose 多拓扑 + compatibility.yaml + suite-check.py 门禁 + E2E 清单 | 复制为 ~/workspace/demo/snaplink-suite |
-| `platform-map.yaml` | 机器可读项目地图：能力目录 / 数据所有权 / 依赖规则 / 审计分级 / 集成端口 | 主仓库（Agent 能力发现依据） |
+| `platform-map.yaml` | 机器可读项目地图：能力目录 / 数据所有权 / 依赖规则 / 审计分级 / 集成端口（含 ERP 场景 sverpweb-stable / iris-ui 条目） | 主仓库（Agent 能力发现依据） |
+| `erp-scenario-pipeline.yaml` | ERP 场景流水线：证据→分析→meta 对抗审查→修订（doccomplete 门禁防空壳）→复审→终裁门 | 主仓库（产提案） |
+| `scripts/check-doc-complete.py` | 交付物完整性门禁（防"自指空壳"：行数/关键节/自引用三重检查） | 主仓库（revision 阶段 validate_cmd） |
 | `requirement-pipeline.yaml` | 组合需求强制决策流水线：目标→场景→能力→组合→变更→决策摘要→决策门→批准 | 主仓库 |
 | `scripts/check-decision-summary.py` | 决策门机械校验器（9 组必填维度，fail closed） | 主仓库（决策门 validate_cmd） |
 | `scripts/check-change-manifest.py` | Change Manifest 门禁（跨仓库变更边界校验） | 主仓库 |
@@ -58,6 +61,12 @@ cd <目标仓库> && python pi-batch.py campaign --dry-run --modules "internal,c
 # 7. 7×24 轮巡 + 看板
 bash examples/snaplink-platform/platform-status.sh
 bash examples/snaplink-platform/platform-247.sh 3 300
+
+# 8. ERP 场景：sverpweb-stable 接入建议（五轮对抗流水线，已终裁 PASS）
+#    完整证据链 docs/snaplink-platform/erp/；决策日志 decisions/erp-scenario.md
+python pi-batch.py examples/snaplink-platform/erp-scenario-pipeline.yaml --dry-run
+#    sverpweb-stable 的 campaign 配置/流水线模板已在仓库内（pi-batch-campaign.yaml）
+cd ~/workspace/job/sverpweb-stable && python ~/ai-batch-runner/pi-batch.py campaign --dry-run
 ```
 
 ## 组合纪律

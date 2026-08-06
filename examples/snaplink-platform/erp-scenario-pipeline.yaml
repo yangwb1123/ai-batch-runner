@@ -1,0 +1,143 @@
+# ERP 场景分析流水线 — sverpweb-stable + iris-ui 接入平台六件套
+#
+# 场景：sverpweb-stable（Vue3 + iris-ui + Hono BFF，生产 ERP）渐进式接入
+# snaplink 认证授权 / snaplink-console 管理端 / snaplink-audit-governance 审计 /
+# aero-id 账户 / aero-im 通知 / aero-vault 文件。
+#
+# 结构：证据归一（from_dir，逐文件）→ 场景分析（aggregate 合并证据单任务）
+# → meta 动态角色对抗审查（并发独立会话、证据折叠）→ VERDICT 裁决门（fail closed）
+# → 决策日志 + 归档（全成功才归档）。
+#
+# 运行（从 ai-batch-runner 仓库根）：
+#   python pi-batch.py examples/snaplink-platform/erp-scenario-pipeline.yaml \
+#     --session-mode per-stage --retries 2 --log-file logs/erp-scenario.log
+#
+# 产出均为提案：人工按 Verified/Partial/Missing/Proposed 核对后提升。
+
+git_commit: false
+
+stages:
+  # ── 阶段 1：证据归一（零 LLM 分析成本）──
+  # 人工证据扫描结果逐文件归一为 .out.md 稳定产物，供下游 aggregate 合并。
+  - name: evidence
+    from_dir: docs/snaplink-platform/erp-inputs
+    mode: serial
+
+  # ── 阶段 2：场景分析与建议（aggregate 单任务）──
+  # 全部证据合并为一份 prompt；agent 可再按需 read 源仓库，产出完整分析。
+  - name: kickoff
+    from_outputs: evidence
+    aggregate: true
+    tasks:
+      - prompt: |
+          你是平台架构顾问。基于以下证据（证据文件已合并，均为 Verified 人工
+          扫描结果；必要时可直接读取 ~/workspace/job/sverpweb-stable 源码核对），
+          为"生产 ERP（sverpweb-stable，Vue3 + iris-ui + Hono BFF）渐进式接入
+          平台六件套（snaplink / snaplink-console / snaplink-audit-governance /
+          aero-id / aero-im / aero-vault）"产出完整场景分析与建议。
+
+          必须覆盖：
+          A. 能力接入优先级路线图：P0/P1/P2 每项给价值/成本/证据/门禁/验收；
+             明确"不接"清单（克制原则，防过度设计）。
+          B. 审计链路：现有 Outbox（sqlite-outbox + HTTP publisher）对接
+             audit-governance ingest 的成本/收益/风险；本地 outbox 与账本谁是真源。
+          C. 文件/附件：本地 SQLite+文件 → aero-vault 的迁移取舍与两阶段策略
+             （BFF 代理 vs 前端直连）；版本/分享/保留/RAG 哪些后接。
+          D. BFF 定位与 console 分工；aero-id 组织/部门接入价值与克制红线；
+             aero-im 通知接入面；iris-ui 版本策略（锁版本+升级门禁）。
+          E. 工程运营：sverpweb-stable 嵌入 pi-batch/pbatch 的建议；
+             platform-status.sh / platform-247.sh 扩展覆盖；跨仓库组合验证
+             （compose + E2E + suite-check + Change Manifest）。
+          每条结论标注证据等级（Verified/Proposed）；遵守组合纪律（数据权威源
+          唯一、同步依赖有向 ≤3 跳、审计异步不阻塞业务、默认只改当前仓库、
+          L2 审计是部署规则）。AI 产出是提案，须人工核对后提升。
+          {input_content}
+        output: docs/snaplink-platform/erp/kickoff.md
+    mode: serial
+
+  # ── 阶段 3：对抗审查（meta 动态角色编排）──
+  # 编排者每轮分析 kickoff 产出 → 从 prompts/ 动态挑角色（architect/security/
+  # composition_reviewer/qa_lead...）→ 并发执行 → 证据折叠 → 再问，直到收敛。
+  - name: review
+    from_outputs: kickoff
+    meta: true
+    role_dir: prompts
+    output_dir: docs/snaplink-platform/erp/reviews
+    max_iterations: 2
+    max_roles_per_iteration: 3
+    relevance_min_score: 1
+    mode: serial
+
+  # ── 阶段 4：修订（自优化闭环）──
+  # 第一轮裁决（docs/snaplink-platform/erp/gate.md，VERDICT: FAIL，历史证据保留）
+  # 的 5 项阻塞经人工复核全部 Verified（证据 04）。本阶段在人工修正版
+  # （docs/snaplink-platform/erp/revision.md，233 行，含 §2.3 三分支修正）基础上
+  # 修订；doccomplete 门禁机械拦截"自指空壳"交付物（上轮教训）。
+  # 注意：旧 gate 的 FAIL 会按设计阻断后续阶段，故本流水线不再重放它——
+  # 历史 FAIL 由人工复核文件（04）与决策日志承接，终裁由本文件尾部 gate 完成。
+  - name: revision
+    from_outputs:
+      - evidence
+      - kickoff
+      - review
+    aggregate: true
+    validate_cmd: "python {cwd}/examples/snaplink-platform/scripts/check-doc-complete.py {output}"
+    tasks:
+      - prompt: |
+          你是平台架构顾问。上一轮裁决 VERDICT: FAIL（5 项阻塞经人工复核全部
+          Verified，见证据 04）；上一轮 revision 的空壳交付物已由人工修正并
+          落盘：**先读取 docs/snaplink-platform/erp/revision.md（233 行完整
+          正文，含 §2.3 三分支语义修正），在其基础上修订**，保留人工修正与
+          全部 Verified 证据标注，不得倒退。
+
+          修订要点（在人工修正版之上）：
+          1. 逐条落实 gate 重裁前置：① 完整正文必须落盘；② §2.3 三分支语义
+             （202+Duplicate=去重成功 / 409 两个冲突分支=检疫+告警 / 解析
+             receipts）保持；③ B2 红测试 → tsc 31→0；④ H2/H3/M1 可执行用例
+             文本入 §4.1；⑤ M2 前置（governance 实例/schema/租户映射）标
+             not_executed；⑥ N1–N8 锚定源评审编号、dev-auth=false + 密钥轮换
+             + demo 关闭入 L2 前置；⑦ owner 决策表 + git init/CI 具名。
+          2. 保留 gate 采纳项（presign 直传禁双写、H2 降级、真源裁定、可逆回退、
+             不接清单 11 项）。
+
+          **输出纪律（必须遵守）**：你的最终回复必须包含完整文档正文本身，
+          这是唯一落盘内容。禁止使用 write 工具写文件后只回摘要；禁止输出
+          "已产出：<路径>"类自指说明；正文 ≥100 行，含全部小节
+          （# 修订版最终路线图 / §2.3 / M1 准入 / M2 验收 / owner 决策 / 不接清单）。
+          文档仍是提案，不豁免任何仓库门禁。
+          {input_content}
+        output: docs/snaplink-platform/erp/revision.md
+    mode: serial
+
+  # ── 阶段 5：复审（meta 动态角色对抗）──
+  - name: review2
+    from_outputs: revision
+    meta: true
+    role_dir: prompts
+    output_dir: docs/snaplink-platform/erp/reviews2
+    max_iterations: 2
+    max_roles_per_iteration: 3
+    relevance_min_score: 1
+    mode: serial
+
+  # ── 阶段 6：终裁门（fail closed，本流水线唯一 gate）──
+  - name: gate
+    from_outputs:
+      - revision
+      - review2
+    aggregate: true
+    gate: true
+    tasks:
+      - prompt: >-
+          你是独立裁决者，对修订后的 ERP 场景最终路线图做终裁（审查对象为
+          docs/snaplink-platform/erp/revision.md 磁盘交付物，已含人工复核修正）。
+          裁决标准：(1) 上一轮 5 项阻塞（B1 契约不兼容 / B2 actor 丢失 /
+          B3 门禁红 / B4 零审计事实 / B5 无 git）全部被修订解决或带证据驳回；
+          (2) 交付物完整性：正文完整落盘、非自指空壳（禁止"已产出：自身路径"
+          式摘要）；(3) 门禁硬门槛（tsc 0 错、M1/M2 门禁、owner 决策、
+          git/CI 前置）；(4) 组合纪律与克制原则保持；(5) 对抗审查新发现的
+          阻塞项已处理。满足 → "VERDICT: PASS - <理由>"；否则
+          "VERDICT: FAIL - <理由>"。必须带具体理由，禁止裸 PASS。
+          {input_content}
+        output: docs/snaplink-platform/erp/gate2.md
+    mode: serial
