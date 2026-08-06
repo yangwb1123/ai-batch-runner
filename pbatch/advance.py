@@ -201,6 +201,14 @@ def record_round(scan: dict, round_no: int) -> None:
         fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
+def _density_bar(count: int, total: int, width: int = 12) -> str:
+    """剩余占比条形（数据表达：健康度式，一眼看懂各维度占比）。"""
+    if total <= 0:
+        return ""
+    filled = max(1, round(count / total * width))
+    return "█" * filled + "░" * (width - filled)
+
+
 def format_plan(batches: list, total: int) -> str:
     """Human-readable iteration plan (per-dimension batches, prioritized)."""
     lines = [f"## 迭代计划（共 {total} 项，按维度分批）"]
@@ -208,7 +216,8 @@ def format_plan(batches: list, total: int) -> str:
         lines.append("全部维度干净——无需推进。")
         return "\n".join(lines)
     for batch in batches:
-        lines.append(f"\n[{batch['priority']}] {batch['label']}（{batch['count']} 项）")
+        lines.append(f"\n[{batch['priority']}] {batch['label']}（{batch['count']} 项）"
+                     f" {_density_bar(batch['count'], total)}")
         lines.append(f"  建议: {batch['fix']}")
         for sample in batch["samples"]:
             lines.append(f"  示例: {sample}")
