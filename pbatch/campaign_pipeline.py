@@ -232,7 +232,7 @@ def _atomic_yaml(path: Path, data: dict) -> None:
         try:
             os.unlink(name)
         except OSError:
-            pass
+            pass  # stale worktree cleanup best-effort
 
 
 def run_direction(root: Path, settings: CampaignSettings, direction: Direction,
