@@ -80,3 +80,8 @@ cases:
         - design-intelligence-arch
         - design-intelligence-ops
         - design-intelligence-pipeline
+  - name: system-type-methodology-routing
+    input: "订单审批流，状态流转，审核流程，生产"
+    expect:
+      includes:
+        - system-type-state-machine

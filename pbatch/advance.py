@@ -64,6 +64,18 @@ DIMENSIONS = [
     {"id": "be_architecture", "checker": "check-backend-quality.py", "mode": "strict",
      "priority": 2, "label": "上帝服务/单实现接口/复杂度",
      "fix": "组合优于继承、去无意义抽象（design-patterns 决策表）"},
+    {"id": "knowledge", "checker": "check-knowledge-freshness.py", "mode": "doc",
+     "priority": 2, "label": "知识维护（模块文档/ADR/关键字段审计）",
+     "fix": "补 README/ADR（docs 决策记录）；关键金额字段加审计信号"
+            "（maintenance-intelligence 六层维护第 6 层）"},
+    {"id": "design_intelligence", "checker": "check-design-intelligence.py", "mode": "kpi",
+     "priority": 1, "label": "设计智能（KPI 强调/空状态教学/状态双编码）",
+     "fix": "按 design-intelligence 规范：大数字强调样式、空状态带动作、"
+            "状态色+图标双编码"},
+    {"id": "backend_experience", "checker": "check-backend-experience.py", "mode": "state",
+     "priority": 2, "label": "业务闭环（状态机/审计/异步生命周期/聚合上下文）",
+     "fix": "状态集中为枚举/常量集；写操作带审计；长任务异步化；搜索端点"
+            "返回聚合上下文（design-intelligence 后端 01/02）"},
 ]
 
 _PRIORITY_LABEL = {0: "P0", 1: "P1", 2: "P2"}
@@ -121,6 +133,17 @@ def classify_violation(detail: str) -> str:
     if "swallow" in detail or "DDL" in detail or "dependency direction" in detail \
             or "status assignment" in detail:
         return "be_errors"
+    if "module_without_docs" in detail or "no_decision_records" in detail \
+            or "critical_number_without_audit" in detail:
+        return "knowledge"
+    if "semantic_color_literal" in detail or "kpi_emphasis_missing" in detail \
+            or "empty_state_no_action" in detail or "status_not_dual_encoded" in detail:
+        return "design_intelligence"
+    if "status_literals_without_state_set" in detail \
+            or "write_without_audit_signal" in detail \
+            or "long_op_without_async_lifecycle" in detail \
+            or "search_endpoint_without_context" in detail:
+        return "backend_experience"
     return "be_architecture"
 
 

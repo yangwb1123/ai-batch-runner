@@ -153,6 +153,9 @@ def _rule_skip_reason(rule: dict, tier_rank: int, page_types: list,
     return ""
 
 
+from pbatch.system_type_methodology import SYSTEM_TYPE_METHODOLOGY
+
+
 def match_rules(text: str, classification: Optional[TaskClassification] = None,
                 registry: Optional[dict] = None) -> dict:
     """Deterministic rule manifest for a task text (domain-aware: the
@@ -195,10 +198,30 @@ def match_rules(text: str, classification: Optional[TaskClassification] = None,
                 "profile": profile,
             },
         })
+    # 系统类型方法论注入：system_type 命中的规范直接进入清单
+    # （evidence.system_type 记录来源，供 LLM 判断与审计）。
+    system_type = getattr(cls, "system_type", "") or "deterministic"
+    methodology_files = SYSTEM_TYPE_METHODOLOGY.get(system_type, [])
+    if methodology_files:
+        rules.append({
+            "id": f"system-type-{system_type}",
+            "tier": "standard",
+            "required": True,
+            "description": (
+                f"问题系统分类学方法论（{system_type}）：先判定问题属于哪类"
+                "系统，再套用该类系统的方法论"
+            ),
+            "files": methodology_files,
+            "evidence": {
+                "system_type": system_type,
+                "system_evidence": list(getattr(cls, "system_evidence", ())),
+            },
+        })
     rules.sort(key=lambda item: (0 if item["required"] else 1, item["tier"]))
     return {"tier": tier, "page_types": page_types, "risk": "high" if high_risk else "low",
             "profile": profile, "rules": rules, "skipped": skipped,
-            "domain": domain_for(text, cls)}
+            "domain": domain_for(text, cls),
+            "system_type": system_type}
 
 
 def _resolve_files(rule: dict, profile: str) -> list:
