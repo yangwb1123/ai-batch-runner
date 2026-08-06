@@ -198,30 +198,34 @@ def match_rules(text: str, classification: Optional[TaskClassification] = None,
                 "profile": profile,
             },
         })
-    # 系统类型方法论注入：system_type 命中的规范直接进入清单
-    # （evidence.system_type 记录来源，供 LLM 判断与审计）。
-    system_type = getattr(cls, "system_type", "") or "deterministic"
-    methodology_files = SYSTEM_TYPE_METHODOLOGY.get(system_type, [])
-    if methodology_files:
-        rules.append({
-            "id": f"system-type-{system_type}",
-            "tier": "standard",
-            "required": True,
-            "description": (
-                f"问题系统分类学方法论（{system_type}）：先判定问题属于哪类"
-                "系统，再套用该类系统的方法论"
-            ),
-            "files": methodology_files,
-            "evidence": {
-                "system_type": system_type,
-                "system_evidence": list(getattr(cls, "system_evidence", ())),
-            },
-        })
+    _inject_system_type_methodology(cls, rules)
     rules.sort(key=lambda item: (0 if item["required"] else 1, item["tier"]))
     return {"tier": tier, "page_types": page_types, "risk": "high" if high_risk else "low",
             "profile": profile, "rules": rules, "skipped": skipped,
             "domain": domain_for(text, cls),
-            "system_type": system_type}
+            "system_type": getattr(cls, "system_type", "") or "deterministic"}
+
+
+def _inject_system_type_methodology(cls, rules: list) -> None:
+    """哥德尔分类学路由：system_type 命中的方法论规范进入规则清单。"""
+    system_type = getattr(cls, "system_type", "") or "deterministic"
+    methodology_files = SYSTEM_TYPE_METHODOLOGY.get(system_type, [])
+    if not methodology_files:
+        return
+    rules.append({
+        "id": f"system-type-{system_type}",
+        "tier": "standard",
+        "required": True,
+        "description": (
+            f"问题系统分类学方法论（{system_type}）：先判定问题属于哪类"
+            "系统，再套用该类系统的方法论"
+        ),
+        "files": methodology_files,
+        "evidence": {
+            "system_type": system_type,
+            "system_evidence": list(getattr(cls, "system_evidence", ())),
+        },
+    })
 
 
 def _resolve_files(rule: dict, profile: str) -> list:

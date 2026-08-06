@@ -109,41 +109,35 @@ def _run_checker(script: str, target: str) -> dict:
         return {"files_scanned": 0, "violations": []}
 
 
+# detail 关键词 → 维度（数据驱动，避免大 if 链）。
+_DETAIL_DIMENSIONS: list = [
+    ("fe_errors", ["swallowed exception", "unsafe innerHTML", ".skip/.only"]),
+    ("be_errors", ["without assertions", "DDL", "dependency direction",
+                   "status assignment", "swallow"]),
+    ("fe_n1", ["N+1", "loop body"]),
+    ("fe_complexity", ["nesting depth", "god-file", "decision points",
+                       "state hooks", "event handlers", "api calls",
+                       "constructor deps", "public methods",
+                       "single-implementation", "Base class"]),
+    ("ui_spacing", ["spacing"]),
+    ("ui_color", ["color"]),
+    ("ui_style", ["style"]),
+    ("knowledge", ["module_without_docs", "no_decision_records",
+                   "critical_number_without_audit"]),
+    ("design_intelligence", ["semantic_color_literal", "kpi_emphasis_missing",
+                             "empty_state_no_action", "status_not_dual_encoded"]),
+    ("backend_experience", ["status_literals_without_state_set",
+                            "write_without_audit_signal",
+                            "long_op_without_async_lifecycle",
+                            "search_endpoint_without_context"]),
+]
+
+
 def classify_violation(detail: str) -> str:
     """Map one violation detail line to a dimension id."""
-    if "swallowed exception" in detail or "unsafe innerHTML" in detail \
-            or ".skip/.only" in detail:
-        return "fe_errors"
-    if "without assertions" in detail:
-        return "be_errors"
-    if "N+1" in detail or "loop body" in detail:
-        return "fe_n1"
-    if "nesting depth" in detail or "god-file" in detail \
-            or "decision points" in detail or "state hooks" in detail \
-            or "event handlers" in detail or "api calls" in detail \
-            or "constructor deps" in detail or "public methods" in detail \
-            or "single-implementation" in detail or "Base class" in detail:
-        return "fe_complexity"
-    if "spacing" in detail:
-        return "ui_spacing"
-    if "color" in detail:
-        return "ui_color"
-    if "style" in detail:
-        return "ui_style"
-    if "swallow" in detail or "DDL" in detail or "dependency direction" in detail \
-            or "status assignment" in detail:
-        return "be_errors"
-    if "module_without_docs" in detail or "no_decision_records" in detail \
-            or "critical_number_without_audit" in detail:
-        return "knowledge"
-    if "semantic_color_literal" in detail or "kpi_emphasis_missing" in detail \
-            or "empty_state_no_action" in detail or "status_not_dual_encoded" in detail:
-        return "design_intelligence"
-    if "status_literals_without_state_set" in detail \
-            or "write_without_audit_signal" in detail \
-            or "long_op_without_async_lifecycle" in detail \
-            or "search_endpoint_without_context" in detail:
-        return "backend_experience"
+    for dimension, markers in _DETAIL_DIMENSIONS:
+        if any(marker in detail for marker in markers):
+            return dimension
     return "be_architecture"
 
 
