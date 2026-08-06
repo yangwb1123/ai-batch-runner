@@ -496,6 +496,11 @@ tasks:
 - **Orphan detection** (`--kill-orphans`): start markers now carry the agent pid; a residue
   scan after a SIGKILLed runner warns when the orphaned agent is still running (double-
   billing risk) and can kill its process group.
+- **Provider rate limiting** (F line): `--rate-limit N` / `--rate-burst N` (or `limits:` in
+  pi-batch.yaml, with per-provider overrides) run a process-wide token bucket that queues
+  agent spawns across parallel workers and meta role fan-out — `--min-interval` only
+  throttled successful serial tasks. Retry waits are jittered (±50% normal, 30–60s spread
+  for rate/network failures) so parallel failures do not re-sync into a thundering herd.
 - **Decision log** (`decision_log:` pipeline key or `--decision-log FILE`): one structured
   record per finished stage — status, extracted decision points (markdown headings) and
   evidence, gate verdicts.

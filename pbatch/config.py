@@ -228,6 +228,7 @@ _VALIDATION_CFG = _section("validation")
 _COMMAND_CFG = _section("commands")
 _MEMORY_CFG = _section("memory")
 _CLASSIFIER_CFG = _section("classifier")
+_LIMITS_CFG = _section("limits")
 
 
 AGENT_BIN = _string_setting(_AGENT_CFG, "bin", "pi", allow_empty=False)
@@ -312,6 +313,20 @@ MEMORY_MANIFEST_MAX_BYTES = _int_setting(_MEMORY_CFG, "manifest_max_bytes", 4096
 MEMORY_READ_MAX_BYTES = _int_setting(_MEMORY_CFG, "read_max_bytes", 65536, 1)
 MEMORY_INDEX_LINE_MAX_BYTES = _int_setting(
     _MEMORY_CFG, "index_line_max_bytes", 256 * 1024, 1)
+
+# F line (round-5 F): provider rate limiting. A process-wide token bucket
+# serializes agent invocations across parallel workers / meta role fan-out;
+# --min-interval only throttles successful SERIAL tasks. 0 = unlimited.
+RATE_LIMIT_PER_SECOND = _float_setting(_LIMITS_CFG, "per_second", 0.0, 0.0)
+RATE_LIMIT_BURST = _float_setting(_LIMITS_CFG, "burst", 1.0, 0.0)
+_LIMIT_PROVIDERS = _LIMITS_CFG.get("providers")
+if not isinstance(_LIMIT_PROVIDERS, dict):
+    _LIMIT_PROVIDERS = {}
+RATE_LIMIT_PROVIDERS = {
+    str(key): value for key, value in _LIMIT_PROVIDERS.items()
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+}
+
 
 # Task type classifier (pbatch/classifier.py): deterministic keyword gate
 # that runs BEFORE execution and routes frontend UI tasks to the UI

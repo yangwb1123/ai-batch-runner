@@ -36,6 +36,16 @@ agent:
   #       - "anthropic.*rate limit"
   #       - "context window exceeded"
 
+# F line: provider rate limiting. A process-wide token bucket serializes
+# agent invocations across parallel workers and meta role fan-out;
+# --min-interval only throttles successful SERIAL tasks. 0 = unlimited.
+# CLI flags --rate-limit / --rate-burst override these per run.
+limits:
+  per_second: 0        # max agent invocations per second (0 = unlimited)
+  burst: 1             # token bucket capacity
+  providers: {}        # per-provider overrides, e.g. {openai: {per_second: 2}}
+
+
 # Preserve pi's original JSONL messages, but inject only a small metadata
 # manifest. The current LLM decides whether to call `pi-batch.py memory`
 # for more history; other agent CLIs remain unchanged in auto mode.

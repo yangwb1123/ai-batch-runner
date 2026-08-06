@@ -179,6 +179,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _sigterm)
 
     _wire_metering(args)
+    _wire_limits(args)
     _auto_detect_pipeline(args)
     _maybe_classify_route(args)
     handler = _configure_run_log(args)
@@ -443,6 +444,11 @@ def _add_metering_args(p) -> None:
                    help="T8: cap agent invocations per UTC day (0 = unlimited); state in --daily-state file")
     p.add_argument("--daily-state", default="",
                    help="T8: daily budget counter state file (default: .pi-batch/daily-budget.json)")
+    p.add_argument("--rate-limit", type=float, default=0.0,
+                   help="F line: max agent invocations per second across all workers "
+                        "(0 = unlimited, default); per-provider overrides via limits.providers")
+    p.add_argument("--rate-burst", type=float, default=1.0,
+                   help="F line: token bucket burst capacity (default: 1)")
 
 
 def _wire_metering(args) -> None:
@@ -453,6 +459,15 @@ def _wire_metering(args) -> None:
     metering.BUDGET_MAX = args.budget_max
     metering.DAILY_BUDGET = args.daily_budget
     metering._DAILY_STATE = args.daily_state or str(Path(".pi-batch") / "daily-budget.json")
+
+
+def _wire_limits(args) -> None:
+    """F line: provider token-bucket wiring (module-level, read by run_task
+    before every agent spawn). CLI flags win over pi-batch.yaml limits.*."""
+    from . import ratelimit
+    per_second = args.rate_limit if args.rate_limit and args.rate_limit > 0 else config.RATE_LIMIT_PER_SECOND
+    burst = args.rate_burst if args.rate_burst and args.rate_burst > 0 else config.RATE_LIMIT_BURST
+    ratelimit.configure(per_second, burst, config.RATE_LIMIT_PROVIDERS)
 
 
 def _auto_detect_pipeline(args) -> None:

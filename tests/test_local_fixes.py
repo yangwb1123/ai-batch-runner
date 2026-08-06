@@ -17,6 +17,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -1390,3 +1391,100 @@ class TestJudgeScript:
             capture_output=True, text=True, timeout=30, cwd=str(PI_BATCH.parent))
         assert result.returncode == 1
         assert "VERDICT: FAIL" in result.stdout
+
+
+class TestRateLimiter:
+    """F line (GAP-F): provider token bucket — parallel workers line up
+    instead of hammering one provider; burst allows short spikes."""
+
+    def test_unlimited_by_default(self):
+        from pbatch import ratelimit
+        ratelimit.configure(0, 1, {})
+        start = time.monotonic()
+        for _ in range(5):
+            assert ratelimit.acquire("p") is True
+        assert time.monotonic() - start < 0.5
+
+    def test_rate_limits_invocations(self):
+        from pbatch import ratelimit
+        ratelimit.configure(100, 1, {})  # 100/s: 10 calls need >= 90ms
+        start = time.monotonic()
+        for _ in range(10):
+            assert ratelimit.acquire("p") is True
+        elapsed = time.monotonic() - start
+        assert elapsed >= 0.07, f"10 calls at 100/s should take ~90ms, took {elapsed:.3f}s"
+        ratelimit.configure(0, 1, {})
+
+    def test_burst_allows_immediate_batch(self):
+        from pbatch import ratelimit
+        ratelimit.configure(1, 5, {})
+        start = time.monotonic()
+        for _ in range(5):  # burst capacity: all immediate
+            assert ratelimit.acquire("p") is True
+        assert time.monotonic() - start < 0.3
+        ratelimit.configure(0, 1, {})
+
+    def test_provider_buckets_are_independent(self):
+        from pbatch import ratelimit
+        ratelimit.configure(0, 1, {"slow": 0.0})  # provider override disables
+        ratelimit.configure(0.5, 1, {"fast": 100.0, "slow": 0.0})
+        assert ratelimit.acquire("fast") is True
+        start = time.monotonic()
+        assert ratelimit.acquire("slow") is True  # unlimited provider
+        assert time.monotonic() - start < 0.3
+        # the default bucket still applies the global rate
+        assert ratelimit.acquire("") is True  # burst token
+        ratelimit.configure(0, 1, {})
+
+    def test_acquire_timeout_returns_false(self):
+        from pbatch import ratelimit
+        ratelimit.configure(0.1, 1, {})
+        assert ratelimit.acquire("p") is True  # burst token
+        start = time.monotonic()
+        assert ratelimit.acquire("p", timeout=0.1) is False  # no refill yet
+        assert time.monotonic() - start < 0.5
+        ratelimit.configure(0, 1, {})
+
+
+class TestRetryJitter:
+    """F line: retry waits are jittered so parallel failures do not
+    re-sync into the next retry window together."""
+
+    def test_normal_failure_jittered_within_half(self):
+        mod = load_batch()
+        result = mod.TaskResult(task=mod.Task(prompt="p"), success=False, reason="agent exited 1")
+        waits = [mod.runner._retry_wait(result, attempt, 10, 2.0) for attempt in (1, 2, 3)]
+        for index, wait in enumerate(waits):
+            base = 10 * (2.0 ** index)
+            assert 0.5 * base <= wait <= 1.5 * base
+
+    def test_rate_limit_failure_keeps_30s_floor(self):
+        mod = load_batch()
+        result = mod.TaskResult(task=mod.Task(prompt="p"), success=False, reason="rate_limit_error")
+        for attempt in (1, 2, 3):
+            wait = mod.runner._retry_wait(result, attempt, 0, 2.0)
+            assert wait >= 30.0
+
+    def test_rate_limit_jitter_spreads_within_window(self):
+        mod = load_batch()
+        result = mod.TaskResult(task=mod.Task(prompt="p"), success=False, reason="rate_limit_error")
+        waits = [mod.runner._retry_wait(result, 1, 0, 2.0) for _ in range(50)]
+        assert len(set(round(w, 1) for w in waits)) > 1  # spread, not fixed
+        assert all(30.0 <= w <= 60.0 for w in waits)
+
+    def test_rate_gate_runs_under_high_limit(self, tmp_path):
+        """run_task passes through the rate gate when the limit is high."""
+        from pbatch import ratelimit
+        ratelimit.configure(1000, 1, {})
+        try:
+            mod = load_batch()
+            agent = tmp_path / "agent.sh"
+            agent.write_text("#!/bin/sh\necho done\n", encoding="utf-8")
+            agent.chmod(0o755)
+            mod.config.AGENT_BIN = str(agent)
+            out = tmp_path / "o.md"
+            result = mod.run_serial([mod.Task(prompt="p", output=str(out))])
+            assert result[0].success
+            assert out.exists()
+        finally:
+            ratelimit.configure(0, 1, {})

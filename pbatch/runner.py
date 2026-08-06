@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import shlex
 import signal
@@ -22,6 +23,7 @@ from . import config
 from .config import AGENT_BIN, AGENT_DEFAULT_WORKERS, _resolve_validator_specs, _resolve_validators, _session_flags, log
 from .models import Task, TaskResult
 from . import metering
+from . import ratelimit
 from .metering import budget_allows, budget_try_consume, record_event
 from .memory import (enrich_prompt, memory_enabled, new_session_id,
                      record_task, session_id_from_flags)
@@ -195,11 +197,11 @@ def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = F
     prefix, env, key, usage_before = _prepare_task_run(
         task, cmd, task_index, total, parallel, workdir, effective_name, session_id)
     try:
+        _rate_gate(task, effective_name)
         proc = _spawn_agent(cmd, workdir, env)
         _register_proc(proc)
-        # GAP-3 (N1): record the AGENT pid in the start marker so a killed
-        # runner's residue scan can tell operators whether the orphaned
-        # agent is still running (double-billing risk) and which pid to kill.
+        # GAP-3 (N1): marker carries the AGENT pid so a killed runner's
+        # residue scan can flag a still-running orphan (double billing).
         write_marker(key, workdir, agent_pid=proc.pid)
         streamed = _stream_output_enabled()
         stdout_lines, stderr_lines, overflow = _stream_proc(proc, prefix, start,
@@ -249,6 +251,18 @@ def _prepare_task_run(task: Task, cmd: list, task_index: int, total: int,
     usage_ref = session_id or session_name
     usage = metering.session_usage(workdir, usage_ref) if metering.EVENTS_FILE else None
     return prefix, env, key, usage
+
+
+def _rate_gate(task: Task, session_name: str = "") -> None:
+    """F line: wait for a provider token before spawning the agent. Runs
+    AFTER the budget gate so a capped run stops before waiting; blocks
+    parallel workers into a queue instead of overloading the provider.
+    Best-effort: an acquire timeout (or a provider-missing key) only logs."""
+    if ratelimit.RATE_PER_SECOND <= 0 and not ratelimit.PROVIDER_RATES:
+        return
+    if not ratelimit.acquire(task.provider or "", timeout=300.0):
+        log.warning("RATE: token wait timed out for provider '%s' (300s); spawning anyway",
+                    task.provider or "default")
 
 
 def _finish_task_result(result: TaskResult, task: Task, session_id: str,
@@ -344,10 +358,17 @@ _RETRYABLE_REASON = re.compile(r"rate|429|quota|network|connect|unreachable|time
 
 def _retry_wait(result: TaskResult, attempt: int, retry_delay: float, backoff: float) -> float:
     """Exponential backoff for a retry attempt; provider/network failures wait
-    at least 30s so a rate-limit window can clear."""
+    at least 30s so a rate-limit window can clear. F line: equal jitter
+    breaks the thundering herd — parallel workers that failed together must
+    not re-sync into the next retry window together (rate-limit failures
+    spread within 30..60s, keeping the >=30s floor; other failures get
+    +/-50% around the base)."""
     wait = retry_delay * (backoff ** (attempt - 1))
     if _RETRYABLE_REASON.search(result.reason or ""):
         wait = max(wait, 30.0)
+        wait += random.uniform(0, min(wait, 30.0))
+    else:
+        wait *= random.uniform(0.5, 1.5)
     return wait
 
 
