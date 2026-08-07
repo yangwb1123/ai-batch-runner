@@ -116,3 +116,23 @@ curl -s "http://127.0.0.1:13018/api/v1/events?tenant_id=sverp&source_system=sver
 
 **我的资源隔离**：admin 上传的文件 tester 看不到（prefix 隔离）；tester 直接调
 删除 admin 的 key 返回 403（服务端前缀校验）。
+
+## 10. 路由 404 排查记录（2026-08-07）
+
+**现象**：`/my/resources` 等新页面浏览器访问 404。
+
+**根因（三层）**：
+1. sverpweb 路由由 **system_route_definitions 表**（数据库）驱动——仅加前端
+   routes.ts 不够，必须插表（`/api/system/runtime-routes` 是前端数据源）
+2. 表的 `parent_id` 必须用 `built-in-<base64(route_key)>` 格式（如
+   `built-in-c3lzdGVt` = system），不能用 route_key 原文
+3. Snaplink `permissions_menus` 是**授权边界**（definition 必须匹配会话菜单
+   id/path + 权限）——菜单被后续写入覆盖后须重加，且**已登录会话要重新登录**
+   才能拉到新菜单快照
+
+**修复**：6 条路由插表（integrations×4/purchase-requests/my/resources）+
+parent_id 修正 + 菜单重加 → runtime-routes 22→30 全齐。
+
+**以后加页面三步**：① routes.ts（菜单定义+组件映射）② system_route_definitions
+插表（parent_id 用 built-in 格式）③ Snaplink permissions_menus 加菜单 →
+重新登录。
