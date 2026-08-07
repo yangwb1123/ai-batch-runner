@@ -11,16 +11,33 @@
 >   -p "<Gx 描述>" --retries 2 --log-file logs/route-gx.log
 > ```
 
-## 完成进度
+## 完成进度（2025-08 全部完成 ✅）
 
-- [x] G1 erp/bs/ship — /order-ship-tracing（2025-08 完成，VERDICT PASS，41 测试，状态 [~]）
-- [x] G2 erp/pchs 组（2025-08 完成，GATE PASSED；meta 审查超时一次，--reuse 续跑成功）
-- [ ] G3 erp/wh 组（进行中）
-- [ ] G3 erp/wh 组 — /warehouse/{purchase-receipt, material-supply, leather-preparation-board, stock, shipment}
-- [ ] G4 erp/qaqc 组 — /qa-qc/production-inspection{,/new,/:id}
-- [ ] G5 erp/prod/model — /prod/computer-car-model-manage
-- [ ] G6 srm/sharing — /srm/pchs/process-sharing
-- [ ] G7 /m/mold/:itemCode — 公开移动端模具详情
+- [x] G1 erp/bs/ship — /order-ship-tracing（VERDICT PASS，41 测试，状态 [~]）
+- [x] G2 erp/pchs 组（GATE PASSED；meta 审查超时一次，--reuse 续跑成功）
+- [x] G3 erp/wh 组（GATE PASSED；232 api + 221 web 测试）
+- [x] G4 erp/qaqc 组（GATE PASSED；P1 字符串拼接 / P2 combobox 自由文本
+  （iris-ui 0.2.19 allowCommit）/ P3 上传静默 三缺陷修复后过门）
+- [x] G5 erp/prod/model（GATE PASSED；287 api + 267 web 测试，
+  审查发现 Bug A/B store 损坏已修复）
+- [x] G6 srm/sharing（GATE PASSED；仲裁 D1 空 U 行 400 / D2 company 作用域
+  实施后过门）
+- [x] G7 /m/mold/:itemCode（GATE PASSED；perf 精确匹配 + Cache-Control、
+  限流 429、移动端 UX/a11y 7 项修复后过门）
+
+**最终状态**：`docs/route-migration.md` 42 条路由全部 `[x]`/`[~]`，
+零 `[ ]`；`/m/mold/:itemCode` 一并完成。api 328 pass（1 skip 为预存
+Snaplink e2e）+ web 310 pass（51 文件）+ 双 typecheck + build 全绿。
+
+## 过程数据
+
+- 10 轮预算实际用 7 轮完成全部需求点（3 轮富余用于失败重试）。
+- gate 共拦截 3 次（G4 P1/P2/P3、G6 D1/D2、G7 7 项）——全部修复后 PASS，
+  未出现"带缺陷放行"。
+- iris-ui 演进 1 次：`IrisCombobox.allowCommit` + `commit` 事件
+  （@iris-ui-kit/vue 0.2.19，真实场景驱动，已发布并升级 sverpweb-stable）。
+- sverpweb-stable 新增 ~58 个文件：7 个 API 域模块 + 7 个路由 + 7 个页面
+  目录 + 对应测试。
 
 ## 组描述（-p 参数，可直接复制）
 
