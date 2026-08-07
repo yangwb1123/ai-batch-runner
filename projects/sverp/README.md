@@ -47,6 +47,21 @@ bash scripts/sverp/check-sverpweb.sh ~/workspace/job/sverpweb-stable
 bash scripts/sverp/check-no-dist-edit.sh ~/workspace/job/iris-ui
 ```
 
+## 实战反馈沉淀（2025-08，已落地到 ai-batch-runner）
+
+本次 7 轮迁移暴露的问题已实现回 pbatch/：
+
+1. **gate-fail 自动修复循环**（`pbatch/gate_fix.py`）：gate FAIL 不再需要
+   人工转手——gatekeeper 输出结构化发现（```json 数组）后，runner 自动
+   生成修复任务（`gate_fix_validate` 门禁）→ 修复报告折回证据重新裁决，
+   最多 `gate_fix_rounds` 轮。两个流水线的 gate 阶段均已启用
+   （gate_fix_rounds: 2 + 门禁）。
+2. **meta 韧性**：`meta_role_retries`（角色失败自动重试）+ 
+   `meta_max_failed_roles`（允许失败数，gate 兜底）——G2 的单角色超时
+   整段 halt 不再发生。
+3. **{tool_root} 占位符**：流水线验证器命令不再硬编码机器路径，
+   可随仓库分发。
+
 ## 当前状态（2025-08 基线）
 
 - iris-ui：`@iris-ui-kit/vue` 已发布至 0.2.18；工作树有未提交的 NavMenu
