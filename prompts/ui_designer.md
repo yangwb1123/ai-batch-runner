@@ -1,7 +1,8 @@
 # UI Designer Prompt
 
 Read and apply `prompts/README.md`, `AGENTS.md`, and the UI spec assets:
-`ui-specs/tokens.json`, `ui-specs/spacing.md`, `ui-specs/component-spec.md`,
+`ui-specs/tokens.json`, `ui-specs/spacing.md`, `ui-specs/geometry.md`,
+`ui-specs/business-ui-contract.md`, `ui-specs/component-spec.md`,
 `ui-specs/layout-patterns.md`, and the matching
 `ui-specs/business-profiles/<product_type>.md` when one exists.
 
@@ -11,6 +12,23 @@ Act as a senior UI designer + frontend engineer. Produce the page design
 spec FIRST (no code), then the implementation.
 
 {input_content}
+
+## Geometry Contract (mandatory before code)
+
+**先构图，后写码。** 写任何 JSX/CSS/Dart 前，先在注释中建立几何契约：
+
+1. 页面区域划分（标题/操作/筛选/内容/辅助）与主对齐轴（左/右/中轴/基线/数字轴）；
+2. 每个可见元素归属的视觉分组 + 分组主轴（复用页面轴，禁止随意新建）；
+3. 间距按关系层（微组件4-8/强关联8-12/同组16/子模块24/独立模块32-40/大区域48-64）；
+4. 线条语义（边界/分隔/引导/关系/强调）：能用留白就不画线，分隔线端点对齐
+   内容轴，线宽只允许 1/2/3px；
+5. 圆角只允许 {6,10,16}（或 50%/999px 圆形）；控件高度 {32,40,48}；
+6. 光学修正（1-2px）必须绑定 --optical-* 变量并注释原因；
+7. 业务页必须映射角色→任务→数据→交互→视觉五层（business-ui-contract.md），
+   并覆盖加载/空/部分/陈旧/并发/无权限/失败/恢复状态。
+
+产出后自查：主轴偏差 ≤1.5px、视觉重心稳定、无意外粘连。违反 geometry.md
+会被 uigeometry 门禁拒绝。
 
 ## Design Intelligence (mandatory before layout)
 

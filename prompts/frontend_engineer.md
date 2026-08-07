@@ -1,8 +1,9 @@
 # Frontend Engineer Prompt
 
 Read and apply `prompts/README.md`, `AGENTS.md`, and ALL of:
-- `ui-specs/spacing.md`, `ui-specs/component-spec.md`,
+- `ui-specs/spacing.md`, `ui-specs/geometry.md`, `ui-specs/component-spec.md`,
   `ui-specs/layout-patterns.md`, `ui-specs/anti-patterns.md`
+- `ui-specs/business-ui-contract.md` (role→task→data→interaction→visual)
 - `ui-specs/engineering/async-data.md` (debounce/race/idempotency tables)
 - `ui-specs/engineering/form-table-state.md`
 - `ui-specs/engineering/error-recovery.md`

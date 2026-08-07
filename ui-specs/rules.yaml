@@ -49,6 +49,21 @@ rules:
     files: [ui-specs/spacing.md, ui-specs/anti-patterns.md]
     min_tier: demo
     required: true
+  geometry:
+    description: >-
+      几何构图：先构图后写码——隐形对齐轴、线条语义（留白>分隔>边框）、
+      圆角/线条层级家族、光学修正显式化（uigeometry 门禁）
+    files: [ui-specs/geometry.md]
+    min_tier: demo
+    required: true
+  business-ui-contract:
+    description: >-
+      业务 UI 契约：角色×任务×数据×交互×视觉五层映射、状态矩阵、
+      并发/错误/权限/数据语义、反模式清单（评审角色裁决依据）
+    files: [ui-specs/business-ui-contract.md]
+    min_tier: standard
+    page_types: [form, table, detail, workbench]
+    required: false
   component-spec:
     description: 组件尺寸/状态/行为规范
     files: [ui-specs/component-spec.md]

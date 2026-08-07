@@ -161,6 +161,8 @@ validators:
   # --dir to the project's frontend root; no frontend files found -> pass.
   # Violations (stderr) feed the retry prompt, driving the refactor loop.
   uicheck: "python {cwd}/scripts/check-ui-spec.py --dir {cwd}/src --all --json -o {cwd}/docs/ui/refactor/report.json"
+  # UI 几何门禁：裸数字小偏移/随机圆角/随机线条宽度（ui-specs/geometry.md）
+  uigeometry: "python {cwd}/scripts/check-ui-geometry.py --dir {cwd}/src --all --json -o {cwd}/docs/ui/refactor/geometry.json"
   # Project-wide frontend ENGINEERING gate (gofmt -l style): machine-checkable
   # half of the engineering spec — console.log/any/unsafe html are always
   # errors; god-file/complexity budgets fail with --strict. Judgment calls
