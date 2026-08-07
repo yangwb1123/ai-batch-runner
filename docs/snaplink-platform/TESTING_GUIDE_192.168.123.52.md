@@ -149,3 +149,15 @@ parent_id 修正 + 菜单重加 → runtime-routes 22→30 全齐。
 - 每表：created_at/created_by、updated_at/updated_by、deleted_at/deleted_by
 - 删除一律软删除（UPDATE 记录删除人+时间），列表/详情过滤 deleted_at IS NULL
 - 实测：删除内容 → DB 行保留 deleted_by=admin + 列表不可见
+
+## 11. iris-ui 组件修复与同步（2026-08-07）
+
+**已修复的交互缺口**（下拉/选择类选项无 hover 反馈）：
+- List（vue/react/solid/svelte 四框架）、react Select、vue/react Cascader、
+  vue/react TreeSelect——选项行 hover 高亮（--iris-surface-hover）
+- combobox 原本已有 hover（onMouseEnter→active）
+
+**同步通道**：iris-ui 依赖包（core/tokens 等）未发布 npm（Alpha）——
+pnpm overrides 不可行；`bash scripts/sync-iris-ui.sh`（构建 vue 包→覆盖
+node_modules→rm dist 强制重建→bundle 校验 MouseEnter）为当前通道；
+iris-ui 发布 npm 后改为升级依赖即可。
