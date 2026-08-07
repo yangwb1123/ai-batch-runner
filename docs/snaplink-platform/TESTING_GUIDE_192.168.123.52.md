@@ -98,3 +98,21 @@ curl -s "http://127.0.0.1:13018/api/v1/events?tenant_id=sverp&source_system=sver
 - **M3 遗留**：snaplink-console 审计页仍为本地管理操作记录
   （audit_log_service.dart + LocalStorage），未接 governance 账本——统一审计
   时间线需 Flutter 侧改动（console 仓库）
+
+## 9. ERP 业务功能（2026-08-07 新增）
+
+| 功能 | 入口 | 说明 |
+|---|---|---|
+| **请购流程** | 左侧菜单 ERP → 请购流程（或 /purchase-requests） | 创建 → 提交 → 审批/驳回；状态机 + 全生命周期审计入账 |
+| **通知铃铛** | 顶部铃铛图标 | 30s 轮询"待我审批"；红点计数；点击列表项跳转请购页 |
+| **我的资源** | 右上角用户菜单 → 我的资源（/my/resources） | 个人文件 presign 直传/下载/删除；命名空间 user/{账号}/ 隔离 |
+| **操作记录** | 用户菜单 → 操作记录（/integrations/audit） | governance 账本查询（全部来源事件） |
+
+**请购审批集成演示**（两账号协作）：
+1. tester 登录 → 请购流程 → 新建（款号 PR-xxx）→ 提交审批
+2. admin 登录 → 顶部铃铛出现红点 → 点开看到"请购审批：PR-xxx（tester 提交）" → 点进请购页 → 通过
+3. 操作记录页可见 created/submitted/approved 三条审计事件（actor 正确）
+4. aero-im "SVERP Integration" 频道同步收到审批消息（best_effort）
+
+**我的资源隔离**：admin 上传的文件 tester 看不到（prefix 隔离）；tester 直接调
+删除 admin 的 key 返回 403（服务端前缀校验）。
