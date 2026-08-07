@@ -37,6 +37,7 @@ def test_prescription_is_restrained_by_scale():
     # information priority are mandatory at every scale) plus visual core.
     assert ids == [
         "visual-core",
+        "geometry",
         "design-intelligence-product",
         "design-intelligence-priority",
         "animation-overshoot-clamp",

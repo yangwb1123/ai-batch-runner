@@ -57,7 +57,7 @@ stages:
   # 失败 = 不落盘 = 自动重试；门禁 stderr（违规明细）喂回修复循环。
   - name: implement
     from_outputs: plan
-    validate: uiquality,uicheck,completion
+    validate: uiquality,uicheck,uigeometry,completion
     tasks:
       - prompt: |
           You are the frontend implementer (apply prompts/frontend_engineer.md

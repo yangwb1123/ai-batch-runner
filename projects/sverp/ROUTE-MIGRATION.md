@@ -13,8 +13,9 @@
 
 ## 完成进度
 
-- [x] G1 erp/bs/ship — /order-ship-tracing（2025-08 完成）
-- [ ] G2 erp/pchs 组 — /purchase/prod-schedule + /purchase/prod-outsourcing
+- [x] G1 erp/bs/ship — /order-ship-tracing（2025-08 完成，VERDICT PASS，41 测试，状态 [~]）
+- [x] G2 erp/pchs 组（2025-08 完成，GATE PASSED；meta 审查超时一次，--reuse 续跑成功）
+- [ ] G3 erp/wh 组（进行中）
 - [ ] G3 erp/wh 组 — /warehouse/{purchase-receipt, material-supply, leather-preparation-board, stock, shipment}
 - [ ] G4 erp/qaqc 组 — /qa-qc/production-inspection{,/new,/:id}
 - [ ] G5 erp/prod/model — /prod/computer-car-model-manage

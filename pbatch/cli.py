@@ -189,6 +189,7 @@ def _apply_verbosity(verbosity: int) -> None:
 def main() -> None:
     if _dispatch_subcommand():
         return
+    # 子命令已处理：subcommand 自身通过 sys.exit 返回退出码
     parser = build_parser()
     args = parser.parse_args()
     _validate_runtime_values(parser, args)
@@ -291,37 +292,34 @@ def _run_configured(args, lock_path) -> None:
     _run_rounds(args, pipeline, session_name, cli_validate, timeout_override, lock_path)
 
 
+_SUBCOMMANDS: dict[str, str] = {
+    "memory": "memory:main",
+    "classify": "classifier:classify_main",
+    "rules": "rule_matcher:rules_main",
+    "assess": "assessor:assess_main",
+    "learn": "learn:learn_main",
+    "context": "context:context_main",
+    "eval": "eval:eval_main",
+    "check": "selfcheck:check_main",
+    "advance": "advance:advance_main",
+    "ps": "registry:ps_main",
+    "retro": "retro:retro_main",
+    "health": "health:health_main",
+    "ui-geometry": "ui_geometry:ui_geometry_main",
+    "export-template": "export_template:export_main",
+    "campaign": "campaign:main",
+}
+
+
 def _dispatch_subcommand() -> bool:
-    if len(sys.argv) <= 1 or sys.argv[1] not in ("memory", "campaign", "classify", "rules", "assess", "learn", "context", "eval", "check", "advance", "ps", "retro", "health", "export-template"):
+    if len(sys.argv) <= 1:
         return False
-    if sys.argv[1] == "memory":
-        from .memory import main as subcommand
-    elif sys.argv[1] == "classify":
-        from .classifier import classify_main as subcommand
-    elif sys.argv[1] == "rules":
-        from .rule_matcher import rules_main as subcommand
-    elif sys.argv[1] == "assess":
-        from .assessor import assess_main as subcommand
-    elif sys.argv[1] == "learn":
-        from .learn import learn_main as subcommand
-    elif sys.argv[1] == "context":
-        from .context import context_main as subcommand
-    elif sys.argv[1] == "eval":
-        from .eval import eval_main as subcommand
-    elif sys.argv[1] == "check":
-        from .selfcheck import check_main as subcommand
-    elif sys.argv[1] == "advance":
-        from .advance import advance_main as subcommand
-    elif sys.argv[1] == "ps":
-        from .registry import ps_main as subcommand
-    elif sys.argv[1] == "retro":
-        from .retro import retro_main as subcommand
-    elif sys.argv[1] == "health":
-        from .health import health_main as subcommand
-    elif sys.argv[1] == "export-template":
-        from .export_template import export_main as subcommand
-    else:
-        from .campaign import main as subcommand
+    target = _SUBCOMMANDS.get(sys.argv[1])
+    if target is None:
+        return False
+    module_name, _, func_name = target.partition(":")
+    module = __import__(f"pbatch.{module_name}", fromlist=[func_name])
+    subcommand = getattr(module, func_name)
     subcommand(sys.argv[2:])
     return True
 

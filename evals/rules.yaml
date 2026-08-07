@@ -51,6 +51,20 @@ cases:
     input: "做一个登录页 demo"
     assert:
       lacks_rule: [interaction-patterns]
+  - id: geometry-mandatory-for-all-ui
+    input: "做一个登录页面 demo"
+    assert:
+      tier: demo
+      has_rule: [geometry]
+  - id: business-ui-contract-on-enterprise-form
+    input: "企业订单管理：新建订单表单，含支付审批，生产"
+    assert:
+      tier: production
+      has_rule: [geometry, business-ui-contract]
+  - id: business-ui-contract-skipped-on-demo
+    input: "做一个登录页 demo"
+    assert:
+      lacks_rule: [business-ui-contract]
   - name: design-intelligence-production-workbench
     input: "企业工作台：生产达成率 KPI + 异常列表 + 趋势图，生产"
     expect:

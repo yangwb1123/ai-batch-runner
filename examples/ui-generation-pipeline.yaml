@@ -42,7 +42,7 @@ stages:
   - name: generate
     from_outputs: classify
     mode: serial
-    validate: uispacing,uicolor,uistyle
+    validate: uispacing,uicolor,uistyle,uigeometry
     tasks:
       - prompt: |
           You are the frontend implementer. Read {input_content} and the

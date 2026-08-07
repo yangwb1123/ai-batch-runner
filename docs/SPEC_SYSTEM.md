@@ -174,3 +174,13 @@ backendexperience + knowledge）→ 埋点 → 假设回测 → 维护演化。
   `pi-batch.py classify "订单审批流" --json` → `system_type: state-machine`。
 - `backend-specs/design-intelligence/08-distribution-intelligence.md`：
   分发智能规范（传播路径设计/能力分发/分发质量工程保障）。
+
+## UI 几何与业务契约资产（2026-08-07 新增）
+
+| 资产 | 层级 | 机制 |
+|---|---|---|
+| `ui-specs/geometry.md` | 规范（demo 档必读） | `uigeometry` 验证器机械拦截 + `pi-batch ui-geometry` 子命令 |
+| `ui-specs/business-ui-contract.md` | 规范（standard+ 页类型） | rules.yaml 自动注入；评审角色裁决依据 |
+| `scripts/check-ui-geometry.py` | 门禁脚本 | 裸偏移/随机圆角/随机线宽 fail closed；sr-only/clip 豁免 |
+| `tests/test_ui_geometry.py` | 回归 | 8 用例（拦截/豁免）随 make ci |
+| evals/rules.yaml | 规则回归 | +3 用例（geometry 必含、business-ui 分级） |

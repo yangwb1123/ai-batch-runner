@@ -108,7 +108,7 @@ stages:
   - name: review
     from_outputs: implement
     meta: true
-    meta_timeout: 1500
+    meta_timeout: 2400  # 复杂页面审查（多页签/大组件）1500s 不够（G2 教训）
     role_dir: prompts
     role_keywords: pbatch/role_keywords.yaml
     output_dir: .pi-batch/sverp/reviews
