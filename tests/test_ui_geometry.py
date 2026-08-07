@@ -67,3 +67,30 @@ def test_sr_only_clip_block_exempted():
         "  overflow: hidden;\n  clip: rect(0 0 0 0);\n}\n"
     )
     assert code == 0, "sr-only clip 块内 -1px 应豁免"
+
+
+def test_tsx_inline_style_camel_case_rejected():
+    """JSX inline style（camelCase，无分号）同样必须拦截。"""
+    code, _ = run_on(
+        "export function Page() {\n"
+        '  return <section>\n'
+        '    <header style={{ marginTop: "3px" }}>t</header>\n'
+        '    <div style={{ borderRadius: "8px" }} />\n'
+        '    <td style={{ borderBottomWidth: "1.5px" }} />\n'
+        "  </section>\n"
+        "}\n"
+    )
+    assert code != 0, "TSX inline style 违规必须被拒"
+
+
+def test_tsx_inline_style_compliant_passes():
+    code, _ = run_on(
+        "export function Page() {\n"
+        '  return <section>\n'
+        '    <header style={{ marginTop: "var(--optical-content-shift, 0)" }}>t</header>\n'
+        '    <div style={{ borderRadius: "10px" }} />\n'
+        '    <td style={{ borderBottomWidth: "1px" }} />\n'
+        "  </section>\n"
+        "}\n"
+    )
+    assert code == 0, "合规 TSX inline style 应通过"
