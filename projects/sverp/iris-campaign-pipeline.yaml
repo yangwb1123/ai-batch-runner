@@ -44,6 +44,8 @@ stages:
       - adversarial_review
     aggregate: true
     gate: true
+    # gate FAIL 自动修复：提取裁决理由 + 结构化发现 → 修复任务 → 折回证据重裁
+    gate_fix_rounds: 2
     tasks:
       - prompt: |
           Independently verify that blocking review findings are resolved or
@@ -51,6 +53,11 @@ stages:
           with VERDICT: in plain text. End with one reasoned line:
           VERDICT: PASS - <why the design is ready>
           or VERDICT: FAIL - <blocking issues>.
+          On FAIL, append a structured findings block:
+          ```json
+          [{"severity": "high", "file": "<path>", "line": <n>,
+            "problem": "...", "fix_hint": "..."}]
+          ```
           {input_content}
         output: .pi-batch/campaign/design-gate.md
 
@@ -94,6 +101,8 @@ stages:
       - implement
     aggregate: true
     gate: true
+    # gate FAIL 自动修复：提取裁决理由 + 结构化发现 → 修复任务 → 折回证据重裁
+    gate_fix_rounds: 2
     tasks:
       - prompt: |
           Verify the implementation against every acceptance check using
@@ -102,5 +111,10 @@ stages:
           reasoned line:
           VERDICT: PASS - <why all acceptance checks are satisfied>
           or VERDICT: FAIL - <missing or failing checks>.
+          On FAIL, append a structured findings block:
+          ```json
+          [{"severity": "high", "file": "<path>", "line": <n>,
+            "problem": "...", "fix_hint": "..."}]
+          ```
           {input_content}
         output: .pi-batch/campaign/acceptance.md
