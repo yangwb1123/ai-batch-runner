@@ -136,3 +136,16 @@ parent_id 修正 + 菜单重加 → runtime-routes 22→30 全齐。
 **以后加页面三步**：① routes.ts（菜单定义+组件映射）② system_route_definitions
 插表（parent_id 用 built-in 格式）③ Snaplink permissions_menus 加菜单 →
 重新登录。
+
+## 10. 审计与软删除体系（2026-08-07）
+
+**审计页**（操作记录 / 集成页-审计账本）展示：
+- 时间列：操作人 @ 本地时间 做了什么（人类可读描述）
+- 变更明细：新增（内容）/ 删除（删除前快照）/ 修改（字段: 旧值 → 新值）
+- 事务链：operation_id 可点击 → 过滤同一事务全部操作（创建→更新→删除
+  一条链），再点清除
+
+**软删除 + 审计字段**（qa_prod_check / contents / media / purchase_requests）：
+- 每表：created_at/created_by、updated_at/updated_by、deleted_at/deleted_by
+- 删除一律软删除（UPDATE 记录删除人+时间），列表/详情过滤 deleted_at IS NULL
+- 实测：删除内容 → DB 行保留 deleted_by=admin + 列表不可见
