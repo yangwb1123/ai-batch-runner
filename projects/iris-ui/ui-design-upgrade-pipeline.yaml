@@ -1,0 +1,246 @@
+# iris-ui 设计系统统一升级流水线
+#
+# 目标：把 iris-ui 推进到"统一、产品完成度高、优雅"——589 处高维审计违规
+# （裸字号 303 / 魔法间距 103 / fallback 漂移 91 / 硬编码阴影 60 / 未知
+# token 17 / 裸 hex 15）全部归零，组件样式 100% 由 --iris-* token 驱动。
+#
+# 执行（在 ai-batch-runner 根目录）：
+#   python pi-batch.py projects/iris-ui/ui-design-upgrade-pipeline.yaml \
+#     --log-file logs/iris-ui-upgrade.log --retries 2
+# 阶段：baseline（摘要）→ adapt（4 框架并行修复，机械门禁）→
+#       review（ui/visual 对抗审查）→ gate（VERDICT 裁决）
+# 修复纪律见 specs/design-tokens.md（子 agent 必读）。
+
+git_commit: false
+decision_log: /home/u1/iris-ui/docs/ui-audit/DECISIONS.md
+
+stages:
+  # ── 1. 基线：把审计结果落盘为可读摘要 ──
+  - name: baseline
+    from_prompt: |
+      You are preparing the baseline for a design-system unification pass on
+      the iris-ui monorepo at /home/u1/iris-ui. Run the audit:
+        python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py \
+          --mode all --json -o /home/u1/iris-ui/docs/ui-audit/report.json
+      Read the JSON report and write a markdown summary to the output path:
+      total violations, per-category counts (font/spacing/shadow/hex),
+      per-package counts, and the top 10 files. Do NOT modify any source
+      files. This is a read-only documentation stage.
+    output: /home/u1/iris-ui/docs/ui-audit/baseline.md
+    mode: serial
+
+  # ── 2. 四框架并行修复（各改各包，机械门禁闭环）──
+  - name: adapt
+    from_outputs: baseline
+    mode: parallel
+    workers: 4
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --pkg react
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are unifying the React adapter of the iris-ui design system.
+          Read the authoritative rules FIRST:
+            /home/u1/ai-batch-runner/projects/iris-ui/specs/design-tokens.md
+          Also read /home/u1/iris-ui/AGENTS.md for repo invariants (token-driven
+          styling, no hardcoded values).
+          Then fix EVERY design-token violation in packages/react/src/**:
+          1. Run the audit to see the violations:
+             python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py \
+               --mode all --pkg react --json -o /home/u1/iris-ui/docs/ui-audit/react.json
+             (also available in the validator stderr if this is a retry)
+          2. Apply the mapping rules from design-tokens.md: bare fontSizes ->
+             var(--iris-font-size-*), magic spacing -> var(--iris-space-*),
+             hardcoded boxShadows -> var(--iris-shadow-*), fallback drift ->
+             light.ts values, unknown tokens -> existing tokens, bare hex ->
+             semantic tokens.
+          3. NEVER touch: dist/, *.tgz, node_modules, manifest.json, llms.txt,
+             packages/tokens, packages/theme, other framework packages.
+          4. Do not change component props/events/behavior or DOM structure.
+          5. Run gates: cd /home/u1/iris-ui && pnpm --filter @iris-ui-kit/react test
+             && pnpm --filter @iris-ui-kit/react typecheck
+             If tests assert old values, update the assertions (unification is
+             intentional). If a mapping would break a test snapshot, prefer the
+             token value and fix the test.
+          6. Re-run the audit; aim for 0 violations in packages/react/src.
+          Return a change report: files changed, violations fixed per category,
+          test/typecheck results, any deviations with reasons. Do not commit.
+          {input_content}
+        output: /home/u1/iris-ui/docs/ui-audit/react.md
+        timeout: 2400
+        validate: |
+          python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --pkg react,
+          bash -c "cd {cwd} && pnpm --filter @iris-ui-kit/react test >/tmp/iris-react-test.log 2>&1 && pnpm --filter @iris-ui-kit/react typecheck >>/tmp/iris-react-test.log 2>&1 && echo REACT-GATES-PASS"
+
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are unifying the Vue adapter of the iris-ui design system.
+          Read the authoritative rules FIRST:
+            /home/u1/ai-batch-runner/projects/iris-ui/specs/design-tokens.md
+          Also read /home/u1/iris-ui/AGENTS.md for repo invariants (token-driven
+          styling, no hardcoded values).
+          Then fix EVERY design-token violation in packages/vue/src/** (this is
+          the largest package: ~211 violations):
+          1. Run the audit to see the violations:
+             python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py \
+               --mode all --pkg vue --json -o /home/u1/iris-ui/docs/ui-audit/vue.json
+             (also available in the validator stderr if this is a retry)
+          2. Apply the mapping rules from design-tokens.md: bare fontSizes ->
+             var(--iris-font-size-*), magic spacing -> var(--iris-space-*),
+             hardcoded boxShadows -> var(--iris-shadow-*), fallback drift ->
+             light.ts values, unknown tokens -> existing tokens, bare hex ->
+             semantic tokens. Vue components are h()-render .ts files.
+          3. NEVER touch: dist/, *.tgz, node_modules, manifest.json, llms.txt,
+             packages/tokens, packages/theme, other framework packages.
+          4. Do not change component props/events/behavior or DOM structure.
+          5. Run gates: cd /home/u1/iris-ui && pnpm --filter @iris-ui-kit/vue test
+             && pnpm --filter @iris-ui-kit/vue typecheck
+             If tests assert old values, update the assertions (unification is
+             intentional).
+          6. Re-run the audit; aim for 0 violations in packages/vue/src.
+          Return a change report: files changed, violations fixed per category,
+          test/typecheck results, any deviations with reasons. Do not commit.
+          {input_content}
+        output: /home/u1/iris-ui/docs/ui-audit/vue.md
+        timeout: 2400
+        validate: |
+          python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --pkg vue,
+          bash -c "cd {cwd} && pnpm --filter @iris-ui-kit/vue test >/tmp/iris-vue-test.log 2>&1 && pnpm --filter @iris-ui-kit/vue typecheck >>/tmp/iris-vue-test.log 2>&1 && echo VUE-GATES-PASS"
+
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are unifying the Solid adapter of the iris-ui design system.
+          Read the authoritative rules FIRST:
+            /home/u1/ai-batch-runner/projects/iris-ui/specs/design-tokens.md
+          Also read /home/u1/iris-ui/AGENTS.md for repo invariants (token-driven
+          styling, no hardcoded values).
+          Then fix EVERY design-token violation in packages/solid/src/**:
+          1. Run the audit to see the violations:
+             python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py \
+               --mode all --pkg solid --json -o /home/u1/iris-ui/docs/ui-audit/solid.json
+             (also available in the validator stderr if this is a retry)
+          2. Apply the mapping rules from design-tokens.md: bare fontSizes ->
+             var(--iris-font-size-*), magic spacing -> var(--iris-space-*),
+             hardcoded boxShadows -> var(--iris-shadow-*), fallback drift ->
+             light.ts values, unknown tokens -> existing tokens, bare hex ->
+             semantic tokens.
+          3. NEVER touch: dist/, *.tgz, node_modules, manifest.json, llms.txt,
+             packages/tokens, packages/theme, other framework packages.
+          4. Do not change component props/events/behavior or DOM structure.
+          5. Run gates: cd /home/u1/iris-ui && pnpm --filter @iris-ui-kit/solid test
+             && pnpm --filter @iris-ui-kit/solid typecheck
+             If tests assert old values, update the assertions (unification is
+             intentional).
+          6. Re-run the audit; aim for 0 violations in packages/solid/src.
+          Return a change report: files changed, violations fixed per category,
+          test/typecheck results, any deviations with reasons. Do not commit.
+          {input_content}
+        output: /home/u1/iris-ui/docs/ui-audit/solid.md
+        timeout: 2400
+        validate: |
+          python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --pkg solid,
+          bash -c "cd {cwd} && pnpm --filter @iris-ui-kit/solid test >/tmp/iris-solid-test.log 2>&1 && pnpm --filter @iris-ui-kit/solid typecheck >>/tmp/iris-solid-test.log 2>&1 && echo SOLID-GATES-PASS"
+
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are unifying the Svelte adapter of the iris-ui design system.
+          Read the authoritative rules FIRST:
+            /home/u1/ai-batch-runner/projects/iris-ui/specs/design-tokens.md
+          Also read /home/u1/iris-ui/AGENTS.md for repo invariants (token-driven
+          styling, no hardcoded values).
+          Then fix EVERY design-token violation in packages/svelte/src/**:
+          1. Run the audit to see the violations:
+             python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py \
+               --mode all --pkg svelte --json -o /home/u1/iris-ui/docs/ui-audit/svelte.json
+             (also available in the validator stderr if this is a retry)
+          2. Apply the mapping rules from design-tokens.md: bare fontSizes (both
+             style-object and <style> blocks) -> var(--iris-font-size-*), magic
+             spacing -> var(--iris-space-*), hardcoded boxShadows in <style> ->
+             var(--iris-shadow-*), fallback drift -> light.ts values, unknown
+             tokens -> existing tokens, bare hex -> semantic tokens.
+          3. NEVER touch: dist/, *.tgz, node_modules, manifest.json, llms.txt,
+             packages/tokens, packages/theme, other framework packages.
+          4. Do not change component props/events/behavior or DOM structure.
+          5. Run gates: cd /home/u1/iris-ui && pnpm --filter @iris-ui-kit/svelte test
+             && pnpm --filter @iris-ui-kit/svelte check (svelte-check)
+             If tests assert old values, update the assertions (unification is
+             intentional).
+          6. Re-run the audit; aim for 0 violations in packages/svelte/src.
+          Return a change report: files changed, violations fixed per category,
+          test/typecheck results, any deviations with reasons. Do not commit.
+          {input_content}
+        output: /home/u1/iris-ui/docs/ui-audit/svelte.md
+        timeout: 2400
+        validate: |
+          python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --pkg svelte,
+          bash -c "cd {cwd} && pnpm --filter @iris-ui-kit/svelte test >/tmp/iris-svelte-test.log 2>&1 && pnpm --filter @iris-ui-kit/svelte check >>/tmp/iris-svelte-test.log 2>&1 && echo SVELTE-GATES-PASS"
+
+  # ── 3. 插件修复（serial：插件跨 4 框架子目录）──
+  - name: adapt-plugins
+    from_outputs: adapt
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --pkg plugins
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are unifying the plugin packages of the iris-ui design system.
+          Read the authoritative rules FIRST:
+            /home/u1/ai-batch-runner/projects/iris-ui/specs/design-tokens.md
+          Also read /home/u1/iris-ui/AGENTS.md for repo invariants.
+          Fix EVERY design-token violation in packages/plugin-*/src/** (~76):
+          1. python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py \
+               --mode all --pkg plugins --json -o /home/u1/iris-ui/docs/ui-audit/plugins.json
+          2. Apply the mapping rules from design-tokens.md section by section
+             (calendar/dashboard/kanban/pro-table/etc). Plugin-private tokens
+             like --iris-cal-today-bg must be migrated to existing tokens per
+             spec section 5.
+          3. NEVER touch: dist/, *.tgz, node_modules, manifest.json, llms.txt,
+             packages/tokens, packages/theme, framework packages.
+          4. Run gates for each modified plugin:
+             cd /home/u1/iris-ui && pnpm --filter @iris-ui-kit/plugin-calendar test
+             && pnpm --filter @iris-ui-kit/plugin-dashboard test
+             && pnpm --filter @iris-ui-kit/plugin-kanban test
+             && pnpm --filter @iris-ui-kit/plugin-pro-table test
+             (and typecheck equivalents; skip plugins you did not touch)
+          5. Re-run the audit; aim for 0 violations in plugin sources.
+          Return a change report: plugins touched, violations fixed per
+          category, gate results, deviations. Do not commit. {input_content}
+        output: /home/u1/iris-ui/docs/ui-audit/plugins.md
+        timeout: 2400
+
+  # ── 4. 对抗审查：UI 与视觉角色交叉复核 ──
+  - name: review
+    from_outputs: adapt-plugins
+    meta: true
+    role_dir: /home/u1/ai-batch-runner/prompts
+    output_dir: /home/u1/iris-ui/docs/ui-audit/reviews
+    max_iterations: 2
+    max_roles_per_iteration: 2
+    mode: serial
+
+  # ── 5. 裁决门 ──
+  - name: gate
+    from_outputs: review
+    aggregate: true
+    gate: true
+    mode: serial
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are the design-system gatekeeper. Read {input_content} (the four
+          framework change reports, plugin report, and review deliverables).
+          Verify against the actual repository at /home/u1/iris-ui:
+          1. Run: python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py \
+               --mode all --json
+             The violation count must be 0 (or near-zero with only documented
+             exemptions).
+          2. Spot-check 5+ changed files: styles must consume var(--iris-*)
+             tokens, fallbacks must match light.ts definitions.
+          3. Confirm no dist/ artifacts or generated files were touched
+             (git status --porcelain must not list dist/ or *.tgz).
+          Output on the last line:
+          VERDICT: PASS - <why the design system is now unified>
+          or
+          VERDICT: FAIL - <remaining violations or rule breaks>
+        output: /home/u1/iris-ui/docs/ui-audit/gate.md
