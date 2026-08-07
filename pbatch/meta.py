@@ -157,11 +157,9 @@ def _run_meta_stage(stage: Stage, stage_outputs: dict, model_override: str = "",
                     reuse_legacy: bool = False,
                     fingerprint_mode: bool = False,
                     original_prompt: str = "") -> tuple[list[TaskResult], bool]:
-    """Dynamic role orchestration: ask the agent which roles the current
-    deliverables still need, execute each chosen role against the aggregated
-    inputs, fold the role deliverables back into the evidence, and iterate
-    until the orchestrator reports no more roles or max_iterations is
-    reached (self-optimizing: the role set is discovered at run time)."""
+    """Dynamic role orchestration: orchestrator picks roles per iteration,
+    role outputs fold back into evidence until no more roles or
+    max_iterations (self-optimizing role set)."""
     raw_sources = stage.from_outputs if isinstance(stage.from_outputs, (list, tuple)) else [stage.from_outputs]
     source_names = [str(name).strip() for name in raw_sources if str(name).strip()]
     missing = [name for name in source_names if name not in stage_outputs]
@@ -172,10 +170,7 @@ def _run_meta_stage(stage: Stage, stage_outputs: dict, model_override: str = "",
         log.error("Meta stage '%s' requires output_dir for role deliverables", stage.name)
         return [], False
 
-    upstream = []
-    for name in source_names:
-        upstream.extend(stage_outputs.get(name, []))
-    evidence_outputs = list(upstream)
+    evidence_outputs = [p for name in source_names for p in stage_outputs.get(name, [])]
     combined = combine_outputs(evidence_outputs)
     if not combined:
         log.warning("No upstream outputs available for meta stage '%s'", stage.name)
@@ -199,7 +194,14 @@ def _run_meta_stage(stage: Stage, stage_outputs: dict, model_override: str = "",
             break
 
     stage_outputs[stage.name] = role_outputs
-    return all_results, all(r.success for r in all_results)
+    # meta_max_failed_roles: 允许 N 个角色失败而阶段仍成功（审查缺失由
+    # 后续 gate 兜底）；默认 0 = 任一角色失败即阶段失败（fail-closed）。
+    failed_roles = sum(1 for r in all_results if not r.success)
+    stage_ok = failed_roles <= stage.meta_max_failed_roles
+    if not stage_ok:
+        log.error("META stage '%s': %d role task(s) failed (limit %d)",
+                  stage.name, failed_roles, stage.meta_max_failed_roles)
+    return all_results, stage_ok
 
 def _run_meta_iteration(stage: Stage, combined: str, role_names: list, model_override: str, timeout_override: int,
                         validate_cmd: str, iteration: int, all_results: list, role_outputs: list,
@@ -224,26 +226,79 @@ def _run_meta_iteration(stage: Stage, combined: str, role_names: list, model_ove
         return True, True, combined
     log.info("META orchestrator selected %d role(s)", len(roles))
 
-    role_tasks, iteration_ok = _build_role_tasks(stage, roles, combined, model_override, timeout_override)
+    role_tasks, _ = _build_role_tasks(stage, roles, combined, model_override, timeout_override)
+    failed = _run_role_batch(stage, role_tasks, validate_cmd, session_name, reuse,
+                             reuse_legacy, fingerprint_mode, all_results,
+                             role_outputs, evidence_outputs)
+    combined = combine_outputs(evidence_outputs)
+    # meta_role_retries: 失败/超时角色自动重试一次（G2 教训），仍失败才计数。
+    if failed and stage.meta_role_retries > 0:
+        failed = _retry_failed_roles(stage, all_results, role_outputs, evidence_outputs,
+                                     validate_cmd, session_name, reuse, reuse_legacy,
+                                     fingerprint_mode)
+        combined = combine_outputs(evidence_outputs)
+    if failed and stage.meta_max_failed_roles <= 0:
+        log.warning("META stage '%s': some role tasks failed in iteration %d", stage.name, iteration)
+        return True, False, combined
+    if failed:
+        log.warning("META stage '%s': %d role task(s) failed in iteration %d (within allowance %d)",
+                    stage.name, sum(1 for r in all_results if not r.success), iteration,
+                    stage.meta_max_failed_roles)
+    return False, True, combined
 
+
+def _run_role_batch(stage: Stage, role_tasks: list, validate_cmd: str, session_name: str,
+                    reuse: bool, reuse_legacy: bool, fingerprint_mode: bool,
+                    all_results: list, role_outputs: list, evidence_outputs: list) -> bool:
+    """Execute one iteration's role tasks concurrently; returns True when
+    any role task failed (caller applies retries/allowance)."""
+    failed = False
     with ThreadPoolExecutor(max_workers=max(1, stage.workers or AGENT_DEFAULT_WORKERS)) as pool:
         futures = [pool.submit(
             _run_role_task, item, validate_cmd, session_name, reuse,
             reuse_legacy, fingerprint_mode) for item in role_tasks]
         for fut in as_completed(futures):
-            role, result = fut.result()
+            _, result = fut.result()
             all_results.append(result)
-            if not result.success:
-                iteration_ok = False
+            failed = failed or not result.success
             out_path = result.task.output_path()
             if result.success and out_path and out_path.exists():
                 role_outputs.append(str(out_path))
                 evidence_outputs.append(str(out_path))
-    combined = combine_outputs(evidence_outputs)
-    if not iteration_ok:
-        log.warning("META stage '%s': some role tasks failed in iteration %d", stage.name, iteration)
-        return True, False, combined
-    return False, True, combined
+    return failed
+
+
+def _retry_failed_roles(stage: Stage, all_results: list, role_outputs: list, evidence_outputs: list,
+                        validate_cmd: str, session_name: str, reuse: bool,
+                        reuse_legacy: bool, fingerprint_mode: bool) -> bool:
+    """Retry failed role tasks once (timeouts/transient failures absorb a
+    single retry). Returns True when failures remain after retrying."""
+    still_failed = False
+    for result in all_results:
+        if result.success:
+            continue
+        task = result.task
+        log.info("META retry role '%s' after %s", task.output_path(), result.reason)
+        retry = run_task(task, parallel=True, session_name=session_name)
+        if retry.success:
+            retry.success = _save_validated(task, retry, validate_cmd)
+            if not retry.success:
+                retry.reason = "validation failed"
+        record_task(retry)
+        # 原位替换失败结果：成功则产物入 evidence，失败则保留计数
+        if retry.success:
+            result.success = True
+            result.returncode = 0
+            result.reason = "retried"
+            result.stdout = retry.stdout
+            out_path = task.output_path()
+            if out_path and out_path.exists() and str(out_path) not in role_outputs:
+                role_outputs.append(str(out_path))
+                evidence_outputs.append(str(out_path))
+        else:
+            still_failed = True
+            log.warning("META retry for '%s' failed again: %s", task.output_path(), retry.reason)
+    return still_failed
 
 
 def _run_role_task(item, validate_cmd: str, session_name: str, reuse: bool,

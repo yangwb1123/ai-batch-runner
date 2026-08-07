@@ -64,8 +64,8 @@ stages:
     aggregate: true
     # source-first 红线 + sverpweb 全门禁
     validate: |
-      bash /home/dwp/ai-batch-runner/scripts/sverp/check-no-dist-edit.sh {cwd},
-      bash /home/dwp/ai-batch-runner/scripts/sverp/check-sverpweb.sh {cwd}
+      bash {tool_root}/scripts/sverp/check-no-dist-edit.sh {cwd},
+      bash {tool_root}/scripts/sverp/check-sverpweb.sh {cwd}
     tasks:
       - prompt: |
           Read the repository's AGENTS.md and the approved evidence below.

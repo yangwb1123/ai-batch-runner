@@ -1446,7 +1446,7 @@ def test_gate_verdict_blocks_later_stages(tmp_path):
         capture_output=True, text=True, timeout=120, cwd=str(tmp_path),
     )
     assert "GATE REJECTED at stage 'gate'" in result.stderr
-    assert "Pipeline halted by gate: gate" in result.stderr
+    assert "Pipeline halted: gate (FAIL)" in result.stderr
     # impl stage must not have run: switch to an agent that would emit the
     # impl deliverable; it must never be invoked because the gate blocks it.
     # A FAIL verdict is NEVER reusable (aero-id round R5e fix): the --reuse
@@ -1540,7 +1540,7 @@ def test_gate_missing_verdict_fails_closed(tmp_path):
         capture_output=True, text=True, timeout=120, cwd=str(tmp_path),
     )
     assert "produced no VERDICT: line; failing closed" in result.stderr
-    assert "Pipeline halted by gate: gate" in result.stderr
+    assert "Pipeline halted: gate (FAIL)" in result.stderr
 
 
 def test_archive_outputs_after_full_success_single_batch(tmp_path):
@@ -1653,6 +1653,8 @@ def test_pipeline_reports_failed_stage(tmp_path, fake_agent):
     assert failed == ["s0"]
     assert len(results) == 2  # tasks still ran; the stage is marked failed
     assert not (tmp_path / "downstream.md").exists()
+    # 失败的 stage 只记录一次（run_pipeline_stage 内统一登记）
+    assert failed.count("s0") == 1
 
 
 # ── aero-id 维护周期 R5e 复盘的三个修复 ──────────────────────────────

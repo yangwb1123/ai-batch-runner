@@ -63,8 +63,8 @@ stages:
   - name: implement
     from_outputs: plan
     validate: |
-      bash /home/dwp/ai-batch-runner/scripts/sverp/check-no-dist-edit.sh {cwd},
-      bash /home/dwp/ai-batch-runner/scripts/sverp/check-sverpweb.sh {cwd}
+      bash {tool_root}/scripts/sverp/check-no-dist-edit.sh {cwd},
+      bash {tool_root}/scripts/sverp/check-sverpweb.sh {cwd}
     tasks:
       - prompt: |
           You are the code implementer for sverpweb-stable. Read
@@ -104,11 +104,13 @@ stages:
         timeout: 2400
         output: .pi-batch/sverp/route-impl.md
 
-  # ── 3. 对抗审查 ──
+  # ── 3. 对抗审查（meta 韧性：角色失败自动重试 1 次；允许 1 个角色失败）──
   - name: review
     from_outputs: implement
     meta: true
     meta_timeout: 2400  # 复杂页面审查（多页签/大组件）1500s 不够（G2 教训）
+    meta_role_retries: 1  # 角色超时/失败自动重试（G2：1500s 超时即整段 halt）
+    meta_max_failed_roles: 1  # 重试后仍失败的单个角色不阻断（gate 兜底）
     role_dir: prompts
     role_keywords: pbatch/role_keywords.yaml
     output_dir: .pi-batch/sverp/reviews
@@ -118,7 +120,7 @@ stages:
     relevance_min_score: 2
     mode: serial
 
-  # ── 4. 裁决门 ──
+  # ── 4. 裁决门（gate_fix_rounds：FAIL 后自动修复循环，无需人工中转）──
   - name: gate
     from_outputs:
       - plan
@@ -127,6 +129,12 @@ stages:
     aggregate: true
     gate: true
     mode: serial
+    # FAIL 自动修复：提取裁决原因 + 结构化发现（```json 数组）→ 修复任务
+    # （带 check-sverpweb 门禁）→ 修复报告折回证据重新裁决，最多 2 轮
+    gate_fix_rounds: 2
+    gate_fix_validate: |
+      bash {tool_root}/scripts/sverp/check-no-dist-edit.sh {cwd},
+      bash {tool_root}/scripts/sverp/check-sverpweb.sh {cwd}
     tasks:
       - prompt: |
           You are the migration gatekeeper. Read {input_content} (plan,
@@ -139,4 +147,10 @@ stages:
           resolved. Output on the last line:
           VERDICT: PASS - <why the migration is complete>
           or VERDICT: FAIL - <blocking issues>.
+          On FAIL, append a structured findings block so the fix loop can
+          consume it:
+          ```json
+          [{"severity": "high", "file": "<path>", "line": <n>,
+            "problem": "...", "fix_hint": "..."}]
+          ```
         output: .pi-batch/sverp/route-gate.md

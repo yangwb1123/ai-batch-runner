@@ -483,7 +483,7 @@ def _apply_gate_commands(tmp: Path, task: Task, commands: list, result: TaskResu
         if spec.scope == "repo":
             log.info("VALIDATE: %s deferred (repo scope -> stage end)", spec.cmd)
             continue
-        cmd = spec.cmd.replace("{output}", shlex.quote(str(tmp))).replace("{cwd}", shlex.quote(task.workdir()))
+        cmd = spec.cmd.replace("{output}", shlex.quote(str(tmp))).replace("{cwd}", shlex.quote(task.workdir())).replace("{tool_root}", shlex.quote(config.TOOL_ROOT))
         log.info("VALIDATE: %s", cmd)
         v = run_validation(cmd, task.workdir())
         result.validation_ok = v.ok
@@ -694,7 +694,7 @@ def _revalidate_one(spec, path: Path, wd: str) -> bool:
     validator reporting {"status":"fail"} must not promote the artifact
     when the fresh-save path would reject it (round-4 finding M3/P2-4).
     H line: judge validators apply the same fail-closed verdict protocol."""
-    cmd = spec.cmd.replace("{output}", shlex.quote(str(path))).replace("{cwd}", shlex.quote(wd))
+    cmd = spec.cmd.replace("{output}", shlex.quote(str(path))).replace("{cwd}", shlex.quote(wd)).replace("{tool_root}", shlex.quote(config.TOOL_ROOT))
     log.info("REVALIDATE: %s", cmd)
     v = run_validation(cmd, wd)
     if not v.ok:

@@ -21,7 +21,8 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `pbatch/config.py` | 声明式配置解析（pi-batch.yaml）、agent 默认值、会话标志、验证器注册表 |
 | `pbatch/models.py` | 数据模型：Task / TaskResult / Stage / Pipeline |
 | `pbatch/runner.py` | 任务执行：硬超时、失败签名拒绝、重试、验证门禁、摘要 |
-| `pbatch/pipeline.py` | 流水线：阶段构建、meta 角色编排、gate 裁决、决策日志、归档 |
+| `pbatch/pipeline.py` | 流水线：阶段构建、meta 角色编排、gate 裁决（含自动修复循环）、决策日志、归档 |
+| `pbatch/gate_fix.py` | gate-FAIL 自动修复：结构化发现解析（```json）、修复任务构建与门禁（sverp 实战沉淀） |
 | `pbatch/pipeline_schema.py` / `evidence.py` | Pipeline fail-closed schema 与有界证据注入 |
 | `pbatch/relevance.py` | meta 角色关键词评分、命中证据、去重与运行时数量上限 |
 | `pbatch/classifier.py` / `task_keywords.yaml` | 任务类型判断器：执行前双语关键词判定，前端→前端实现流水线、后端→后端实现流水线（`classifier.frontend_pipeline` / `backend_pipeline`，均为 plan→implement+门禁→对抗审查→gate 结构），`--classify` / `classify` 子命令，零 LLM 成本 |
@@ -130,7 +131,9 @@ validators:
 - **每阶段可选**：任务 `validate` > 阶段 `validate_cmd` > CLI > 无；
   空字符串显式禁用（分析类任务跳过，代码生成类保留）
 - 机制：输出写临时文件（`{output}` 占位符）→ 验证命令 → 通过则原子
-  rename，失败则删除零残留
+  rename，失败则删除零残留；`{tool_root}` 占位符展开为工具仓库根
+  （validator/stage 命令可引用随仓库分发的脚本，替代硬编码绝对路径，
+  sverp 实战反馈）
 - 外部验证器 stdout/stderr 分别受 `validation.output_max_bytes`（默认 256KiB）
   约束；超限按验证失败关闭，避免 noisy gate 在超时前耗尽 runner 内存
 - stage `commands` 同样使用进程组硬截止与有界诊断；全局默认由
@@ -223,6 +226,10 @@ stages:
     max_iterations: 3
     max_roles_per_iteration: 3       # 运行时硬限制，不只依赖 prompt
     relevance_min_score: 2           # 命名角色最低相关性；ad-hoc 角色不受此限
+    meta_role_retries: 1             # 角色失败/超时自动重试次数（G2 教训：
+                                     # 单角色 1500s 超时曾整段 halt）
+    meta_max_failed_roles: 0         # 重试后仍失败的角色允许数（0 = 任一失败
+                                     # 即阶段失败；>0 时缺失审查由后续 gate 兜底）
 ```
 
 编排循环：**分析当前交付物 → 输出 JSON 角色计划 → 执行 → 产出折回证据 →
@@ -257,6 +264,8 @@ stages:
     from_outputs: adversarial_review
     aggregate: true
     gate: true
+    gate_fix_rounds: 2          # FAIL 自动修复循环（见下）
+    gate_fix_validate: "bash {tool_root}/scripts/check.sh {cwd}"
     tasks:
       - prompt: "... output VERDICT: PASS - <reasons> or VERDICT: FAIL - <reasons>"
         output: docs/proposals/gate.md
@@ -265,6 +274,14 @@ stages:
 - `gate: true` 阶段读取产出中的 `VERDICT: PASS|FAIL|REJECT` 行；
   FAIL/REJECT **阻断后续所有阶段**（流水线停止并报告 GATE REJECTED）；
   裸 `VERDICT: PASS`（无理由）或无 VERDICT 行都视为 FAIL（fail closed）
+- **gate-fix 自动修复循环**（`gate_fix_rounds: N`，sverp 实战沉淀）：gate
+  FAIL/REJECT 时不再直接 halt——提取裁决理由 + gatekeeper 的结构化发现
+  （```json 数组 `[{severity, file, line, problem, fix_hint}]`）→ 生成修复
+  任务（`gate_fix_validate` 门禁，默认继承阶段 validate）→ 修复报告作为
+  额外证据重新执行 gate 阶段 → 重新裁决，最多 N 轮；PASS 提前继续后续
+  阶段。无结构化发现时回退纯文本理由。修复报告存
+  `<gate 输出目录>/<stage>-fix-<n>.md`，决策日志按 `stage#fixN` 追加。
+  人工修复 G4/G6/G7 的三次转手（读报告→改代码→重跑）由此自动化。
 - 交叉对抗由 meta 阶段提供：security_engineer 挑战架构、qa_lead 找缺陷、
   protocol_expert 验线协议……并发执行、证据折叠；gatekeeper 独立裁决
 

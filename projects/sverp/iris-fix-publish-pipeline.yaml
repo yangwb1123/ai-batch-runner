@@ -40,8 +40,8 @@ stages:
   - name: fix
     from_outputs: diagnose
     validate: |
-      bash /home/dwp/ai-batch-runner/scripts/sverp/check-no-dist-edit.sh {cwd},
-      bash /home/dwp/ai-batch-runner/scripts/sverp/check-iris-vue.sh {cwd}
+      bash {tool_root}/scripts/sverp/check-no-dist-edit.sh {cwd},
+      bash {tool_root}/scripts/sverp/check-iris-vue.sh {cwd}
     tasks:
       - prompt: |
           Read {input_content} (the diagnosis). If it says ROUTED-TO-SVERPWEB,
@@ -61,11 +61,13 @@ stages:
         timeout: 1800
         output: .pi-batch/sverp/fix.md
 
-  # ── 3. 对抗审查 ──
+  # ── 3. 对抗审查（meta 韧性：角色失败自动重试 1 次；允许 1 个角色失败）──
   - name: review
     from_outputs: fix
     meta: true
-    meta_timeout: 1500
+    meta_timeout: 2400
+    meta_role_retries: 1
+    meta_max_failed_roles: 1
     role_dir: prompts
     role_keywords: pbatch/role_keywords.yaml
     output_dir: .pi-batch/sverp/reviews
@@ -75,7 +77,7 @@ stages:
     relevance_min_score: 2
     mode: serial
 
-  # ── 4. 裁决门：PASS 后才允许走发布循环 ──
+  # ── 4. 裁决门：PASS 后才允许走发布循环（FAIL 自动修复，最多 2 轮）──
   - name: gate
     from_outputs:
       - diagnose
@@ -83,6 +85,10 @@ stages:
       - review
     aggregate: true
     gate: true
+    gate_fix_rounds: 2
+    gate_fix_validate: |
+      bash {tool_root}/scripts/sverp/check-no-dist-edit.sh {cwd},
+      bash {tool_root}/scripts/sverp/check-iris-vue.sh {cwd}
     mode: serial
     tasks:
       - prompt: |
@@ -95,5 +101,10 @@ stages:
           Output on the last line:
           VERDICT: PASS - <why the fix is ready to release>
           or VERDICT: FAIL - <blocking issues>.
+          On FAIL, append a structured findings block:
+          ```json
+          [{"severity": "high", "file": "<path>", "line": <n>,
+            "problem": "...", "fix_hint": "..."}]
+          ```
           {input_content}
         output: .pi-batch/sverp/gate.md

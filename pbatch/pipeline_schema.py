@@ -65,7 +65,8 @@ def _field_errors(stage: dict, prefix: str) -> list[str]:
     for key, minimum in (("workers", 1), ("max_iterations", 1),
                          ("max_roles_per_iteration", 1), ("relevance_min_score", 0),
                          ("command_timeout", 1), ("command_output_max_bytes", 1),
-                         ("meta_timeout", 1)):
+                         ("meta_timeout", 1), ("meta_max_failed_roles", 0),
+                         ("meta_role_retries", 0), ("gate_fix_rounds", 0)):
         value = stage.get(key, minimum)
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
             errors.append(f"{prefix}.{key} must be an integer >= {minimum}")

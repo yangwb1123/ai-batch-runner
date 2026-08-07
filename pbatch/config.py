@@ -44,6 +44,11 @@ def _find_batch_config() -> Optional[dict]:
     return None
 
 
+# 工具根目录：pi-batch 包所在仓库根（validator/stage 命令里可用
+# {tool_root} 占位符引用随仓库分发的脚本，替代硬编码绝对路径）。
+TOOL_ROOT = str(Path(__file__).resolve().parent.parent)
+
+
 def _load_batch_config(path: str = "pi-batch.yaml") -> dict:
     """Optional defaults for pi-batch. Missing file -> {} (built-in defaults
     below apply), so the tool still runs standalone with zero config -- copy
