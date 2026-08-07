@@ -24,11 +24,14 @@ from pathlib import Path
 
 OPTICAL_OK = re.compile(r"--optical-[a-z0-9-]+")
 OFFSET_PATTERN = re.compile(
-    r"(?:margin(?:-top|-left|-right|-bottom)?|translate[XY]?|inset(?:-inline|-block)?(?:-start|-end)?)\s*:\s*(?P<value>-?\d{1,2})px",
+    r"""(?:margin(?:-top|-left|-right|-bottom|Top|Left|Right|Bottom)?|translate[XY]?|"""
+    r"""inset(?:-inline|-block|Inline|Block)?(?:-start|-end|Start|End)?)\s*:\s*"""
+    r"""["']?(?P<value>-?\d{1,2})px""",
 )
-RADIUS_PATTERN = re.compile(r"border-radius\s*:\s*([^;]+);")
+RADIUS_PATTERN = re.compile(r"""border(?:-radius|Radius)\s*:\s*["']?([^;"',}]+)["']?["'`,;}]*""")
 BORDER_WIDTH_PATTERN = re.compile(
-    r"border(?:-top|-left|-right|-bottom)?-width\s*:\s*(\d+(?:\.\d+)?)px",
+    r"""border(?:-top|-left|-right|-bottom|Top|Left|Right|Bottom)?(?:-width|Width)\s*:\s*"""
+    r"""["']?(\d+(?:\.\d+)?)px""",
 )
 RADIUS_FAMILY = {6, 10, 16}
 STROKE_LEVELS = {1, 2, 3}
