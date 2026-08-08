@@ -282,3 +282,18 @@ permissions_roles.permissions_json——config 有但 DB 角色缺，tester 曾�
   （软删 tombstone 过滤）
 
 **最终状态**：7 E2E + test-platform（25/8/8）+ 健康检查全绿。
+
+## 20. 审计时间过滤 + 质检创建链 + verify 命令（2026-08-08 终版）
+
+- 审计账本页时间范围过滤（1h/24h/7d/30d，from 参数；默认 24h）
+- 质检单创建链 E2E（创建→查询→审计入账 quality_inspection.created.v1）
+  ——8 个 E2E 固化 /home/ywb/platform-e2e/（含 quality-create）
+- `bash /home/ywb/test-platform.sh verify`：一键跑全部业务 E2E
+
+**最终命令集**：
+```bash
+bash /home/ywb/test-platform.sh {status|audit|e2e|verify}  # 25/8/8/8 全绿
+bash /home/ywb/check-audit-health.sh                        # 毒丸+漏注册
+bash /home/ywb/run-all-e2e.sh                               # 8 个业务 E2E
+crontab -l                                                  # 每日 3 点健康检查
+```
