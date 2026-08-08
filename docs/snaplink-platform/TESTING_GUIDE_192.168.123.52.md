@@ -161,3 +161,35 @@ parent_id 修正 + 菜单重加 → runtime-routes 22→30 全齐。
 pnpm overrides 不可行；`bash scripts/sync-iris-ui.sh`（构建 vue 包→覆盖
 node_modules→rm dist 强制重建→bundle 校验 MouseEnter）为当前通道；
 iris-ui 发布 npm 后改为升级依赖即可。
+
+## 12. 通知体系与 M3 审计时间线（2026-08-08）
+
+**通知（sverpweb 铃铛）**：
+- `notifications` 表（app.sqlite）：type=file_deleted（管理员删文件）、
+  approval_result（审批结果，含驳回原因）——接收者由业务逻辑决定
+- API：GET /api/notifications?unread=1、GET /notifications/unread-count、
+  POST /notifications/read（id 或全读，需 CSRF）
+- 铃铛双分区：审批待办 / 系统通知；红点 = 总数；点击已读
+- 通知是尽力而为渠道，审计账本才是事实源
+
+**管理员删除文件（需求 P0+P1）**：DELETE /api/contents/:id 带 `{reason}` →
+审计 content.deleted.v1 metadata.reason + 通知所有者（authorId ≠ actor 时）；
+E2E：`bash /tmp/file-delete-e2e.sh`（创建→删除→通知/审计断言）
+
+**生产事故复盘（content 审计毒丸）**：content.* 事件 schema 未注册 →
+outbox 422 毒丸隔离（35 条）。修复：POST /api/v1/schemas 注册
+sverp.content.{created,updated,deleted}.v1；**required_fields 只能选
+hasField 可判定字段**（event_type/operation_id/aggregate_id/actor.id——
+occurred_at/actor/action 是顶层字段，hasField 按 payload 查找会误判）；
+schema v1 已存在时直接编辑 governance state.json（备份→改→重启）；
+重放：UPDATE audit_outbox SET status='pending', permanent=0 WHERE
+status='failed' AND last_error LIKE '%schema%'；幂等键保证重放安全。
+教训：**新增事件类型必先注册 schema，required_fields 参照 quality 系
+（None）**。
+
+**M3 console 审计时间线**：snaplink config.yaml `audit.api_enabled: true`
+→ GET /api/v1/audit/events（admin:read 门禁，401 无 token）；console
+审计 tab 双视图（本机操作 localStorage / 平台审计时间线：时间+类型可读
++操作人+IP+结果+元数据+类型筛选）；API 契约测试
+test/platform_audit_api_test.dart。账本 1141+ 条真实事件
+（admin_client_created/admin_user_created/token_revoked 等）。
