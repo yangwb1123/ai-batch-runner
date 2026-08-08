@@ -895,6 +895,7 @@ def run_pipeline(pipeline: Pipeline, model_override: str = "", dry_run: bool = F
     
     for stage in pipeline.stages:
         if dry_run:
+            from .from_dir import _describe_stage
             _describe_stage(stage, reuse)
             continue
         stop, results = _run_pipeline_stage(
