@@ -83,6 +83,13 @@
 
 ## 四、后续
 
-- P1（from_dir aggregate）优先实现（本次直接痛点）。
-- P2/P5 一行级改进（信息准确性）。
-- P3 退出原因记录（恢复体验）。
+- P1（from_dir aggregate）、P5（dry-run 文件数）——✅ 已实现（3cead11/1ef68a6）
+- P2（容忍失败不阻断）——✅ 已实现（阶段成功时角色失败仅 warning，不报
+  ERROR 不阻断；真正 failed_stages 仍阻断）
+- P3（退出原因记录）——✅ 已实现（_record_fatal_exit 写 .exit.json + FATAL 日志）
+- P4（provider 冷却）——✅ 已实现（model unavailable 重试 ≥60s + jitter +
+  连续失败提示 --round-delay）
+- P6（dry-run 不持锁）——✅ 已确认既有（acquire_lock no_lock=args.dry_run）
+- P7（拒绝行内联 stderr）——✅ 已实现（REJECTED 行带 stderr 首行）
+
+全部闭环于 2026-08-08（tests +5，536 全过，quality strict OK）。

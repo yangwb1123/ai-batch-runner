@@ -361,6 +361,8 @@ def save_result(task: Task, result: TaskResult) -> None:
 
 
 _RETRYABLE_REASON = re.compile(r"rate|429|quota|network|connect|unreachable|timeout", re.IGNORECASE)
+# P4（使用反馈）：provider 侧模型不可用/过载——快速失败后需要更长冷却
+_PROVIDER_BROKEN = re.compile(r"model is unavailable|model_unavailable|upstream request failed|server_error", re.IGNORECASE)
 
 
 def _retry_wait(result: TaskResult, attempt: int, retry_delay: float, backoff: float) -> float:
@@ -371,7 +373,15 @@ def _retry_wait(result: TaskResult, attempt: int, retry_delay: float, backoff: f
     spread within 30..60s, keeping the >=30s floor; other failures get
     +/-50% around the base)."""
     wait = retry_delay * (backoff ** (attempt - 1))
-    if _RETRYABLE_REASON.search(result.reason or ""):
+    reason = result.reason or ""
+    if _PROVIDER_BROKEN.search(reason):
+        # provider 模型不可用：固定 60s+ 冷却（等上游恢复），连续失败由
+        # circuit/stall 治理接管；jitter 防并发惊群。
+        wait = max(wait, 60.0) + random.uniform(0, 30.0)
+        if attempt >= 3:
+            log.warning("Provider model unavailable (attempt %d); consider "
+                        "--round-delay after retries exhaust", attempt)
+    elif _RETRYABLE_REASON.search(reason):
         wait = max(wait, 30.0)
         wait += random.uniform(0, min(wait, 30.0))
     else:
@@ -732,7 +742,11 @@ def _result_from_proc(task: Task, proc: subprocess.Popen, stdout_lines: list, st
     reason = agent_failure_reason(proc.returncode, stdout_text + "\n" + stderr_text)
     success = proc.returncode == 0 and not reason
     if reason:
-        log.warning("agent output REJECTED: %s", reason)
+        # P7（使用反馈）：拒绝行内联 stderr 首行（provider 400/model
+        # unavailable 一眼可见，不必翻到下一行的 FAIL 明细）。
+        first_err = (stderr_text or "").strip().splitlines()
+        hint = f" | {first_err[0][:200]}" if first_err and first_err[0] else ""
+        log.warning("agent output REJECTED: %s%s", reason, hint)
     if success:
         log.info("OK  done  [%.1fs]  [output=%s]", elapsed, task.output or "(stdout)")
     else:

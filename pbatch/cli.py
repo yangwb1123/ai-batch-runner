@@ -4,6 +4,7 @@ single-batch / pipeline dispatch."""
 from __future__ import annotations
 
 import argparse
+import json
 import hashlib
 import logging
 import logging.handlers
@@ -218,12 +219,35 @@ def main() -> None:
     except KeyboardInterrupt:
         log.warning("\nInterrupted by user. Rerun with --reuse to continue later.")
         sys.exit(130)
+    except Exception as exc:  # P3（使用反馈）：意外退出记录原因，续跑可诊断
+        _record_fatal_exit(exc, args)
+        raise
     finally:
         release_lock(lock_path)
         unregister()
         if handler:
             log.removeHandler(handler)
             handler.close()
+
+
+def _record_fatal_exit(exc: BaseException, args) -> None:
+    """Write the crash reason to the run log and a state file so a
+    --reuse resume can explain why the previous process vanished."""
+    log.error("FATAL: pi-batch crashed (%s: %s)", type(exc).__name__, exc)
+    try:
+        state = Path(args.log_file).with_suffix(".exit.json") if getattr(args, "log_file", "") else None
+        if state is None:
+            state = Path.cwd() / ".pi-batch" / "exit.json"
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text(
+            json.dumps({"exit": type(exc).__name__, "reason": str(exc)[:500],
+                        "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                        "argv": sys.argv[:4]}, ensure_ascii=False, indent=1),
+            encoding="utf-8",
+        )
+        log.error("Exit reason written to %s", state)
+    except Exception:
+        pass
 
 
 def _register_run(args) -> None:
@@ -708,12 +732,19 @@ def _run_pipeline_round(args, pipeline: Pipeline, session_name: str, cli_validat
                                               approval_file=args.approve_file,
                                               original_prompt=args.prompt or "")
     print_summary(all_results)
-    if failed_stages or any(not r.success for r in all_results):
+    if failed_stages:
         failed_keys = {task_key(r.task) for r in all_results if not r.success}
         for s in failed_stages:
             failed_keys.add("stage:" + s)
-        log.error("Failed stages: %s", ", ".join(failed_stages) if failed_stages else "(task failures)")
+        log.error("Failed stages: %s", ", ".join(failed_stages))
         return True, failed_keys
+    # P2（使用反馈）：阶段全部成功但个别任务失败——meta_max_failed_roles
+    # 允许的角色失败属豁免（gate 已兜底），只提示不报 ERROR 也不阻断。
+    tolerated = [r for r in all_results if not r.success]
+    if tolerated:
+        log.warning("Stages passed with %d tolerated task failure(s) (within "
+                    "meta_max_failed_roles): %s",
+                    len(tolerated), ", ".join(r.task.output for r in tolerated[:5]))
     return False, set()
 
 
