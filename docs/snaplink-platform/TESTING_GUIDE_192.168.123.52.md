@@ -193,3 +193,20 @@ status='failed' AND last_error LIKE '%schema%'；幂等键保证重放安全。
 +操作人+IP+结果+元数据+类型筛选）；API 契约测试
 test/platform_audit_api_test.dart。账本 1141+ 条真实事件
 （admin_client_created/admin_user_created/token_revoked 等）。
+
+## 13. vault 部门维度 ACL（2026-08-08）
+
+**架构**：vault 原生支持 department principal（PrincipalTypeDepartment）+ 部门
+目录（department_members，Authorize 时 ListSubjectDepartments 实时递归查询）——
+部门 ACL 条目对成员变动**自动生效**，零 user 快照重写。
+
+**实施**：
+- `AeroVaultClient.syncDepartment`：按 name 匹配/创建 vault 部门（CreateDepartment
+  不接受 id，vault 生成 UUID）+ 全量成员；启动时 sverpweb 组织目录同步（异步告警）
+- file_shares 共享：ACL 条目 = owner(user) + **department 条目（vault UUID）**——
+  sverpweb 部门 id → vault UUID 用 `findDepartmentByName` 映射（fallback 原 id）
+- 验证：`bash /tmp/vault-dept-acl-e2e.sh`（上传→共享→resource_acls 断言
+  department 条目为 UUID、无成员快照）
+
+**运维**：vault 部门数据在 `/home/ywb/apps/aero-vault/shared/data/vault.db`
+（departments/department_members/resource_acls 表）。
