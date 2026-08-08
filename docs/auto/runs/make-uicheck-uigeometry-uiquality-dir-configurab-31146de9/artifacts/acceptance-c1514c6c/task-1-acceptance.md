@@ -1,0 +1,11 @@
+All four acceptance checks verified against the live tree and test evidence:
+
+**R1 (AC1)** — `pi-batch.yaml:165/167/173` use `--dir {ui_scan_dir}` for all three gates, top-level documented key present; `pbatch/cmd_expand.py` provides `ui_scan_dir()` + `expand_cmd()`; all 4 expansion sites (runner.py:487/:698, repo_gates.py:31, cli_batch.py:408) route through the helper; zero hand-rolled replace sites outside it; default expansion byte-identical to the historical literal chain (`--dir /proj/src`, verified by replicating the old chain); unset/empty/whitespace → None → default; relative `lib` → `--dir {cwd}/lib`, absolute passthrough.
+
+**R2 (AC2)** — Live probe on empty dir: exit 0, stderr `UI-SPEC: warning: 0 file(s) scanned…`, `--json` stdout pure JSON (`files_scanned: 0`), non-JSON stdout anchor `OK (0 file(s) scanned)` intact; T2.1/T2.2 tests with warning-not-in-stdout negative assertion pass.
+
+**R3 (AC3)** — `--dir` against a real `lib/` layout scans files (`files_scanned: 2`), violation → exit 1; wiring-level `ui_scan_dir: lib` expansion verified; T3.x tests (files_scanned == 1) pass.
+
+**R4 (AC4)** — `pytest tests/test_ui_check.py`: 19 passed; +test_validator_registry 27 passed; repo-gate subset 5 passed; `make ci`: 1043 passed / 21 failed, all 21 reproduced as the environmental singleton lock (`Another pi-batch instance is running (pid=1547473, argv=pi-batch.py campaign --retry-failed --reuse, age=4.8h)… exit 5`, process confirmed still live in ps) — zero failures involve this direction; `pi-batch.py check` 9 gates + 42/42 evals pass; `quality.py --strict` OK. Non-goals honored (`backendquality` untouched, no uigeometry/uiquality warnings).
+
+VERDICT: PASS - all four acceptance checks (R1 placeholder+config with byte-identical backward-compatible default, R2 stderr zero-file warning with exit 0 and pure --json stdout, R3 lib/-layout real-file scanning at script and wiring levels, R4 regression suites) are verified live against the repository and tests pass (19/19 test_ui_check, 27/27 direction suites, 9/9 check gates), with the only make ci failures being 21/21 reproduced singleton-lock environmental failures from the still-running campaign pid 1547473 that involve none of this direction's code and were explicitly accepted as an out-of-campaign criterion.
