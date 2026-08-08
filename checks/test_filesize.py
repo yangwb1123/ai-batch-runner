@@ -99,6 +99,23 @@ class TestCheckFile(unittest.TestCase):
         finally:
             filesize.repo_root = orig_root
 
+    def test_explicit_files_under_excluded_dir_unchanged(self):
+        """R3: exclusion applies to discovery only — an explicit files
+        list containing paths under an excluded dir is still checked
+        (a future scope-tightening of explicit lists would fail here)."""
+        tmp = Path(tempfile.mkdtemp())
+        big = tmp / "build" / "big.py"
+        big.parent.mkdir()
+        big.write_text("".join(f"# {i}\n" for i in range(600)), encoding="utf-8")
+
+        orig_root, orig_cfg = filesize.repo_root, filesize.get_config
+        try:
+            filesize.repo_root = lambda: tmp
+            filesize.get_config = lambda: Config(filesize=FilesizeGate(max_lines=500))
+            self.assertEqual(filesize.run([big]), 1)      # explicit list NOT filtered
+        finally:
+            filesize.repo_root, filesize.get_config = orig_root, orig_cfg
+
 
 if __name__ == "__main__":
     unittest.main()
