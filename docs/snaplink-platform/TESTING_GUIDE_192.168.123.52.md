@@ -262,3 +262,23 @@ test/platform_audit_api_test.dart。账本 1141+ 条真实事件
 | resource-delete-e2e | 资源删除清理+审计 |
 
 全部 E2E + test-platform（25/8/8）+ 健康检查 ✓
+
+## 19. 最终收尾清单（2026-08-08）
+
+**UI 缺陷修复**：
+- 删除内容对话框支持填写删除原因（需求 P1 UI 面；此前 API 支持但 UI 未传）
+- 请购驳回原因由审批人填写（移除硬编码"测试驳回"——会写入通知与审计的缺陷）
+- 铃铛"全部已读"按钮（POST /notifications/read 无 id = 全读）
+
+**权限修正**：snaplink quality 角色补 quality:inspection:delete（DB
+permissions_roles.permissions_json——config 有但 DB 角色缺，tester 曾无法删附件）
+
+**运营固化**：
+- 7 个 E2E 固化到 `/home/ywb/platform-e2e/` + `bash /home/ywb/run-all-e2e.sh`
+  （file-delete/approval-notify/vault-dept-acl/quality-vault/quality-abnormal/
+  resource-delete/quality-delete 全绿）
+- 每日 3 点 cron：`audit-health-cron.sh`（毒丸/漏注册检测 → /home/ywb/logs/audit-health.log）
+- 审计查询 limit=200（防全量加载）；vault 附件/质检单删除清理 vault 对象
+  （软删 tombstone 过滤）
+
+**最终状态**：7 E2E + test-platform（25/8/8）+ 健康检查全绿。
