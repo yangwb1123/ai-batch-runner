@@ -1,0 +1,20 @@
+Adjudication record written: `docs/auto/design/pbatch-ba9cd1a4-adjudication.md` (companion to the design doc, repo convention). All decisions verified against the live tree, not just re-quoted from reviews — including the propagation chain (no catch anywhere from `_execute_stage_tasks` to `_run_rounds`), `_collect_parallel`'s single caller, the `>1000` gate semantics, and `pipeline.py` at 988/1000.
+
+## C1–C4 sign-off — all ACCEPTED as owner decisions
+- **C1** (distinct-cwd containment): accepted — grounded in the atomic mkstemp+rename write property; same-cwd is the runner's own batch shape and the literal rule contradicts the spec's own T3. Nested distinct cwds stay flagged; residual shared-cwd side effects accepted as baseline (heuristic, not sandbox — architect #5 sentence goes into the AGENTS.md bullet).
+- **C2** (plan_waves_for tightening): accepted — required for correctness; write-set intersection cannot express containment.
+- **C3** (unified wave loop): accepted — arithmetic verified; `print_summary` is public API; 999 → 998 with the fold.
+- **C4** (empty-plan fail closed): accepted — consistent with fail-closed doctrine; `tasks=[]` stays a no-op.
+
+## Architect §5 unknowns — concrete resolutions
+1. **`--parallel-waves` / error-contract asymmetry**: fail-fast is the **permanent default**; waves stay API-only now. The asymmetry is intentional and documented (plain = fail-closed per R1.6; waves = cross-wave conflicts by design). Pre-decided future-flag semantics: explicit opt-in, loud WARNING naming deferred tasks, and — per R1.6 — **refusal to serialize identical-output writers** (the flag only resolves separable conflicts, never converts data-loss into "success").
+2. **Pipeline collision handling**: keep "let propagate" (R1.5), **pipeline.py +0 lines**. Decisive factor: catching inside `execute_stage` would make a permanent definition error round-retryable (`--max-rounds 0` burns quota forever); propagation kills the loop immediately — the same hard-error doctrine as the single-batch exit-2 placement. Recorded bounded upgrade path: catch in `_run_pipeline_round` → `log.error` + `sys.exit(2)`, triggered by a real 7×24 hit.
+3. **Case-insensitive FS**: Linux/CI scope, **no case normalization** in `collides` — it would false-positive on case-sensitive Linux for legitimately distinct `A.md`/`a.md` (fail-closed on a non-error). Documented limitation + scope sentence in the AGENTS.md bullet; OS-level probe if macOS ever becomes a requirement.
+
+## Implementation-ready confirmation — Option B + F1–F5 + mandates M1–M4
+- **F2 is an implementation fix, not just a test**: `isinstance(waves, list)`/`isinstance(wave, list)` checks + `try/except (TypeError, ValueError)` around id parsing (kills `waves=5`, `"01"` char-iteration, and 3.11+ `int("9"*5000)`).
+- **F4 owner decision: cumulative/global `min_interval`** — matches R2.4's literal text and `run_serial`; zero net line cost by threading `successes` through `_collect_parallel` (verified single caller); runner stays **998**.
+- New mandates: **M1** exception message must not hardcode `(exit 2)` (pipeline exits 1); **M2** PROGRESS total = `len(wave)`; **M3** `--dry-run` collision warning (exit 0 preserved — informational contract intact); **M4** new CLI test passes `--no-lock` (E1).
+- Declined: `InvalidPlanError` subclass (single fail-closed type defensible). Final surface: `parallel_plan.py` new, `runner.py` 998, `cli_batch.py` ~509, `pipeline.py` +0, 2–3 test files, AGENTS.md + two doc fixes; `waves.py`/`fabric_sched.py`/`__init__.py` byte-identical.
+
+VERDICT: PASS - all four spec deviations C1-C4 signed off as owner decisions with verified grounding and pins; architect unknowns resolved (fail-fast permanent default, waves API-only with pre-decided follow-up flag semantics, pipeline collisions propagate by design with a recorded bounded upgrade path, case-insensitive FS scoped to Linux CI without normalization); design confirmed implementation-ready under Option B + F1-F5 + mandates M1-M4, with the line gate secured at runner 998 and pipeline.py untouched.
