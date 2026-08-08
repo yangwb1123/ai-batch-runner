@@ -13,6 +13,7 @@ stages:
   # ── 阶段 1：证据归一（连接现状 + 平台地图 + 组合模型）──
   - name: evidence
     from_dir: docs/snaplink-platform/connections/inputs
+    aggregate: true
     mode: serial
 
   # ── 阶段 2：连接矩阵汇总（先总览再分项目）──
