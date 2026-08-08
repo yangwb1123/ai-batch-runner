@@ -219,3 +219,20 @@ test/platform_audit_api_test.dart。账本 1141+ 条真实事件
   **权限边界仍在 BFF**（quality:inspection:read）；存量本地文件不受影响
 - 坑：vault 的 key 支持多段（chi 路由原始斜杠），**encodeURIComponent(%2F) 反而 404**
 - 验证：`bash /tmp/quality-vault-e2e.sh`（上传→vault 对象存在→下载内容一致）
+
+## 15. 质检异常通知（2026-08-08）
+
+- 触发：质检单保存时任一检验项（item.abnormal）异常描述非空 →
+  通知质检主管任职者（pos-quality-lead，职务表驱动接收者）
+- 铃铛 quality_abnormal 分区；多条异常聚合（"共 N 项异常"）
+- 验证：`bash /tmp/quality-abnormal-e2e.sh`
+
+## 16. 通知触发点全集（M5 对齐）
+
+| 事件 | 类型 | 接收者（业务逻辑/职务表） |
+|---|---|---|
+| 管理员删除文件 | file_deleted | 文件所有者（author_id） |
+| 审批通过/驳回 | approval_result | 请购发起人（requester，含驳回原因） |
+| 质检异常 | quality_abnormal | 质检主管任职者（pos-quality-lead） |
+| 待审批提醒 | pending-approvals | 按审批职务解析（页面轮询） |
+| 文件共享变更 | aero-im 频道广播 | 共享范围涉及者 |
