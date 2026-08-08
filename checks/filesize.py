@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from checks.config import FilesizeGate, get_config, is_ignored, repo_root
+from checks.config import FilesizeGate, get_config, is_ignored, repo_root, scan_files
 
 _SUFFIX = ".py"
 
@@ -51,7 +51,7 @@ def run(files: list = None) -> int:
     root = repo_root()
     gate = get_config().filesize
     if files is None:
-        files = sorted(root.rglob(f"*{_SUFFIX}"))
+        files = scan_files(root, suffix=_SUFFIX)
     failed = 0
     for f in files:
         if not check_file(Path(f), root, gate):

@@ -56,6 +56,30 @@ class TestStyle(unittest.TestCase):
         p.write_text("x   \n", encoding="utf-8")
         self.assertEqual(style.check_file(p, self.root, self.gate), 0)
 
+    def test_run_scan_excludes_generated_dirs(self):
+        """AC2: run() discovery never lists .py under build/, dist/,
+        *.egg-info/, .git/, __pycache__/, logs/ — the scan list is exactly
+        the authored tree (src/ok.py)."""
+        tmp = Path(tempfile.mkdtemp())
+        for kind in ("build", "dist", ".git", "__pycache__", "logs"):
+            d = tmp / kind
+            d.mkdir()
+            (d / "x.py").write_text("x = 1\n", encoding="utf-8")
+        egg = tmp / "vendor" / "pkg.egg-info"
+        egg.mkdir(parents=True)
+        (egg / "x.py").write_text("x = 1\n", encoding="utf-8")
+        src = tmp / "src"
+        src.mkdir()
+        (src / "ok.py").write_text("x = 1\n", encoding="utf-8")
+
+        orig_root = style.repo_root
+        try:
+            style.repo_root = lambda: tmp
+            self.assertEqual(style.run(), 0)
+            self.assertEqual(style.scan_files(tmp), [src / "ok.py"])
+        finally:
+            style.repo_root = orig_root
+
 
 if __name__ == "__main__":
     unittest.main()

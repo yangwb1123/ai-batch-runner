@@ -9,6 +9,9 @@
 # (pi-batch.py, ai/run-review.py) — they are kept byte-identical with
 # snaplink/ai-dev (see README provenance), so quality rules apply to the
 # code we author here: cli.py, checks/, and anything new.
+#
+# Gate scan discovery excludes generated dirs: build/ dist/ *.egg-info/
+# .git/ __pycache__/ logs/ (see checks/config.py:scan_files).
 
 project:
   name: ai-batch-runner
@@ -58,6 +61,7 @@ root_policy:
     - pi-batch.yaml
     - git-auto-commit.sh
     - quality.py           # upstream-synced org-quality scanner (validators.pyquality)
+    - pytest.ini          # 测试分类 markers（unit/contract/property/scenario/chaos）
     - .coverage            # pytest-cov data file (gitignored, recreated by make coverage)
     - .pi-batch.lock       # T4 single-instance lock (gitignored, runtime-only)
   banned_patterns:
