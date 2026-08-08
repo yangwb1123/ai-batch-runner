@@ -1,0 +1,174 @@
+# 6 项目连接分析流水线 — 连接矩阵 + 各项目对接接口清单与改动点
+#
+# 运行（从 ai-batch-runner 仓库根）：
+#   python pi-batch.py examples/snaplink-platform/connection-analysis-pipeline.yaml \
+#     --session-mode per-stage --retries 2 --log-file logs/connection-analysis.log \
+#     --decision-log docs/snaplink-platform/decisions/connection-analysis.md
+#
+# 产出均为提案：人工核对后提升。
+
+git_commit: false
+
+stages:
+  # ── 阶段 1：证据归一（连接现状 + 平台地图 + 组合模型）──
+  - name: evidence
+    from_dir: docs/snaplink-platform/connections/inputs
+    mode: serial
+
+  # ── 阶段 2：连接矩阵汇总（先总览再分项目）──
+  - name: kickoff
+    from_outputs: evidence
+    aggregate: true
+    tasks:
+      - prompt: |
+          你是平台集成架构师。基于证据（connections-evidence.md 代码级收集 +
+          platform-map.yaml 能力模型 + COMBINATION_MODEL.md 组合纪律），产出
+          **6 项目连接总览**（snaplink / snaplink-console / snaplink-audit-
+          governance / aero-id / aero-vault / aero-im）：
+
+          A. 连接矩阵：8 条连接逐条列出——发起方、接收方、接口（端点/SDK/
+             协议）、凭据（服务账号/scope）、现状状态（已对接/部分/未对接）。
+          B. 信任边界：谁信任谁（JWT 验签/JWKS）、服务账号最小权限核查。
+          C. 连接缺口清单：每条连接缺什么（如 aero-im 无 Outbox relay、
+             aero-id gRPC 校验未定案、console 两 token 模型未落地）。
+          D. 分析框架：后续分项目任务按 6 维度展开（入站接口/出站调用/
+             凭据/审计接入/通知接入/存储接入）。
+          每条标注证据等级（Verified/Proposed）。产出完整文档（≥80 行），
+          禁止自指空壳。
+          {input_content}
+        output: docs/snaplink-platform/connections/kickoff.md
+    mode: serial
+
+  # ── 阶段 3：分项目对接分析（6 项目 + sverpweb 接入方，并行）──
+  - name: per-project
+    from_outputs: kickoff
+    aggregate: false
+    mode: serial
+    tasks:
+      - prompt: |
+          分析 **snaplink**（认证授权核心）的对接面。基于连接总览与证据：
+          A. 对外接口清单：它提供哪些接口给其他项目（OIDC 登录/token/
+             introspection/JWKS/admin API/audit events API）——每个接口的
+             端点、scope 门禁、消费方。
+          B. 它调用/依赖谁（audit 上报？无——它是权威源）。
+          C. **为完成连接要做的改变**：scope 注册表落地（registry landing）、
+             admin API 的审计接入（recordAdminUserCRUDAction 已审计，其余
+             admin 操作是否全覆盖）、JWKS 轮换对下游的影响、gRPC 校验
+             （aero-id 需要的 snaplink:token:validate）定案、审计 API
+             api_enabled 已开之后的读侧授权粒度。
+          每条给出改动理由、影响面、验收标准。产出 ≥60 行文档。
+          {input_content}
+        output: docs/snaplink-platform/connections/snaplink.md
+      - prompt: |
+          分析 **aero-id**（账户核心）的对接面。基于连接总览与证据：
+          A. 对外接口清单：用户档案/组织/账号生命周期接口（现状有哪些
+             HTTP/gRPC），消费方是谁。
+          B. 它调用/依赖谁：snaplink 认证（JWT 验签/JWKS）、审计接入
+             （audit:event:ingest 是否已实现）。
+          C. **为完成连接要做的改变**：gRPC 校验选择（snaplink:token:validate
+             还是 mTLS allowlist——scope-matrix 开放决策）、审计事件上报
+             （Outbox/直报？）、组织模型与 sverpweb 组织目录的关系（重复？
+             同步？）、notification 端口接入（aero-im）。
+          每条给出改动理由、影响面、验收标准。产出 ≥60 行文档。
+          {input_content}
+        output: docs/snaplink-platform/connections/aero-id.md
+      - prompt: |
+          分析 **aero-vault**（文件存储核心）的对接面。基于连接总览与证据：
+          A. 对外接口清单：presign、/v1/files CRUD、ACL、部门目录、metadata
+             ——每个端点的消费方（sverpweb BFF/直连）。
+          B. 它调用/依赖谁：snaplink JWT 验签（JWKS + tenant claim）。
+          C. **为完成连接要做的改变**：审计事件上报（audit:event:ingest——
+             scope-matrix 里 vault 的条件是?）、部门目录与 sverpweb 组织
+             双向同步（当前单向 sverpweb→vault）、对象删除的审计事件、
+             共享链接（share-link）与保留策略（retention）对 sverpweb 的
+             暴露面、vault 自身管理 API 的 admin 门禁。
+          每条给出改动理由、影响面、验收标准。产出 ≥60 行文档。
+          {input_content}
+        output: docs/snaplink-platform/connections/aero-vault.md
+      - prompt: |
+          分析 **aero-im**（消息通知核心）的对接面。基于连接总览与证据：
+          A. 对外接口清单：rooms/messages API（sverpweb 用房间广播）、
+             通知偏好/模板/推送能力（现有能力与对外暴露）。
+          B. 它调用/依赖谁：snaplink JWT 验签、vault BlobStore
+             （attachment 场景，scope-matrix 提案）、审计。
+          C. **为完成连接要做的改变**：**Outbox relay 实现**（scope-matrix
+             verified gap——audit:event:ingest 的授予条件）、定向通知
+             （当前 sverpweb 用房间广播，aero-im 侧是否有 DM/定向消息
+             能力供接入）、通知偏好表对接 sverpweb 铃铛、审计事件上报。
+          每条给出改动理由、影响面、验收标准。产出 ≥60 行文档。
+          {input_content}
+        output: docs/snaplink-platform/connections/aero-im.md
+      - prompt: |
+          分析 **snaplink-audit-governance**（审计治理核心）的对接面。基于
+          连接总览与证据：
+          A. 对外接口清单：events:batch（ingest）、events 查询、schemas
+             注册、admin 治理 API（legal hold/export/retention）——消费方
+             与 scope 门禁。
+          B. 它调用/依赖谁：snaplink OAuth 服务账号验签。
+          C. **为完成连接要做的改变**：读侧授权（sverp-audit 只有
+             audit:event:write，查询用 sso-admin policy scope——是否应有
+             专用查询服务账号？）、schema 治理流程（新增事件类型的审批
+             链——当前靠健康检查事后发现）、legal hold/export 对 console
+             的暴露、与 snaplink 自身审计（audit_events 表）的关系
+             （两套账本？统一时间线？）。
+          每条给出改动理由、影响面、验收标准。产出 ≥60 行文档。
+          {input_content}
+        output: docs/snaplink-platform/connections/audit-governance.md
+      - prompt: |
+          分析 **snaplink-console**（管理控制面）的对接面。基于连接总览与
+          证据：
+          A. 对外接口清单：它消费 snaplink admin API/audit API/scim——
+             现状（浏览器直连 snaplink 13015 + nginx BFF 代理）。
+          B. **为完成连接要做的改变**：两 token 模型落地（用户 OIDC 会话
+             + BFF 服务账号持各服务 admin scope——scope-matrix flow 4）、
+             governance 查询经 BFF 授权（当前审计时间线直连 snaplink，
+             治理账本经哪条路？）、各服务管理 API 聚合的 BFF 路由清单、
+             审计上报（console 操作是否入 governance 账本——当前由
+             snaplink adminuser 审计覆盖，缺口在哪）。
+          每条给出改动理由、影响面、验收标准。产出 ≥60 行文档。
+          {input_content}
+        output: docs/snaplink-platform/connections/snaplink-console.md
+      - prompt: |
+          分析 **sverpweb-stable**（ERP 接入方，第 7 方）的对接面。基于连接
+          总览与证据：
+          A. 对外接口清单：snaplink（SDK/BFF）、governance（events:batch）、
+             vault（presign/ACL/部门）、im（rooms 消息）——每条连接的
+             客户端与调用点。
+          B. **为完成连接要做的改变**：aero-im 定向通知（当前房间广播——
+             若 aero-im 提供 DM 能力则切换）、vault 直链下载（当前受控
+             代理——share-link 能力接入？）、audit 查询走专用服务账号、
+             双写风险核查（BFF 网关 + vault ACL 双重校验的纪律）。
+          每条给出改动理由、影响面、验收标准。产出 ≥60 行文档。
+          {input_content}
+        output: docs/snaplink-platform/connections/sverpweb.md
+
+  # ── 阶段 4：对抗审查（meta 动态角色）──
+  - name: review
+    from_outputs: per-project
+    meta: true
+    role_dir: prompts
+    output_dir: docs/snaplink-platform/connections/reviews
+    max_iterations: 2
+    max_roles_per_iteration: 3
+    relevance_min_score: 1
+    meta_max_failed_roles: 1
+    mode: serial
+
+  # ── 阶段 5：裁决门（fail closed）──
+  - name: gate
+    from_outputs:
+      - kickoff
+      - per-project
+      - review
+    aggregate: true
+    gate: true
+    tasks:
+      - prompt: >-
+          你是独立裁决者，对 6 项目连接分析做终裁。标准：(1) 每条连接有
+          接口/凭据/状态证据；(2) 每项目"为完成连接要做的改变"有理由、
+          影响面、验收标准；(3) 对抗审查阻塞项已处理或带证据驳回；
+          (4) 克制原则（不接清单）保持。满足 → "VERDICT: PASS - <理由>"；
+          否则 "VERDICT: FAIL - <理由>"。必须带具体理由，禁止裸 PASS。
+          {input_content}
+        output: docs/snaplink-platform/connections/gate.md
+    mode: serial
