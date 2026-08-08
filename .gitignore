@@ -8,3 +8,4 @@ docs/reviews/
 *.egg-info/
 docs/ui/
 dist/
+__pycache__/

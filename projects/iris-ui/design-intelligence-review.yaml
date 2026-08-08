@@ -1,0 +1,40 @@
+# iris-ui 设计智能评审（Phase 2）：design-intelligence 6 维度 × 组件库
+#
+# 运行：python pi-batch.py projects/iris-ui/design-intelligence-review.yaml
+git_commit: false
+decision_log: /home/u1/iris-ui/docs/ui-audit/DECISIONS.md
+
+stages:
+  - name: review
+    from_prompt: |
+      You are conducting a design-intelligence review of the iris-ui component
+      library at /home/u1/iris-ui (four-framework, token-driven). Read the
+      evaluation dimensions FIRST:
+        /home/u1/ai-batch-runner/ui-specs/design-intelligence/01-product-thinking.md
+        /home/u1/ai-batch-runner/ui-specs/design-intelligence/02-color-intelligence.md
+        /home/u1/ai-batch-runner/ui-specs/design-intelligence/03-information-priority.md
+        /home/u1/ai-batch-runner/ui-specs/design-intelligence/04-cognitive-load.md
+        /home/u1/ai-batch-runner/ui-specs/design-intelligence/05-emotional-design.md
+        /home/u1/ai-batch-runner/ui-specs/design-intelligence/06-data-expression.md
+        /home/u1/ai-batch-runner/ui-specs/component-spec.md
+      Then review the component library across these dimensions (focus on
+      packages/react/src/primitives as the reference implementation):
+      1. Information priority: do components communicate hierarchy/state
+         clearly (primary vs secondary actions, active vs inactive, severity)?
+      2. Cognitive load: are complex components (Table, Select, DatePicker,
+         Tree, Combobox) internally consistent in patterns?
+      3. Emotional design: are empty/loading/error states humane and helpful?
+      4. Data expression: do data components (Statistic, Gauge, Progress,
+         Charts, Sparkline) communicate values honestly and clearly?
+      5. Color intelligence: is semantic color usage consistent across
+         components (success/warning/danger/info)?
+      6. Component spec adherence: do sizes/states match the spec's key
+         dimensions (Button/Input height, Card padding, Dialog padding)?
+      For each dimension output: strengths (evidence-backed), issues
+      (evidence-backed: file/line or component), and concrete improvement
+      recommendations ranked by value/effort. Mark each issue as
+      [MECHANICAL] (verifiable by code) or [JUDGMENT] (design decision).
+      Do NOT modify any files. Output a markdown report.
+    output: /home/u1/iris-ui/docs/ui-audit/design-intelligence.md
+    mode: serial
+    timeout: 1800
