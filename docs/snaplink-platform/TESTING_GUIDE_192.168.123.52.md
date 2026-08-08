@@ -236,3 +236,29 @@ test/platform_audit_api_test.dart。账本 1141+ 条真实事件
 | 质检异常 | quality_abnormal | 质检主管任职者（pos-quality-lead） |
 | 待审批提醒 | pending-approvals | 按审批职务解析（页面轮询） |
 | 文件共享变更 | aero-im 频道广播 | 共享范围涉及者 |
+
+## 17. 资源删除清理 + 审计健康检查（2026-08-08）
+
+- my-resources/delete：vault 对象删除后清理 file_shares 记录（防残留）
+  + 审计 resource.deleted.v1（schema 已注册）；media 审计补 description
+- **审计健康检查**：`bash /home/ywb/check-audit-health.sh`——outbox 毒丸分类
+  + 未注册 schema 事件类型比对（skip 白名单 http.request.*）；
+  **新增事件类型后必跑**（防 422 毒丸：quality_inspection_file.created.v1
+  曾因漏注册被隔离，教训已固化）
+- 陷阱复述：schema required_fields 只用 ["event_type","operation_id",
+  "actor.id"]（顶层可判定字段）；hasField 的 aggregate_id 查顶层（payload 层
+  误判）；vault 多段 key 用原始斜杠（%2F 404）
+- 验证：`bash /tmp/resource-delete-e2e.sh`
+
+## 18. 最终 E2E 全集（2026-08-08 全绿）
+
+| 脚本 | 验证 |
+|---|---|
+| file-delete-e2e | 管理员删除→通知+审计带 reason |
+| approval-notify-e2e | 审批结果通知 requester |
+| vault-dept-acl-e2e | 部门 ACL（UUID 条目/无快照） |
+| quality-vault-e2e | 质检附件 vault 存储 |
+| quality-abnormal-e2e | 质检异常通知 |
+| resource-delete-e2e | 资源删除清理+审计 |
+
+全部 E2E + test-platform（25/8/8）+ 健康检查 ✓
