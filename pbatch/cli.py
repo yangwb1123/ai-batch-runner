@@ -60,9 +60,9 @@ def _add_runtime_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--pipeline", metavar="FILE",
                    help="run a multi-stage pipeline from YAML file")
     p.add_argument("--classify", action="store_true",
-                   help="run the task type classifier BEFORE execution; frontend UI "
-                        "tasks route to the configured UI generation pipeline "
-                        "(classifier.frontend_pipeline; explicit --pipeline wins)")
+                   help="run the task type classifier BEFORE execution; confident "
+                        "frontend/backend majorities route to their configured pipelines "
+                        "(mixed ties run as a plain batch; explicit --pipeline wins)")
     p.add_argument("--reuse", action="store_true",
                    help="reuse existing .out.md files (skip regeneration)")
     p.add_argument("--reuse-legacy", action="store_true",
@@ -136,7 +136,7 @@ def _add_lock_args(p: argparse.ArgumentParser) -> None:
 
 def _add_validate_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--validate", default="",
-                   help="Named validators from pi-batch.yaml validators registry, comma-separated (e.g. 'quick,gofmt'); AND semantics. Unknown names are treated as raw shell commands")
+                   help="Named validators (e.g. quick,gofmt), jsonschema=PATH, or raw shell commands; comma-separated with AND semantics")
     p.add_argument("--validate-cmd", default="",
                    help="Engineering gate run against every agent result BEFORE its output is saved (e.g. 'go build ./... && go vet ./...', 'python cli.py check'); {output} and {cwd} placeholders are substituted. Non-zero exit rejects the result and leaves no file")
 
@@ -196,6 +196,7 @@ def main() -> None:
     _validate_runtime_values(parser, args)
     _apply_verbosity(args.verbose)
     _wire_agent(args)
+    _preflight_agent(parser, args)
     if args.session_max_bytes != config.SESSION_MAX_BYTES:
         config.SESSION_MAX_BYTES = args.session_max_bytes
 
@@ -354,6 +355,15 @@ def _wire_agent(args) -> None:
     config.STREAM_OUTPUT = args.stream_output
 
 
+def _preflight_agent(parser: argparse.ArgumentParser, args) -> None:
+    """Fail before logs/locks when the selected executable cannot be run."""
+    if args.dry_run:
+        return
+    errors = config.agent_preflight_errors(args.agent_bin)
+    if errors:
+        parser.error("agent preflight failed: " + "; ".join(errors))
+
+
 def _validate_session_flags(args) -> None:
     """Shared/per-stage sessions require serial execution; per-stage needs
     a pipeline (single-batch has no stages)."""
@@ -509,10 +519,14 @@ def _add_metering_args(p) -> None:
                    help="T7: append JSONL metering events (task_finish/task_fail/gate_reject/budget_cap/stall_stop)")
     p.add_argument("--webhook", default="",
                    help="T7: POST each metering event to URL (non-blocking, 5s timeout, failures logged only)")
-    p.add_argument("--budget-max", type=int, default=0,
-                   help="T8: cap agent invocations per run (0 = unlimited); on cap stop with exit 3")
-    p.add_argument("--daily-budget", type=int, default=0,
-                   help="T8: cap agent invocations per UTC day (0 = unlimited); state in --daily-state file")
+    p.add_argument("--budget-max", "--max-invocations", dest="budget_max",
+                   metavar="N", type=int, default=0,
+                   help="T8: cap agent invocations per run (0 = unlimited); "
+                        "--max-invocations is the explicit alias")
+    p.add_argument("--daily-budget", "--daily-invocations", dest="daily_budget",
+                   metavar="N", type=int, default=0,
+                   help="T8: cap agent invocations per UTC day (0 = unlimited); "
+                        "--daily-invocations is the explicit alias")
     p.add_argument("--daily-state", default="",
                    help="T8: daily budget counter state file (default: .pi-batch/daily-budget.json)")
     p.add_argument("--rate-limit", type=float, default=0.0,
@@ -574,7 +588,7 @@ def _resolve_pipeline(value: str, label: str, config_key: str) -> str:
         script_dir = os.environ.get("PBATCH_SCRIPT_DIR", "")
         if script_dir:
             candidates.append(Path(script_dir) / value)
-        candidates.append(Path(__file__).resolve().parent.parent / value)
+        candidates.append(Path(config.resolve_asset_path(value)))
     for candidate in candidates:
         if candidate.exists():
             return str(candidate)
@@ -605,7 +619,7 @@ def _maybe_classify_route(args) -> None:
         return
     if not tasks:
         return
-    from .classifier import FRONTEND, classify_tasks, should_route_frontend
+    from .classifier import BACKEND, FRONTEND, classify_tasks, routing_target
     dominant, per_task = classify_tasks(tasks)
     for index, item in enumerate(per_task, 1):
         detail = ""
@@ -614,20 +628,17 @@ def _maybe_classify_route(args) -> None:
         log.info("CLASSIFY task %d: %s%s (score %d, %s)",
                  index, item.task_type, detail, item.score,
                  "confident" if item.confident else "best-guess")
-    if not should_route_frontend(per_task, config.CLASSIFIER_FRONTEND_RATIO):
-        if dominant.task_type == "backend":
-            pipeline = _resolve_pipeline(config.CLASSIFIER_BACKEND_PIPELINE,
-                                         "Backend", "backend_pipeline")
-            log.info("CLASSIFY: backend task(s) detected (%s); routing to %s",
-                     dominant.task_type, pipeline)
-            args.pipeline = pipeline
-            return
-        log.info("CLASSIFY: dominant type %s; running as a plain batch",
-                 dominant.task_type)
+    target = routing_target(per_task)
+    if target == FRONTEND:
+        pipeline = _resolve_frontend_pipeline()
+    elif target == BACKEND:
+        pipeline = _resolve_pipeline(config.CLASSIFIER_BACKEND_PIPELINE,
+                                     "Backend", "backend_pipeline")
+    else:
+        log.info("CLASSIFY: no confident routing majority (dominant=%s); "
+                 "running as a plain batch", dominant.task_type)
         return
-    pipeline = _resolve_frontend_pipeline()
-    log.info("CLASSIFY: frontend task(s) detected (%s); routing to %s",
-             dominant.task_type, pipeline)
+    log.info("CLASSIFY: confident %s majority; routing to %s", target, pipeline)
     args.pipeline = pipeline
 
 
@@ -730,7 +741,10 @@ def _run_pipeline_round(args, pipeline: Pipeline, session_name: str, cli_validat
                                               decision_log=args.decision_log, archive_dir=args.archive_dir,
                                               reuse_legacy=args.reuse_legacy, fingerprint_mode=args.reuse_fingerprint,
                                               approval_file=args.approve_file,
-                                              original_prompt=args.prompt or "")
+                                              original_prompt=args.prompt or "",
+                                              retries=getattr(args, "retries", 0),
+                                              retry_delay=getattr(args, "retry_delay", 10.0),
+                                              backoff=getattr(args, "retry_backoff", 2.0))
     print_summary(all_results)
     if failed_stages:
         failed_keys = {task_key(r.task) for r in all_results if not r.success}
@@ -879,7 +893,8 @@ def _run_batch_repo_spec(spec, wd: str):
     """Run one repo-scoped validator once against the repo root. Returns
     the synthetic failure key (task_key-shaped) or None on success."""
     from . import metering
-    cmd = spec.cmd.replace("{cwd}", shlex.quote(wd))
+    from .runner import expand_command_placeholders
+    cmd = expand_command_placeholders(spec.cmd, wd, wd)
     log.info("REPO VALIDATE (batch): %s", cmd)
     v = run_validation(cmd, wd)
     ok = v.ok

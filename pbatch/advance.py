@@ -30,9 +30,10 @@ import json
 import re
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
+from . import config
 from .config import log
 
 STATE_DIR = Path("docs/advance")
@@ -86,7 +87,7 @@ def _checker_script(name: str) -> str:
     candidates = [
         Path("scripts") / name,
         Path("tools/ai-dev-gates") / name,
-        Path(__file__).resolve().parent.parent / "scripts" / name,
+        Path(config.TOOL_ROOT) / "scripts" / name,
     ]
     for candidate in candidates:
         if candidate.exists():
@@ -191,7 +192,7 @@ def record_round(scan: dict, round_no: int) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     state_file = STATE_DIR / "state.jsonl"
     entry = {
-        "ts": datetime.utcnow().isoformat() + "Z",
+        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "round": round_no,
         "target": scan["target"],
         "total": sum(d["count"] for d in scan["dimensions"].values()),

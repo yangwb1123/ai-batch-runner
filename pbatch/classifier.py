@@ -11,9 +11,9 @@ rest of the sentence is business wording. Profile hits (erp/cms/oa/
 dashboard/immersive/marketing/mobile) add +1 each (cap +4): "a marketing
 landing page" is a UI signal even with no generic UI word.
 
-Zero-score input classifies as unknown (never frontend on a tie). Routing
-is a hint, not a gate: a false positive just adds spec/review stages via
-the frontend pipeline; an explicit --pipeline always wins.
+Zero-score input classifies as unknown. Batch routing requires a confident
+majority; ties follow the configured policy (frontend by default for backward
+compatibility). An explicit --pipeline always wins.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from .text_io import read_text_bounded
 
 UNKNOWN = "unknown"
 FRONTEND = "frontend_ui"
+BACKEND = "backend"
 PLATFORM_BOOST = 2
 
 # Built-in defaults so the classifier works standalone (no YAML, no PyYAML);
@@ -203,34 +204,52 @@ def _detect_system_type(text: str, keywords: Optional[dict] = None) -> tuple:
     return best_name, tuple(best_hits[:5])
 
 
-def classify_text(text: str, keywords: Optional[dict] = None) -> TaskClassification:
-    """Classify one prompt/task text into a task type (with frontend
-    platform/profile detail). confident = top score >= the configured
-    minimum (default 2, i.e. one strong keyword hit)."""
-    kw = keywords or load_keywords()
-    lowered = (text or "").lower()
+def _score_task_types(lowered: str, kw: dict) -> tuple:
     types = kw.get("task_types", {})
     platforms = kw.get("platforms", {})
     profiles = kw.get("profiles", {})
-
     scored = []
     for name, terms in types.items():
         hits = tuple(str(term) for term in terms if _keyword_hit(lowered, str(term)))
         scored.append((name, min(10, len(hits) * 2), hits))
-    # Platform mention is strong frontend evidence: "implement in flutter".
     platform, platform_hits = _best_match(lowered, platforms, lowered)
-    # Profile mention is UI evidence too: "a marketing landing page".
     profile, profile_hits = _best_match(lowered, profiles, lowered)
     boost = _frontend_boost(platform, platform_hits, profile, profile_hits)
     if boost:
         scored = [(n, s + (boost if n == FRONTEND else 0), h)
                   for n, s, h in scored]
     scored.sort(key=lambda item: (-item[1], 0 if item[0] == FRONTEND else 1, item[0]))
+    return scored, platform, platform_hits, profile, profile_hits
+
+
+def _winning_score(scored: list, system_type: str, system_evidence: tuple):
     best_type, best_score, best_hits = scored[0]
-    system_type, system_evidence = _detect_system_type(text, kw)
     if best_score <= 0:
         return TaskClassification(UNKNOWN, 0, system_type=system_type,
                                    system_evidence=system_evidence)
+    tied = [item for item in scored if item[1] == best_score]
+    if len(tied) == 1:
+        return best_type, best_score, best_hits
+    best_type = _resolve_type_tie([item[0] for item in tied])
+    if best_type != UNKNOWN:
+        return next(item for item in tied if item[0] == best_type)
+    hits = tuple(dict.fromkeys(hit for _, _, item_hits in tied for hit in item_hits))
+    return TaskClassification(
+        UNKNOWN, best_score, matched=hits, confident=False,
+        system_type=system_type, system_evidence=system_evidence)
+
+
+def classify_text(text: str, keywords: Optional[dict] = None) -> TaskClassification:
+    """Classify one prompt and retain the evidence behind its top score."""
+    kw = keywords or load_keywords()
+    lowered = (text or "").lower()
+    scored, platform, platform_hits, profile, profile_hits = _score_task_types(
+        lowered, kw)
+    system_type, system_evidence = _detect_system_type(text, kw)
+    winner = _winning_score(scored, system_type, system_evidence)
+    if isinstance(winner, TaskClassification):
+        return winner
+    best_type, best_score, best_hits = winner
 
     matched = best_hits
     if best_type == FRONTEND:
@@ -249,10 +268,21 @@ def classify_text(text: str, keywords: Optional[dict] = None) -> TaskClassificat
     )
 
 
+def _resolve_type_tie(types: list[str], policy: str = "") -> str:
+    """Resolve an ambiguous classification using the configured policy."""
+    tied = set(types)
+    selected = policy or config.CLASSIFIER_TIE_POLICY
+    if selected == "frontend" and FRONTEND in tied:
+        return FRONTEND
+    if selected == "backend" and BACKEND in tied:
+        return BACKEND
+    return UNKNOWN
+
+
 def classify_tasks(tasks: list, keywords: Optional[dict] = None) -> tuple:
     """Classify a whole batch; returns (dominant, per_task). The dominant
-    type is the majority of per-task top types (frontend_ui wins ties so a
-    mixed batch errs toward the spec/review pipeline)."""
+    type is the majority of per-task top types; ambiguous ties are unknown
+    unless classifier.tie_policy explicitly selects frontend or backend."""
     per_task = []
     for t in tasks:
         if isinstance(t, TaskClassification):
@@ -264,21 +294,49 @@ def classify_tasks(tasks: list, keywords: Optional[dict] = None) -> tuple:
         counts[item.task_type] = counts.get(item.task_type, 0) + 1
     best_count = max(counts.values()) if counts else 0
     tied = sorted(name for name, count in counts.items() if count == best_count)
-    dominant_type = tied[0] if len(tied) == 1 else FRONTEND
+    dominant_type = tied[0] if len(tied) == 1 else _resolve_type_tie(tied)
     dominant = next((item for item in per_task if item.task_type == dominant_type),
                     per_task[0] if per_task else TaskClassification(UNKNOWN, 0))
     return dominant, per_task
+
+
+def routing_target(per_task: list, frontend_ratio: Optional[float] = None,
+                   backend_ratio: Optional[float] = None,
+                   tie_policy: str = "") -> str:
+    """Return the pipeline domain only for a confident routing majority."""
+    if not per_task:
+        return UNKNOWN
+    counts: dict[str, int] = {}
+    for item in per_task:
+        if item.confident:
+            counts[item.task_type] = counts.get(item.task_type, 0) + 1
+    if not counts:
+        return UNKNOWN
+    thresholds = {
+        FRONTEND: (config.CLASSIFIER_FRONTEND_RATIO
+                   if frontend_ratio is None else frontend_ratio),
+        BACKEND: (config.CLASSIFIER_BACKEND_RATIO
+                  if backend_ratio is None else backend_ratio),
+    }
+    largest = max(counts.values())
+    candidates = [task_type for task_type, threshold in thresholds.items()
+                  if counts.get(task_type, 0) == largest
+                  and counts.get(task_type, 0) / len(per_task) >= threshold]
+    if len(candidates) == 1:
+        return candidates[0]
+    return _resolve_type_tie(candidates, tie_policy) if candidates else UNKNOWN
 
 
 def should_route_frontend(per_task: list, min_ratio: float = 0.5) -> bool:
     """Frontend routing decision: at least min_ratio of the batch's
     CONFIDENT top types are frontend_ui (a zero-score best guess must not
     divert a task into the UI pipeline)."""
-    if not per_task:
-        return False
-    frontend = sum(1 for item in per_task
-                   if item.task_type == FRONTEND and item.confident)
-    return frontend / len(per_task) >= min_ratio
+    return routing_target(per_task, frontend_ratio=min_ratio) == FRONTEND
+
+
+def should_route_backend(per_task: list, min_ratio: float = 0.5) -> bool:
+    """Backward-compatible convenience wrapper for backend routing."""
+    return routing_target(per_task, backend_ratio=min_ratio) == BACKEND
 
 
 def format_classification(item: TaskClassification, index: int = 0) -> str:
@@ -377,11 +435,16 @@ def classify_main(argv: list) -> None:
     keywords = load_keywords(args.index)
     per_task = [classify_text(text, keywords) for text in texts]
     dominant = classify_tasks(per_task, keywords)[0]
-    route = should_route_frontend(per_task, config.CLASSIFIER_FRONTEND_RATIO)
+    target = routing_target(per_task)
+    route = target == FRONTEND
+    route_backend = target == BACKEND
     if args.json:
         payload = {
             "dominant": dominant.to_dict(),
             "route_frontend": route,
+            "route_backend": route_backend,
+            "route_pipeline": (config.CLASSIFIER_FRONTEND_PIPELINE if route else
+                               config.CLASSIFIER_BACKEND_PIPELINE if route_backend else ""),
             "frontend_pipeline": config.CLASSIFIER_FRONTEND_PIPELINE if route else "",
             "tasks": [item.to_dict() for item in per_task],
         }
@@ -389,4 +452,5 @@ def classify_main(argv: list) -> None:
         return
     for index, item in enumerate(per_task, 1):
         print(format_classification(item, index))
-    print(f"dominant: {dominant.task_type}; route to frontend pipeline: {route}")
+    print(f"dominant: {dominant.task_type}; route target: {target}")
+    print(f"route to frontend pipeline: {route}")

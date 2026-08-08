@@ -56,12 +56,19 @@ Deliverables:
 """
 
 
+def _role_base(role_dir: str) -> Path:
+    path = Path(role_dir)
+    if not path.is_absolute() and not path.exists():
+        path = Path(config.resolve_asset_path(role_dir))
+    return path.resolve()
+
+
 def _available_roles(role_dir: str) -> list:
     """List role template names (file stems) inside role_dir; empty when the
     dir is missing (meta stages may still run with ad-hoc roles only)."""
     if not role_dir:
         return []
-    base = Path(role_dir).resolve()
+    base = _role_base(role_dir)
     if not base.is_dir():
         return []
     return sorted(p.stem for p in base.glob("*.md") if p.stem != "README")
@@ -75,7 +82,7 @@ def _load_role_template(role_dir: str, role: str) -> Optional[str]:
     resolve() refuses symlinks that point outside role_dir."""
     if not role_dir:
         return None
-    base = Path(role_dir).resolve()
+    base = _role_base(role_dir)
     if not base.is_dir():
         return None
     target = (base / (role + ".md")).resolve()

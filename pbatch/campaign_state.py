@@ -10,6 +10,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import config
 from .config import log
 from .memory_io import bounded_lines
 
@@ -79,7 +80,8 @@ def tool_digest() -> str:
     entry = root / "pi-batch.py"
     if entry.is_file():
         records.append((entry.name, file_digest(entry)))
-    for candidate in (root / "pi-batch.yaml", pkg / "pi-batch.yaml"):
+    for candidate in (root / "pi-batch.yaml", pkg / "pi-batch.yaml",
+                      Path(config.TOOL_ROOT) / "pi-batch.yaml"):
         if candidate.is_file():
             records.append((candidate.name, file_digest(candidate)))
             break
@@ -88,7 +90,7 @@ def tool_digest() -> str:
 
 def tool_head() -> str:
     """Git HEAD of the tool's own repository ('' when not a git checkout)."""
-    root = Path(__file__).resolve().parent.parent
+    root = Path(config.TOOL_ROOT)
     return (_git_output(root, ["rev-parse", "HEAD"]) or "not-a-git-repository").strip()
 
 

@@ -40,7 +40,7 @@ class PipelineOutcome:
 
 def direction_fingerprint(root: Path, settings: CampaignSettings, direction: Direction,
                           analysis_path: Path, snapshot: dict, model: str, provider: str) -> str:
-    template = settings.path(root, settings.pipeline_template)
+    template = _pipeline_template(root, settings)
     return digest({
         "version": 1,
         "direction": direction.raw or direction.title,
@@ -64,7 +64,7 @@ def direction_fingerprint(root: Path, settings: CampaignSettings, direction: Dir
 def materialize_pipeline(root: Path, settings: CampaignSettings, direction: Direction,
                          analysis_path: Path) -> Path:
     """Create a direction-scoped pipeline without output/decision collisions."""
-    template = settings.path(root, settings.pipeline_template)
+    template = _pipeline_template(root, settings)
     if not template.is_file() or template.is_symlink():
         raise ValueError(f"pipeline template is missing or unsafe: {template}")
     if not yaml:
@@ -177,12 +177,22 @@ def _output_name(value: str, fallback: str) -> str:
 
 def _repository_resource(root: Path, value: str) -> Path:
     path = Path(value)
-    resolved = path.resolve() if path.is_absolute() else (root / path).resolve()
+    local = path.resolve() if path.is_absolute() else (root / path).resolve()
+    resolved = (local if local.exists() else
+                Path(config.resolve_asset_path(value, str(root))))
     try:
         resolved.relative_to(root.resolve())
     except ValueError as exc:
-        raise ValueError(f"pipeline resource escapes repository: {value}") from exc
+        if not config.is_tool_asset(resolved):
+            raise ValueError(f"pipeline resource escapes repository: {value}") from exc
     return resolved
+
+
+def _pipeline_template(root: Path, settings: CampaignSettings) -> Path:
+    local = settings.path(root, settings.pipeline_template)
+    if local.exists():
+        return local
+    return Path(config.resolve_asset_path(settings.pipeline_template, str(root)))
 
 
 def _pipeline_resources(root: Path, template: Path) -> dict:
@@ -332,8 +342,13 @@ def _run_in_worktree(settings: CampaignSettings, direction: Direction, analysis_
     pipeline_path = materialize_pipeline(worktree, settings, direction, local_analysis)
     logfile = worktree / "logs" / f"campaign-{direction.direction_id}.log"
     logfile.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [sys.executable, str(worktree / "pi-batch.py"), str(pipeline_path),
-           "--reuse", "--reuse-fingerprint", "--log-file", str(logfile), *agent_args]
+    local_entrypoint = worktree / "pi-batch.py"
+    tool_entrypoint = Path(config.TOOL_ROOT) / "pi-batch.py"
+    entrypoint = local_entrypoint if local_entrypoint.is_file() else tool_entrypoint
+    runner = ([sys.executable, str(entrypoint)] if entrypoint.is_file()
+              else [sys.executable, "-m", "pbatch"])
+    cmd = [*runner, str(pipeline_path), "--reuse", "--reuse-fingerprint",
+           "--log-file", str(logfile), *agent_args]
     # The child RotatingFileHandler is the sole logfile writer. Redirecting
     # its stdout to the same path created duplicate records and unsafe
     # concurrent rotation; isolated model bodies remain in artifacts/sessions.

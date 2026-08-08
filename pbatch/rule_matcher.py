@@ -1,21 +1,15 @@
 """Deterministic rule matching: which ui-spec rules apply to a task.
 
-The spec system is large; a small demo must not load all of it. This
-module is the algorithmic half of rule selection (the LLM stays inside
-the emitted candidate set). A task is classified along three axes:
+The matcher classifies a task along three axes and emits a bounded
+manifest so agents load only relevant specification files:
 
 - scale:    demo < standard < production (default standard; demos must be
             marked with demo/示例/原型 keywords)
 - page_type: form/table/detail/workbench/immersive/auth (matched keywords)
 - risk:     high-risk business actions (pay/approve/delete/submit...)
 
-`match_rules` returns a bounded manifest: rule id, tier, matched evidence,
-and the spec files to load. Prompts inject ONLY the manifest; agents load
-the files on demand (progressive disclosure, like the memory manifest).
-
-Usage:
-    pi-batch rules "生成一个支付表单页"            # human manifest
-    pi-batch rules "登录页 demo" --json            # machine report
+The result contains rule ids, tiers, matched evidence and files. Prompts
+inject only this manifest and preserve progressive disclosure.
 """
 
 from __future__ import annotations
@@ -30,6 +24,7 @@ from . import config
 from .classifier import TaskClassification, classify_text
 from .config import log, yaml
 from .relevance import _keyword_hit
+from .rule_format import manifest_rule_lines
 from .text_io import read_text_bounded
 
 TIER_ORDER = {"demo": 0, "standard": 1, "production": 2}
@@ -87,7 +82,7 @@ def domain_for(text: str, classification: Optional[TaskClassification] = None) -
 
 def _default_registry_paths(domain: str) -> list:
     rels = DOMAIN_REGISTRIES.get(domain, DOMAIN_REGISTRIES[DEFAULT_DOMAIN])
-    return ([Path(__file__).resolve().parent.parent / rel for rel in rels]
+    return ([Path(config.resolve_asset_path(rel)) for rel in rels]
             + [Path(rel) for rel in rels])
 
 
@@ -203,7 +198,8 @@ def match_rules(text: str, classification: Optional[TaskClassification] = None,
     return {"tier": tier, "page_types": page_types, "risk": "high" if high_risk else "low",
             "profile": profile, "rules": rules, "skipped": skipped,
             "domain": domain_for(text, cls),
-            "system_type": getattr(cls, "system_type", "") or "deterministic"}
+            "system_type": getattr(cls, "system_type", "") or "deterministic",
+            "asset_root": config.TOOL_ROOT}
 
 
 def _inject_system_type_methodology(cls, rules: list) -> None:
@@ -353,13 +349,7 @@ def format_manifest(matched: dict, limit: int = 8) -> str:
     rules = matched["rules"]
     shown = rules[:limit]
     for item in shown:
-        marker = "REQUIRED" if item["required"] else "optional"
-        source = ""
-        if "provenance" in item and item["provenance"] != "algorithm":
-            source = f" [{item['provenance']}]"
-        lines.append(f"- [{marker}]{source} {item['id']} ({item['tier']}): {item['description']}")
-        for file in item["files"]:
-            lines.append(f"    {file}")
+        lines.extend(manifest_rule_lines(item))
     hidden = rules[limit:]
     if hidden:
         lines.append(f"- ... and {len(hidden)} more rule(s) in this manifest: "
@@ -409,12 +399,12 @@ def _check_rule(rule_id: str, rule, violations: list) -> None:
         violations.append(f"rule '{rule_id}': missing 'files' or "
                           f"'files_template'")
     for file in files:
-        if not Path(str(file)).exists():
+        if not Path(config.resolve_asset_path(str(file))).exists():
             violations.append(f"rule '{rule_id}': missing file {file}")
     if template:
         for profile in rule.get("profiles", []):
             target = str(template).replace("{profile}", str(profile))
-            if not Path(target).exists():
+            if not Path(config.resolve_asset_path(target)).exists():
                 violations.append(f"rule '{rule_id}': missing profile file "
                                   f"{target}")
 
@@ -439,10 +429,11 @@ def _check_registries_cli() -> None:
     """--check: validate schema integrity of both domain registries."""
     for domain, path in (("frontend", "ui-specs/rules.yaml"),
                          ("backend", "backend-specs/rules.yaml")):
-        if not Path(path).exists():
+        resolved = Path(config.resolve_asset_path(path))
+        if not resolved.exists():
             log.error("registry not found: %s", path)
             sys.exit(1)
-        violations = check_registry(load_registry(domain=domain))
+        violations = check_registry(load_registry(str(resolved), domain=domain))
         if violations:
             for item in violations:
                 log.error("%s registry: %s", domain, item)

@@ -18,6 +18,8 @@ from .campaign_analysis import (analysis_fingerprint, build_analysis_task,
                                 discover_modules, parse_directions,
                                 run_analysis_tasks, select_directions)
 from .campaign_models import CampaignSettings, Direction
+from .campaign_paths import (campaign_config_path as _campaign_config_path,
+                             validate_paths as _validate_paths)
 from .campaign_pipeline import (direction_fingerprint, parallel_ready,
                                 run_direction, run_directions_isolated)
 from .campaign_state import StateStore, _git_output, git_snapshot, tool_digest, tool_head, write_summary
@@ -84,14 +86,18 @@ def build_campaign_parser() -> argparse.ArgumentParser:
 def _add_metering_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--events-file", default="")
     parser.add_argument("--webhook", default="")
-    parser.add_argument("--budget-max", type=int, default=0)
-    parser.add_argument("--daily-budget", type=int, default=0)
+    parser.add_argument("--budget-max", "--max-invocations", dest="budget_max",
+                        metavar="N", type=int, default=0,
+                        help="cap agent invocations per campaign run")
+    parser.add_argument("--daily-budget", "--daily-invocations", dest="daily_budget",
+                        metavar="N", type=int, default=0,
+                        help="cap agent invocations per UTC day")
     parser.add_argument("--daily-state", default="")
 
 
 def load_settings(root: Path, args: argparse.Namespace) -> CampaignSettings:
     data = {}
-    config_path = _inside(root, root / args.config) if args.config else None
+    config_path = _campaign_config_path(root, args.config) if args.config else None
     if config_path and config_path.exists():
         if not yaml:
             raise ValueError("campaign config requires PyYAML")
@@ -142,24 +148,6 @@ def _apply_overrides(settings: CampaignSettings, args: argparse.Namespace) -> No
                         ("state_file", args.state_file), ("summary_file", args.summary_file)):
         if value:
             setattr(settings, attr, value)
-
-
-def _validate_paths(root: Path, settings: CampaignSettings) -> None:
-    for value in (settings.output_dir, settings.state_file, settings.summary_file,
-                  settings.pipeline_template, settings.worktree_root):
-        _inside(root, settings.path(root, value))
-    template = settings.path(root, settings.pipeline_template)
-    if not template.is_file() or template.is_symlink():
-        raise ValueError(f"campaign pipeline template is missing or unsafe: {template}")
-
-
-def _inside(root: Path, path: Path) -> Path:
-    resolved = path.resolve()
-    try:
-        resolved.relative_to(root.resolve())
-    except ValueError as exc:
-        raise ValueError(f"campaign path escapes repository: {path}") from exc
-    return resolved
 
 
 def run_campaign(context: CampaignContext) -> int:
@@ -367,6 +355,10 @@ def main(argv: list[str] | None = None) -> None:
     root = Path.cwd().resolve()
     try:
         settings = load_settings(root, args)
+        if not args.dry_run:
+            preflight_errors = config.agent_preflight_errors(args.agent_bin)
+            if preflight_errors:
+                raise ValueError("agent preflight failed: " + "; ".join(preflight_errors))
         if settings.pipeline_concurrency > 1 and not args.dry_run:
             ready, reason = parallel_ready(root)
             if not ready:

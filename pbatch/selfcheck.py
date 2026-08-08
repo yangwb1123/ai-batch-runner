@@ -3,7 +3,7 @@
 Runs the local engineering gates that keep the rule system healthy:
 - quality: code-organization scanner (functions/lines/complexity/dupes)
 - registry: schema integrity of both domain rule registries (rules --check)
-- eval: the rule-system regression suite (evals/, 25 cases)
+- eval: the rule-system regression suite (evals/, currently 40 cases)
 
 Exit 0 only when everything passes (fail closed); useful after installing
 or editing rules/keywords/registry to confirm the environment is sound.
@@ -14,6 +14,8 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+
+from . import config
 
 
 def _run_step(name: str, command: list) -> bool:
@@ -40,8 +42,11 @@ def check_main(argv: list) -> None:
     parser.add_argument("--quick-eval", action="store_true",
                         help="run only core eval cases (rules + classifier)")
     args = parser.parse_args(argv)
+    asset_root = Path(config.TOOL_ROOT)
+    source_root = asset_root if (asset_root / "pbatch").is_dir() else Path(__file__).parent
     steps = [
-        ("quality", [sys.executable, str(Path("quality.py")), "--strict", "."]),
+        ("quality", [sys.executable, str(asset_root / "quality.py"),
+                     "--strict", str(source_root)]),
         ("registry", [sys.executable, "-m", "pbatch", "rules", "--check"]),
     ]
     if not args.skip_eval:

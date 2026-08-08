@@ -122,20 +122,10 @@ class Task:
     memory: dict = field(default_factory=dict)  # stage/role/task metadata for the memory index
 
     def to_cmd(self, session_flags: Optional[list] = None) -> list[str]:
-        cmd = [config.AGENT_BIN, "-p", self.prompt]
-        if self.model:
-            cmd.extend(["--model", self.model])
-        if self.provider:
-            cmd.extend(["--provider", self.provider])
-        if self.thinking:
-            cmd.extend(["--thinking", self.thinking])
-        if self.tools:
-            cmd.extend(["--tools", self.tools])
-        if self.exclude_tools:
-            cmd.extend(["--exclude-tools", self.exclude_tools])
-        if session_flags:
-            cmd.extend(session_flags)
-        return cmd
+        return config.build_agent_argv(
+            config.AGENT_BIN, self.prompt, model=self.model,
+            provider=self.provider, thinking=self.thinking, tools=self.tools,
+            exclude_tools=self.exclude_tools, session_flags=session_flags)
 
     def workdir(self) -> str:
         return self.cwd or os.getcwd()

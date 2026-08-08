@@ -37,7 +37,7 @@ from .product import product_manifest
 from .rule_matcher import match_rules
 from .text_io import read_text_bounded
 
-EVAL_DIR = Path("evals")
+EVAL_DIR = Path(config.TOOL_ROOT) / "evals"
 
 
 def load_eval_files() -> list:

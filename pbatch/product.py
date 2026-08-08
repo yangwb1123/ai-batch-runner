@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from . import config
 from .relevance import _keyword_hit
 
 LEVELS = ("L0_local_feature", "L1_reusable_module", "L2_platform_capability",
@@ -138,6 +139,7 @@ def product_manifest(text: str, level: Optional[str] = None) -> dict:
         "evidence": list(evidence),
         "scenarios": scenarios,
         "specs": _SPECS_BY_LEVEL.get(resolved, []),
+        "asset_root": config.TOOL_ROOT,
         "restraint_notes": notes,
     }
 

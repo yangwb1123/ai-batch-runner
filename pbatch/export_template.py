@@ -16,7 +16,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+from . import config
+
+ROOT = Path(config.TOOL_ROOT)
 
 _DEFAULT_SPECS = [
     "ui-specs/design-intelligence",
@@ -35,11 +37,14 @@ _PIPELINE_TEMPLATES = [
 
 
 def _copy(src: Path, dest_root: Path) -> int:
+    try:
+        relative = src.resolve().relative_to(ROOT.resolve())
+    except ValueError:
+        relative = Path(src.name)
+    target = dest_root / relative
     if src.is_dir():
-        target = dest_root / src.name
         shutil.copytree(src, target, dirs_exist_ok=True)
         return sum(1 for _ in target.rglob("*") if _.is_file())
-    target = dest_root / src.name
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, target)
     return 1
@@ -72,9 +77,9 @@ def export_template(specs: list[Path], checkers: list[Path],
         f"规范 {len(specs)} 项 / 检查器 {len(checkers)} / 流水线 {len(pipelines)}\n"
         f"\n## 校验\n"
         f"```bash\n"
-        f"python check-design-intelligence.py --selfcheck\n"
-        f"python check-backend-experience.py --selfcheck\n"
-        f"python check-knowledge-freshness.py --selfcheck\n"
+        f"python scripts/check-design-intelligence.py --selfcheck\n"
+        f"python scripts/check-backend-experience.py --selfcheck\n"
+        f"python scripts/check-knowledge-freshness.py --selfcheck\n"
         f"```\n",
         encoding="utf-8",
     )
@@ -98,12 +103,14 @@ def export_main(argv: list | None = None) -> int:
     args = parser.parse_args(argv)
     specs = [ROOT / p for p in _DEFAULT_SPECS]
     if args.all:
-        specs = [p for p in (ROOT / "ui-specs").rglob("*.md")]
-        specs += [p for p in (ROOT / "backend-specs").rglob("*.md")]
-        specs += [ROOT / "docs" / "ENGINEERING_PHILOSOPHY.md"]
+        specs = [ROOT / "ui-specs", ROOT / "backend-specs",
+                 ROOT / "product-specs",
+                 ROOT / "docs" / "ENGINEERING_PHILOSOPHY.md"]
     checkers = [ROOT / p for p in _DEFAULT_CHECKERS] if args.checkers else []
     pipelines = [ROOT / p for p in _PIPELINE_TEMPLATES] if args.pipelines else []
-    out = ROOT / args.output
+    out = Path(args.output).expanduser()
+    if not out.is_absolute():
+        out = Path.cwd() / out
     report = export_template(specs, checkers, pipelines, out)
     print(f"exported {report['files']} files -> {out}")
     print(f"manifest: {report['manifest']}")

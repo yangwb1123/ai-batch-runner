@@ -15,6 +15,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import config
+
 
 def ui_geometry_main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
@@ -29,10 +31,10 @@ def ui_geometry_main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     # 定位 check-ui-geometry.py（入口脚本旁 / 仓库根 scripts/）
-    root = Path(__file__).resolve().parent.parent
+    root = Path(config.TOOL_ROOT)
     candidates = [
         root / "scripts" / "check-ui-geometry.py",
-        Path(__file__).resolve().parent.parent.parent / "scripts" / "check-ui-geometry.py",
+        Path(config.resolve_asset_path("scripts/check-ui-geometry.py")),
     ]
     script = next((c for c in candidates if c.is_file()), None)
     if script is None:

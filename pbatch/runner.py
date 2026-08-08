@@ -16,12 +16,15 @@ import threading
 import time
 from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from .validation_batch import run_file_validators
 from pathlib import Path
 from typing import NamedTuple, Optional
 
 from . import config
 from .config import AGENT_BIN, AGENT_DEFAULT_WORKERS, _resolve_validator_specs, _resolve_validators, _session_flags, log
 from .models import Task, TaskResult
+from .runner_results import (overflow_result as _overflow_result,
+                             prompt_limit_result as _prompt_limit_result)
 from . import metering
 from . import ratelimit
 from .metering import budget_allows, budget_try_consume, record_event
@@ -172,32 +175,27 @@ def _agent_not_found(task: Task) -> TaskResult:
                       reason="agent binary not found")
 
 
-def _overflow_result(task: Task, proc, stdout_lines: list, stderr_lines: list, start: float) -> TaskResult:
-    """T12e: reject a result whose collected stdout exceeded the byte cap.
-    The cap is enforced DURING collection (a runaway agent must not OOM the
-    runner before the post-hoc size check — round-4 finding L9)."""
-    log.error("REJECTED: agent output exceeds %d bytes (T12e cap)", config.OUTPUT_MAX_BYTES)
-    return TaskResult(
-        task=task, success=False, stdout="".join(stdout_lines), stderr="".join(stderr_lines),
-        elapsed=time.monotonic() - start, returncode=proc.returncode,
-        reason=f"agent output exceeds {config.OUTPUT_MAX_BYTES} bytes (T12e cap)",
-    )
-
-
-def _prompt_limit_result(task: Task, cmd: list) -> Optional[TaskResult]:
-    size = len(cmd[2].encode("utf-8", errors="replace"))
-    if config.PROMPT_MAX_BYTES <= 0 or size <= config.PROMPT_MAX_BYTES:
-        return None
-    reason = f"prompt exceeds {config.PROMPT_MAX_BYTES} bytes ({size} bytes)"
-    log.error("REJECTED: %s", reason)
-    return TaskResult(task=task, success=False, returncode=-1, reason=reason)
+def _task_invocation(task: Task, session_flags: Optional[list],
+                     session_name: str):
+    try:
+        cmd, workdir, session_id, effective_name = _memory_invocation(
+            task, session_flags, session_name)
+    except (TypeError, ValueError) as exc:
+        reason = f"agent adapter error: {exc}"
+        log.error("REJECTED: %s", reason)
+        return TaskResult(task=task, success=False, returncode=-1,
+                          stderr=str(exc), reason=reason)
+    if prompt_limit := _prompt_limit_result(task, cmd):
+        return _attach_session(prompt_limit, session_id, effective_name, workdir)
+    return cmd, workdir, session_id, effective_name
 
 
 def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = False, session_flags: Optional[list] = None, session_name: str = "") -> TaskResult:
     """Execute one agent task with live-output policy and T7 session metering."""
-    cmd, workdir, session_id, effective_name = _memory_invocation(task, session_flags, session_name)
-    if prompt_limit := _prompt_limit_result(task, cmd):
-        return _attach_session(prompt_limit, session_id, effective_name, workdir)
+    invocation = _task_invocation(task, session_flags, session_name)
+    if isinstance(invocation, TaskResult):
+        return invocation
+    cmd, workdir, session_id, effective_name = invocation
     start = time.monotonic()
     proc = None
     completed = False
@@ -207,8 +205,7 @@ def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = F
         _rate_gate(task, effective_name)
         proc = _spawn_agent(cmd, workdir, env)
         _register_proc(proc)
-        # GAP-3 (N1): marker carries the AGENT pid so a killed runner's
-        # residue scan can flag a still-running orphan (double billing).
+        # Marker carries the PID so residue scans detect orphaned agents.
         write_marker(key, workdir, agent_pid=proc.pid)
         streamed = _stream_output_enabled()
         stdout_lines, stderr_lines, overflow = _stream_proc(proc, prefix, start,
@@ -400,6 +397,16 @@ class ValidationResult(NamedTuple):
     timed_out: bool
 
 
+def expand_command_placeholders(cmd: str, cwd: str, output: str = "") -> str:
+    """Expand every supported command placeholder with shell-quoted paths."""
+    values = config.command_placeholder_values(cwd)
+    values["{output}"] = str(output)
+    expanded = cmd
+    for placeholder, value in values.items():
+        expanded = expanded.replace(placeholder, shlex.quote(value))
+    return expanded
+
+
 def run_validation(cmd: str, cwd: str, timeout: float = 600,
                    cap: Optional[int] = None) -> ValidationResult:
     """Run one validator command in its own process group with a hard
@@ -481,7 +488,7 @@ def _save_rejected_excerpt(tmp: Path, workdir: str, cmd: str, reason: str) -> Op
 
 
 def _apply_gate_commands(tmp: Path, task: Task, commands: list, result: TaskResult) -> bool:
-    """Run every gate command against the temp artifact (AND semantics);
+    """Run file gate commands concurrently and fold them with AND semantics;
     a failure deletes the artifact, records the outcome on the result
     (T2 feedback fields) and returns False. T12a: a validator may reply
     with a JSON status line -- {"status":"warn"} is allowed with a
@@ -489,17 +496,16 @@ def _apply_gate_commands(tmp: Path, task: Task, commands: list, result: TaskResu
     judge validators (spec.judge) must emit VERDICT: PASS|FAIL - <reason>
     (fail closed on missing/bare verdict). Repo-scoped validators are
     deferred to the stage/batch end (N2) and skipped here."""
-    for spec in commands:
-        if spec.scope == "repo":
-            log.info("VALIDATE: %s deferred (repo scope -> stage end)", spec.cmd)
-            continue
-        cmd = spec.cmd.replace("{output}", shlex.quote(str(tmp))).replace("{cwd}", shlex.quote(task.workdir())).replace("{tool_root}", shlex.quote(config.TOOL_ROOT))
-        log.info("VALIDATE: %s", cmd)
-        v = run_validation(cmd, task.workdir())
+    workdir = task.workdir()
+    validations = run_file_validators(
+        commands, workdir, tmp, expand_command_placeholders,
+        run_validation, log, "VALIDATE",
+    )
+    for spec, cmd, v in validations:
         result.validation_ok = v.ok
         result.validation_exit = v.exit_code
         result.validation_stderr = _cap_feedback(v.stderr or "")
-        if not _gate_spec_passed(spec, cmd, tmp, result, v, task.workdir()):
+        if not _gate_spec_passed(spec, cmd, tmp, result, v, workdir):
             return False
     result.validation_ok = True
     result.validation_exit = 0
@@ -688,11 +694,12 @@ def revalidate_existing(path: Path, validate_cmd: Optional[str], workdir: str = 
     if not commands:
         return True
     wd = workdir or os.getcwd()
-    for spec in commands:
-        if spec.scope == "repo":
-            # N2: full-tree gates run once at stage/batch end, not here
-            continue
-        if not _revalidate_one(spec, path, wd):
+    validations = run_file_validators(
+        commands, wd, path, expand_command_placeholders,
+        run_validation, log, "REVALIDATE",
+    )
+    for spec, cmd, validation in validations:
+        if not _revalidation_passed(spec, path, cmd, validation):
             return False
     log.info("REVALIDATED %s", path)
     return True
@@ -704,9 +711,13 @@ def _revalidate_one(spec, path: Path, wd: str) -> bool:
     validator reporting {"status":"fail"} must not promote the artifact
     when the fresh-save path would reject it (round-4 finding M3/P2-4).
     H line: judge validators apply the same fail-closed verdict protocol."""
-    cmd = spec.cmd.replace("{output}", shlex.quote(str(path))).replace("{cwd}", shlex.quote(wd)).replace("{tool_root}", shlex.quote(config.TOOL_ROOT))
+    cmd = expand_command_placeholders(spec.cmd, wd, str(path))
     log.info("REVALIDATE: %s", cmd)
     v = run_validation(cmd, wd)
+    return _revalidation_passed(spec, path, cmd, v)
+
+
+def _revalidation_passed(spec, path: Path, cmd: str, v) -> bool:
     if not v.ok:
         log.warning("REVALIDATION FAILED%s: %s; %s NOT reusable",
                     " (timeout)" if v.timed_out else f" (exit={v.exit_code})", cmd, path)

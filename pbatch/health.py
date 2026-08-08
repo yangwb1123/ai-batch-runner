@@ -21,15 +21,18 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
-ROOT = Path(__file__).resolve().parents[1]
+from . import config
+
+ASSET_ROOT = Path(config.TOOL_ROOT)
 SKIP = ".git,.dart_tool,test,build,vendor,checks"
 
 
-def _count_tests() -> int:
+def _count_tests(root: Path) -> int:
     """Count test functions without running them (stdlib scan)."""
     total = 0
-    for path in (ROOT / "tests").rglob("test_*.py"):
+    for path in (root / "tests").rglob("test_*.py"):
         if ".dart_tool" in path.parts:
             continue
         try:
@@ -40,11 +43,11 @@ def _count_tests() -> int:
     return total
 
 
-def _checker_violations(name: str) -> int:
-    script = ROOT / "scripts" / f"{name}.py"
+def _checker_violations(name: str, root: Path) -> int:
+    script = ASSET_ROOT / "scripts" / f"{name}.py"
     if not script.exists():
         return -1
-    cmd = [sys.executable, str(script), "--dir", str(ROOT), "--json"]
+    cmd = [sys.executable, str(script), "--dir", str(root), "--json"]
     # check-backend-quality 无 --skip（内置 DEFAULT_EXCLUDES）；其余接受逗号参数。
     if name != "check-backend-quality":
         cmd += ["--skip", SKIP]
@@ -60,21 +63,21 @@ def _checker_violations(name: str) -> int:
         return -1
 
 
-def _quality_violations() -> int:
+def _quality_violations(root: Path) -> int:
     result = subprocess.run(
-        [sys.executable, str(ROOT / "quality.py"), str(ROOT)],
+        [sys.executable, str(ASSET_ROOT / "quality.py"), str(root)],
         capture_output=True, text=True, timeout=120,
     )
     match = re.search(r"(\d+) violation", result.stdout)
     return int(match.group(1)) if match else 0
 
 
-def _spec_counts() -> dict:
-    ui = len(list((ROOT / "ui-specs").rglob("*.md")))
-    be = len(list((ROOT / "backend-specs").rglob("*.md")))
-    drafts = len(list((ROOT / "docs" / "rules" / "drafts").glob("*.yaml")))
+def _spec_counts(root: Path) -> dict:
+    ui = len(list((ASSET_ROOT / "ui-specs").rglob("*.md")))
+    be = len(list((ASSET_ROOT / "backend-specs").rglob("*.md")))
+    drafts = len(list((root / "docs" / "rules" / "drafts").glob("*.yaml")))
     rounds = 0
-    state = ROOT / "docs" / "advance" / "state.jsonl"
+    state = root / "docs" / "advance" / "state.jsonl"
     if state.exists():
         try:
             rounds = sum(1 for _ in state.open(encoding="utf-8"))
@@ -84,17 +87,22 @@ def _spec_counts() -> dict:
             "advance_rounds": rounds}
 
 
-def health_report(root: Path = ROOT) -> dict:
+def health_report(root: Optional[Path] = None) -> dict:
     """Gather health signals. Read-only; slow checkers capped by timeout."""
-    tests = _count_tests()
+    project_root = (root or Path.cwd()).resolve()
+    tests = _count_tests(project_root)
     checkers = {
-        "designintelligence": _checker_violations("check-design-intelligence"),
-        "knowledge": _checker_violations("check-knowledge-freshness"),
-        "backendquality": _checker_violations("check-backend-quality"),
+        "designintelligence": _checker_violations(
+            "check-design-intelligence", project_root),
+        "knowledge": _checker_violations(
+            "check-knowledge-freshness", project_root),
+        "backendquality": _checker_violations(
+            "check-backend-quality", project_root),
     }
-    quality = _quality_violations()
-    specs = _spec_counts()
+    quality = _quality_violations(project_root)
+    specs = _spec_counts(project_root)
     return {
+        "project_root": str(project_root),
         "tests": tests,
         "checkers": checkers,
         "quality_violations": quality,
@@ -132,8 +140,9 @@ def health_main(argv: list | None = None) -> int:
                                      description=__doc__)
     parser.add_argument("--json", action="store_true",
                         help="machine-readable report")
+    parser.add_argument("--dir", default=".", help="project root (default: cwd)")
     args = parser.parse_args(argv)
-    report = health_report()
+    report = health_report(Path(args.dir))
     if args.json:
         print(json.dumps(report, indent=2))
     else:
