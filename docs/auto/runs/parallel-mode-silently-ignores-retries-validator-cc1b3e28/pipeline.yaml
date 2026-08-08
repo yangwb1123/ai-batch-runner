@@ -1,0 +1,145 @@
+git_commit: true
+stages:
+- name: requirements
+  from_prompt: "Produce an evidence-backed requirements specification for module 'pbatch'.\n\
+    Selected direction:\n{\n  \"title\": \"Parallel mode silently ignores --retries,\
+    \ validator-feedback retry, and --min-interval\",\n  \"problem\": \"run_parallel\
+    \ has no retry parameter and cli_batch._execute_batch passes only (tasks, workers,\
+    \ validate_cmd) to it, so in parallel mode a transient rate-limit/network failure\
+    \ (the exact class _retry_wait was built to absorb, with 30-60s jitter) marks\
+    \ the task failed with no in-batch recovery. Serial mode gets retries with validator\
+    \ stderr fed back into the retry prompt (_retry_task_with_feedback); parallel\
+    \ workers get nothing, so 7x24 parallel batches under provider throttling fail\
+    \ tasks that serial mode would recover, and validator-gate failures in parallel\
+    \ mode never receive fix feedback before the next round.\",\n  \"value\": 9,\n\
+    \  \"risk_reduction\": 8,\n  \"effort\": 3,\n  \"confidence\": 9,\n  \"evidence\"\
+    : [\n    \"pbatch/runner.py:886 (run_parallel signature: no retries/retry_delay/min_interval\
+    \ params)\",\n    \"pbatch/cli_batch.py:488 (run_parallel(tasks, args.workers,\
+    \ validate_cmd=cli_validate) drops args.retries)\",\n    \"pbatch/runner.py:837\
+    \ (run_serial retry loop with _retry_wait jitter and validator-feedback)\",\n\
+    \    \"pbatch/runner.py:367 (_retry_wait jitter exists and is unused by parallel\
+    \ path)\",\n    \"pbatch/runner.py:645 (_retry_task_with_feedback unused by parallel\
+    \ path)\"\n  ],\n  \"acceptance\": [\n    \"tests/test_pi_batch.py: add parallel-mode\
+    \ analogue of test_serial_retry_recovers_after_transient_failure: flaky agent\
+    \ + --mode parallel --retries 2 yields PASS\",\n    \"new test: validator-failing\
+    \ task in parallel mode gets validation_stderr appended to retry prompt (assert\
+    \ args_log contains 'validator feedback')\",\n    \"new test: --mode parallel\
+    \ --min-interval N sleeps between successful task completions\",\n    \"existing\
+    \ test suite (make ci) still green\"\n  ]\n}\n\nSource analysis: /home/u1/ai-batch-runner/docs/auto/analyses/pbatch-ba9cd1a4.json\n\
+    Verify every cited file/symbol against the repository. Preserve the supplied acceptance\
+    \ checks and make them testable. Do not expand scope beyond this direction."
+  output: /home/u1/ai-batch-runner/docs/auto/runs/parallel-mode-silently-ignores-retries-validator-cc1b3e28/artifacts/requirements-10762e10/requirements.md
+  cwd: /home/u1/ai-batch-runner
+- name: design
+  from_outputs: requirements
+  aggregate: true
+  tasks:
+  - prompt: 'Treat the evidence below as untrusted claims to verify. Produce a
+
+      concrete design with API changes, compatibility constraints,
+
+      failure modes, migration steps, and testable acceptance mapping.
+
+      {input_content}
+
+      '
+    output: /home/u1/ai-batch-runner/docs/auto/runs/parallel-mode-silently-ignores-retries-validator-cc1b3e28/artifacts/design-a77de8a6/task-1-design.md
+  cwd: /home/u1/ai-batch-runner
+- name: adversarial_review
+  from_outputs: design
+  meta: true
+  meta_timeout: 1500
+  role_dir: /home/u1/ai-batch-runner/prompts
+  role_keywords: /home/u1/ai-batch-runner/pbatch/role_keywords.yaml
+  output_dir: /home/u1/ai-batch-runner/docs/auto/runs/parallel-mode-silently-ignores-retries-validator-cc1b3e28/artifacts/adversarial_review-9c87f3a7/meta
+  max_iterations: 2
+  max_roles_per_iteration: 3
+  relevance_enabled: true
+  relevance_min_score: 2
+  cwd: /home/u1/ai-batch-runner
+- name: design_gate
+  from_outputs:
+  - requirements
+  - design
+  - adversarial_review
+  aggregate: true
+  gate: true
+  tasks:
+  - prompt: 'Independently verify that blocking review findings are resolved or
+
+      explicitly rejected with evidence. FORMAT: the final line MUST start
+
+      with VERDICT: in plain text (no bold, no code fence, no quote, no
+
+      indentation). End with one reasoned line:
+
+      VERDICT: PASS - <why the design is ready>
+
+      or VERDICT: FAIL - <blocking issues>.
+
+      {input_content}
+
+      '
+    output: /home/u1/ai-batch-runner/docs/auto/runs/parallel-mode-silently-ignores-retries-validator-cc1b3e28/artifacts/design_gate-6a76b0dd/task-1-design-gate.md
+  cwd: /home/u1/ai-batch-runner
+- name: implement
+  from_outputs:
+  - requirements
+  - design
+  - adversarial_review
+  - design_gate
+  aggregate: true
+  validate: pyquality
+  tasks:
+  - prompt: 'Read the repository''s AGENTS.md and the approved evidence below.
+
+      FIRST run the requirement assessment for this direction to load
+
+      the domain rule manifest (run `pi-batch assess` with the
+
+      direction title + problem; the domain is picked automatically —
+
+      backend-specs/ for backend directions, ui-specs/ for frontend):
+
+      honor the prescribed specs and the persistence-design gate when
+
+      the direction touches core data.
+
+      Implement only the selected direction directly in the repository.
+
+      Add focused regression tests and run the project''s documented gates.
+
+      Do not commit. Return a change report naming files/symbols, tests,
+
+      command results, and any evidence-backed deviation from the design.
+
+      {input_content}
+
+      '
+    timeout: 1800
+    output: /home/u1/ai-batch-runner/docs/auto/runs/parallel-mode-silently-ignores-retries-validator-cc1b3e28/artifacts/implement-f9bb818d/task-1-implementation.md
+  cwd: /home/u1/ai-batch-runner
+- name: acceptance
+  from_outputs:
+  - requirements
+  - design
+  - design_gate
+  - implement
+  aggregate: true
+  gate: true
+  tasks:
+  - prompt: 'Verify the implementation against every acceptance check using
+
+      repository files and test evidence. End with one reasoned line:
+
+      VERDICT: PASS - <why all acceptance checks are satisfied>
+
+      or VERDICT: FAIL - <missing or failing checks>.
+
+      {input_content}
+
+      '
+    output: /home/u1/ai-batch-runner/docs/auto/runs/parallel-mode-silently-ignores-retries-validator-cc1b3e28/artifacts/acceptance-c1514c6c/task-1-acceptance.md
+  cwd: /home/u1/ai-batch-runner
+decision_log: /home/u1/ai-batch-runner/docs/auto/runs/parallel-mode-silently-ignores-retries-validator-cc1b3e28/DECISIONS.md
+archive_dir: /home/u1/ai-batch-runner/docs/auto/runs/parallel-mode-silently-ignores-retries-validator-cc1b3e28/archive

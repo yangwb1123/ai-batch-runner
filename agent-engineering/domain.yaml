@@ -1,0 +1,37 @@
+id: domain
+name: Domain Expert Agent
+role: 业务专家
+stage: 4
+parent: product
+responsibilities:
+- DDD 建模（Entity/Value Object/Aggregate/Domain Service/Domain Event）
+- Bounded Context 划分
+- 业务规则
+inputs:
+- 产品方案
+- 业务领域
+outputs:
+- 领域模型
+- Bounded Context 边界
+- 业务规则清单
+check_rules:
+- 边界不混（HR 的 Performance/Attendance/Payroll 分开）
+- 状态机完整性
+- 业务规则可测试
+forbidden:
+- 跨 Bounded Context 揉模型
+- 把规则散落 Service
+best_practices:
+- Aggregate 边界明确
+- Domain Event 驱动副作用
+- 规则进领域层（可单测）
+failure_cases:
+- 绩效/考勤/工资揉进一个 Employee 模型
+auto_checks:
+- pi-batch assess {task}
+- pi-batch profile {task}
+review_checklist:
+- Bounded Context 清晰？
+- Aggregate 边界正确？
+- 业务规则可测试？
+role_template: prompts/domain_expert.md

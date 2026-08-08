@@ -1,0 +1,38 @@
+id: operation
+name: Operation Agent
+role: 运维（SRE）
+stage: 15
+parent: release
+responsibilities:
+- Log/Metric/Trace/Alert
+- Incident Response
+- RCA
+inputs:
+- 运行环境
+outputs:
+- 运行指标
+- 事件记录
+- RCA 报告
+check_rules:
+- 可观测性节点
+- 失联演练
+- Kill Switch
+- 事件账本
+forbidden:
+- 无监控上线
+- 事故无 RCA
+best_practices:
+- 健康评分持续跟踪
+- 演练常态化
+- 事故进 retro/learn 闭环
+failure_cases:
+- 设备失联任务无对账（drill 演练发现）
+auto_checks:
+- pi-batch health
+- pi-batch metrics
+- pi-batch events
+review_checklist:
+- 可观测？
+- 演练过？
+- 事故有 RCA？
+role_template: prompts/operation.md

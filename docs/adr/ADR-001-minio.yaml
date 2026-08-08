@@ -1,0 +1,13 @@
+number: 1
+slug: minio
+title: 文件存储使用 MinIO
+decision: Use MinIO
+context: 大文件/S3 兼容/未来迁移
+alternatives:
+- 本地磁盘
+- OSS
+rejected_reasons:
+- 本地磁盘:扩容困难
+status: accepted
+created_at: '2026-08-07'
+superseded_by: ''

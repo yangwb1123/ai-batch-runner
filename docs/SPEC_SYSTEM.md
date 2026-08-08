@@ -20,9 +20,14 @@
 |---|---|---|
 | `ui-specs/rules.yaml` | 前端 | scale（demo<standard<production）× page_type（form/table/detail/workbench/immersive/auth）× risk |
 | `backend-specs/rules.yaml` | 后端 | 同上（use_case_types：crud/workflow/integration/query + 算法场景 search/sort/graph/schedule/cache/range）|
+| `product-specs/rules.yaml` | 产品 | scale × use_case_type（auth/upload/approval/messaging/erp/search/billing）× risk；L0 克制不加载（domain_for 仅对 productization_level L1+ 路由到 product 域）；L1=demo/L2=standard/L3=production（product_manifest specs 派生）|
+
+路由优先级：classifier 先行——同时含产品信号与前端/后端信号的任务（如“做一个 SaaS 计费前端页面”）取 backend/frontend_ui 注册表而非 product；产品规范仍经 `assess` 的 `product_manifest`（按 level 驱动、与域无关）到达。
 
 每条规则：`id / description / files / min_tier / page_types / risk /
-required_when_risk / profiles`。`pi-batch rules --check` 校验 schema。
+required_when_risk / profiles`。`pi-batch rules --check` 校验 schema；
+规则不得引用注册表文件自身——自引用 `files`/`files_template` 会被
+`rules --check` 拒绝（fail closed）。
 
 ## 3. 决策链（一次任务如何被处理）
 

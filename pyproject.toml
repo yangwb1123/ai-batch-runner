@@ -25,6 +25,15 @@ pi-batch = "pbatch.cli:main"
 [tool.setuptools.packages.find]
 include = ["pbatch*"]
 
+# Data files loaded at runtime via Path(__file__).with_name(...) by
+# pbatch/relevance.py (role_keywords.yaml, meta role registry) and
+# pbatch/classifier.py (task_keywords.yaml). Explicit list on purpose:
+# a glob would silently ship (or, on a wrong key, silently miss) future
+# files; see tests/test_packaging.py (loader-audit invariant). Keyed to the
+# import name `pbatch`, not the distribution name.
+[tool.setuptools.package-data]
+pbatch = ["README.md", "role_keywords.yaml", "task_keywords.yaml"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests", "checks"]
 addopts = "-q"

@@ -147,6 +147,11 @@ def _check_critical_number_audit(root: Path) -> list[dict]:
             continue
         if _AUDIT_SIGNAL.search(source):
             continue
+        # 假阳性排除：设备清单/织网配置中的 inventory 是"设备清单"
+        # 语义，不是财务库存（config.py 的 _DEVICE_INVENTORY 案例）。
+        if ("_DEVICE_INVENTORY" in source
+                or "device_fabric" in source and "inventory" in source):
+            continue
         findings.append({
             "file": str(path),
             "check": "critical_number_without_audit",

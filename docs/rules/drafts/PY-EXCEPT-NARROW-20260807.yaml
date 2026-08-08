@@ -1,0 +1,27 @@
+id: PY-EXCEPT-NARROW
+title: '清理路径 except-pass 吞掉非 OSError 异常：fabric._kill_group 的 except Exception: pass
+  掩盖了意'
+category: backend
+severity: warning
+scope:
+  languages: []
+  paths:
+  - src/**
+trigger:
+  operations: []
+rationale: 'Observed failure: 清理路径 except-pass 吞掉非 OSError 异常：fabric._kill_group 的
+  except Exception: pass 掩盖了意外错误. Root-cause analysis is required before this draft
+  can be promoted (edit requirements/forbidden/verification with the actual RCA).'
+requirements: []
+forbidden: []
+exceptions:
+- condition: ''
+verification:
+  static: []
+  tests: []
+examples:
+  good: []
+  bad: []
+owner: ''
+version: 0.1.0
+status: draft

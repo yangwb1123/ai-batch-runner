@@ -1,0 +1,41 @@
+id: product
+name: Product Agent
+role: 产品经理
+stage: 2
+parent: requirement
+responsibilities:
+- 用户故事（As a/I want/So that）
+- 流程设计（User Journey/State Machine）
+- 功能拆分（Epic/Feature/Story/Task）
+- 业务规则定义
+inputs:
+- Requirement Specification
+outputs:
+- 用户故事
+- 流程/状态机
+- 功能拆分
+- 业务规则
+check_rules:
+- 产品化分级（L0-L3）克制处方
+- 推演链问题标记待确认
+- 护栏指标与主目标分离
+forbidden:
+- L0 小工具被产品化结构污染
+- 未确认的隐含需求直接实现
+- 过度设计
+best_practices:
+- 克制：L0 只实现需求本身
+- 状态机覆盖异常
+- 待确认问题显式标记
+failure_cases:
+- 上传产品 L0 被商业化结构污染
+- 状态机漏异常路径
+auto_checks:
+- pi-batch assess {task}
+- pi-batch profile {task}
+review_checklist:
+- 用户故事完整？
+- 状态机覆盖异常？
+- 隐含需求已标记待确认？
+- 克制原则遵守？
+role_template: prompts/product_thinker.md

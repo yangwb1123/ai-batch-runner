@@ -5,7 +5,8 @@
 # 错误恢复、资源泄漏。经验 = ui-specs/engineering/ 决策表 + 缺陷模式库；
 # 可机器检查的由 uiquality 门禁拦截，需要推理的由审查角色对抗发现。
 #
-# 运行（把 pi-batch.yaml 的 uiquality --dir 改成项目前端根目录）：
+# 运行（uiquality 扫描根由 pi-batch.yaml 顶层 ui_scan_dir 配置，默认 {cwd}/src，
+# 非 src/ 布局需设置，如 ui_scan_dir: lib）：
 #   pi-batch examples/frontend-engineering-review.yaml \
 #     --retries 3 --log-file logs/fe-review.log
 # 只跑机器门禁：

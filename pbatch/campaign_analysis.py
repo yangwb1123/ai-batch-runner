@@ -73,10 +73,19 @@ def _fallback_modules(root: Path, settings: CampaignSettings) -> list[str]:
             not _excluded(path.relative_to(root), settings.excludes) and _contains_files(path)]
 
 
+# 打包/缓存产物目录：永远不是分析目标（campaign 实战：ai_batch_runner.egg-info
+# 被当作模块分析浪费一轮流水线；其方向多是打包/版本噪音）。
+_PACKAGE_ARTIFACT_DIRS = ("egg-info", "__pycache__", "dist", "build",
+                          "node_modules", ".venv", "venv")
+
+
 def _excluded(path: Path, excludes: tuple[str, ...]) -> bool:
     lowered = {item.lower() for item in path.parts}
     hidden = any(item.startswith(".") for item in path.parts)
-    return hidden or any(term.lower() in lowered for term in excludes)
+    artifact = any(term in item or item.endswith(term)
+                   for item in lowered for term in _PACKAGE_ARTIFACT_DIRS)
+    return hidden or artifact or any(term.lower() in lowered
+                                     for term in excludes)
 
 
 def _contains_files(path: Path) -> bool:
@@ -176,16 +185,27 @@ def parse_directions(module: str, text: str) -> list[Direction]:
 
 
 def evidence_exists(root: Path, direction: Direction) -> bool:
+    """True when any evidence path exists under the repo root.
+
+    Real-world lesson (forge-os campaign): the analysis model cited evidence
+    WITHOUT the module prefix — `internal/statefs/statefs.go:276` for a
+    repository where the file lives at `forge-core/internal/statefs/statefs.go`.
+    Every candidate is therefore probed bare first (models that DO include the
+    prefix keep working), then with the direction's module prefixed. `_inside`
+    rejects anything escaping the root either way.
+    """
+    module = direction.module
     for evidence in direction.evidence:
         for candidate in _evidence_candidates(evidence):
             if not candidate:
                 continue
-            try:
-                path = _inside(root, root / candidate)
-            except ValueError:
-                continue
-            if path.exists():
-                return True
+            for probe in (candidate, f"{module}/{candidate}"):
+                try:
+                    path = _inside(root, root / probe)
+                except ValueError:
+                    continue
+                if path.exists():
+                    return True
     return False
 
 

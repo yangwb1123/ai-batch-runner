@@ -481,7 +481,8 @@ restarting the service.
   interactive TTY; use `full` or `none` to override. A task without `output`
   still prints its final answer once because stdout is its result channel.
   Missing parent directories for the log are created automatically.
-- Budget guardrails: `--min-interval` throttles serial batches, `--workers`
+- Budget guardrails: `--min-interval` throttles successful tasks (serial and
+  parallel), `--workers`
   caps parallel fan-out, and `--retries`/`--max-rounds` bound how many times
   a failing task is re-attempted before the run reports failure.
 

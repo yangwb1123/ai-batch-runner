@@ -43,11 +43,9 @@ def _find_batch_config() -> Optional[dict]:
             return data
     return None
 
-
 # 工具根目录：pi-batch 包所在仓库根（validator/stage 命令里可用
 # {tool_root} 占位符引用随仓库分发的脚本，替代硬编码绝对路径）。
 TOOL_ROOT = str(Path(__file__).resolve().parent.parent)
-
 
 def _load_batch_config(path: str = "pi-batch.yaml") -> dict:
     """Optional defaults for pi-batch. Missing file -> {} (built-in defaults
@@ -56,7 +54,6 @@ def _load_batch_config(path: str = "pi-batch.yaml") -> dict:
     CLI."""
     data = _find_batch_config()
     return data if data is not None else {}
-
 
 _BATCH_CFG = _load_batch_config()
 
@@ -68,7 +65,6 @@ def _section(name: str) -> dict:
         return value
     log.warning("Config section '%s' must be a mapping; using defaults", name)
     return {}
-
 
 def _int_setting(section: dict, key: str, default: int,
                  minimum: Optional[int] = None) -> int:
@@ -86,7 +82,6 @@ def _int_setting(section: dict, key: str, default: int,
         return default
     return parsed
 
-
 def _choice_setting(section: dict, key: str, default: str,
                     choices: tuple[str, ...]) -> str:
     """Normalize a small string enum, with a usable argparse-safe default."""
@@ -97,7 +92,6 @@ def _choice_setting(section: dict, key: str, default: str,
                 key, ", ".join(choices), default)
     return default
 
-
 def _string_setting(section: dict, key: str, default: str,
                     allow_empty: bool = True) -> str:
     """Read a scalar string and reject YAML null/collection surprises."""
@@ -107,7 +101,6 @@ def _string_setting(section: dict, key: str, default: str,
     kind = "a string" if allow_empty else "a non-empty string"
     log.warning("Config value '%s' must be %s; using %s", key, kind, default)
     return default
-
 
 def _float_setting(section: dict, key: str, default: float,
                    minimum: Optional[float] = None,
@@ -127,6 +120,20 @@ def _float_setting(section: dict, key: str, default: float,
         return default
     return parsed
 
+def _bool_setting(section: dict, key: str, default: bool) -> bool:
+    """Read a boolean without letting YAML string/number surprises abort
+    import; malformed values fall back to the default (fail closed)."""
+    value = section.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("true", "yes", "on", "1"):
+            return True
+        if normalized in ("false", "no", "off", "0"):
+            return False
+    log.warning("Config value '%s' must be a boolean; using %s", key, default)
+    return default
 
 _AGENT_CFG = _section("agent")
 # Optional per-agent override sections: agent.agents.<bin>.* win over the
@@ -136,7 +143,6 @@ _AGENTS_CFG = _AGENT_CFG.get("agents")
 if not isinstance(_AGENTS_CFG, dict):
     _AGENTS_CFG = {}
 
-
 def _agent_section(bin_name: str) -> dict:
     """Per-agent config section for a binary name (agent.agents.<bin>),
     or {} when the section is absent/malformed."""
@@ -144,7 +150,6 @@ def _agent_section(bin_name: str) -> dict:
         return {}
     section = _AGENTS_CFG.get(bin_name)
     return section if isinstance(section, dict) else {}
-
 
 # Default provider/CLI failure signatures (G line). Per-agent overrides:
 #   agent.error_patterns: [...]      (all agents)
@@ -195,11 +200,9 @@ _DEFAULT_ERROR_PATTERNS = (
     r"(?im)^fatal:",
 )
 
-
 @lru_cache(maxsize=16)
 def _compile_patterns(patterns: tuple) -> tuple:
     return tuple(re.compile(pattern, re.IGNORECASE) for pattern in patterns)
-
 
 def agent_error_patterns(bin_name: str = "") -> tuple:
     """Failure-signature patterns for the current agent binary: per-agent
@@ -235,9 +238,7 @@ _MEMORY_CFG = _section("memory")
 _CLASSIFIER_CFG = _section("classifier")
 _LIMITS_CFG = _section("limits")
 
-
 AGENT_BIN = _string_setting(_AGENT_CFG, "bin", "pi", allow_empty=False)
-
 
 AGENT_DEFAULT_MODEL = _string_setting(_AGENT_CFG, "default_model", "")
 
@@ -330,6 +331,40 @@ if not isinstance(_LIMIT_PROVIDERS, dict):
 RATE_LIMIT_PROVIDERS = {
     str(key): value for key, value in _LIMIT_PROVIDERS.items()
     if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+}
+
+
+# Device-Aware Execution Fabric (AADM-D, docs/AADM_DEVICE.md): an optional,
+# OFF-by-default execution plane. `enabled` only loads the fabric module — it
+# never implies network scanning, remote execution, migration or sensitive
+# data distribution (AADM-D §4: one flag must not enable everything).
+_DEVICE_CFG = _section("device_fabric")
+DEVICE_FABRIC_ENABLED = _bool_setting(_DEVICE_CFG, "enabled", False)
+DEVICE_FABRIC_MODE = _choice_setting(
+    _DEVICE_CFG, "mode", "off",
+    ("off", "inventory", "observe", "execute", "migrate", "federate"))
+# 主动扫描默认关闭（安全/隐私/企业策略）；设备主动注册优于网络扫描。
+DEVICE_FABRIC_LAN_SCAN = _bool_setting(_DEVICE_CFG, "lan_active_scan", False)
+# 性能探测占用设备资源，单独启用；探测与修复必须分离。
+DEVICE_FABRIC_BENCHMARK = _bool_setting(_DEVICE_CFG, "benchmark", False)
+DEVICE_FABRIC_AUTO_INSTALL = _bool_setting(_DEVICE_CFG, "auto_install", False)
+DEVICE_FABRIC_APPROVAL_REQUIRED = _bool_setting(
+    _DEVICE_CFG, "approval_required_for_new_device", True)
+_DEVICE_INVENTORY = _DEVICE_CFG.get("inventory")
+if not isinstance(_DEVICE_INVENTORY, dict):
+    _DEVICE_INVENTORY = {}
+_DEVICE_STATIC = _DEVICE_INVENTORY.get("static")
+if not isinstance(_DEVICE_STATIC, list):
+    _DEVICE_STATIC = []
+DEVICE_FABRIC_STATIC = tuple(
+    entry for entry in _DEVICE_STATIC if isinstance(entry, dict))
+_DEVICE_CLUSTERS = _DEVICE_CFG.get("clusters")
+if not isinstance(_DEVICE_CLUSTERS, dict):
+    _DEVICE_CLUSTERS = {}
+DEVICE_FABRIC_CLUSTERS = {
+    str(name): [str(item) for item in members]
+    for name, members in _DEVICE_CLUSTERS.items()
+    if isinstance(members, list)
 }
 
 

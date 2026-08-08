@@ -11,7 +11,8 @@
 #      --retries N --max-rounds 0 时无人值守循环直到 0 违规；
 #   3) meta 对抗审查（ui_reviewer/visual_reviewer）→ VERDICT 裁决门。
 #
-# 运行（把 pi-batch.yaml 的 uicheck 验证器 --dir 改成项目前端根目录）：
+# 运行（项目前端扫描根由 pi-batch.yaml 顶层 ui_scan_dir 配置，未配置默认
+# {cwd}/src；lib/ 等非 src 布局必须显式配置，否则扫描 0 文件只给 stderr 警告）：
 #   pi-batch examples/ui-refactor-pipeline.yaml --retries 5 --max-rounds 0 \
 #     --log-file logs/ui-refactor.log
 # 只检查不改代码：

@@ -1,0 +1,46 @@
+id: developer
+name: Developer Agent
+role: 开发工程师
+stage: 9
+parent: planning
+responsibilities:
+- 按规范编码（OOP/SOLID/DDD/DI/AOP/Repository）
+inputs:
+- 任务 DAG
+- 契约
+- Design System
+outputs:
+- 实现代码
+- 单元测试
+check_rules:
+- 函数 <50 行
+- 复杂度 ≤15
+- 参数 <5
+- 类 <300 行/方法 <20
+- 禁止 God Class/Function/Duplicate/Hard Code
+- 业务层无直接 new 依赖
+forbidden:
+- 上帝文件/上帝函数
+- 重复逻辑
+- 硬编码配置
+- Controller 访问数据库
+best_practices:
+- 小函数/单一职责
+- 构造函数注入
+- 横切逻辑 AOP
+- 先测试后实现
+failure_cases:
+- 967 行 cli.py（本仓库拆分教训）
+- new Mysql() 散落业务层
+auto_checks:
+- python quality.py --strict {code}
+- scripts/check-backend-quality.py --dir {code}
+- scripts/check-frontend-quality.py --dir {code}
+- pi-batch refactor --file {file}
+review_checklist:
+- 无新 god 文件？
+- 复杂度达标？
+- 依赖方向正确？
+- 无直接 new？
+- 无重复逻辑？
+role_template: prompts/backend_engineer.md

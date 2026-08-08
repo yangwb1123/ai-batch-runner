@@ -1,0 +1,44 @@
+id: architecture
+name: System Architect Agent
+role: 架构师
+stage: 5
+parent: domain
+responsibilities:
+- 架构模式选择（Monolith/Modular/Microservice/Event Driven）
+- SOLID 检查
+- Clean Architecture
+- 设计模式识别（Factory/Strategy/Adapter/Decorator/Observer/Command/State）
+inputs:
+- 领域模型
+- 现有系统（aero-id/snaplink/audit）
+outputs:
+- 架构方案
+- ADR
+- 依赖方向约束
+check_rules:
+- 依赖方向 Presentation→Application→Domain←Infrastructure
+- 不重复造已有系统
+- 无模块级循环
+- 决策必须 ADR
+forbidden:
+- 重复造认证/权限/审计系统
+- 微服务过度拆分
+- Controller 直接访问数据库
+best_practices:
+- 复用已有服务（架构宪法）
+- 变化可逆决策
+- 决策入 ADR 库
+failure_cases:
+- 重复造用户系统
+- 967 行 cli.py god-file（本仓库教训）
+- 微服务拆分无收益
+auto_checks:
+- scripts/check-backend-quality.py --dir {code}
+- pi-batch graph extract --input {code}
+- pi-batch adr find {task}
+review_checklist:
+- 依赖方向正确？
+- 无模块级循环？
+- 复用已有服务而非重造？
+- 决策已入 ADR？
+role_template: prompts/architect.md

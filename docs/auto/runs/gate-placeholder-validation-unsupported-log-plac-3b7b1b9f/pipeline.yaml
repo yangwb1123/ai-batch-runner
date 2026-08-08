@@ -1,0 +1,141 @@
+git_commit: true
+stages:
+- name: requirements
+  from_prompt: "Produce an evidence-backed requirements specification for module 'agent-engineering'.\n\
+    Selected direction:\n{\n  \"title\": \"Gate placeholder validation: unsupported\
+    \ {log} placeholder silently false-passes the evolution node gate\",\n  \"problem\"\
+    : \"agent-engineering/evolution.yaml:31 declares `pi-batch retro --actions {log}`,\
+    \ but run_gate only substitutes {task}/{code}/{file} (pbatch/org.py:166), and\
+    \ _check_exists (pbatch/org.py:57-67) validates only the command name, never placeholder\
+    \ tokens. Verified live: `pi-batch retro --actions {log}` treats the literal string\
+    \ as a path, scans zero files, exits 0, and the evolution gate reports 'passed'\
+    \ — violating the documented '缺参不伪装通过' (no fake pass on missing params) contract\
+    \ in docs/AGENT_ORGANIZATION.md. A gate that silently degrades to false-pass is\
+    \ a trust-boundary defect in a fail-closed system.\",\n  \"value\": 9,\n  \"risk_reduction\"\
+    : 8,\n  \"effort\": 2,\n  \"confidence\": 10,\n  \"evidence\": [\n    \"agent-engineering/evolution.yaml:31\"\
+    ,\n    \"pbatch/org.py:166\",\n    \"pbatch/org.py:57\",\n    \"pbatch/org.py:161\"\
+    ,\n    \"docs/AGENT_ORGANIZATION.md:256\"\n  ],\n  \"acceptance\": [\n    \"`python\
+    \ pi-batch.py org check` reports evolution auto_check with unsupported placeholder\
+    \ {log} and exits nonzero (new fail-closed check)\",\n    \"tests/test_org.py\
+    \ gains a test: org_check() on a fixture node with auto_checks ['pi-batch retro\
+    \ --actions {log}'] returns valid=False\",\n    \"tests/test_org.py gains a test:\
+    \ run_gate('evolution', task=..., code_dir=...) never marks the {log} check 'passed'\
+    \ (it is skipped with reason or failed)\",\n    \"`python -m pytest tests/test_org.py\
+    \ -q` and `make ci` stay green\"\n  ]\n}\n\nSource analysis: /home/u1/ai-batch-runner/docs/auto/analyses/agent-engineering-36bd39dc.json\n\
+    Verify every cited file/symbol against the repository. Preserve the supplied acceptance\
+    \ checks and make them testable. Do not expand scope beyond this direction."
+  output: /home/u1/ai-batch-runner/docs/auto/runs/gate-placeholder-validation-unsupported-log-plac-3b7b1b9f/artifacts/requirements-10762e10/requirements.md
+  cwd: /home/u1/ai-batch-runner
+- name: design
+  from_outputs: requirements
+  aggregate: true
+  tasks:
+  - prompt: 'Treat the evidence below as untrusted claims to verify. Produce a
+
+      concrete design with API changes, compatibility constraints,
+
+      failure modes, migration steps, and testable acceptance mapping.
+
+      {input_content}
+
+      '
+    output: /home/u1/ai-batch-runner/docs/auto/runs/gate-placeholder-validation-unsupported-log-plac-3b7b1b9f/artifacts/design-a77de8a6/task-1-design.md
+  cwd: /home/u1/ai-batch-runner
+- name: adversarial_review
+  from_outputs: design
+  meta: true
+  meta_timeout: 1500
+  role_dir: /home/u1/ai-batch-runner/prompts
+  role_keywords: /home/u1/ai-batch-runner/pbatch/role_keywords.yaml
+  output_dir: /home/u1/ai-batch-runner/docs/auto/runs/gate-placeholder-validation-unsupported-log-plac-3b7b1b9f/artifacts/adversarial_review-9c87f3a7/meta
+  max_iterations: 2
+  max_roles_per_iteration: 3
+  relevance_enabled: true
+  relevance_min_score: 2
+  cwd: /home/u1/ai-batch-runner
+- name: design_gate
+  from_outputs:
+  - requirements
+  - design
+  - adversarial_review
+  aggregate: true
+  gate: true
+  tasks:
+  - prompt: 'Independently verify that blocking review findings are resolved or
+
+      explicitly rejected with evidence. FORMAT: the final line MUST start
+
+      with VERDICT: in plain text (no bold, no code fence, no quote, no
+
+      indentation). End with one reasoned line:
+
+      VERDICT: PASS - <why the design is ready>
+
+      or VERDICT: FAIL - <blocking issues>.
+
+      {input_content}
+
+      '
+    output: /home/u1/ai-batch-runner/docs/auto/runs/gate-placeholder-validation-unsupported-log-plac-3b7b1b9f/artifacts/design_gate-6a76b0dd/task-1-design-gate.md
+  cwd: /home/u1/ai-batch-runner
+- name: implement
+  from_outputs:
+  - requirements
+  - design
+  - adversarial_review
+  - design_gate
+  aggregate: true
+  validate: pyquality
+  tasks:
+  - prompt: 'Read the repository''s AGENTS.md and the approved evidence below.
+
+      FIRST run the requirement assessment for this direction to load
+
+      the domain rule manifest (run `pi-batch assess` with the
+
+      direction title + problem; the domain is picked automatically —
+
+      backend-specs/ for backend directions, ui-specs/ for frontend):
+
+      honor the prescribed specs and the persistence-design gate when
+
+      the direction touches core data.
+
+      Implement only the selected direction directly in the repository.
+
+      Add focused regression tests and run the project''s documented gates.
+
+      Do not commit. Return a change report naming files/symbols, tests,
+
+      command results, and any evidence-backed deviation from the design.
+
+      {input_content}
+
+      '
+    timeout: 1800
+    output: /home/u1/ai-batch-runner/docs/auto/runs/gate-placeholder-validation-unsupported-log-plac-3b7b1b9f/artifacts/implement-f9bb818d/task-1-implementation.md
+  cwd: /home/u1/ai-batch-runner
+- name: acceptance
+  from_outputs:
+  - requirements
+  - design
+  - design_gate
+  - implement
+  aggregate: true
+  gate: true
+  tasks:
+  - prompt: 'Verify the implementation against every acceptance check using
+
+      repository files and test evidence. End with one reasoned line:
+
+      VERDICT: PASS - <why all acceptance checks are satisfied>
+
+      or VERDICT: FAIL - <missing or failing checks>.
+
+      {input_content}
+
+      '
+    output: /home/u1/ai-batch-runner/docs/auto/runs/gate-placeholder-validation-unsupported-log-plac-3b7b1b9f/artifacts/acceptance-c1514c6c/task-1-acceptance.md
+  cwd: /home/u1/ai-batch-runner
+decision_log: /home/u1/ai-batch-runner/docs/auto/runs/gate-placeholder-validation-unsupported-log-plac-3b7b1b9f/DECISIONS.md
+archive_dir: /home/u1/ai-batch-runner/docs/auto/runs/gate-placeholder-validation-unsupported-log-plac-3b7b1b9f/archive

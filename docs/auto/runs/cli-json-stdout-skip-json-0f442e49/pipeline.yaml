@@ -1,0 +1,138 @@
+git_commit: true
+stages:
+- name: requirements
+  from_prompt: "Produce an evidence-backed requirements specification for module 'scripts'.\n\
+    Selected direction:\n{\n  \"title\": \"统一校验器 CLI 面与 --json 的 stdout 契约（--skip\
+    \ 缺失 + JSON 后跟摘要行污染机器输出）\",\n  \"problem\": \"check-backend-quality.py 与 check-frontend-quality.py\
+    \ 用手写 parse_argv，不支持 --skip（项目无法排除自己的 generated/迁移目录，误报只能改代码调优）；且 --json 时 JSON\
+    \ 输出后仍向 stdout 打印 'BACKEND-QUALITY: OK' 摘要，污染机器可读输出。consumers 被迫打补丁：pbatch/health.py:48\
+    \ 注释 'check-backend-quality 无 --skip' 并特判，pbatch/health.py:57 用 raw_decode 跳过尾行才解析到\
+    \ JSON。同族的 check-ui-spec.py:244-253 已正确实现（--json 时摘要走 stderr、stdout 纯 JSON），说明这是可修复的不一致而非设计约束。\"\
+    ,\n  \"value\": 8,\n  \"risk_reduction\": 6,\n  \"effort\": 3,\n  \"confidence\"\
+    : 9,\n  \"evidence\": [\n    \"scripts/check-backend-quality.py:323\",\n    \"\
+    scripts/check-backend-quality.py:371\",\n    \"scripts/check-frontend-quality.py:220\"\
+    ,\n    \"scripts/check-frontend-quality.py:268\",\n    \"scripts/check-ui-spec.py:238\"\
+    ,\n    \"pbatch/health.py:48\",\n    \"pbatch/health.py:57\"\n  ],\n  \"acceptance\"\
+    : [\n    \"python scripts/check-backend-quality.py --dir . --json 的 stdout 能被\
+    \ json.loads 直接解析（无尾行）\",\n    \"python scripts/check-backend-quality.py --dir\
+    \ . --skip generated,migrations 不扫描被排除目录\",\n    \"python scripts/check-frontend-quality.py\
+    \ --dir . --skip e2e 生效\",\n    \"pbatch/health.py 的 raw_decode 特判与 --skip 分支可删除且\
+    \ health --json 输出不变\",\n    \"python scripts/check-ui-spec.py --dir . --json\
+    \ 现有行为不回归\"\n  ]\n}\n\nSource analysis: /home/u1/ai-batch-runner/docs/auto/analyses/scripts-8f645734.json\n\
+    Verify every cited file/symbol against the repository. Preserve the supplied acceptance\
+    \ checks and make them testable. Do not expand scope beyond this direction."
+  output: /home/u1/ai-batch-runner/docs/auto/runs/cli-json-stdout-skip-json-0f442e49/artifacts/requirements-10762e10/requirements.md
+  cwd: /home/u1/ai-batch-runner
+- name: design
+  from_outputs: requirements
+  aggregate: true
+  tasks:
+  - prompt: 'Treat the evidence below as untrusted claims to verify. Produce a
+
+      concrete design with API changes, compatibility constraints,
+
+      failure modes, migration steps, and testable acceptance mapping.
+
+      {input_content}
+
+      '
+    output: /home/u1/ai-batch-runner/docs/auto/runs/cli-json-stdout-skip-json-0f442e49/artifacts/design-a77de8a6/task-1-design.md
+  cwd: /home/u1/ai-batch-runner
+- name: adversarial_review
+  from_outputs: design
+  meta: true
+  meta_timeout: 1500
+  role_dir: /home/u1/ai-batch-runner/prompts
+  role_keywords: /home/u1/ai-batch-runner/pbatch/role_keywords.yaml
+  output_dir: /home/u1/ai-batch-runner/docs/auto/runs/cli-json-stdout-skip-json-0f442e49/artifacts/adversarial_review-9c87f3a7/meta
+  max_iterations: 2
+  max_roles_per_iteration: 3
+  relevance_enabled: true
+  relevance_min_score: 2
+  cwd: /home/u1/ai-batch-runner
+- name: design_gate
+  from_outputs:
+  - requirements
+  - design
+  - adversarial_review
+  aggregate: true
+  gate: true
+  tasks:
+  - prompt: 'Independently verify that blocking review findings are resolved or
+
+      explicitly rejected with evidence. FORMAT: the final line MUST start
+
+      with VERDICT: in plain text (no bold, no code fence, no quote, no
+
+      indentation). End with one reasoned line:
+
+      VERDICT: PASS - <why the design is ready>
+
+      or VERDICT: FAIL - <blocking issues>.
+
+      {input_content}
+
+      '
+    output: /home/u1/ai-batch-runner/docs/auto/runs/cli-json-stdout-skip-json-0f442e49/artifacts/design_gate-6a76b0dd/task-1-design-gate.md
+  cwd: /home/u1/ai-batch-runner
+- name: implement
+  from_outputs:
+  - requirements
+  - design
+  - adversarial_review
+  - design_gate
+  aggregate: true
+  validate: pyquality
+  tasks:
+  - prompt: 'Read the repository''s AGENTS.md and the approved evidence below.
+
+      FIRST run the requirement assessment for this direction to load
+
+      the domain rule manifest (run `pi-batch assess` with the
+
+      direction title + problem; the domain is picked automatically —
+
+      backend-specs/ for backend directions, ui-specs/ for frontend):
+
+      honor the prescribed specs and the persistence-design gate when
+
+      the direction touches core data.
+
+      Implement only the selected direction directly in the repository.
+
+      Add focused regression tests and run the project''s documented gates.
+
+      Do not commit. Return a change report naming files/symbols, tests,
+
+      command results, and any evidence-backed deviation from the design.
+
+      {input_content}
+
+      '
+    timeout: 1800
+    output: /home/u1/ai-batch-runner/docs/auto/runs/cli-json-stdout-skip-json-0f442e49/artifacts/implement-f9bb818d/task-1-implementation.md
+  cwd: /home/u1/ai-batch-runner
+- name: acceptance
+  from_outputs:
+  - requirements
+  - design
+  - design_gate
+  - implement
+  aggregate: true
+  gate: true
+  tasks:
+  - prompt: 'Verify the implementation against every acceptance check using
+
+      repository files and test evidence. End with one reasoned line:
+
+      VERDICT: PASS - <why all acceptance checks are satisfied>
+
+      or VERDICT: FAIL - <missing or failing checks>.
+
+      {input_content}
+
+      '
+    output: /home/u1/ai-batch-runner/docs/auto/runs/cli-json-stdout-skip-json-0f442e49/artifacts/acceptance-c1514c6c/task-1-acceptance.md
+  cwd: /home/u1/ai-batch-runner
+decision_log: /home/u1/ai-batch-runner/docs/auto/runs/cli-json-stdout-skip-json-0f442e49/DECISIONS.md
+archive_dir: /home/u1/ai-batch-runner/docs/auto/runs/cli-json-stdout-skip-json-0f442e49/archive

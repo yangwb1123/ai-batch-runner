@@ -1,0 +1,27 @@
+
+## 2026-08-08 09:54:43 — stage 'requirements' — PASS
+- task /home/u1/ai-batch-runner/docs/auto/runs/make-uicheck-uigeometry-uiquality-dir-configurab-31146de9/artifacts/requirements-10762e10/requirements.md [ok]: Deliverable summary: **Evidence verification** — every citation checked against the live tree:
+- evidence: /home/u1/ai-batch-runner/docs/auto/runs/make-uicheck-uigeometry-uiquality-dir-configurab-31146de9/artifacts/requirements-10762e10/requirements.md
+
+## 2026-08-08 09:58:05 — stage 'design' — PASS
+- task /home/u1/ai-batch-runner/docs/auto/runs/make-uicheck-uigeometry-uiquality-dir-configurab-31146de9/artifacts/design-a77de8a6/task-1-design.md [ok]: Verification results (all claims checked against live tree): | Claim | Result |; Design deliverable: **`docs/auto/designs/ui-specs-672fd14a-design.md`** (follows the `designs/<module>-<id>-design.md` convention):
+- evidence: /home/u1/ai-batch-runner/docs/auto/runs/make-uicheck-uigeometry-uiquality-dir-configurab-31146de9/artifacts/design-a77de8a6/task-1-design.md
+
+## 2026-08-08 10:39:01 — stage 'adversarial_review' — PASS
+- task /home/u1/ai-batch-runner/docs/auto/runs/make-uicheck-uigeometry-uiquality-dir-configurab-31146de9/artifacts/adversarial_review-9c87f3a7/meta/qa_lead.md [ok]: Summary: **Verdict**: design is evidence-sound, but the test plan needs 1 High + 3 Medium additions before implement.
+- task /home/u1/ai-batch-runner/docs/auto/runs/make-uicheck-uigeometry-uiquality-dir-configurab-31146de9/artifacts/adversarial_review-9c87f3a7/meta/backend_engineer.md [ok]: 审查结论: **设计方向正确、实现忠实，无阻断项。** 这是实现后审查——工作树中该方向已全部落地（上一轮本角色因超时无产出）。; 核验结果（全部实测，非纸面）: - **4 个展开点**全部走共享 helper（runner.py:487/:698、repo_gates.py:31、cli_batch.py:408）；`grep '.replace("{cwd}"' pbatch/` 仅剩 help; 发现（4 Low + 1 Info，均低成本收尾）: 1. **L1**：QA F-1 只修一半——`test_validator_commands_parse` 仍无 `{ui_scan_dir}` 残留断言（三重其他测试兜底，非洞）; 工程分析: 无模式引入（组合 + 单入口纯函数足够）；`{cmd, vars}` 映射 schema 否决正确；依赖链 cmd_expand → config 单向无环；唯一变化点是"项目前端根布局"这一配置点，非代码抽象点。evolution.md 
+- task /home/u1/ai-batch-runner/docs/auto/runs/make-uicheck-uigeometry-uiquality-dir-configurab-31146de9/artifacts/adversarial_review-9c87f3a7/meta/devops_engineer.md [ok]: Summary: **Key premise verified**: `ops/deploy/` does **not exist** in this repo (`git ls-files ops/` empty; zero Dockerfile/syst
+- task /home/u1/ai-batch-runner/docs/auto/runs/make-uicheck-uigeometry-uiquality-dir-configurab-31146de9/artifacts/adversarial_review-9c87f3a7/meta/testing_reviewer.md [ok]: VERDICT: PASS - test plan is discriminating where it matters; AC1–AC4 rows have exact non-vacuous assertions; remaining gaps (1 Medium: unpinned defensive branch; 2 call sites without placeholder-specific tests; doc accuracy) do not block the direction.: Every claim below was re-verified live this session, not inherited:; Findings: | # | Sev | Defect pattern | Missing test | Exact test that would catch it |; Risk-coverage matrix: | Risky path | Covered? | Proof |; Honesty audit: - **Executed vs claimed**: backend_engineer's core claims (4 sites, single replace site, 18+7 green, quality OK, `check`
+- evidence: /home/u1/ai-batch-runner/docs/auto/runs/make-uicheck-uigeometry-uiquality-dir-configurab-31146de9/artifacts/adversarial_review-9c87f3a7/meta/qa_lead.md, /home/u1/ai-batch-runner/docs/auto/runs/make-uicheck-uigeometry-uiquality-dir-configurab-31146de9/artifacts/adversarial_review-9c87f3a7/meta/backend_engineer.md, /home/u1/ai-batch-runner/docs/auto/runs/make-uicheck-uigeometry-uiquality-dir-configurab-31146de9/artifacts/adversarial_review-9c87f3a7/meta/devops_engineer.md, /home/u1/ai-batch-runner/docs/auto/runs/make-uicheck-uigeometry-uiquality-dir-configurab-31146de9/artifacts/adversarial_review-9c87f3a7/meta/testing_reviewer.md
+
+## 2026-08-08 10:42:14 — stage 'design_gate' — PASS (gate verdict: PASS)
+- task /home/u1/ai-batch-runner/docs/auto/runs/make-uicheck-uigeometry-uiquality-dir-configurab-31146de9/artifacts/design_gate-6a76b0dd/task-1-design-gate.md [ok]
+- evidence: /home/u1/ai-batch-runner/docs/auto/runs/make-uicheck-uigeometry-uiquality-dir-configurab-31146de9/artifacts/design_gate-6a76b0dd/task-1-design-gate.md
+
+## 2026-08-08 10:49:42 — stage 'implement' — PASS
+- task /home/u1/ai-batch-runner/docs/auto/runs/make-uicheck-uigeometry-uiquality-dir-configurab-31146de9/artifacts/implement-f9bb818d/task-1-implementation.md [ok]: 1. Requirement assessment: Ran `pi-batch assess "<direction title> + <problem>"` — domain manifest loaded automatically: **frontend domain** (ui-sp; 2. Files / symbols changed: **Core implementation** (already in tree from the campaign implement stage — I verified every touchpoint live and closed; 3. Tests added (4 new this session; 7 total direction tests): | Test | File | Covers |; 4. Command results: | Gate | Result |; 5. Evidence-backed deviations: 1. **Helper in `pbatch/cmd_expand.py`, not `config.py`** (design §2.2 said config.py) — documented deviation: config.py 
+- evidence: /home/u1/ai-batch-runner/docs/auto/runs/make-uicheck-uigeometry-uiquality-dir-configurab-31146de9/artifacts/implement-f9bb818d/task-1-implementation.md
+
+## 2026-08-08 10:53:16 — stage 'acceptance' — PASS (gate verdict: PASS)
+- task /home/u1/ai-batch-runner/docs/auto/runs/make-uicheck-uigeometry-uiquality-dir-configurab-31146de9/artifacts/acceptance-c1514c6c/task-1-acceptance.md [ok]
+- evidence: /home/u1/ai-batch-runner/docs/auto/runs/make-uicheck-uigeometry-uiquality-dir-configurab-31146de9/artifacts/acceptance-c1514c6c/task-1-acceptance.md

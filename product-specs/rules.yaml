@@ -1,0 +1,64 @@
+# Rule registry: which product-spec files apply to which task.
+#
+# Consumed by pbatch/rule_matcher.py (domain "product", selected for
+# product-signal tasks by pbatch/product.py productization_level L1+).
+# L0 tasks never reach this registry (restraint); the level→tier mapping
+# for product_manifest specs derivation is L1=demo, L2=standard, L3=production.
+#
+# Axes: scale (demo < standard < production), use-case type, risk.
+# The assess effective tier is capped by scale_signal (pbatch/assessor.py
+# reads `signals`/`signal_weights` from the registry).
+
+scale:
+  demo: [小工具, 脚本, 内部, 临时, 工具, demo, 原型, utility, script, internal, prototype]
+  production: [产品, 商业化, 开源, 上线, 对外, 发布, saas, product, commercial,
+               open source, release]
+
+# Empty on purpose: the assess effective tier (处方档 = min(关键词档, 规模档))
+# must stay demo (S) for product tasks, so production-tier high-cost rules
+# (billing) never enter the prescription (restraint, product-thinking.md §5).
+signals: {}
+signal_weights: {}
+
+use_case_types:
+  auth: [登录, 认证, auth, login, sso, oauth]
+  upload: [上传, 文件, upload, file, 附件, oss, s3]
+  approval: [审批, approval, approve, 工作流, workflow]
+  messaging: [聊天, 消息, chat, message, 即时通讯]
+  erp: [erp, 订单, 采购, 库存, 财务, order]
+  search: [搜索, 检索, search, lookup]
+  billing: [订阅, 计费, 定价, 账单, 套餐, 配额, quota, 额度, billing,
+            subscription, pricing, plan, tier]
+
+risk:
+  high: [支付, 审批, 资金, 收费, 商业化, 订阅, 计费, 定价, 付费,
+         payment, approve, commercial, subscription, billing, monetize, pricing]
+
+rules:
+  product-thinking:
+    description: 产品化分级与需求推演（L0-L3 决策表、隐含需求推演链、过度产品化红线）
+    files: [product-specs/product-thinking.md]
+    min_tier: demo
+    required: true
+  completion-evidence:
+    description: 完成证据报告（诚实完成报告，禁止伪造通过表述）
+    files: [product-specs/completion-evidence.md]
+    min_tier: demo
+  commercial-readiness:
+    description: 商业项目思维（低成本预留 vs 高成本实现、License 分级、Billing 克制红线）
+    files: [product-specs/commercial-readiness.md]
+    min_tier: standard
+    risk: [high]
+    required_when_risk: true
+  open-source-readiness:
+    description: 开源项目思维（目录/文档套件/工程配套；无开源意图不加载）
+    files: [product-specs/open-source-readiness.md]
+    min_tier: production
+  billing:
+    description: >-
+      高成本实现（Billing/Subscription/计费系统/插件市场）：仅在有明确商业机制
+      信号（订阅/计费/定价/账单/套餐/配额）时加载；无商业信号禁止提前设计
+      （先测量，后收费）
+    files: [product-specs/commercial-readiness.md]
+    min_tier: production
+    page_types: [billing]

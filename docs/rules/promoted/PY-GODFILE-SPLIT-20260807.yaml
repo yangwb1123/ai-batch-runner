@@ -1,0 +1,36 @@
+id: PY-GODFILE-SPLIT
+title: god-file 967 行 cli.py：执行层未拆分导致可维护性下降
+category: backend
+severity: advice
+scope:
+  languages: []
+  paths:
+  - src/**
+trigger:
+  operations: []
+rationale: 'RCA（2026-08-07 dogfooding）：cli.py 967 行包含入口解析 + 轮循环 +
+  单批分派 + 流水线分派四类变化原因；改动任意一类都要在 967 行内导航，
+  圈复杂度与合并冲突随行数超线性增长。修复：按变化原因拆为
+  cli_rounds/cli_batch/cli_residue（cli.py 392 行），分派表不变、行为零回归
+  （927 测试全绿）。同类症状：任何模块 > 500 行且职责 > 1 的执行层。'
+requirements:
+- 执行层模块按变化原因拆分（不是按文件名/功能重命名）
+- 拆分后行为零回归（全量测试 + 门禁通过）
+forbidden:
+- 以 order1/order2 式改名代替真实拆分（只改名字不改结构）
+exceptions:
+- condition: 模块职责单一且行数 < 500（容忍预算内）
+verification:
+  static:
+  - quality.py --strict（函数 ≤50 行、复杂度 ≤15、文件 ≤1000 行）
+  - graph extract 无模块级循环
+  tests:
+  - pytest tests/（全量回归）
+examples:
+  good:
+  - cli.py 967 行 → cli_rounds/cli_batch/cli_residue（按执行路径拆分）
+  bad:
+  - cli.py 967 行 → cli2.py 800 行（只搬不拆）
+owner: maintainers
+version: 0.2.0
+status: draft

@@ -1,0 +1,9 @@
+decisions:
+- number: 1
+  title: 文件存储使用 MinIO
+  status: accepted
+  decision: Use MinIO
+- number: 1
+  title: 数据库用 PostgreSQL
+  status: accepted
+  decision: PostgreSQL

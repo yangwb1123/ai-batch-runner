@@ -1,0 +1,143 @@
+git_commit: true
+stages:
+- name: requirements
+  from_prompt: "Produce an evidence-backed requirements specification for module 'ai_batch_runner.egg-info'.\n\
+    Selected direction:\n{\n  \"title\": \"Package pbatch data files (role_keywords.yaml,\
+    \ task_keywords.yaml) in wheel/sdist\",\n  \"problem\": \"VERIFIED: `pip wheel\
+    \ . --no-deps` produces a wheel containing all 102 pbatch/*.py modules but zero\
+    \ data files — pbatch/role_keywords.yaml, pbatch/task_keywords.yaml and pbatch/README.md\
+    \ are absent because pyproject.toml declares only [tool.setuptools.packages.find]\
+    \ with no package-data mapping and no MANIFEST.in. After a non-editable install\
+    \ (the documented `pipx install .` / `uv tool install .`), load_role_keywords\
+    \ (relevance.py:54-68) catches the missing-file exception and returns {} — meta\
+    \ role relevance scoring, suggestions and relevance_min_score filtering silently\
+    \ degrade to no-op; classifier YAML overrides (classifier.py:148-157) are silently\
+    \ dropped. Failure is silent, so it ships unnoticed until orchestration quality\
+    \ regresses.\",\n  \"value\": 9,\n  \"risk_reduction\": 8,\n  \"effort\": 2,\n\
+    \  \"confidence\": 9,\n  \"evidence\": [\n    \"pyproject.toml:25\",\n    \"pbatch/relevance.py:51\"\
+    ,\n    \"pbatch/relevance.py:54\",\n    \"pbatch/classifier.py:136\",\n    \"\
+    pbatch/classifier.py:148\",\n    \"pbatch/role_keywords.yaml\",\n    \"pbatch/task_keywords.yaml\"\
+    \n  ],\n  \"acceptance\": [\n    \"pip wheel . --no-deps -w /tmp/w outputs a wheel\
+    \ containing pbatch/role_keywords.yaml and pbatch/task_keywords.yaml\",\n    \"\
+    python -m venv /tmp/v && /tmp/v/bin/pip install /tmp/w/*.whl && /tmp/v/bin/python\
+    \ -c \\\"from pbatch.relevance import load_role_keywords; assert load_role_keywords()\\\
+    \" returns a non-empty dict\",\n    \"/tmp/v/bin/python -m pbatch classify '生成登录页\
+    \ tsx' returns frontend_ui with route-to-frontend True, identical to repo-tree\
+    \ run\"\n  ]\n}\n\nSource analysis: /home/u1/ai-batch-runner/docs/auto/analyses/ai-batch-runner-egg-info-f13b1df7.json\n\
+    Verify every cited file/symbol against the repository. Preserve the supplied acceptance\
+    \ checks and make them testable. Do not expand scope beyond this direction."
+  output: /home/u1/ai-batch-runner/docs/auto/runs/package-pbatch-data-files-role-keywords-yaml-tas-8807d80f/artifacts/requirements-10762e10/requirements.md
+  cwd: /home/u1/ai-batch-runner
+- name: design
+  from_outputs: requirements
+  aggregate: true
+  tasks:
+  - prompt: 'Treat the evidence below as untrusted claims to verify. Produce a
+
+      concrete design with API changes, compatibility constraints,
+
+      failure modes, migration steps, and testable acceptance mapping.
+
+      {input_content}
+
+      '
+    output: /home/u1/ai-batch-runner/docs/auto/runs/package-pbatch-data-files-role-keywords-yaml-tas-8807d80f/artifacts/design-a77de8a6/task-1-design.md
+  cwd: /home/u1/ai-batch-runner
+- name: adversarial_review
+  from_outputs: design
+  meta: true
+  meta_timeout: 1500
+  role_dir: /home/u1/ai-batch-runner/prompts
+  role_keywords: /home/u1/ai-batch-runner/pbatch/role_keywords.yaml
+  output_dir: /home/u1/ai-batch-runner/docs/auto/runs/package-pbatch-data-files-role-keywords-yaml-tas-8807d80f/artifacts/adversarial_review-9c87f3a7/meta
+  max_iterations: 2
+  max_roles_per_iteration: 3
+  relevance_enabled: true
+  relevance_min_score: 2
+  cwd: /home/u1/ai-batch-runner
+- name: design_gate
+  from_outputs:
+  - requirements
+  - design
+  - adversarial_review
+  aggregate: true
+  gate: true
+  tasks:
+  - prompt: 'Independently verify that blocking review findings are resolved or
+
+      explicitly rejected with evidence. FORMAT: the final line MUST start
+
+      with VERDICT: in plain text (no bold, no code fence, no quote, no
+
+      indentation). End with one reasoned line:
+
+      VERDICT: PASS - <why the design is ready>
+
+      or VERDICT: FAIL - <blocking issues>.
+
+      {input_content}
+
+      '
+    output: /home/u1/ai-batch-runner/docs/auto/runs/package-pbatch-data-files-role-keywords-yaml-tas-8807d80f/artifacts/design_gate-6a76b0dd/task-1-design-gate.md
+  cwd: /home/u1/ai-batch-runner
+- name: implement
+  from_outputs:
+  - requirements
+  - design
+  - adversarial_review
+  - design_gate
+  aggregate: true
+  validate: pyquality
+  tasks:
+  - prompt: 'Read the repository''s AGENTS.md and the approved evidence below.
+
+      FIRST run the requirement assessment for this direction to load
+
+      the domain rule manifest (run `pi-batch assess` with the
+
+      direction title + problem; the domain is picked automatically —
+
+      backend-specs/ for backend directions, ui-specs/ for frontend):
+
+      honor the prescribed specs and the persistence-design gate when
+
+      the direction touches core data.
+
+      Implement only the selected direction directly in the repository.
+
+      Add focused regression tests and run the project''s documented gates.
+
+      Do not commit. Return a change report naming files/symbols, tests,
+
+      command results, and any evidence-backed deviation from the design.
+
+      {input_content}
+
+      '
+    timeout: 1800
+    output: /home/u1/ai-batch-runner/docs/auto/runs/package-pbatch-data-files-role-keywords-yaml-tas-8807d80f/artifacts/implement-f9bb818d/task-1-implementation.md
+  cwd: /home/u1/ai-batch-runner
+- name: acceptance
+  from_outputs:
+  - requirements
+  - design
+  - design_gate
+  - implement
+  aggregate: true
+  gate: true
+  tasks:
+  - prompt: 'Verify the implementation against every acceptance check using
+
+      repository files and test evidence. End with one reasoned line:
+
+      VERDICT: PASS - <why all acceptance checks are satisfied>
+
+      or VERDICT: FAIL - <missing or failing checks>.
+
+      {input_content}
+
+      '
+    output: /home/u1/ai-batch-runner/docs/auto/runs/package-pbatch-data-files-role-keywords-yaml-tas-8807d80f/artifacts/acceptance-c1514c6c/task-1-acceptance.md
+  cwd: /home/u1/ai-batch-runner
+decision_log: /home/u1/ai-batch-runner/docs/auto/runs/package-pbatch-data-files-role-keywords-yaml-tas-8807d80f/DECISIONS.md
+archive_dir: /home/u1/ai-batch-runner/docs/auto/runs/package-pbatch-data-files-role-keywords-yaml-tas-8807d80f/archive

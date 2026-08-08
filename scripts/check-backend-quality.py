@@ -7,26 +7,35 @@ violations are enforced here; judgment calls go to the review roles
 (backend_engineer / design_pattern_reviewer) and backend-specs/.
 
 Errors (always fail):
-- console.log / debugger (no-op logging)
-- TS any usage
-- unsafe innerHTML / v-html (also backend-adjacent templates)
+- console.log / debugger; TS any; unsafe innerHTML/v-html (templates)
 - test .skip/.only, eslint-disable/@ts-ignore
-- direct state assignment (`order.status = "paid"`) — bypasses domain methods
+- direct status assignment (bypasses domain methods)
 - domain layer importing framework/ORM/SDK (dependency direction)
 
 Warnings (fail only with --strict):
-- file > 400 lines, class > 300 lines (god-file signals)
-- > 7 constructor dependencies (god-service signal)
-- > 12 public methods
-- fuzzy names: file/class matching Common|Manager|Helper|Utils|BaseService
+- god-file/god-service signals: file > 400 lines, class > 300 lines,
+  > 7 constructor deps, > 12 public methods
+- fuzzy names (Common/Manager/Helper/Utils/BaseService)
 - one-implementation interfaces (no replacement/test value)
-- Base class inheritance (BaseService/BaseController/...)
-- scattered begin/commit/rollback outside use-case layers
-- > 10 TODO/FIXME markers
+- Base class inheritance; scattered tx outside use-case layers; > 10 TODO
 
 Usage:
-    python scripts/check-backend-quality.py --dir src [--strict] [--json]
+    python scripts/check-backend-quality.py --dir <backend-root> [--strict] [--json] [--skip NAMES]
+    python scripts/check-backend-quality.py --dir <backend-root> --manifest go [--skip NAMES]
     python scripts/check-backend-quality.py file.go file.ts ...
+
+--skip NAMES: extra comma-separated dir-segment excludes (union, never
+replace); --dir scans only. Under --json, stdout = ONLY the JSON report.
+A flag-like value after a value flag is a usage error: exit 2.
+
+--dir mode is manifest-aware and FAILS CLOSED (never a silent 0-file pass):
+  missing dir -> exit 1; manifest (go.mod/Cargo.toml/pom.xml/package.json,
+  walk-up <= 6 levels, fixed precedence) with 0 files -> exit 1; manifest ->
+  scan only its language (go.mod->.go, Cargo.toml->.rs, pom.xml->.java/.kt,
+  package.json->.ts/.tsx/.js); no manifest -> exit 0 'no backend manifest
+  detected; gate skipped'. --manifest NAME forces a language (aliases
+  go/rust/java/node); unknown names -> union exts, still fail closed.
+  Positional-file mode unchanged.
 """
 from __future__ import annotations
 
@@ -36,6 +45,21 @@ import sys
 from pathlib import Path
 
 DEFAULT_EXTS = (".ts", ".tsx", ".js", ".go", ".py", ".java", ".php", ".rs", ".sql")
+
+# Manifest-aware --dir mode: fixed precedence, first manifest present at
+# the nearest level wins; each manifest pins the scan language.
+MANIFEST_SPECS = (
+    ("go.mod", (".go",)), ("Cargo.toml", (".rs",)),
+    ("pom.xml", (".java", ".kt")), ("package.json", (".ts", ".tsx", ".js")),
+)
+_MANIFEST_BY_NAME = dict(MANIFEST_SPECS)
+_MANIFEST_ALIASES = {
+    "go.mod": "go.mod", "go": "go.mod",
+    "cargo.toml": "Cargo.toml", "rust": "Cargo.toml",
+    "pom.xml": "pom.xml", "java": "pom.xml",
+    "package.json": "package.json", "node": "package.json",
+}
+MANIFEST_WALK_UP = 6
 DEFAULT_EXCLUDES = {
     # Tooling dirs are not business services (their own gates are tests).
     "scripts", "tools", "checks", "tests", "harness", "ai",
@@ -66,9 +90,8 @@ _ERROR_PATTERNS = [
 _FUZZY_RE = re.compile(r"(common|manager|helper|utils?|base\w*service|util)\b",
                        re.IGNORECASE)
 _DIRECT_STATUS_RE = re.compile(r"\b[\w.]+\.status\s*=\s*[\"']")
-_DOMAIN_IMPORT_RE = re.compile(
-    r"from\s+['\"][^'\"]*(infrastructure|controller|orm|prisma|typeorm|mongoose|"
-    r"sequelize|redis|kafka|axios|fetch)[^'\"]*['\"]")
+_DOMAIN_IMPORT_RE = re.compile(r"from\s+['\"][^'\"]*(infrastructure|controller|orm|prisma|"
+                               r"typeorm|mongoose|sequelize|redis|kafka|axios|fetch)[^'\"]*['\"]")
 _BASE_CLASS_RE = re.compile(r"class\s+\w+\s+extends\s+Base\w+")
 _INTERFACE_RE = re.compile(r"interface\s+(\w+)\b")
 _IMPLEMENTS_RE = re.compile(r"class\s+\w+\s+implements\s+([\w,\s]+)")
@@ -97,6 +120,54 @@ def scan_directory(directory: Path, exts: tuple, excludes: set) -> list:
     return files
 
 
+def detect_manifest(directory: Path) -> tuple:
+    """Nearest backend manifest within MANIFEST_WALK_UP parent levels
+    (level-first, fixed precedence); (name, exts) or (None, DEFAULT_EXTS)."""
+    probe = directory
+    for _ in range(MANIFEST_WALK_UP + 1):
+        for name, exts in MANIFEST_SPECS:
+            if (probe / name).is_file():
+                return name, exts
+        parent = probe.parent
+        if parent == probe:
+            break
+        probe = parent
+    return None, DEFAULT_EXTS
+
+
+def resolve_manifest(directory: Path, forced: str) -> tuple:
+    """(manifest name, extensions, forced_only) for --dir mode. Auto-detect
+    unless ``forced`` names a known manifest (asserts the language, label
+    gets a '(--manifest)' suffix); unknown names fall back to the union
+    extension set (still fail-closed on 0 files)."""
+    if forced is None:
+        name, exts = detect_manifest(directory)
+        return name, exts, name is None
+    name = _MANIFEST_ALIASES.get(forced.casefold())
+    if name is None:
+        return None, DEFAULT_EXTS, False
+    return name, _MANIFEST_BY_NAME[name], True
+
+
+def resolve_dir_scan(directory: Path, forced: str, skip: str = "") -> tuple:
+    """(--dir mode) (files, manifest name, status, scan_error). Fail-closed:
+    missing dir -> scan_error; manifest with 0 files -> empty; none -> skip.
+    ``skip``: extra excludes (union, never replace)."""
+    if not directory.exists() or not directory.is_dir():
+        reason = "directory not found" if not directory.exists() else "not a directory"
+        return [], "", "scan_error", f"scan error: {reason}: {directory}"
+    manifest_name, exts, forced_only = resolve_manifest(directory, forced)
+    if manifest_name is None and forced is None:
+        return [], "", "skipped", ""
+    files = scan_directory(directory, exts, DEFAULT_EXCLUDES | {s for s in skip.split(",") if s})
+    if files:
+        return files, manifest_name, "ok", ""
+    if manifest_name:
+        label = f"{manifest_name} (--manifest)" if forced_only else manifest_name
+        return [], manifest_name, "empty", f"manifest {label} found but 0 backend files scanned"
+    return [], "", "empty", f"--manifest {forced}: 0 backend files scanned"
+
+
 def _class_metrics(text: str) -> dict:
     """Heuristic class signals: constructor deps, public methods, extends."""
     deps = max(len(re.findall(r"constructor\s*\(\s*[^)]*?\b(private|public|readonly|protected)\b", text)),
@@ -122,31 +193,37 @@ def _single_implementation_interfaces(text: str) -> list:
     return flagged
 
 
+def _scrub_string_literals(text: str) -> str:
+    """剥离单行字符串字面量后再扫 DDL——关键词表/提示文案里的
+    \"drop table\" 不是真实 DDL（dogfooding：profile.py 硬触发器关键词表
+    曾被自家扫描器误报为危险 DDL）。"""
+    return re.sub(r'"[^"\n]{0,200}"|\'[^\'\n]{0,200}\'', "", text)
+
+
 def _ddl_warnings(text: str, rel: str) -> list:
     """Dangerous DDL outside migration files (data-loss risk)."""
     if any(part in rel.lower() for part in ("migration", "migrate", "seed")):
         return []
     path = Path(rel)
-    is_test_file = (
-        ".test." in rel.lower()
-        or path.name.lower().endswith(("_test.rs", "_tests.rs", "_test.py", "_spec.ts", "_test.go", "_test.ts"))
-        or any(part in ("test", "tests", "spec", "e2e") for part in path.parts[:-1])
-    )
+    is_test_file = (".test." in rel.lower()
+                    or path.name.lower().endswith(("_test.rs", "_tests.rs",
+                                                   "_test.py", "_spec.ts",
+                                                   "_test.go", "_test.ts"))
+                    or any(part in ("test", "tests", "spec", "e2e")
+                           for part in path.parts[:-1]))
     if is_test_file:
         # Test files embed DDL in string literals (rollback assertions,
         # throwaway schemas) — those never touch a production database.
         return []
     matches = re.findall(
         r"\b(DROP\s+TABLE|DROP\s+COLUMN|TRUNCATE\s+TABLE)\b|ALTER\s+TABLE[^;]{0,80}?\bDROP\b",
-        text, re.IGNORECASE)
-    # findall with a single capture group returns the group text (empty string
-    # when only the non-capturing ALTER ... DROP alternative matched); never
-    # index into an empty match (""[0] raises IndexError on real projects).
+        _scrub_string_literals(text), re.IGNORECASE)
+    # findall: single capture group -> group text ("" for ALTER..DROP alt);
+    # never index into an empty match (""[0] raises IndexError).
     if matches:
         display = matches[0] or "ALTER TABLE ... DROP"
-        return [("error", f"{rel}: dangerous DDL outside a migration file: "
-                          f"{display} "
-                          f"(data-loss risk; migrations must be versioned)")]
+        return [("error", f"{rel}: dangerous DDL outside a migration file: {display}"
+                          f" (data-loss risk; migrations must be versioned)")]
     return []
 
 
@@ -155,9 +232,10 @@ def _test_warnings(text: str, rel: str) -> list:
     is_test = ".test." in rel or rel.endswith(("_test.go", "_test.py", "_test.ts", "_spec.ts"))
     if not is_test:
         return []
-    has_assertion = (re.search(r"\b(expect|assert|assertThat|should\.|t\.Error|t\.Fatal|assertion)\b", text)
-                     or bool(re.search(r"test\(['\"]", text) and re.search(r"lambda\s*:", text))
-                     or bool(re.search(r"\bcheck\(\s*['\"]", text)))  # custom check(label, cond) style
+    has_assertion = bool(re.search(
+        r"\b(expect|assert|assertThat|should\.|t\.Error|t\.Fatal|assertion)\b", text)
+        or re.search(r"test\(['\"]", text) and re.search(r"lambda\s*:", text)
+        or re.search(r"\bcheck\(\s*['\"]", text))  # custom check(label, cond) style
     if not has_assertion:
         return [("warning", f"{rel}: test file without assertions "
                             f"(renders/exists checks do not prove behavior)")]
@@ -170,15 +248,13 @@ def _reliability_warnings(text: str, rel: str) -> list:
     paths (warning)."""
     findings = []
     if re.search(r"catch\s*\([^)]*\)\s*\{\s*\}", text):
-        findings.append(("error", f"{rel}: swallowed exception (empty catch) "
-                                  f"— failure path invisible"))
+        findings.append(("error", f"{rel}: swallowed exception (empty catch) — failure path invisible"))
     non_os = len(_EXCEPT_PASS_RE.findall(text)) - len(_OS_EXCEPT_PASS_RE.findall(text))
     if non_os > 0:
         findings.append(("error", f"{rel}: {non_os} except-pass swallowing "
                                   f"non-OSError exceptions — failure path hidden"))
     elif len(_OS_EXCEPT_PASS_RE.findall(text)) > 0:
-        findings.append(("warning", f"{rel}: except-pass on OSError cleanup "
-                                    f"paths — verify it is intentional"))
+        findings.append(("warning", f"{rel}: except-pass on OSError cleanup paths — verify it is intentional"))
     clients = (len(re.findall(r"axios\.create\(|new\s+HttpClient\(|http\.Client\{", text))
                + len(re.findall(r"Dio\(", text)))
     if clients >= 2:
@@ -290,21 +366,19 @@ def check_text(text: str, path: Path, strict: bool) -> list:
         # and Python dict keys are legitimate data, not DOM sinks.
         error_patterns = [p for p in error_patterns if p[1] != "unsafe innerHTML/v-html"]
     if rel.endswith(".rs"):
-        # Rust has no property setters: `task.status = "x"` inside a builder
-        # or update fn is the idiomatic mutation path, not a bypass.
         error_patterns = [p for p in error_patterns if p[1] != "direct status assignment"]
     for pattern, label in error_patterns:
         for match in pattern.finditer(text):
             add("error", f"{label}: {match.group(0).strip()[:60]}")
 
     if not rel.endswith(".rs") and _DIRECT_STATUS_RE.search(text):
-        # Rust has no property setters: `task.status = "x"` inside a builder
-        # or update fn is the idiomatic mutation path, not a bypass.
-        add("error", "direct status assignment (bypasses domain methods): "
-            + _DIRECT_STATUS_RE.search(text).group(0).strip()[:60])
+        m = _DIRECT_STATUS_RE.search(text)
+        add("error", f"direct status assignment (bypasses domain methods): "
+            f"{m.group(0).strip()[:60]}")
     if "/domain/" in rel and _DOMAIN_IMPORT_RE.search(text):
-        add("error", "domain layer imports framework/ORM/SDK (dependency direction): "
-            + _DOMAIN_IMPORT_RE.search(text).group(0).strip()[:60])
+        m = _DOMAIN_IMPORT_RE.search(text)
+        add("error", f"domain layer imports framework/ORM/SDK (dependency direction): "
+            f"{m.group(0).strip()[:60]}")
 
     findings.extend(_warning_findings(lines, rel, text, _class_metrics(text)))
 
@@ -314,33 +388,36 @@ def check_text(text: str, path: Path, strict: bool) -> list:
 
 
 def parse_argv(argv: list) -> tuple:
-    """(targets, directory, strict, want_json, report_path)."""
-    targets, directory, strict, want_json, report_path = [], None, False, False, ""
+    """(targets, directory, strict, want_json, report_path, forced_manifest, skip)."""
+    values = {"--dir": None, "--manifest": None, "-o": "", "--skip": ""}
+    targets, strict, want_json = [], False, False
     i = 0
     while i < len(argv):
         arg = argv[i]
-        if arg == "--dir" and i + 1 < len(argv):
-            directory = Path(argv[i + 1])
+        if arg in values and i + 1 < len(argv):
+            nxt = argv[i + 1]
+            if nxt.startswith("-") and nxt != "-":
+                # Flag-like value: argparse-family rejects it (exit 2);
+                # swallowing it would silently drop a flag (--skip --json
+                # -> human mode, exit 0 false pass).
+                print(f"error: {arg}: expected one argument (got {nxt})",
+                      file=sys.stderr)
+                raise SystemExit(2)
+            values[arg] = nxt
             i += 1
         elif arg == "--strict":
             strict = True
         elif arg == "--json":
             want_json = True
-        elif arg == "-o" and i + 1 < len(argv):
-            report_path = argv[i + 1]
-            i += 1
         else:
-            targets.append(arg)
+            targets.append(arg)  # trailing value flag -> visible missing target
         i += 1
-    return targets, directory, strict, want_json, report_path
+    return (targets, Path(values["--dir"]) if values["--dir"] is not None else None,
+            strict, want_json, values["-o"], values["--manifest"], values["--skip"])
 
 
-def main(argv: list) -> int:
-    targets, directory, strict, want_json, report_path = parse_argv(argv)
-    paths = [Path(t) for t in targets]
-    if directory is not None:
-        paths.extend(scan_directory(directory, DEFAULT_EXTS, DEFAULT_EXCLUDES))
-
+def _scan_paths(paths: list, strict: bool) -> list:
+    """Violations for every target; missing/unreadable targets are reported."""
     violations = []
     for path in paths:
         if not path.exists():
@@ -352,7 +429,55 @@ def main(argv: list) -> int:
             violations.append(f"{path}: unreadable ({exc})")
             continue
         violations.extend(check_text(text, path, strict))
+    return violations
 
+
+def _emit_report(report: dict, want_json: bool, report_path: str) -> None:
+    """Write the JSON report (-o) and/or print it (--json)."""
+    if not (want_json or report_path):
+        return
+    payload = json.dumps(report, ensure_ascii=False, indent=2)
+    if report_path:
+        Path(report_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(report_path).write_text(payload + "\n", encoding="utf-8")
+    if want_json:
+        print(payload)
+
+
+def _finish(status: str, scan_error: str, violations: list, n_files: int,
+            want_json: bool = False) -> int:
+    """Summary lines + exit code; fail closed (scan_error/empty/violations).
+    Under --json all summaries go to stderr; stdout = the JSON report."""
+    if scan_error:
+        print(f"BACKEND-QUALITY: {scan_error}", file=sys.stderr)
+    for item in violations:
+        print(f"BACKEND-QUALITY {item}", file=sys.stderr)
+    if violations:
+        print(f"BACKEND-QUALITY: {len(violations)} violation(s) in "
+              f"{n_files} file(s); rejected", file=sys.stderr)
+        return 1
+    if status in ("scan_error", "empty"):
+        print(f"BACKEND-QUALITY: {scan_error}; rejected", file=sys.stderr)
+        return 1
+    msg = ("BACKEND-QUALITY: no backend manifest detected; gate skipped"
+           if status == "skipped" else
+           f"BACKEND-QUALITY: OK ({n_files} file(s) scanned)")
+    print(msg, file=sys.stderr if want_json else None)
+    return 0
+
+
+def main(argv: list) -> int:
+    targets, directory, strict, want_json, report_path, forced, skip = parse_argv(argv)
+    paths = [Path(t) for t in targets]
+    manifest_name, status, scan_error = "", "ok", ""
+    if directory is not None:
+        # Resolve first: walk-up needs the real path (Path('.') is its own
+        # parent), so relative and absolute --dir behave identically.
+        dir_files, manifest_name, status, scan_error = \
+            resolve_dir_scan(directory.resolve(), forced, skip)
+        paths.extend(dir_files)
+
+    violations = _scan_paths(paths, strict)
     report = {
         "strict": strict,
         "directory": str(directory) if directory else "",
@@ -360,22 +485,13 @@ def main(argv: list) -> int:
         "violations": [{"file": item.split(":")[0], "detail": item}
                        for item in violations],
         "total": len(violations),
+        "manifest": manifest_name or "",
+        "status": status,
     }
-    if want_json or report_path:
-        payload = json.dumps(report, ensure_ascii=False, indent=2)
-        if report_path:
-            Path(report_path).parent.mkdir(parents=True, exist_ok=True)
-            Path(report_path).write_text(payload + "\n", encoding="utf-8")
-        if want_json:
-            print(payload)
-    for item in violations:
-        print(f"BACKEND-QUALITY {item}", file=sys.stderr)
-    if violations:
-        print(f"BACKEND-QUALITY: {len(violations)} violation(s) in "
-              f"{len(paths)} file(s); rejected", file=sys.stderr)
-        return 1
-    print(f"BACKEND-QUALITY: OK ({len(paths)} file(s) scanned)")
-    return 0
+    if scan_error:
+        report["scan_error"] = scan_error
+    _emit_report(report, want_json, report_path)
+    return _finish(status, scan_error, violations, len(paths), want_json)
 
 
 if __name__ == "__main__":

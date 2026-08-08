@@ -41,7 +41,7 @@ stages:
       technical assumptions as the final design. Output a markdown document
       with sections: ## Interpreted Goal / ## User Roles / ## Scope Priority.
     output: docs/snaplink-platform/decisions/01-intake.md
-    validate_cmd: "python {cwd}/scripts/check-no-refusal.py {output}"
+    validate_cmd: "python3 {cwd}/scripts/check-no-refusal.py {output}"
     mode: serial
 
   # ── L2 完整场景建模 ──

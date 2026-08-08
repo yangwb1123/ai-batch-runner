@@ -285,6 +285,34 @@ def format_execution_prompt(assessment: dict) -> str:
     return "\n".join(lines)
 
 
+def _assess_text(args, parser) -> str:
+    """需求文本来源：--file 或位置参数（有界读取）。"""
+    if args.file:
+        from .text_io import read_text_bounded
+        return read_text_bounded(Path(args.file), config.INPUT_MAX_BYTES,
+                                 "assess source")
+    text = " ".join(args.task)
+    if not text.strip():
+        parser.error("Provide a requirement (positional text or --file)")
+    return text
+
+
+def print_profile_block(assessment: dict) -> None:
+    """画像 + 假设记录的人类可读输出（assess 文本模式尾部）。"""
+    from .profile import format_profile
+    print("")
+    print(format_profile(assessment["task_profile"]))
+    records = assessment.get("assumptions") or []
+    if not records:
+        return
+    print("")
+    print("## 假设记录（待确认问题 → 处理决策）")
+    for record in records:
+        print(f"- 风险{record['assumption_risk']:.2f} "
+              f"{record['statement']} → {record['verification_plan']} "
+              f"[{record['status']}]")
+
+
 def assess_main(argv: list) -> None:
     """`pi-batch assess "<requirement>" [--json] [--llm-json '...']`."""
     import argparse
@@ -303,14 +331,7 @@ def assess_main(argv: list) -> None:
                         help='LLM selection JSON {"apply":[],"skip":[]} to reconcile')
     parser.add_argument("--registry", default="", help="rule registry YAML override")
     args = parser.parse_args(argv)
-    if args.file:
-        from .text_io import read_text_bounded
-        text = read_text_bounded(Path(args.file), config.INPUT_MAX_BYTES,
-                                 "assess source")
-    else:
-        text = " ".join(args.task)
-    if not text.strip():
-        parser.error("Provide a requirement (positional text or --file)")
+    text = _assess_text(args, parser)
     registry = load_registry(args.registry) if args.registry else None
     assessment = prescription(text, registry)
     if args.llm_json:
@@ -325,6 +346,10 @@ def assess_main(argv: list) -> None:
         assessment["prescription"] = matched["rules"]
         assessment["provenance"] = matched["provenance"]
         assessment["dropped"] = matched["dropped"]
+    # P1/P3/P4：多维画像 + 裁量包络 + 假设记录（惰性导入避免循环依赖）
+    from .profile import assumption_records, task_profile
+    assessment["task_profile"] = task_profile(text, registry)
+    assessment["assumptions"] = assumption_records(text)
     if args.json:
         print(json.dumps(assessment, ensure_ascii=False, indent=2))
         return
@@ -332,3 +357,4 @@ def assess_main(argv: list) -> None:
         print(format_execution_prompt(assessment))
         return
     print(format_assessment(assessment))
+    print_profile_block(assessment)

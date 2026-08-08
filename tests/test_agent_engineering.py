@@ -140,7 +140,7 @@ def test_assess_from_file(tmp_path, capsys):
 
 def test_rules_check_passes():
     sys.argv = ["pi-batch.py", "rules", "--check"]
-    from pbatch.rule_matcher import rules_main
+    from pbatch.rule_cli import rules_main
     try:
         rules_main(sys.argv[2:])
         code = 0
@@ -153,7 +153,8 @@ def test_rules_check_fails_on_broken_registry(tmp_path, monkeypatch):
     broken = tmp_path / "rules.yaml"
     broken.write_text("rules:\n  bad-rule:\n    description: x\n",
                       encoding="utf-8")
-    from pbatch.rule_matcher import check_registry, load_registry
+    from pbatch.rule_cli import check_registry
+    from pbatch.rule_matcher import load_registry
     violations = check_registry(load_registry(str(broken)))
     assert any("min_tier" in v for v in violations)
     assert any("files" in v for v in violations)

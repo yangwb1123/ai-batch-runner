@@ -23,6 +23,7 @@ from .pipeline_schema import validate_pipeline
 from .evidence import combine_outputs, source_manifest
 from .meta import run_meta_stage
 from .repo_gates import run_stage_repo_validators
+from .pipeline_archive import archive_output_pairs
 from .reuse import fingerprint as reuse_fp
 from .reuse import reuse_decision, write_sidecar
 from .runner import (_save_validated, print_summary, run_parallel,
@@ -560,6 +561,9 @@ def _execute_stage_tasks(stage: Stage, tasks: list, reused_outputs: list, stage_
                          session_mode: str, session_name: str, stage_session_id: str) -> tuple[list, list]:
     """Run the stage's tasks (serial or parallel) and collect the output
     paths that downstream stages will consume (reused outputs included)."""
+    if stage.or_tasks:
+        return _execute_or_tasks(stage, tasks, reused_outputs, stage_validate,
+                                 session_mode, session_name, stage_session_id)
     if stage.mode == "parallel":
         results = run_parallel(tasks, stage.workers, validate_cmd=stage_validate)
     else:
@@ -573,6 +577,30 @@ def _execute_stage_tasks(stage: Stage, tasks: list, reused_outputs: list, stage_
         if r.success and r.task.output:
             outputs.append(str(r.task.output_path()))
     return results, outputs
+
+def _execute_or_tasks(stage: Stage, tasks: list, reused_outputs: list,
+                        stage_validate: str, session_mode: str,
+                        session_name: str, stage_session_id: str) -> tuple:
+    """OR 算子（AADM §6）：候选任务模板按序执行，**第一个通过验证者
+    胜出**（其余候选跳过）；全部失败 → 阶段失败（fail closed）。"""
+    results = []
+    for index, task in enumerate(tasks, 1):
+        log.info("-- OR candidate [%d/%d]: %s --", index, len(tasks),
+                 " ".join(task.prompt.split())[:60])
+        batch = run_serial([task], retries=0, session_mode=session_mode,
+                           session_id=stage_session_id,
+                           session_name=session_name,
+                           validate_cmd=stage_validate)
+        results.extend(batch)
+        if batch and batch[0].success:
+            log.info("OR: candidate %d 通过，其余候选跳过", index)
+            break
+    outputs = list(reused_outputs)
+    for result in results:
+        if result.success and result.task.output:
+            outputs.append(str(result.task.output_path()))
+    return results, outputs
+
 
 def _run_stage_commands(stage: Stage) -> bool:
     """Run the stage's shell commands (post-task hooks); False when any
@@ -673,43 +701,9 @@ _GATE_VERDICT_RE = re.compile(r"^\s*\*{0,2}VERDICT\s*:\s*\*{0,2}(PASS|FAIL|REJEC
 
 def _archive_outputs(outputs: list, archive_dir: str, label: str) -> list:
     """Move finished deliverables into a timestamped archive subdirectory
-    once the stage/pipeline completed (all tasks succeeded, gates passed).
-    The worktree stays clean; git history (committed artifacts) retains
-    everything, and the decision log points at the original paths. Returns
-    the moved destinations for logging."""
-    return [destination for _, destination in
-            _archive_output_pairs(outputs, archive_dir, label)]
-
-def _archive_output_pairs(outputs: list, archive_dir: str, label: str) -> list[tuple[str, str]]:
-    """Move outputs and retain their original-to-archive mapping."""
-    if not archive_dir or not outputs:
-        return []
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    target = Path(archive_dir) / f"{label}-{stamp}"
-    target.mkdir(parents=True, exist_ok=True)
-    moved: list[tuple[str, str]] = []
-    for o in outputs:
-        p = Path(o)
-        if p.exists():
-            dest = _archive_destination(target, p)
-            shutil.move(str(p), str(dest))
-            moved.append((str(o), str(dest)))
-    if moved:
-        log.info("ARCHIVED %d deliverable(s) -> %s", len(moved), target)
-    return moved
-
-def _archive_destination(target: Path, source: Path) -> Path:
-    """Choose a destination without overwriting an earlier deliverable."""
-    direct = target / source.name
-    if not direct.exists():
-        return direct
-    digest = hashlib.sha256(str(source.resolve()).encode("utf-8")).hexdigest()[:8]
-    candidate = target / f"{source.stem}-{digest}{source.suffix}"
-    index = 2
-    while candidate.exists():
-        candidate = target / f"{source.stem}-{digest}-{index}{source.suffix}"
-        index += 1
-    return candidate
+    (实现见 pbatch/pipeline_archive.py；此处 re-export 保持兼容)。"""
+    from .pipeline_archive import archive_outputs
+    return archive_outputs(outputs, archive_dir, label)
 
 def _gate_reuse_blocked(output_path: str) -> bool:
     """A gate deliverable carrying VERDICT: FAIL/REJECT must NEVER be
@@ -918,7 +912,7 @@ def _archive_pipeline_results(pipeline: Pipeline, results: list[TaskResult],
                               archive_dir: str, session_name: str) -> None:
     outputs = [result.task.output for result in results
                if result.success and result.task.output]
-    moved = dict(_archive_output_pairs(
+    moved = dict(archive_output_pairs(
         outputs, archive_dir or pipeline.archive_dir, pipeline.name))
     for result in results:
         if result.task.output in moved:

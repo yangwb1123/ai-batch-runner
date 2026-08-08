@@ -95,3 +95,27 @@ def test_product_specs_exist():
     for file in ("product-thinking.md", "commercial-readiness.md",
                  "open-source-readiness.md", "completion-evidence.md"):
         assert (__import__("pathlib").Path("product-specs") / file).exists()
+
+
+def test_derived_specs_parity_l3_and_l0():
+    """D3 parity pin: the registry-derived spec sets must equal the
+    documented contract (L3 = the four product-spec files, L0 = []).
+    Guards silent level-spec drift when the registry evolves."""
+    from pbatch.product import _SPECS_BY_LEVEL
+    assert _SPECS_BY_LEVEL["L0_local_feature"] == []
+    assert sorted(_SPECS_BY_LEVEL["L3_product_feature"]) == sorted([
+        "product-specs/product-thinking.md",
+        "product-specs/commercial-readiness.md",
+        "product-specs/open-source-readiness.md",
+        "product-specs/completion-evidence.md",
+    ])
+
+
+def test_domain_for_routes_product_and_generic():
+    """F6 pin: L1+ productization routes to the product domain; L0 stays
+    generic (restraint); backend/frontend precedence preserved."""
+    from pbatch.rule_matcher import domain_for
+    assert domain_for("做一个开源上传产品，商业化") == "product"
+    assert domain_for("写个内部小工具脚本，解析日志") == "generic"
+    assert domain_for("写一个订单创建接口，含支付审批，生产，go") == "backend"
+    assert domain_for("生成一个登录页面 tsx") == "frontend_ui"

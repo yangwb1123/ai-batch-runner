@@ -20,7 +20,8 @@
 #
 # 运行（--classify 自动路由前端任务到这里）：
 #   pi-batch -p "用 React 实现 ERP 排程列表页，生产环境" --classify
-# 注意：pi-batch.yaml 中 uicheck/uiquality 的 --dir 需指向项目前端根目录。
+# 注意：项目前端根目录由 pi-batch.yaml 顶层 ui_scan_dir 配置（默认 {cwd}/src，
+# 非 src/ 布局需设置，如 ui_scan_dir: lib），无需手改验证器 --dir。
 
 git_commit: true
 decision_log: docs/DECISIONS.md

@@ -8,9 +8,10 @@ import json
 import sys
 from pathlib import Path
 
+from pbatch.rule_cli import rules_main
 from pbatch.rule_matcher import (format_manifest, format_llm_prompt,
                                  load_registry, match_rules, reconcile,
-                                 rules_main, summarize_task)
+                                 summarize_task)
 
 
 def test_demo_tier_loads_only_visual_core():
@@ -107,6 +108,52 @@ def test_registry_keyword_sections_present():
     assert {"demo", "production"} <= set(registry["scale"])
     assert "rules" in registry
     assert "visual-core" in registry["rules"]
+
+
+def test_registry_rejects_self_referential_files():
+    """A rule listing the registry file itself is a schema violation."""
+    from pbatch.rule_cli import check_registry
+    reg = {"rules": {"bad": {"description": "x", "min_tier": "standard",
+                             "files": ["backend-specs/rules.yaml"]}}}
+    viol = check_registry(reg, registry_paths=["backend-specs/rules.yaml"])
+    assert any("self-referential" in v for v in viol)
+    # default (no registry_paths) keeps backward-compatible behavior
+    assert not check_registry(reg)
+
+
+def test_shipped_registries_have_no_self_reference():
+    """Both shipped registries pass the self-reference gate (A3 clean side)."""
+    from pbatch.rule_cli import check_registry
+    from pbatch.rule_matcher import _default_registry_paths
+    for domain in ("frontend_ui", "backend"):
+        paths = [str(p.resolve()) for p in _default_registry_paths(domain)]
+        assert not check_registry(load_registry(domain=domain), paths)
+
+
+def test_product_registry_has_no_frontend_defaults():
+    """F1 pin: the product registry must not inherit ui-spec defaults
+    (load_registry reset tuple must include "product")."""
+    registry = load_registry(domain="product")
+    ids = set(registry["rules"])
+    assert {"product-thinking", "commercial-readiness",
+            "open-source-readiness", "completion-evidence",
+            "billing"} <= ids
+    assert not ({"visual-core", "component-spec",
+                 "business-profile"} & ids)
+
+
+def test_check_registries_fails_closed_on_empty_registry(monkeypatch):
+    """F2 pin: a missing/empty registry must exit 1, never report OK
+    (vacuous-pass guard R4')."""
+    from pbatch import rule_cli
+    monkeypatch.setattr(rule_cli, "load_registry",
+                        lambda domain="": {"rules": {}})
+    try:
+        rule_cli._check_registries_cli()
+        raised = False
+    except SystemExit as exc:
+        raised = exc.code == 1
+    assert raised
 
 
 def test_summarize_task_compresses_requirement():

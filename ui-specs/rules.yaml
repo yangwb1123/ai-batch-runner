@@ -49,6 +49,7 @@ rules:
     files: [ui-specs/spacing.md, ui-specs/anti-patterns.md]
     min_tier: demo
     required: true
+    level: invariant   # 宪法层：不参与权重竞争，违反即淘汰方案（AADM §12）
   geometry:
     description: >-
       几何构图：先构图后写码——隐形对齐轴、线条语义（留白>分隔>边框）、
@@ -85,6 +86,7 @@ rules:
     files: [ui-specs/design-intelligence/01-product-thinking.md]
     min_tier: demo
     required: true
+    level: heuristic
   design-intelligence-color:
     description: >-
       色彩智能（场景→心理→信息权重→色彩语言；企业/SaaS/AI/大屏/Dark 范式；
@@ -128,6 +130,7 @@ rules:
     files: [ui-specs/engineering/form-table-state.md]
     min_tier: standard
     page_types: [form, table]
+    suppress_on: [demo]   # demo 档显式抑制（激活/抑制机制，AADM §14）
   interaction-patterns:
     description: 操作分级/反馈闭环/弹窗vs抽屉/批量报告/删除确认/异步任务
     files: [ui-specs/engineering/interaction-patterns.md]
@@ -149,3 +152,5 @@ rules:
     description: 依赖方向、上帝文件、复杂度预算、shared 准入
     files: [ui-specs/engineering/architecture-budgets.md]
     min_tier: production
+    level: policy   # 组织策略：默认强制，正式例外流程可豁免（AADM §12）
+    suppress_on: [demo]   # demo 档显式抑制（激活/抑制机制，AADM §14）

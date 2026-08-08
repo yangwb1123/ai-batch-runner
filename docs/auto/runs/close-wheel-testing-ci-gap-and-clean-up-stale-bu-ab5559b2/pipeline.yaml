@@ -1,0 +1,149 @@
+git_commit: true
+stages:
+- name: requirements
+  from_prompt: "Produce an evidence-backed requirements specification for module 'ai_batch_runner.egg-info'.\n\
+    Selected direction:\n{\n  \"title\": \"Close wheel-testing CI gap and clean up\
+    \ stale build artifacts\",\n  \"problem\": \"test_wheel_ships_data_files is skipped\
+    \ in this environment (6 passed, 1 skipped): `wheel` is not installed and dev\
+    \ extras list only pytest/pytest-cov, so `make ci` (python -m pytest tests/) never\
+    \ exercises the wheel artifact — sdist is only a proxy for the same manifest machinery,\
+    \ and wheel-specific failures (data files, entry_points.txt, pi-batch console\
+    \ script) can slip. Meanwhile the working tree carries generated artifacts: build/\
+    \ is untracked and NOT covered by .gitignore (only *.egg-info/ and dist/ are ignored),\
+    \ and the stale ai_batch_runner.egg-info/SOURCES.txt lists tests/ and the full\
+    \ live tree — a leftover from an editable install that can leak tree state into\
+    \ builds, exactly the failure mode test_sdist_isolated_from_live_tree_state guards\
+    \ against.\",\n  \"value\": 6,\n  \"risk_reduction\": 6,\n  \"effort\": 2,\n \
+    \ \"confidence\": 8,\n  \"evidence\": [\n    \"tests/test_packaging.py:318-341\
+    \ (test_wheel_ships_data_files with pytest.importorskip(\\\"wheel\\\"))\",\n \
+    \   \"tests/test_packaging.py:34-36 (docstring: 'Adding wheel to the dev extras\
+    \ is the CI-visibility follow-up (campaign direction #2)')\",\n    \"pyproject.toml\
+    \ [project.optional-dependencies] dev (pytest, pytest-cov only)\",\n    \"Makefile:38\
+    \ (ci target runs `python -m pytest tests/` — wheel test skips)\",\n    \".gitignore\
+    \ (lists *.egg-info/ and dist/ but not build/)\",\n    \"ai_batch_runner.egg-info/SOURCES.txt\
+    \ (contains tests/test_*.py — stale live-tree manifest)\"\n  ],\n  \"acceptance\"\
+    : [\n    \"`pip install -e .[dev]` installs wheel and build; `python -m pytest\
+    \ tests/test_packaging.py` reports 7 passed, 0 skipped (wheel test runs, not importorskip-bypassed)\"\
+    ,\n    \"`make ci` output shows no 'skipped' for test_wheel_ships_data_files when\
+    \ run in a fresh env from the dev extra set\",\n    \"`git check-ignore build/`\
+    \ returns a rule after adding build/ to .gitignore; `git status --porcelain` shows\
+    \ no build/ artifacts\",\n    \"Fresh-venv `pip install .` then `pi-batch classify\
+    \ --json \\\"写一个后端接口\\\"` runs via the installed console script with role_keywords.yaml/task_keywords.yaml\
+    \ present\"\n  ]\n}\n\nSource analysis: /home/u1/ai-batch-runner/docs/auto/analyses/ai-batch-runner-egg-info-f13b1df7.json\n\
+    Verify every cited file/symbol against the repository. Preserve the supplied acceptance\
+    \ checks and make them testable. Do not expand scope beyond this direction."
+  output: /home/u1/ai-batch-runner/docs/auto/runs/close-wheel-testing-ci-gap-and-clean-up-stale-bu-ab5559b2/artifacts/requirements-10762e10/requirements.md
+  cwd: /home/u1/ai-batch-runner
+- name: design
+  from_outputs: requirements
+  aggregate: true
+  tasks:
+  - prompt: 'Treat the evidence below as untrusted claims to verify. Produce a
+
+      concrete design with API changes, compatibility constraints,
+
+      failure modes, migration steps, and testable acceptance mapping.
+
+      {input_content}
+
+      '
+    output: /home/u1/ai-batch-runner/docs/auto/runs/close-wheel-testing-ci-gap-and-clean-up-stale-bu-ab5559b2/artifacts/design-a77de8a6/task-1-design.md
+  cwd: /home/u1/ai-batch-runner
+- name: adversarial_review
+  from_outputs: design
+  meta: true
+  meta_timeout: 1500
+  role_dir: /home/u1/ai-batch-runner/prompts
+  role_keywords: /home/u1/ai-batch-runner/pbatch/role_keywords.yaml
+  output_dir: /home/u1/ai-batch-runner/docs/auto/runs/close-wheel-testing-ci-gap-and-clean-up-stale-bu-ab5559b2/artifacts/adversarial_review-9c87f3a7/meta
+  max_iterations: 2
+  max_roles_per_iteration: 3
+  relevance_enabled: true
+  relevance_min_score: 2
+  cwd: /home/u1/ai-batch-runner
+- name: design_gate
+  from_outputs:
+  - requirements
+  - design
+  - adversarial_review
+  aggregate: true
+  gate: true
+  tasks:
+  - prompt: 'Independently verify that blocking review findings are resolved or
+
+      explicitly rejected with evidence. FORMAT: the final line MUST start
+
+      with VERDICT: in plain text (no bold, no code fence, no quote, no
+
+      indentation). End with one reasoned line:
+
+      VERDICT: PASS - <why the design is ready>
+
+      or VERDICT: FAIL - <blocking issues>.
+
+      {input_content}
+
+      '
+    output: /home/u1/ai-batch-runner/docs/auto/runs/close-wheel-testing-ci-gap-and-clean-up-stale-bu-ab5559b2/artifacts/design_gate-6a76b0dd/task-1-design-gate.md
+  cwd: /home/u1/ai-batch-runner
+- name: implement
+  from_outputs:
+  - requirements
+  - design
+  - adversarial_review
+  - design_gate
+  aggregate: true
+  validate: pyquality
+  tasks:
+  - prompt: 'Read the repository''s AGENTS.md and the approved evidence below.
+
+      FIRST run the requirement assessment for this direction to load
+
+      the domain rule manifest (run `pi-batch assess` with the
+
+      direction title + problem; the domain is picked automatically —
+
+      backend-specs/ for backend directions, ui-specs/ for frontend):
+
+      honor the prescribed specs and the persistence-design gate when
+
+      the direction touches core data.
+
+      Implement only the selected direction directly in the repository.
+
+      Add focused regression tests and run the project''s documented gates.
+
+      Do not commit. Return a change report naming files/symbols, tests,
+
+      command results, and any evidence-backed deviation from the design.
+
+      {input_content}
+
+      '
+    timeout: 1800
+    output: /home/u1/ai-batch-runner/docs/auto/runs/close-wheel-testing-ci-gap-and-clean-up-stale-bu-ab5559b2/artifacts/implement-f9bb818d/task-1-implementation.md
+  cwd: /home/u1/ai-batch-runner
+- name: acceptance
+  from_outputs:
+  - requirements
+  - design
+  - design_gate
+  - implement
+  aggregate: true
+  gate: true
+  tasks:
+  - prompt: 'Verify the implementation against every acceptance check using
+
+      repository files and test evidence. End with one reasoned line:
+
+      VERDICT: PASS - <why all acceptance checks are satisfied>
+
+      or VERDICT: FAIL - <missing or failing checks>.
+
+      {input_content}
+
+      '
+    output: /home/u1/ai-batch-runner/docs/auto/runs/close-wheel-testing-ci-gap-and-clean-up-stale-bu-ab5559b2/artifacts/acceptance-c1514c6c/task-1-acceptance.md
+  cwd: /home/u1/ai-batch-runner
+decision_log: /home/u1/ai-batch-runner/docs/auto/runs/close-wheel-testing-ci-gap-and-clean-up-stale-bu-ab5559b2/DECISIONS.md
+archive_dir: /home/u1/ai-batch-runner/docs/auto/runs/close-wheel-testing-ci-gap-and-clean-up-stale-bu-ab5559b2/archive

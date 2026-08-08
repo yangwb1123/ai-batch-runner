@@ -192,3 +192,115 @@ def test_dart_const_static_access_ok(tmp_path):
     dart = tmp_path / "w.dart"
     dart.write_text("const x = Color(0xFF6366F1);\n", encoding="utf-8")
     assert _run("--strict", str(dart)).returncode == 0
+
+
+def test_frontend_skip_flag(tmp_path):
+    """AC3: --skip unions with DEFAULT_EXCLUDES. --skip e2e keeps 2 (e2e is
+    already a default exclude — union AND replace agree here, so this line
+    pins idempotence, not the trap); --skip scratch -> 1 is the line that
+    catches a replace implementation (it would drop the defaults and re-scan
+    e2e/, yielding 2)."""
+    _write(tmp_path, "src/a.tsx", "const x: any = 1;\n")
+    _write(tmp_path, "scratch/b.tsx", "const x: any = 1;\n")
+    _write(tmp_path, "e2e/c.tsx", "const x: any = 1;\n")
+
+    def scanned(*extra):
+        result = _run("--dir", str(tmp_path), "--json", *extra)
+        return json.loads(result.stdout)["files_scanned"]
+
+    assert scanned() == 2                  # e2e excluded by default
+    assert scanned("--skip", "scratch") == 1  # replace-impl would yield 2
+    assert scanned("--skip", "e2e") == 2  # idempotence pin (both semantics 2)
+    assert scanned("--skip", "scratch,e2e") == 1
+    assert scanned("--skip", "") == 2     # empty value -> no-op
+
+
+def test_frontend_flaglike_value_rejected(tmp_path):
+    """F1: --skip followed by a flag is a usage error (exit 2), never
+    silently swallowed — --skip --json must not degrade to human mode with
+    exit 0 on a clean tree."""
+    _write(tmp_path, "src/a.tsx", "const x: any = 1;\n")
+
+    for args in (("--skip", "--json"), ("--skip", "--strict")):
+        result = _run("--dir", str(tmp_path), *args)
+        assert result.returncode == 2, args
+        assert "expected one argument" in result.stderr, args
+        assert "{" not in result.stdout, args  # no JSON, no false pass
+
+    # bare dash is still a legal value (argparse-family convention)
+    _write(tmp_path, "src/a.tsx", "export const ok = 1;\n")
+    result = _run("--dir", str(tmp_path), "--skip", "-")
+    assert result.returncode == 0
+
+
+def test_frontend_json_ok_path_pure(tmp_path):
+    """R2: under --json the OK summary goes to stderr; stdout is exactly
+    one JSON document."""
+    _write(tmp_path, "src/clean.tsx",
+           "export function ok() {\n  return <div />;\n}\n")
+    result = _run("--dir", str(tmp_path), "--json")
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["total"] == 0
+    assert "UI-QUALITY" not in result.stdout
+    assert "UI-QUALITY: OK" in result.stderr
+
+
+def test_frontend_trailing_skip_diagnostic(tmp_path):
+    """F1 (mirror): trailing --skip (no value) is a visible missing-target
+    violation (exit 1), never a silent accept; stdout stays strict JSON."""
+    _write(tmp_path, "src/a.tsx", "export const ok = 1;\n")
+    result = _run("--dir", str(tmp_path), "--json", "--skip")
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    files = [v["file"] for v in payload["violations"]]
+    assert "--skip" in files
+    assert "missing target" in result.stderr
+
+
+def test_frontend_skip_explicit_file_immune(tmp_path):
+    """F2 (mirror): --skip filters --dir scans only; explicit file targets
+    are scanned regardless; positional mode is a --skip no-op."""
+    _write(tmp_path, "src/a.tsx", "export const ok = 1;\n")
+    viol = tmp_path / "scratch" / "b.tsx"
+    _write(tmp_path, "scratch/b.tsx", "const x: any = 1;\n")
+
+    result = _run("--dir", str(tmp_path), "--skip", "scratch", "--json",
+                  str(viol))
+    payload = json.loads(result.stdout)
+    assert payload["files_scanned"] == 2  # src/a.tsx (dir) + explicit viol
+    assert payload["total"] == 1
+    assert any(v["file"] == str(viol) for v in payload["violations"])
+
+    with_skip = _run(str(viol), "--skip", "scratch")
+    without = _run(str(viol))
+    assert with_skip.returncode == without.returncode == 1
+    assert with_skip.stdout == without.stdout
+    assert with_skip.stderr == without.stderr
+
+
+def test_frontend_skip_all_excluded_empty_pass(tmp_path):
+    """F3 (mirror): frontend convention — an empty scan after --skip is a
+    pass (exit 0), symmetric to its empty-directory convention; backend's
+    fail-closed behavior is pinned in test_backend_specs."""
+    _write(tmp_path, "src/a.tsx", "const x: any = 1;\n")
+    _write(tmp_path, "scratch/b.tsx", "const x: any = 1;\n")
+    result = _run("--dir", str(tmp_path), "--json", "--skip",
+                  "src,scratch")
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["files_scanned"] == 0
+    assert payload["total"] == 0
+    assert "UI-QUALITY: OK (0 file(s) scanned)" in result.stderr
+
+
+def test_frontend_o_flag_summary_on_stdout(tmp_path):
+    """F6: -o without --json keeps the human summary on stdout; the report
+    file is strict-parseable JSON (mirror of the backend C2 test)."""
+    _write(tmp_path, "src/clean.tsx",
+           "export function ok() {\n  return <div />;\n}\n")
+    report = tmp_path / "report.json"
+    result = _run("--dir", str(tmp_path), "-o", str(report))
+    assert result.returncode == 0
+    assert "UI-QUALITY: OK" in result.stdout
+    assert json.loads(report.read_text(encoding="utf-8"))["total"] == 0

@@ -1,0 +1,43 @@
+id: requirement
+name: Requirement Agent
+role: 需求分析（PM+BA）
+stage: 1
+parent: orchestrator
+responsibilities:
+- 需求澄清（目标/用户/价值/成功标准/边界）
+- 用户角色分析
+- 场景分析（正常/异常/边界/权限）
+- 验收标准 Given/When/Then
+inputs:
+- 自然语言需求
+outputs:
+- Requirement Specification
+- 角色清单
+- 场景清单
+- 验收标准
+check_rules:
+- 8 维完整性（角色/主流程/数据源/权限/异常/验收/技术栈）
+- 目标对齐
+- 需求先原子化
+forbidden:
+- 直接转代码
+- 把假设当事实
+- 缺验收标准就交付
+best_practices:
+- 先原子化（atomize）再评估（assess）
+- 异常流程必须设计
+- 验收标准可测试
+failure_cases:
+- 把'增加审批'直接转代码（缺角色/异常/验收）
+- 隐含假设未标记
+auto_checks:
+- pi-batch atomize {task}
+- pi-batch assess {task}
+- pi-batch reflect quick --task {task}
+- pi-batch impact --task {task}
+review_checklist:
+- 角色齐全？
+- 异常流程设计？
+- Given/When/Then 验收标准？
+- 假设已标记？
+role_template: prompts/requirement_interpreter.md

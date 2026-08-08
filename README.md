@@ -173,7 +173,7 @@ pi-batch assess "..." --json
 
 # Rule matching (scale × page_type × risk) + two-sided LLM check
 pi-batch rules "生成一个登录页 demo"
-pi-batch rules --check                     # registry schema integrity (both domains)
+pi-batch rules --check                     # registry schema integrity (three domains)
 pi-batch rules "..." --summary | --llm-prompt p.txt | --llm-json '{...}'
 
 # Context routing + evolution + self-check
@@ -592,11 +592,11 @@ deadline), missing `pyproject.toml`, and the unguarded `git add -A`.
 Agent 生成前端 UI 时遵循"先构图、后写码"：
 
 - **`ui-specs/geometry.md`**：隐形对齐轴、线条五语义（留白>分隔>边框）、
-  圆角 {6,10,16} / 线宽 {1,2,3} / 控件 {32,40,48} 家族、光学修正显式化
-  （`--optical-*` 变量）
+  圆角 {4,8,12}（tokens.json radius 派生）/ 线宽 {1,2,3} / 控件 {32,40,48}
+  家族、光学修正显式化（`--optical-*` 变量）
 - **`ui-specs/business-ui-contract.md`**：角色×任务×数据×交互×视觉五层映射、
   状态矩阵（加载/空/部分/陈旧/并发/无权限/恢复）、错误四阶、数据可信度
 - **`pi-batch ui-geometry <file|--dir>`**：机械门禁子命令——裸数字小偏移、
   随机圆角、随机线宽 fail closed（`uigeometry` 验证器 + eval 回归 40 例）
-- 流水线挂载：frontend-implementation / ui-generation / ui-refactor 的
-  implement/生成阶段自动带 uigeometry 门禁
+- 流水线挂载：frontend-implementation / ui-generation 的 implement/生成阶段
+  自动带 uigeometry 门禁（ui-refactor 走 uicheck 项目级扫描）

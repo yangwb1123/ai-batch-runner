@@ -1,0 +1,71 @@
+Based on my analysis of the `scripts/` module (12 Python checkers + 5 sverp bash gates) and their consumers (`pi-batch.yaml` validators, `pbatch/health.py`, `pbatch/advance.py`, `pbatch/ui_geometry.py`), here are the top improvement directions:
+
+```json
+[
+  {
+    "title": "统一校验器 CLI 面与 --json 的 stdout 契约（--skip 缺失 + JSON 后跟摘要行污染机器输出）",
+    "problem": "check-backend-quality.py 与 check-frontend-quality.py 用手写 parse_argv，不支持 --skip（项目无法排除自己的 generated/迁移目录，误报只能改代码调优）；且 --json 时 JSON 输出后仍向 stdout 打印 'BACKEND-QUALITY: OK' 摘要，污染机器可读输出。consumers 被迫打补丁：pbatch/health.py:48 注释 'check-backend-quality 无 --skip' 并特判，pbatch/health.py:57 用 raw_decode 跳过尾行才解析到 JSON。同族的 check-ui-spec.py:244-253 已正确实现（--json 时摘要走 stderr、stdout 纯 JSON），说明这是可修复的不一致而非设计约束。",
+    "value": 8,
+    "risk_reduction": 6,
+    "effort": 3,
+    "confidence": 9,
+    "evidence": [
+      "scripts/check-backend-quality.py:323",
+      "scripts/check-backend-quality.py:371",
+      "scripts/check-frontend-quality.py:220",
+      "scripts/check-frontend-quality.py:268",
+      "scripts/check-ui-spec.py:238",
+      "pbatch/health.py:48",
+      "pbatch/health.py:57"
+    ],
+    "acceptance": [
+      "python scripts/check-backend-quality.py --dir . --json 的 stdout 能被 json.loads 直接解析（无尾行）",
+      "python scripts/check-backend-quality.py --dir . --skip generated,migrations 不扫描被排除目录",
+      "python scripts/check-frontend-quality.py --dir . --skip e2e 生效",
+      "pbatch/health.py 的 raw_decode 特判与 --skip 分支可删除且 health --json 输出不变",
+      "python scripts/check-ui-spec.py --dir . --json 现有行为不回归"
+    ]
+  },
+  {
+    "title": "修复 completion 门禁对 PyYAML 的硬依赖：声称纯 stdlib 但缺 yaml 时崩溃而非按声明回退文本检查",
+    "problem": "check-completion-report.py 文档声明 'pure stdlib'（scripts/check-completion-report.py:3），且 pi-batch.yaml 的 completion_go 面向无此脚本的目标仓库（AGENTS.md 明示用绝对路径指向本工具集）。但 check_report 中 _has_yaml() 为假时只追加一条 violation，随后第 106 行无条件 import yaml → ImportError 直接崩溃（traceback 污染 stderr 反馈、退出码 1 而非干净 fail-closed），声明的 'falling back to textual checks' 是死代码。对失败闭合门禁而言，缺依赖时行为应是可诊断的干净拒绝或真正的回退解析，而不是崩溃。",
+    "value": 6,
+    "risk_reduction": 8,
+    "effort": 2,
+    "confidence": 9,
+    "evidence": [
+      "scripts/check-completion-report.py:3",
+      "scripts/check-completion-report.py:61",
+      "scripts/check-completion-report.py:104",
+      "scripts/check-completion-report.py:106",
+      "pi-batch.yaml:150"
+    ],
+    "acceptance": [
+      "在无 PyYAML 环境（python -S 或临时隐藏 yaml 模块）运行 check-completion-report.py，退出码为 0/1/2 之一且 stderr 有明确原因，无 traceback",
+      "无 yaml 时仍能检出 completion_report 缺失（'missing completion_report block'）",
+      "有 yaml 时现有 387 回归测试与 make ci 不回归"
+    ]
+  },
+  {
+    "title": "抽取共享扫描器基础设施（scan_directory/DEFAULT_EXCLUDES/JSON 报告 main），消除三份手工同步拷贝",
+    "problem": "check-backend-quality.py:86、check-frontend-quality.py:69、check-ui-spec.py:122 存在逐字重复的 scan_directory；三处 DEFAULT_EXCLUDES 近似重复但已漂移（backend 版多了 migrations/generated/ephemeral 等条目），main() 的 report dict + JSON 落盘 + stderr 打印块也在各检查器重复。git 历史 45fafb9 'fix(scanners): Rust/JS false positives, vendor/.claude/target excludes, DDL crash' 证明排除项修复需要跨文件人工同步，漏一处就产生行为分叉。仓库已有共享模块先例 scripts/ui_tokens.py（check-ui-spec 与 check-ui-geometry 共用 token 单一事实源），按同一模式抽 scripts/checker_common.py 即可。",
+    "value": 6,
+    "risk_reduction": 5,
+    "effort": 4,
+    "confidence": 8,
+    "evidence": [
+      "scripts/check-backend-quality.py:86",
+      "scripts/check-frontend-quality.py:69",
+      "scripts/check-ui-spec.py:122",
+      "scripts/ui_tokens.py:1",
+      "scripts/check-backend-quality.py:345",
+      "scripts/check-frontend-quality.py:242"
+    ],
+    "acceptance": [
+      "scripts/ 下所有 check-*.py 共用同一 scan_directory 实现（grep 计数 = 1）",
+      "DEFAULT_EXCLUDES 单一来源，check-backend-quality/check-frontend-quality/check-ui-spec 三脚本扫描同一目录结果与重构前一致（tests/test_frontend_quality.py 18 用例、tests/test_ui_geometry.py 全绿）",
+      "python quality.py --strict . 通过（函数 ≤50 行/文件 ≤1000 行）"
+    ]
+  }
+]
+```

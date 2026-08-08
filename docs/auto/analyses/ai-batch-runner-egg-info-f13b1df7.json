@@ -1,0 +1,70 @@
+```json
+[
+  {
+    "title": "Resolve out-of-package assets for pip-installed pi-batch (documented deferred surface)",
+    "problem": "A pip-installed pi-batch silently degrades: rule_matcher resolves ui-specs/backend-specs/product-specs registries via Path(__file__).parent.parent (site-packages when installed) and a missing registry degrades to an empty rule set (fail-closed but lossy — `rules` returns nothing); classifier defaults route to examples/frontend-implementation-pipeline.yaml / backend-implementation-pipeline.yaml (allow_empty=False) which do not ship in the wheel; pi-batch.yaml validators like pyquality reference {tool_root}/quality.py, a repo-only script; health.py has no data-file/registry presence probe. test_packaging.py's own docstring records this as deferred (direction #2 / M3 health probe) — the compensating sdist test proves data files ship, but the missing-asset failure mode is still silent at runtime.",
+    "value": 7,
+    "risk_reduction": 7,
+    "effort": 6,
+    "confidence": 7,
+    "evidence": [
+      "tests/test_packaging.py:44-52 (deferred surface: {tool_root} validators, rule_matcher registries, examples/ pipelines, health probe M3)",
+      "pbatch/rule_matcher.py:98 (Path(__file__).resolve().parent.parent / rel registry paths)",
+      "pbatch/rule_matcher.py:104-105 (missing backend registry degrades to empty rule set)",
+      "pbatch/config.py:48 (TOOL_ROOT = parent.parent), pbatch/config.py:376-379 (examples/ pipeline defaults, allow_empty=False)",
+      "pbatch/health.py:125-135 (checkers: designintelligence/knowledge/backendquality, no asset-presence probe)",
+      "pi-batch.yaml (validators.pyquality: python {cwd}/quality.py {cwd} — quality.py not packaged)"
+    ],
+    "acceptance": [
+      "In a fresh venv, `pip install .` then `pi-batch rules \"企业支付审批，生产\" --json` returns non-empty rules OR a clear explicit error naming the missing ui-specs registry — never a silent empty result",
+      "`python -m pbatch classify \"生成登录页面 tsx\"` from an installed location reports a resolvable pipeline path or fails with a message naming the missing examples/ file",
+      "`pi-batch health --json` executed from site-packages includes a packaged-assets checker key reporting which registries/scripts are missing",
+      "tests/test_packaging.py gains a case asserting quality.py and scripts/ are either shipped in the sdist or that {tool_root} validators fail closed with an explicit message"
+    ]
+  },
+  {
+    "title": "Close wheel-testing CI gap and clean up stale build artifacts",
+    "problem": "test_wheel_ships_data_files is skipped in this environment (6 passed, 1 skipped): `wheel` is not installed and dev extras list only pytest/pytest-cov, so `make ci` (python -m pytest tests/) never exercises the wheel artifact — sdist is only a proxy for the same manifest machinery, and wheel-specific failures (data files, entry_points.txt, pi-batch console script) can slip. Meanwhile the working tree carries generated artifacts: build/ is untracked and NOT covered by .gitignore (only *.egg-info/ and dist/ are ignored), and the stale ai_batch_runner.egg-info/SOURCES.txt lists tests/ and the full live tree — a leftover from an editable install that can leak tree state into builds, exactly the failure mode test_sdist_isolated_from_live_tree_state guards against.",
+    "value": 6,
+    "risk_reduction": 6,
+    "effort": 2,
+    "confidence": 8,
+    "evidence": [
+      "tests/test_packaging.py:318-341 (test_wheel_ships_data_files with pytest.importorskip(\"wheel\"))",
+      "tests/test_packaging.py:34-36 (docstring: 'Adding wheel to the dev extras is the CI-visibility follow-up (campaign direction #2)')",
+      "pyproject.toml [project.optional-dependencies] dev (pytest, pytest-cov only)",
+      "Makefile:38 (ci target runs `python -m pytest tests/` — wheel test skips)",
+      ".gitignore (lists *.egg-info/ and dist/ but not build/)",
+      "ai_batch_runner.egg-info/SOURCES.txt (contains tests/test_*.py — stale live-tree manifest)"
+    ],
+    "acceptance": [
+      "`pip install -e .[dev]` installs wheel and build; `python -m pytest tests/test_packaging.py` reports 7 passed, 0 skipped (wheel test runs, not importorskip-bypassed)",
+      "`make ci` output shows no 'skipped' for test_wheel_ships_data_files when run in a fresh env from the dev extra set",
+      "`git check-ignore build/` returns a rule after adding build/ to .gitignore; `git status --porcelain` shows no build/ artifacts",
+      "Fresh-venv `pip install .` then `pi-batch classify --json \"写一个后端接口\"` runs via the installed console script with role_keywords.yaml/task_keywords.yaml present"
+    ]
+  },
+  {
+    "title": "Single-source version identity for the distribution and runtime components",
+    "problem": "Version 0.1.0 exists only as duplicated hardcoded strings: pyproject.toml, the generated egg-info PKG-INFO, FABRIC_VERSION in fabric.py (embedded in runner handshakes, capsule replay and execution evidence fingerprints), and the rule-schema template in learn.py — four drift-prone copies. The installed tool cannot report its own version (`pi-batch --version` and `python -m pbatch --version` do not exist; --help prints none), and tests/test_packaging.py hardcodes SDIST_PREFIX = \"ai-batch-runner-0.1.0/\" so any version bump silently breaks the sdist suite until the constant is found. Version drift undermines fabric runner/control compatibility checks and capsule replay provenance.",
+    "value": 5,
+    "risk_reduction": 5,
+    "effort": 2,
+    "confidence": 9,
+    "evidence": [
+      "pyproject.toml:7 (version = \"0.1.0\" hardcoded)",
+      "ai_batch_runner.egg-info/PKG-INFO (Metadata-Version 2.4, Version: 0.1.0)",
+      "pbatch/fabric.py:40 (FABRIC_VERSION = \"0.1.0\") used at pbatch/fabric.py:195,365,381 and pbatch/fabric_exec.py:171 (fingerprint), pbatch/capsule.py:61",
+      "pbatch/learn.py:204 (rule schema template \"version\": \"0.1.0\")",
+      "pbatch/cli.py (no --version argument — only 'nversion' match for 'version')",
+      "tests/test_packaging.py:20 (SDIST_PREFIX = \"ai-batch-runner-0.1.0/\" coupled to the version string)"
+    ],
+    "acceptance": [
+      "`python -m pbatch --version` prints a version derived from a single source (e.g. importlib.metadata.version(\"ai-batch-runner\")) equal to pyproject.toml's version",
+      "`importlib.metadata.version('ai-batch-runner')` == pbatch.fabric.FABRIC_VERSION",
+      "Bumping version in pyproject.toml alone updates PKG-INFO and `--version` without editing pbatch/ or tests/",
+      "tests/test_packaging.py derives SDIST_PREFIX from importlib.metadata instead of the hardcoded '0.1.0' literal"
+    ]
+  }
+]
+```
