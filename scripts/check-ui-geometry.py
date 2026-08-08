@@ -37,6 +37,11 @@ RADIUS_FAMILY = {6, 10, 16}
 STROKE_LEVELS = {1, 2, 3}
 ALLOWED_OFFSETS = {0}  # 0 是合法的重置
 
+def _offset_line_exempt(line: str) -> bool:
+    """同一行出现 --optical-* 变量或 sr-only 裁剪时豁免。"""
+    return "--optical-" in line or "clip: rect" in line
+
+
 def check_offsets(text: str) -> list[str]:
     """裸数字小偏移（1-3px）未绑定光学变量 → 问题。"""
     problems = []
@@ -50,15 +55,13 @@ def check_offsets(text: str) -> list[str]:
             for j in range(max(0, i - 5), min(len(lines), i + 6)):
                 clip_blocks.add(j + 1)
     for lineno, line in enumerate(lines, 1):
-        if "--optical" in line or "--spacing" in line or "var(--" in line:
+        if "--spacing" in line or "var(--" in line or _offset_line_exempt(line):
             continue
         if lineno in clip_blocks:
             continue
         for match in OFFSET_PATTERN.finditer(line):
             value = int(match.group("value"))
-            if value in ALLOWED_OFFSETS:
-                continue
-            if 1 <= abs(value) <= 3:
+            if _offset_violation(value):
                 problems.append(
                     f"{lineno}:{match.start() + 1}: bare offset "
                     f"{match.group(0).split(':', 1)[0]}: {match.group('value')}px"
@@ -66,6 +69,18 @@ def check_offsets(text: str) -> list[str]:
                     f"（ui-specs/geometry.md §5）"
                 )
     return problems
+
+
+def _offset_violation(value: int) -> bool:
+    """1-3px 裸偏移且不在允许集合 → 违规。"""
+    return value not in ALLOWED_OFFSETS and 1 <= abs(value) <= 3
+
+
+def _radius_exempt(raw: str) -> bool:
+    """可变/百分比/胶囊/零半径不强制家族约束。"""
+    if raw in {"50%", "9999px", "999px", "0", "0px", "inherit"} or raw.endswith("%"):
+        return True
+    return raw.startswith("var(")
 
 
 def check_radius(text: str) -> list[str]:
@@ -76,9 +91,7 @@ def check_radius(text: str) -> list[str]:
         if not match:
             continue
         raw = match.group(1).strip().removesuffix("!important").strip()
-        if raw in {"50%", "9999px", "999px", "0", "0px", "inherit"} or raw.endswith("%"):
-            continue
-        if raw.startswith("var("):
+        if _radius_exempt(raw):
             continue
         values = [v.strip() for v in raw.split()]
         for value in values:
