@@ -1548,3 +1548,48 @@ class TestRetryJitter:
             assert out.exists()
         finally:
             ratelimit.configure(0, 1, {})
+
+
+class TestFromDirAggregate:
+    """P1 使用反馈：from_dir + aggregate 合并为单任务（证据归一零浪费）。"""
+
+    def test_aggregate_merges_all_files_into_one_task(self, tmp_path, monkeypatch):
+        mod = load_batch()
+        inputs = tmp_path / "inputs"
+        inputs.mkdir()
+        (inputs / "01-a.md").write_text("AAA", encoding="utf-8")
+        (inputs / "02-b.md").write_text("BBB", encoding="utf-8")
+        (inputs / "03-c.md").write_text("CCC", encoding="utf-8")
+        stage = mod.Stage(name="s0", from_dir=str(inputs), aggregate=True)
+        tasks, reused = mod.pipeline._stage_from_dir_tasks(
+            stage, reuse=False, model_override="", timeout_override=0)
+        assert len(tasks) == 1, "aggregate 必须是单任务"
+        assert reused == []
+        assert "AAA" in tasks[0].prompt and "BBB" in tasks[0].prompt and "CCC" in tasks[0].prompt
+        assert "01-a.md" in tasks[0].prompt  # 分界符含文件名
+        assert tasks[0].output_path() == (inputs / "aggregate.out.md").resolve()
+
+    def test_aggregate_skips_existing_outputs(self, tmp_path):
+        mod = load_batch()
+        inputs = tmp_path / "inputs"
+        inputs.mkdir()
+        (inputs / "a.md").write_text("AAA", encoding="utf-8")
+        (inputs / "a.out.md").write_text("old", encoding="utf-8")  # 既有产出不被当输入
+        stage = mod.Stage(name="s0", from_dir=str(inputs), aggregate=True)
+        tasks, _ = mod.pipeline._stage_from_dir_tasks(
+            stage, reuse=False, model_override="", timeout_override=0)
+        assert len(tasks) == 1
+        assert "a.out.md" not in tasks[0].prompt
+
+    def test_aggregate_respects_reuse(self, tmp_path, monkeypatch):
+        mod = load_batch()
+        inputs = tmp_path / "inputs"
+        inputs.mkdir()
+        (inputs / "a.md").write_text("AAA", encoding="utf-8")
+        out = inputs / "aggregate.out.md"
+        out.write_text("done", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        stage = mod.Stage(name="s0", from_dir=str(inputs), aggregate=True)
+        tasks, reused = mod.pipeline._stage_from_dir_tasks(
+            stage, reuse=True, model_override="", timeout_override=0)
+        assert tasks == [] and len(reused) == 1

@@ -263,20 +263,68 @@ def _stage_from_prompt_tasks(stage: Stage, reuse: bool, model_override: str, tim
     log.info("Loaded 1 task from from_prompt for stage '%s'", stage.name)
     return [task], []
 
+def _stage_from_dir_aggregate(
+    stage: Stage, files: list, reuse: bool, model_override: str,
+    timeout_override: int, validate_cmd: str, reuse_legacy: bool,
+    fingerprint_mode: bool,
+) -> tuple[list[Task], list[str]]:
+    """P1（使用反馈）：from_dir + aggregate 合并为单任务（有界读取 + 总
+    预算 INPUT_MAX_BYTES；超限截断保留完整路径供按需读取）。"""
+    dir_path = Path(stage.from_dir)
+    parts: list[str] = []
+    total = 0
+    truncated = 0
+    for fpath in files:
+        text = read_text_bounded(fpath, config.INPUT_MAX_BYTES, "stage input")
+        if total + len(text) > config.INPUT_MAX_BYTES:
+            truncated += 1
+            continue
+        total += len(text)
+        parts.append(f"===== {fpath.name} =====\n{text}")
+    if not parts:
+        log.error("Stage '%s' aggregate input is empty from %s", stage.name, stage.from_dir)
+        return [], []
+    prompt = "\n\n".join(parts)
+    if truncated:
+        prompt += f"\n\n[截断提示] {truncated} 个文件超出合并预算，可按需读取其完整路径。"
+    out_path = (dir_path / ("aggregate" + stage.output_suffix)).resolve()
+    task = Task(prompt=prompt, output=str(out_path), cwd=str(dir_path.resolve()))
+    task.model = stage.model or task.model
+    task.provider = stage.provider or task.provider
+    if model_override:
+        task.model = model_override
+    if timeout_override:
+        task.timeout = timeout_override
+    fp = _expected_fp(prompt, str(out_path), validate_cmd, task.model, task.provider, fingerprint_mode)
+    if reuse and reuse_decision(str(out_path), validate_cmd, str(dir_path.resolve()), reuse_legacy, fp):
+        log.info("REUSE: %s (reused+validated)", out_path.name)
+        return [], [str(out_path)]
+    log.info("Loaded %d files -> 1 aggregate task from %s", len(files), stage.from_dir)
+    return [task], []
+
+
 def _stage_from_dir_tasks(stage: Stage, reuse: bool, model_override: str, timeout_override: int,
                           validate_cmd: str = "", reuse_legacy: bool = False,
                           fingerprint_mode: bool = False) -> tuple[list[Task], list[str]]:
-    """Read .md files from a directory; one task per file, output next to
-    the input with the stage's output suffix."""
+    """Read .md files from a directory; one task per file (default), or a
+    single merged task when the stage sets `aggregate: true` (evidence
+    normalization without one LLM call per file)."""
     dir_path = Path(stage.from_dir)
     if not dir_path.is_dir():
         log.error("Directory not found: %s", stage.from_dir)
         return [], []
+    files = sorted(
+        fpath for fpath in dir_path.glob(f"*{stage.suffix}")
+        if not fpath.name.endswith(stage.output_suffix)
+    )
+    if stage.aggregate:
+        return _stage_from_dir_aggregate(
+            stage, files, reuse, model_override, timeout_override,
+            validate_cmd, reuse_legacy, fingerprint_mode,
+        )
     tasks: list[Task] = []
     reused: list[str] = []
-    for fpath in sorted(dir_path.glob(f"*{stage.suffix}")):
-        if fpath.name.endswith(stage.output_suffix):
-            continue
+    for fpath in files:
         # Local fix (self-iteration round 2, F1): resolve the output path
         # absolutely here. The task's cwd is the input dir, so a relative
         # output would be double-prefixed by output_path()'s cwd-aware
@@ -923,6 +971,15 @@ def _describe_stage(stage: Stage, reuse: bool) -> None:
     log.info("STAGE: %s (dry-run)", stage.name)
     if stage.from_dir:
         log.info("  Will read .md files from: %s", stage.from_dir)
+        try:
+            files = [
+                f for f in Path(stage.from_dir).glob(f"*{stage.suffix}")
+                if not f.name.endswith(stage.output_suffix)
+            ]
+            mode = "merged into 1 aggregate task" if stage.aggregate else "one task per file"
+            log.info("  Files: %d (%s)", len(files), mode)
+        except OSError:
+            log.info("  Files: (directory not readable)")
         if reuse:
             log.info("  Will skip files with existing outputs")
     elif stage.from_outputs:
