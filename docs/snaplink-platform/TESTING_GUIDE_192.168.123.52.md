@@ -210,3 +210,12 @@ test/platform_audit_api_test.dart。账本 1141+ 条真实事件
 
 **运维**：vault 部门数据在 `/home/ywb/apps/aero-vault/shared/data/vault.db`
 （departments/department_members/resource_acls 表）。
+
+## 14. 质检附件 vault 受控存储（2026-08-08）
+
+- 上传：presign PUT 入 vault（`quality/{uploader}/{filename}`），qa_prod_check_file
+  url 记录 `vault:{key}`；vault 失败自动回退本地存储（不阻断业务）
+- 读取：content 路由按定位器（getFileStorageLocator）从 vault 流式透传——
+  **权限边界仍在 BFF**（quality:inspection:read）；存量本地文件不受影响
+- 坑：vault 的 key 支持多段（chi 路由原始斜杠），**encodeURIComponent(%2F) 反而 404**
+- 验证：`bash /tmp/quality-vault-e2e.sh`（上传→vault 对象存在→下载内容一致）
