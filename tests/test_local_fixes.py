@@ -20,6 +20,7 @@ import sys
 import time
 from pathlib import Path
 
+import argparse
 import pytest
 
 PI_BATCH = Path(__file__).resolve().parent.parent / "pi-batch.py"
@@ -1548,3 +1549,113 @@ class TestRetryJitter:
             assert out.exists()
         finally:
             ratelimit.configure(0, 1, {})
+
+
+class TestFromDirAggregate:
+    """P1 使用反馈：from_dir + aggregate 合并为单任务（证据归一零浪费）。"""
+
+    def test_aggregate_merges_all_files_into_one_task(self, tmp_path, monkeypatch):
+        mod = load_batch()
+        inputs = tmp_path / "inputs"
+        inputs.mkdir()
+        (inputs / "01-a.md").write_text("AAA", encoding="utf-8")
+        (inputs / "02-b.md").write_text("BBB", encoding="utf-8")
+        (inputs / "03-c.md").write_text("CCC", encoding="utf-8")
+        stage = mod.Stage(name="s0", from_dir=str(inputs), aggregate=True)
+        tasks, reused = mod.pipeline._stage_from_dir_tasks(
+            stage, reuse=False, model_override="", timeout_override=0)
+        assert len(tasks) == 1, "aggregate 必须是单任务"
+        assert reused == []
+        assert "AAA" in tasks[0].prompt and "BBB" in tasks[0].prompt and "CCC" in tasks[0].prompt
+        assert "01-a.md" in tasks[0].prompt  # 分界符含文件名
+        assert tasks[0].output_path() == (inputs / "aggregate.out.md").resolve()
+
+    def test_aggregate_skips_existing_outputs(self, tmp_path):
+        mod = load_batch()
+        inputs = tmp_path / "inputs"
+        inputs.mkdir()
+        (inputs / "a.md").write_text("AAA", encoding="utf-8")
+        (inputs / "a.out.md").write_text("old", encoding="utf-8")  # 既有产出不被当输入
+        stage = mod.Stage(name="s0", from_dir=str(inputs), aggregate=True)
+        tasks, _ = mod.pipeline._stage_from_dir_tasks(
+            stage, reuse=False, model_override="", timeout_override=0)
+        assert len(tasks) == 1
+        assert "a.out.md" not in tasks[0].prompt
+
+    def test_aggregate_respects_reuse(self, tmp_path, monkeypatch):
+        mod = load_batch()
+        inputs = tmp_path / "inputs"
+        inputs.mkdir()
+        (inputs / "a.md").write_text("AAA", encoding="utf-8")
+        out = inputs / "aggregate.out.md"
+        out.write_text("done", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        stage = mod.Stage(name="s0", from_dir=str(inputs), aggregate=True)
+        tasks, reused = mod.pipeline._stage_from_dir_tasks(
+            stage, reuse=True, model_override="", timeout_override=0)
+        assert tasks == [] and len(reused) == 1
+
+
+class TestUsageFeedbackP2P4P7:
+    """使用反馈 P2/P4/P7：容忍失败不阻断、provider 冷却、拒绝行内联 stderr。"""
+
+    def test_p2_tolerated_failures_do_not_fail_round(self, tmp_path, monkeypatch):
+        mod = load_batch()
+        args = argparse.Namespace(dry_run=False, model="", reuse=False, timeout_override=0,
+                                  session_mode="new", session_name="", validate="",
+                                  reuse_legacy=False, reuse_fingerprint=False,
+                                  approve_file="", prompt="", decision_log="",
+                                  archive_dir="")
+        fake_result = mod.TaskResult(
+            task=mod.Task(prompt="p", output="o.md"), success=False,
+            stdout="", stderr="", elapsed=1.0, returncode=1, reason="agent exited 1")
+        calls = {"n": 0}
+        def fake_run_pipeline(*a, **k):
+            calls["n"] += 1
+            return [fake_result], []  # 阶段成功（failed_stages 空）但有容忍失败
+        monkeypatch.setattr(mod.cli, "run_pipeline", fake_run_pipeline)
+        monkeypatch.setattr(mod.cli, "print_summary", lambda *a, **k: None)
+        failed, keys = mod.cli._run_pipeline_round(args, object(), "s", "", 0, False)
+        assert failed is False and keys == set()
+        assert calls["n"] == 1
+
+    def test_p2_real_failed_stages_still_fail_round(self, monkeypatch):
+        mod = load_batch()
+        args = argparse.Namespace(dry_run=False, model="", reuse=False, timeout_override=0,
+                                  session_mode="new", session_name="", validate="",
+                                  reuse_legacy=False, reuse_fingerprint=False,
+                                  approve_file="", prompt="", decision_log="",
+                                  archive_dir="")
+        def fake_run_pipeline(*a, **k):
+            return [], ["gate"]
+        monkeypatch.setattr(mod.cli, "run_pipeline", fake_run_pipeline)
+        monkeypatch.setattr(mod.cli, "print_summary", lambda *a, **k: None)
+        failed, keys = mod.cli._run_pipeline_round(args, object(), "s", "", 0, False)
+        assert failed is True and "stage:gate" in keys
+
+    def test_p4_provider_broken_waits_longer(self):
+        mod = load_batch()
+        result = mod.TaskResult(
+            task=mod.Task(prompt="p", output="o"), success=False,
+            stdout="", stderr="400: Model is unavailable", elapsed=1.0,
+            returncode=1, reason="agent exited 1: 400 Model is unavailable")
+        wait = mod.runner._retry_wait(result, 2, 5.0, 2.0)
+        assert wait >= 60.0, f"provider 不可用应 ≥60s 冷却，实际 {wait:.1f}s"
+
+    def test_p4_normal_failure_stays_short(self):
+        mod = load_batch()
+        result = mod.TaskResult(
+            task=mod.Task(prompt="p", output="o"), success=False,
+            stdout="", stderr="syntax error", elapsed=1.0,
+            returncode=1, reason="validator failed")
+        wait = mod.runner._retry_wait(result, 2, 5.0, 2.0)
+        assert wait < 30.0, f"普通失败应短退避，实际 {wait:.1f}s"
+
+    def test_p3_record_fatal_exit_writes_state(self, tmp_path, monkeypatch):
+        mod = load_batch()
+        state = tmp_path / "run.exit.json"
+        args = argparse.Namespace(log_file=str(tmp_path / "run.log"))
+        monkeypatch.setattr(mod.cli.Path, "cwd", classmethod(lambda cls: tmp_path))
+        mod.cli._record_fatal_exit(RuntimeError("boom"), args)
+        content = state.read_text(encoding="utf-8")
+        assert "RuntimeError" in content and "boom" in content

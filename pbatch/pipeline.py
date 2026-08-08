@@ -266,17 +266,26 @@ def _stage_from_prompt_tasks(stage: Stage, reuse: bool, model_override: str, tim
 def _stage_from_dir_tasks(stage: Stage, reuse: bool, model_override: str, timeout_override: int,
                           validate_cmd: str = "", reuse_legacy: bool = False,
                           fingerprint_mode: bool = False) -> tuple[list[Task], list[str]]:
-    """Read .md files from a directory; one task per file, output next to
-    the input with the stage's output suffix."""
+    """Read .md files from a directory; one task per file (default), or a
+    single merged task when the stage sets `aggregate: true` (evidence
+    normalization without one LLM call per file)."""
     dir_path = Path(stage.from_dir)
     if not dir_path.is_dir():
         log.error("Directory not found: %s", stage.from_dir)
         return [], []
+    files = sorted(
+        fpath for fpath in dir_path.glob(f"*{stage.suffix}")
+        if not fpath.name.endswith(stage.output_suffix)
+    )
+    if stage.aggregate:
+        from .from_dir import _stage_from_dir_aggregate
+        return _stage_from_dir_aggregate(
+            stage, files, reuse, model_override, timeout_override,
+            validate_cmd, reuse_legacy, fingerprint_mode,
+        )
     tasks: list[Task] = []
     reused: list[str] = []
-    for fpath in sorted(dir_path.glob(f"*{stage.suffix}")):
-        if fpath.name.endswith(stage.output_suffix):
-            continue
+    for fpath in files:
         # Local fix (self-iteration round 2, F1): resolve the output path
         # absolutely here. The task's cwd is the input dir, so a relative
         # output would be double-prefixed by output_path()'s cwd-aware
@@ -886,6 +895,7 @@ def run_pipeline(pipeline: Pipeline, model_override: str = "", dry_run: bool = F
     
     for stage in pipeline.stages:
         if dry_run:
+            from .from_dir import _describe_stage
             _describe_stage(stage, reuse)
             continue
         stop, results = _run_pipeline_stage(
@@ -917,25 +927,6 @@ def _archive_pipeline_results(pipeline: Pipeline, results: list[TaskResult],
     cwd = pipeline.stages[0].cwd if pipeline.stages and pipeline.stages[0].cwd else os.getcwd()
     record_archive(list(moved.items()), cwd, session_name)
 
-def _describe_stage(stage: Stage, reuse: bool) -> None:
-    """Dry-run: print what the stage would do without executing it."""
-    log.info("")
-    log.info("STAGE: %s (dry-run)", stage.name)
-    if stage.from_dir:
-        log.info("  Will read .md files from: %s", stage.from_dir)
-        if reuse:
-            log.info("  Will skip files with existing outputs")
-    elif stage.from_outputs:
-        log.info("  Will use outputs from stage: %s", stage.from_outputs)
-        log.info("  Task templates: %d", len(stage.tasks))
-    if stage.commands:
-        log.info("  Commands: %d (parallel=%s)", len(stage.commands), stage.commands_parallel)
-        for cmd in stage.commands:
-            log.info("    | %s", cmd)
-    if stage.git_commit:
-        log.info("  Git commit: YES")
-    log.info("  Mode: %s", stage.mode)
-
 def _handle_gate(stage: Stage, stage_outputs: dict, session_name: str = "") -> Optional[str]:
     """Evaluate a gate stage's deliverables: VERDICT: PASS/FAIL/REJECT.
     A missing verdict fails closed (no explicit pass, no unlock). Returns
@@ -954,10 +945,6 @@ def _handle_gate(stage: Stage, stage_outputs: dict, session_name: str = "") -> O
     record_gate(stage.name, verdict, stage_outputs.get(stage.name, []),
                 stage.cwd or os.getcwd(), session_name)
     return verdict
-
-# ── Gate-fix loop (gate FAIL 自动修复) ──────────────────────────────
-# 实现见 pbatch/gate_fix.py（extract_gate_findings / gate_fail_reason /
-# gate_fix_prompt / run_gate_fix）——保持本文件在行数预算内。
 
 def _run_gate_fix_loop(stage: Stage, stage_outputs: dict, validate_cmd: str,
                        session_name: str, reuse: bool, model_override: str,

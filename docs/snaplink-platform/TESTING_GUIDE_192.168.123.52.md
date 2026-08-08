@@ -297,3 +297,37 @@ bash /home/ywb/check-audit-health.sh                        # 毒丸+漏注册
 bash /home/ywb/run-all-e2e.sh                               # 8 个业务 E2E
 crontab -l                                                  # 每日 3 点健康检查
 ```
+
+## 21. 三原则落地：认证统一 / 审计全接入 / 通知统一（2026-08-08）
+
+**原则 1：认证授权使用 snaplink**——sverpweb（@snaplink/sso-client SDK）、
+aero-vault/aero-id/audit-governance（JWT 验签 JWKS，协议级）；**aero-im 保持
+自签发 JWT**（独立账号体系，切换需账号迁移——记录为提案，触发条件：im
+账号并入 snaplink）。
+
+**原则 2：审计都接入 audit-governance**（全部完成并验证）：
+| 项目 | 通道 | 状态 |
+|---|---|---|
+| sverpweb | outbox → events:batch | ✅ 既有 |
+| aero-vault | AUDIT_GOVERNANCE_ENABLED=true relay | ✅ 78 条积压入账 |
+| aero-id | config audit_governance.enabled | ✅ 链路通（manual ledgered） |
+| aero-im | snaplink_commercial relay（trigger→outbox→HTTP） | ✅ workspace.settings.updated 入账 |
+| snaplink | 自身 L1 审计（不强制上报=克制设计） | ✅ 保持 |
+
+**服务账号**（snaplink clients，secret 在 keys.txt）：
+aero-vault-audit-relay / aero-id-audit-relay / aero-im-audit-relay
+（audit:event:write）+ aero-im-billing（billing:entitlement:read metering:write）
+
+**排障链（三项目通用）**：token scope → source 注册（**HMAC 算法坑**：
+vault 用 writeMACFields(domain,tenant,field,value) 带 0x00 + base64url；
+bash 传 key 会污染——python 直读文件）→ schema 注册（event_type=schema_id、
+required_fields 只留顶层可判定字段、allowed_fields 动态 payload 置空）→
+id/im 的 source = {prefix}.base64url(sha256(tenant))。
+
+**aero-im 部署**：env（AERO_SNAPLINK_COMMERCIAL_ENABLED=true + endpoints +
+bindings 文件 version=2 + workspace 需 ULID）+ zero-workspace 豁免（ca9fe3e）；
+workspace 用 ULID（gen_random_uuid 无效）；默认 workspace（nil）绑定校验
+拒绝——代码豁免 + 其 audit trigger 无 binding 静默跳过（安全）。
+
+**原则 3：消息通知使用 aero-im**——sverpweb rooms 广播 + 铃铛（既有）；
+im 的 DM/通知偏好能力已存在（sverpweb 未用——deferred 带触发条件）。
