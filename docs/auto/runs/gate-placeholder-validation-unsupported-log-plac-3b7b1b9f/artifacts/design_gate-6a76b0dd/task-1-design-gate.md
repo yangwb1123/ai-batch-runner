@@ -1,0 +1,13 @@
+Gate ruling. I independently verified every blocking finding against the live repo:
+
+**C1 — Filesize hard-gate breach (Critical):** org.py is still 488 lines (verified `wc -l`); no `pbatch/placeholders.py` exists anywhere in the tree; `_summarize` dead code not removed. The design's D1+R1+R2 (~+17–22 lines) would breach the 500-line gate (`checks/config.py:42`; org.py not in ignore list), making AC4 (`make ci` green) unachievable as designed. No resolution, no explicit rejection with counter-evidence, no owner decision — the design evidence simply omits the budget issue.
+
+**C2 — Design artifact integrity (Blocking):** `task-1-design.md` is 17 lines on disk and still self-claims "(425 lines)". The F1–F7 failure-mode table, ordered migration/rollback steps, and T1a/T1b/T2/T3 acceptance mapping exist nowhere on disk (only the one-line mention in the summary; requirements carry only T1/T2/T3). The gate cannot verify the risk analysis it is asked to pass, and implement cannot be validated against the pinned assertions the artifact claims to contain. Not regenerated, not demoted, not rejected.
+
+**C3 — Runtime semantics owner decision (Medium):** DECISIONS.md contains only stage PASS records; no recorded owner sign-off on skipped-vs-failed semantics, budget resolution, or R3 semantic acceptance. Unresolved and unrecorded.
+
+**Confirmed non-blockers:** bug reproduction (`org check` exit 0 with `{log}` at evolution.yaml:31), 38/38 token inventory, R1↔R3 coupling designed (execution constraint, keep), reviewer synthesis is consistent (C13 correction: meta dir has 4 reviews, verified on disk).
+
+The direction is sound and the root-cause analysis is verified, but two independently-flagged blockers (C1, C2) are neither resolved nor explicitly rejected with evidence, and the required owner decisions (C3) are unrecorded. Fail-closed gate: the design is not ready for implementation.
+
+VERDICT: FAIL - blocking findings unresolved: C1 (org.py 488 lines + ~20-line design delta breaches the 500-line filesize gate → AC4 unachievable as designed; no placeholders.py extraction or budget mitigation exists) and C2 (design artifact is a 17-line self-referential summary claiming a 425-line body — failure-mode table, migration steps, and T1a/T1b/T2/T3 acceptance mapping exist nowhere on disk), both un-rejected and un-remediated; plus C3: no owner sign-off recorded in DECISIONS.md on runtime skipped-vs-failed semantics. Fix by regenerating the design body at the artifact path, resolving the line budget (preferred: extract pbatch/placeholders.py), and recording the three owner decisions before re-running the gate.
