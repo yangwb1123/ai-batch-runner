@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# post-commit: auto-sync — after every commit, run `git pull && git push`.
+#
+# Safety guards:
+#   * PB_AUTO_SYNC env guard prevents recursion from our own pull's merge commit
+#   * skip during interactive rebase / cherry-pick (per-commit triggers would spam syncs)
+#   * skip on detached HEAD / unborn branch / no upstream configured
+set -u
+
+# 1) Recursion guard: our own `git pull` (merge/rebase commit) re-triggers this hook.
+if [ "${PB_AUTO_SYNC:-}" = "1" ]; then
+    exit 0
+fi
+export PB_AUTO_SYNC=1
+
+# 2) Skip when not on a normal branch (detached HEAD / unborn).
+branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null) || exit 0
+[ "$branch" = "HEAD" ] && exit 0
+
+# 3) Skip during rebase/cherry-pick (per-commit triggers would spam syncs).
+git_dir=$(git rev-parse --git-dir 2>/dev/null) || exit 0
+if [ -d "$git_dir/rebase-merge" ] || [ -d "$git_dir/rebase-apply" ] || [ -d "$git_dir/cherry-pick" ]; then
+    exit 0
+fi
+
+# 4) Skip when no upstream configured.
+git rev-parse --abbrev-ref --symbolic-full-name @{u} >/dev/null 2>&1 || exit 0
+
+echo "post-commit: auto-sync ($branch) — git pull && git push"
+if ! git pull; then
+    echo "post-commit: git pull FAILED (conflict?) — commit kept locally; resolve, then push manually." >&2
+    exit 1
+fi
+if ! git push; then
+    echo "post-commit: git push FAILED — fix and push manually." >&2
+    exit 1
+fi
