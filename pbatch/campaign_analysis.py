@@ -210,8 +210,13 @@ def evidence_exists(root: Path, direction: Direction) -> bool:
                     path = _inside(root, root / probe)
                 except ValueError:
                     continue
-                if path.exists():
-                    return True
+                try:
+                    if path.exists():
+                        return True
+                except OSError:
+                    # untrusted evidence paths may exceed the FS limit
+                    # (live finding: File name too long) — skip, never crash
+                    continue
     return False
 
 
