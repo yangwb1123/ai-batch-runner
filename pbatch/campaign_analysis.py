@@ -36,11 +36,17 @@ def discover_modules(root: Path, settings: CampaignSettings, explicit: str = "")
 
 def _safe_module(root: Path, value: str) -> str:
     candidate = root / value
-    if candidate.is_symlink():
-        raise ValueError(f"module is not a real directory: {value}")
-    path = _inside(root, candidate)
-    if not path.is_dir():
-        raise ValueError(f"module is not a real directory: {value}")
+    try:
+        if candidate.is_symlink():
+            raise ValueError(f"module is not a real directory: {value}")
+        path = _inside(root, candidate)
+        if not path.is_dir():
+            raise ValueError(f"module is not a real directory: {value}")
+    except OSError as exc:
+        # robustness: paths longer than the FS limit (or otherwise
+        # unstat-able) must fail as invalid modules, not crash the
+        # whole campaign (live finding: File name too long)
+        raise ValueError(f"module not accessible: {value} ({exc})") from exc
     return path.relative_to(root).as_posix()
 
 
