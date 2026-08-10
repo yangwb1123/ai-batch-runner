@@ -94,12 +94,7 @@ def scan_directory(directory: Path, exts: tuple, excludes: set) -> list:
 
 
 def _git_boundary(directory: Path) -> Path | None:
-    """Return the nearest Git worktree root containing ``directory``.
-
-    A worktree's ``.git`` marker may be either a directory or a gitfile. It
-    is a hard project boundary: a manifest owned by an unrelated parent
-    checkout must not affect the project being scanned.
-    """
+    """Nearest Git root; ``.git`` may be a directory or worktree gitfile."""
     for probe in (directory, *directory.parents):
         if (probe / ".git").exists():
             return probe
@@ -107,11 +102,7 @@ def _git_boundary(directory: Path) -> Path | None:
 
 
 def detect_manifest(directory: Path) -> tuple:
-    """Find the nearest manifest without walking beyond the Git project.
-
-    Outside a Git worktree the bounded walk-up remains useful for scanning a
-    service subdirectory whose manifest lives in its parent.
-    """
+    """Find a manifest within Git; outside Git, use bounded parent lookup."""
     boundary = _git_boundary(directory)
     probe = directory
     for _ in range(MANIFEST_WALK_UP + 1):

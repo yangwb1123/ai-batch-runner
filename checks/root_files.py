@@ -18,7 +18,9 @@ from checks.config import RootPolicyGate, get_config, repo_root
 
 def check_root(root: Path, gate: RootPolicyGate) -> int:
     """Return the number of violations at the root level."""
-    files = [p for p in root.iterdir() if p.is_file()]
+    # Linked Git worktrees represent repository metadata with a root-level
+    # ``.git`` gitfile rather than a directory; neither form is product code.
+    files = [p for p in root.iterdir() if p.is_file() and p.name != ".git"]
     failures = 0
     for f in sorted(files):
         name = f.name

@@ -43,6 +43,12 @@ class TestRootPolicy(unittest.TestCase):
         (self.root / "subdir").mkdir()
         self.assertEqual(root_files.check_root(self.root, gate), 0)
 
+    def test_worktree_gitfile_not_counted(self):
+        gate = RootPolicyGate(max_files=0)
+        (self.root / ".git").write_text(
+            "gitdir: /repo/.git/worktrees/example\n", encoding="utf-8")
+        self.assertEqual(root_files.check_root(self.root, gate), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
