@@ -1043,6 +1043,32 @@ class TestGovernanceBatch:
         assert results[0].success is False
         assert not out.exists()
 
+    def test_validator_most_restrictive_json_status_wins(self):
+        from pbatch.runner import _json_status
+
+        output = '{"status":"pass"}\n{"status":"warn"}\n{"status":"fail"}\n'
+        assert _json_status(output) == "fail"
+
+    def test_judge_warning_cannot_bypass_fail_verdict(
+            self, tmp_path, monkeypatch):
+        mod = load_batch()
+        agent = tmp_path / "agent.sh"
+        agent.write_text("#!/bin/sh\necho done\n", encoding="utf-8")
+        agent.chmod(0o755)
+        mod.config.AGENT_BIN = str(agent)
+        monkeypatch.setattr(
+            mod.config, "VALIDATOR_SPECS",
+            {"judge": mod.config.ValidatorSpec(
+                cmd="printf '%s\\n' '{\"status\":\"warn\"}' "
+                    "'VERDICT: FAIL - rejected'", judge=True)})
+        out = tmp_path / "o.md"
+
+        result = mod.run_serial(
+            [mod.Task(prompt="p", output=str(out))], validate_cmd="judge")
+
+        assert not result[0].success
+        assert not out.exists()
+
     def test_bare_verdict_fails_closed(self, tmp_path):
         """12b: VERDICT: PASS without a reason does not unlock a gate."""
         mod = load_batch()
@@ -1378,6 +1404,59 @@ class TestRepoScopeValidators:
             {"repogate": mod.config.ValidatorSpec(cmd="true", scope="repo")})
         task = mod.Task(prompt="p", output=str(tmp_path / "o.md"))
         assert mod.cli._run_batch_repo_validators([task], "repogate") == set()
+
+    def test_pipeline_cli_repo_validator_is_not_lost(
+            self, tmp_path, monkeypatch):
+        mod = load_batch()
+        agent = tmp_path / "agent.sh"
+        agent.write_text("#!/bin/sh\necho done\n", encoding="utf-8")
+        agent.chmod(0o755)
+        mod.config.AGENT_BIN = str(agent)
+        monkeypatch.setattr(
+            mod.config, "VALIDATOR_SPECS",
+            {"repogate": mod.config.ValidatorSpec(
+                cmd="echo broken >&2; exit 9", scope="repo")})
+        stage = mod.Stage(name="s", from_prompt="p",
+                          output=str(tmp_path / "o.md"), cwd=str(tmp_path))
+
+        results, ok = mod.execute_stage(stage, {}, validate_cmd="repogate")
+
+        assert results[0].success  # artifact gate was correctly deferred
+        assert ok is False         # stage-end repository gate still ran
+
+    def test_reused_stage_collects_declared_task_repo_validators(
+            self, tmp_path, monkeypatch):
+        from pbatch.repo_gates import run_stage_repo_validators
+
+        mod = load_batch()
+        monkeypatch.setattr(
+            mod.config, "VALIDATOR_SPECS",
+            {"repogate": mod.config.ValidatorSpec(
+                cmd="echo broken >&2; exit 9", scope="repo")})
+        stage = mod.Stage(name="s", cwd=str(tmp_path), tasks=[
+            {"prompt": "review", "validate": "repogate"},
+        ])
+
+        ok, failed = run_stage_repo_validators(stage, [], [])
+
+        assert ok is False
+        assert failed
+
+    def test_repo_validator_json_fail_is_enforced(self, tmp_path, monkeypatch):
+        from pbatch.repo_gates import run_stage_repo_validators
+
+        mod = load_batch()
+        monkeypatch.setattr(
+            mod.config, "VALIDATOR_SPECS",
+            {"repogate": mod.config.ValidatorSpec(
+                cmd="echo '{\"status\":\"fail\"}'", scope="repo")})
+        stage = mod.Stage(name="s", cwd=str(tmp_path),
+                          validate_cmd="repogate")
+
+        ok, failed = run_stage_repo_validators(stage, [], [])
+
+        assert ok is False
+        assert failed
 
 
 class TestOrphanMarkers:

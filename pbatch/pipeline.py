@@ -66,8 +66,7 @@ def load_pipeline(path: str) -> Pipeline:
                     archive_dir=data.get("archive_dir", ""), name=Path(path).stem)
 
 def _parse_stage_def(s: dict, global_git_commit: bool) -> Stage:
-    """Map one YAML stage definition onto a Stage (untrusted keys ignored;
-    unknown keys simply do not exist on the dataclass)."""
+    """Map one schema-validated YAML stage definition onto a Stage."""
     return Stage(
         name=s.get("name", ""),
         model=s.get("model", ""),
@@ -187,8 +186,13 @@ def _task_from_def(task_def: dict, prompt: str, output_path: str, model_override
         cwd=task_def.get("cwd", stage.cwd if stage else ""),
         timeout=task_def.get("timeout", AGENT_DEFAULT_TIMEOUT),
         env=dict(task_def.get("env", {})),
-        validate=task_def.get("validate"),
+        # Public task YAML uses `validate`; retain the historical
+        # `validate_cmd` spelling with the same explicit-key precedence as a
+        # stage definition.
+        validate=task_def.get("validate", task_def.get("validate_cmd")),
     )
+    if task_def.get("role"):
+        task.memory["role"] = task_def["role"]
     if model_override:
         task.model = model_override
     if timeout_override:
@@ -369,6 +373,19 @@ def _collect_upstream(from_outputs, stage_outputs: dict) -> tuple[list[str], lis
         outputs.extend(stage_outputs.get(name, []))
     return names, outputs, missing
 
+
+def _parallel_session_rejected(stage: Stage, session_mode: str,
+                               session_name: str) -> bool:
+    """Shared conversations cannot safely interleave parallel stage tasks."""
+    if session_mode == "new" or stage.mode != "parallel":
+        return False
+    log.error("Stage '%s': --session-mode %s requires serial execution "
+              "(parallel would interleave one session)", stage.name, session_mode)
+    from .memory import record_stage
+    record_stage(stage.name, "FAILED", "shared session cannot run in parallel",
+                 [], stage.cwd or os.getcwd(), session_name)
+    return True
+
 def execute_stage(stage: Stage, stage_outputs: dict[str, list[str]], model_override: str = "", reuse: bool = False, timeout_override: int = 0,
                   session_mode: str = "new", session_name: str = "", validate_cmd: str = "",
                   reuse_legacy: bool = False, fingerprint_mode: bool = False,
@@ -387,22 +404,18 @@ def execute_stage(stage: Stage, stage_outputs: dict[str, list[str]], model_overr
     if early is not None:
         results, stage_ok = early
         outputs = stage_outputs.get(stage.name, [])
-        return _finalize_stage(stage, results, outputs, stage_ok, approval_file)
+        return _finalize_stage(stage, results, outputs, stage_ok,
+                               approval_file, stage_validate)
     if not tasks:
         results, stage_ok = _empty_stage_result(stage, stage_outputs, reused_outputs)
         outputs = stage_outputs.get(stage.name, reused_outputs)
-        return _finalize_stage(stage, results, outputs, stage_ok, approval_file)
+        return _finalize_stage(stage, results, outputs, stage_ok,
+                               approval_file, stage_validate)
 
     for task in tasks:
         task.memory.setdefault("stage", stage.name)
 
-    # Shared sessions must not run in parallel (conversation order).
-    if session_mode != "new" and stage.mode == "parallel":
-        log.error("Stage '%s': --session-mode %s requires serial execution (parallel would interleave one session)",
-                  stage.name, session_mode)
-        from .memory import record_stage
-        record_stage(stage.name, "FAILED", "shared session cannot run in parallel",
-                     [], stage.cwd or os.getcwd(), session_name)
+    if _parallel_session_rejected(stage, session_mode, session_name):
         return [], False
 
     stage_session_id = f"{session_name}-{stage.name}" if session_mode == "per-stage" else session_name
@@ -417,16 +430,19 @@ def execute_stage(stage: Stage, stage_outputs: dict[str, list[str]], model_overr
     if fingerprint_mode:
         _write_stage_sidecars(results, stage_validate)
 
-    return _finalize_stage(
-        stage, results, outputs, all(r.success for r in results), approval_file)
+    return _finalize_stage(stage, results, outputs,
+                           all(r.success for r in results), approval_file,
+                           stage_validate)
 
 def _finalize_stage(stage: Stage, results: list[TaskResult], outputs: list[str],
-                    stage_ok: bool, approval_file: str) -> tuple[list[TaskResult], bool]:
+                    stage_ok: bool, approval_file: str,
+                    effective_validate=None) -> tuple[list[TaskResult], bool]:
     """Apply stage-wide gates even when every artifact was reused."""
     task_ok = stage_ok
     approved = _apply_approval(stage, task_ok, outputs, approval_file)
     commands_ok = _run_stage_commands(stage)
-    repo_ok, repo_failed = run_stage_repo_validators(stage, results, outputs)
+    repo_ok, repo_failed = run_stage_repo_validators(
+        stage, results, outputs, effective_validate)
     stage_ok = task_ok and approved and commands_ok and repo_ok
     if not stage_ok:
         from .memory import record_stage
@@ -442,7 +458,11 @@ def _finalize_stage(stage: Stage, results: list[TaskResult], outputs: list[str],
             reason += f"; repo validator failed: {repo_failed}"
         record_stage(stage.name, "FAILED", reason[:500], outputs,
                      stage.cwd or os.getcwd())
-    _git_commit_stage(stage, outputs)  # advisory: commit issues do not fail the stage
+    # A failed approval/command/repository gate must never create a success
+    # commit. Gate stages defer their commit until the verdict itself has been
+    # evaluated by _run_pipeline_stage.
+    if stage_ok and not stage.gate:
+        _git_commit_stage(stage, outputs)  # advisory: commit issues do not fail the stage
     return results, stage_ok
 
 def _apply_approval(stage: Stage, stage_ok: bool, outputs: list, approval_file: str) -> bool:
@@ -499,13 +519,14 @@ def _log_pipeline_start(pipeline: Pipeline, reuse: bool) -> None:
 
 def _empty_stage_result(stage: Stage, stage_outputs: dict, reused_outputs: list) -> tuple[list, bool]:
     """Handle a stage with no tasks to run: fully-reused stages propagate
-    their outputs downstream; otherwise warn and pass (nothing failed)."""
+    their outputs downstream; otherwise fail closed. A configured stage that
+    silently does no work must not unlock its downstream stages."""
     if reused_outputs:
         stage_outputs[stage.name] = reused_outputs
         log.info("Stage '%s' fully reused (%d outputs)", stage.name, len(reused_outputs))
         return [], True
-    log.warning("No tasks to execute in stage '%s'", stage.name)
-    return [], True
+    log.error("No tasks to execute in stage '%s'; failing closed", stage.name)
+    return [], False
 
 def _log_stage_header(stage: Stage, reuse: bool) -> None:
     """Print the stage banner and whether reuse applies."""
@@ -691,13 +712,12 @@ def _gate_reuse_blocked(output_path: str) -> bool:
     path = Path(output_path)
     if not path.is_file():
         return False
-    try:
-        text = read_text_bounded(path, config.OUTPUT_MAX_BYTES, "gate artifact")
-    except ValueError:
-        return False
-    if _gate_verdict([str(path)]) in ("FAIL", "REJECT"):
-        log.warning("REUSE: %s carries a FAIL/REJECT (or missing) VERDICT; "
-                    "a rejected gate is never reusable — regenerating", path)
+    # Only a reasoned PASS is reusable. _gate_verdict returns None for a
+    # missing or bare verdict, so comparing against PASS also covers malformed
+    # gate artifacts instead of accidentally preserving them under --reuse.
+    if _gate_verdict([str(path)]) != "PASS":
+        log.warning("REUSE: %s has no usable PASS verdict; a rejected, bare, "
+                    "or missing gate verdict is never reusable — regenerating", path)
         path.unlink(missing_ok=True)
         return True
     return False
@@ -859,6 +879,7 @@ def _run_pipeline_stage(stage: Stage, stage_outputs: dict, failed_stages: list,
             fingerprint_mode, approval_file, original_prompt, decision_log)
         results = [*results, *fix_results]
         if verdict == "PASS":
+            _git_commit_stage(stage, stage_outputs.get(stage.name, []))
             return False, results  # gate resolved; move on
         if stage.name not in failed_stages:
             failed_stages.append(stage.name)
@@ -871,6 +892,8 @@ def _run_pipeline_stage(stage: Stage, stage_outputs: dict, failed_stages: list,
         log.error("Pipeline halted: %s (%s)", stage.name,
                   verdict if verdict else "stage failed")
         return True, results
+    if stage.gate:
+        _git_commit_stage(stage, stage_outputs.get(stage.name, []))
     return False, results
 
 def run_pipeline(pipeline: Pipeline, model_override: str = "", dry_run: bool = False, reuse: bool = False, timeout_override: int = 0,

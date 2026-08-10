@@ -12,16 +12,22 @@ import os
 from pathlib import Path
 
 from .config import _resolve_validator_specs, log
-from .runner import expand_command_placeholders, judge_verdict, run_validation
+from .runner import (_json_status, expand_command_placeholders, judge_verdict,
+                     run_validation)
 
 
-def run_stage_repo_validators(stage, results: list, outputs: list) -> tuple[bool, str]:
+def run_stage_repo_validators(stage, results: list, outputs: list,
+                              effective_validate=None) -> tuple[bool, str]:
     """N2 (round-5 finding): run repo-scoped validators once at stage end.
     Specs are collected from the stage's validate_cmd plus every task's
     per-task validate field (deduplicated); a failure fails the stage
     (gate semantics). Returns (ok, failing-command-or-empty)."""
-    specs = _collect_repo_specs(
-        [stage.validate_cmd] + [r.task.validate for r in results if r.task.validate])
+    configured = [effective_validate if effective_validate is not None
+                  else stage.validate_cmd]
+    configured.extend(task.get("validate", task.get("validate_cmd"))
+                      for task in stage.tasks if isinstance(task, dict))
+    configured.extend(r.task.validate for r in results if r.task.validate)
+    specs = _collect_repo_specs(configured)
     if not specs:
         return True, ""
     wd = stage.cwd or os.getcwd()
@@ -53,7 +59,17 @@ def _run_stage_repo_spec(spec, cmd: str, wd: str, stage_name: str) -> tuple[bool
     the detail."""
     log.info("REPO VALIDATE (stage '%s'): %s", stage_name, cmd)
     v = run_validation(cmd, wd)
-    if spec.judge and v.ok:
+    if not v.ok:
+        log.error("REPO VALIDATE FAILED%s: %s",
+                  " (timeout)" if v.timed_out else f" (exit={v.exit_code})", cmd)
+        for line in (v.stderr or "").strip().splitlines()[-10:]:
+            log.error("  | %s", line)
+        return False, cmd
+    status = _json_status(v.stdout)
+    if status == "fail":
+        log.error("REPO VALIDATE FAILED (JSON status=fail): %s", cmd)
+        return False, cmd
+    if spec.judge:
         verdict = judge_verdict(v.stdout)
         if verdict in ("FAIL", "REJECT"):
             log.error("REPO VALIDATE FAILED (judge verdict=%s): %s", verdict, cmd)
@@ -61,10 +77,6 @@ def _run_stage_repo_spec(spec, cmd: str, wd: str, stage_name: str) -> tuple[bool
         if verdict is None:
             log.error("REPO VALIDATE FAILED (judge: no verdict): %s", cmd)
             return False, cmd
-    elif not v.ok:
-        log.error("REPO VALIDATE FAILED%s: %s",
-                  " (timeout)" if v.timed_out else f" (exit={v.exit_code})", cmd)
-        for line in (v.stderr or "").strip().splitlines()[-10:]:
-            log.error("  | %s", line)
-        return False, cmd
+    if status == "warn":
+        log.warning("REPO VALIDATE WARN: %s", cmd)
     return True, ""

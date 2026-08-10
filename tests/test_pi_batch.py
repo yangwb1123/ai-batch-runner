@@ -193,6 +193,87 @@ def test_pipeline_schema_rejects_invalid_command_limits(tmp_path):
         mod.load_pipeline(str(pipeline))
 
 
+@pytest.mark.parametrize(
+    ("data", "message"),
+    [
+        (
+            {"stages": [{"name": "s", "from_prompt": "p", "output": "o.md"}],
+             "mystery": True},
+            "top level has unknown field 'mystery'",
+        ),
+        (
+            {"stages": [{"name": "s", "from_prompt": "p", "output": "o.md",
+                         "gtae": True}]},
+            "stage 's' has unknown field 'gtae'",
+        ),
+        (
+            {"stages": [
+                {"name": "s0", "from_prompt": "p", "output": "o.md"},
+                {"name": "s1", "from_outputs": "s0",
+                 "tasks": [{"prompt": "review", "output": "r.md", "ouptut": "typo"}]},
+            ]},
+            "stage 's1'.tasks[1] has unknown field 'ouptut'",
+        ),
+    ],
+)
+def test_pipeline_schema_rejects_unknown_fields(data, message):
+    from pbatch.pipeline_schema import validate_pipeline
+
+    assert message in validate_pipeline(data)
+
+
+@pytest.mark.parametrize("field", ["gate_fix_prompt", "gate_fix_validate"])
+def test_pipeline_schema_checks_gate_fix_string_fields(field):
+    from pbatch.pipeline_schema import validate_pipeline
+
+    data = {"stages": [{"name": "gate", "from_prompt": "review",
+                        "output": "gate.md", field: 7}]}
+    assert f"stage 'gate'.{field} must be a string" in "\n".join(
+        validate_pipeline(data))
+
+
+@pytest.mark.parametrize(
+    "task",
+    [{}, {"prompt": "   ", "output": "out.md"},
+     {"prompt_template": "", "output": "out.md"}],
+)
+def test_pipeline_schema_requires_nonempty_task_prompt(task):
+    from pbatch.pipeline_schema import validate_pipeline
+
+    data = {"stages": [
+        {"name": "source", "from_prompt": "p", "output": "source.md"},
+        {"name": "consume", "from_outputs": "source", "tasks": [task]},
+    ]}
+    assert "requires a non-empty prompt or prompt_template" in "\n".join(
+        validate_pipeline(data))
+
+
+def test_pipeline_schema_keeps_shipped_task_aliases_legal():
+    from pbatch.pipeline_schema import validate_pipeline
+
+    data = {"stages": [
+        {"name": "source", "from_prompt": "p", "output": "source.md"},
+        {"name": "consume", "from_outputs": "source", "tasks": [{
+            "role": "reviewer", "prompt": "review {input_content}",
+            "output": "review.md", "validate_cmd": "true",
+        }]},
+    ]}
+    assert validate_pipeline(data) == []
+
+
+def test_empty_non_reused_stage_fails_closed(tmp_path, fake_agent):
+    mod = load_batch()
+    mod.config.AGENT_BIN = str(fake_agent)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+
+    results, ok = mod.execute_stage(
+        mod.Stage(name="empty", from_dir=str(empty)), {})
+
+    assert results == []
+    assert ok is False
+
+
 def test_aggregate_merges_upstream_outputs(tmp_path, fake_agent):
     mod = load_batch()
     mod.config.AGENT_BIN = str(fake_agent)
@@ -1701,6 +1782,53 @@ def test_gate_fail_verdict_never_reused(tmp_path, counter_agent):
     # deliverable replaced it
     assert gate_out.exists()
     assert "VERDICT: FAIL" not in gate_out.read_text()
+
+
+@pytest.mark.parametrize("stale_verdict", [
+    "VERDICT: PASS\n",
+    "VERDICT: FAIL\n",
+    "gatekeeper forgot the verdict\n",
+])
+def test_gate_reuse_blocker_deletes_bare_or_missing_verdict(
+        tmp_path, stale_verdict):
+    from pbatch.pipeline import _gate_reuse_blocked
+
+    gate_out = tmp_path / "gate.md"
+    gate_out.write_text(stale_verdict, encoding="utf-8")
+
+    assert _gate_reuse_blocked(str(gate_out)) is True
+    assert not gate_out.exists()
+
+
+@pytest.mark.parametrize("stale_verdict", [
+    "VERDICT: PASS\n",
+    "VERDICT: FAIL\n",
+    "gatekeeper forgot the verdict\n",
+])
+def test_gate_bare_or_missing_verdict_never_reused(
+        tmp_path, counter_agent, stale_verdict):
+    """Only a reasoned PASS is reusable; malformed gate artifacts are
+    deleted and regenerated instead of being preserved until _handle_gate
+    fails later."""
+    mod = load_batch()
+    agent, calls = counter_agent
+    mod.config.AGENT_BIN = str(agent)
+    gate_out = tmp_path / "gate.md"
+    gate_out.write_text(stale_verdict, encoding="utf-8")
+    upstream = tmp_path / "upstream.out.md"
+    upstream.write_text("design\n", encoding="utf-8")
+    stage = mod.Stage(
+        name="gate", from_outputs="design", aggregate=True, gate=True,
+        tasks=[{"prompt": "verify:\n{input_content}", "output": str(gate_out)}],
+    )
+
+    results, ok = mod.execute_stage(
+        stage, {"design": [str(upstream)]}, reuse=True)
+
+    assert ok is True
+    assert len(results) == 1
+    assert calls.read_text(encoding="utf-8").strip()
+    assert gate_out.read_text(encoding="utf-8") == "reply\n"
 
 
 def test_gate_pass_verdict_reused(tmp_path, fake_agent):

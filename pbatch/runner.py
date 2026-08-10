@@ -539,10 +539,8 @@ def _gate_spec_passed(spec, cmd: str, tmp: Path, result: TaskResult, v, workdir:
                          "exit=%d%s" % (v.exit_code, " (timeout)" if v.timed_out else ""),
                          v.stdout, v.stderr)
         return False
-    if _json_status(v.stdout) == "warn":
-        log.warning("VALIDATE WARN: %s (output saved with warning)", cmd)
-        return True
-    if _json_status(v.stdout) == "fail":
+    status = _json_status(v.stdout)
+    if status == "fail":
         _reject_artifact(tmp, workdir, cmd, "JSON status=fail", v.stdout, v.stderr)
         return False
     if spec.judge:
@@ -559,6 +557,8 @@ def _gate_spec_passed(spec, cmd: str, tmp: Path, result: TaskResult, v, workdir:
             _reject_artifact(tmp, workdir, cmd, "judge: no verdict", v.stdout, v.stderr)
             return False
         log.info("VALIDATE JUDGE PASS: %s", cmd)
+    if status == "warn":
+        log.warning("VALIDATE WARN: %s (output saved with warning)", cmd)
     return True
 
 
@@ -607,7 +607,10 @@ def _save_validated(task: Task, result: TaskResult, validate_cmd: str) -> bool:
 
 def _json_status(stdout: str) -> str:
     """T12a: extract a validator's JSON status ({"status": "pass|warn|fail"});
-    empty when the output carries no JSON status line."""
+    empty when the output carries no JSON status line. When a validator emits
+    multiple status objects, the most restrictive status wins."""
+    strongest = ""
+    rank = {"": 0, "pass": 1, "warn": 2, "fail": 3}
     for line in (stdout or "").splitlines():
         line = line.strip()
         if not line.startswith("{"):
@@ -617,9 +620,9 @@ def _json_status(stdout: str) -> str:
         except ValueError:
             continue
         status = str(data.get("status", "")).lower()
-        if status in ("pass", "warn", "fail"):
-            return status
-    return ""
+        if status in rank and rank[status] > rank[strongest]:
+            strongest = status
+    return strongest
 
 
 _JUDGE_VERDICT_RE = re.compile(r"^\s*\*{0,2}VERDICT\s*:\s*\*{0,2}(PASS|FAIL|REJECT)\b",
