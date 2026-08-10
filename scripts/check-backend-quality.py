@@ -99,8 +99,8 @@ def scan_directory(directory: Path, exts: tuple, excludes: set) -> list:
 
 def _class_metrics(text: str) -> dict:
     """Heuristic class signals: constructor deps, public methods, extends."""
-    deps = max(len(re.findall(r"constructor\s*\(\s*[^)]*?\b(private|public|readonly|protected)\b", text)),
-               0)
+    deps = max(len(re.findall(
+        r"constructor\s*\(\s*[^)]*?\b(private|public|readonly|protected)\b", text)), 0)
     methods = len(re.findall(r"^\s{4}(public\s+)?(async\s+)?\w+\s*\(", text, re.M))
     base = _BASE_CLASS_RE.findall(text)
     return {"deps": deps, "methods": methods, "bases": base}
@@ -129,7 +129,8 @@ def _ddl_warnings(text: str, rel: str) -> list:
     path = Path(rel)
     is_test_file = (
         ".test." in rel.lower()
-        or path.name.lower().endswith(("_test.rs", "_tests.rs", "_test.py", "_spec.ts", "_test.go", "_test.ts"))
+        or path.name.lower().endswith((
+            "_test.rs", "_tests.rs", "_test.py", "_spec.ts", "_test.go", "_test.ts"))
         or any(part in ("test", "tests", "spec", "e2e") for part in path.parts[:-1])
     )
     if is_test_file:
@@ -155,9 +156,11 @@ def _test_warnings(text: str, rel: str) -> list:
     is_test = ".test." in rel or rel.endswith(("_test.go", "_test.py", "_test.ts", "_spec.ts"))
     if not is_test:
         return []
-    has_assertion = (re.search(r"\b(expect|assert|assertThat|should\.|t\.Error|t\.Fatal|assertion)\b", text)
-                     or bool(re.search(r"test\(['\"]", text) and re.search(r"lambda\s*:", text))
-                     or bool(re.search(r"\bcheck\(\s*['\"]", text)))  # custom check(label, cond) style
+    has_assertion = (
+        re.search(r"\b(expect|assert|assertThat|should\.|t\.Error|t\.Fatal|assertion)\b", text)
+        or bool(re.search(r"test\(['\"]", text) and re.search(r"lambda\s*:", text))
+        or bool(re.search(r"\bcheck\(\s*['\"]", text))  # custom check(label, cond)
+    )
     if not has_assertion:
         return [("warning", f"{rel}: test file without assertions "
                             f"(renders/exists checks do not prove behavior)")]
@@ -184,7 +187,10 @@ def _reliability_warnings(text: str, rel: str) -> list:
     if clients >= 2:
         findings.append(("warning", f"{rel}: {clients} HTTP client creations — reuse a "
                                     f"single client with a connection pool"))
-    if re.search(r"while\s*\([^)]*\)\s*\{[\s\S]{0,200}?(?:sleep|Sleep|setTimeout|Thread\.sleep)", text):
+    busy_poll = re.search(
+        r"while\s*\([^)]*\)\s*\{[\s\S]{0,200}?(?:sleep|Sleep|setTimeout|Thread\.sleep)",
+        text)
+    if busy_poll:
         findings.append(("warning", f"{rel}: busy-polling loop without backoff/cap — "
                                     f"use exponential backoff + max attempts"))
     return findings
@@ -241,21 +247,29 @@ def _warning_findings(lines: list, rel: str, text: str, metrics: dict) -> list:
     over-abstraction candidates, scattered transactions."""
     findings = []
     if len(lines) > MAX_FILE_LINES:
-        findings.append(("warning", f"{rel}: {len(lines)} lines > {MAX_FILE_LINES} (god-file risk)"))
+        findings.append((
+            "warning", f"{rel}: {len(lines)} lines > {MAX_FILE_LINES} (god-file risk)"))
     if metrics["deps"] > MAX_DEPS:
-        findings.append(("warning", f"{rel}: {metrics['deps']} constructor deps > {MAX_DEPS} (god-service signal)"))
+        findings.append((
+            "warning", f"{rel}: {metrics['deps']} constructor deps > {MAX_DEPS} "
+            "(god-service signal)"))
     if metrics["methods"] > MAX_METHODS:
         findings.append(("warning", f"{rel}: {metrics['methods']} public methods > {MAX_METHODS}"))
     for base in metrics["bases"]:
-        findings.append(("warning", f"{rel}: Base class inheritance: {base} (composition preferred)"))
+        findings.append((
+            "warning", f"{rel}: Base class inheritance: {base} (composition preferred)"))
     if _FUZZY_RE.search(Path(rel).stem):
-        findings.append(("warning", f"{rel}: fuzzy name '{Path(rel).stem}' (Common/Manager/Helper/Utils)"))
+        findings.append((
+            "warning", f"{rel}: fuzzy name '{Path(rel).stem}' "
+            "(Common/Manager/Helper/Utils)"))
     for name in _single_implementation_interfaces(text):
         findings.append(("warning", f"{rel}: single-implementation interface '{name}' "
                                     f"(no replacement/test value? consider the concrete class)"))
     if len(_TX_RE.findall(text)) >= 2 and "use-case" not in rel.lower() \
             and "application" not in rel.lower():
-        findings.append(("warning", f"{rel}: manual transaction calls outside use-case/application layer"))
+        findings.append((
+            "warning", f"{rel}: manual transaction calls outside "
+            "use-case/application layer"))
     todos = len(_TODO_RE.findall(text))
     if todos > MAX_TODOS:
         findings.append(("warning", f"{rel}: {todos} TODO/FIXME markers > {MAX_TODOS}"))

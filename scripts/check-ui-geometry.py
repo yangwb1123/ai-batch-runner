@@ -147,7 +147,8 @@ def main() -> int:
         root = Path(args.dir)
         suffixes = {".tsx", ".jsx", ".vue", ".css", ".dart"}
         if args.all:
-            targets = [p for p in root.rglob("*") if p.suffix in suffixes and "node_modules" not in p.parts]
+            targets = [p for p in root.rglob("*")
+                       if p.suffix in suffixes and "node_modules" not in p.parts]
         else:
             targets = [p for p in root.iterdir() if p.suffix in suffixes]
     elif args.artifact:
@@ -165,7 +166,8 @@ def main() -> int:
             all_problems[str(path)] = problems
 
     if args.json:
-        print(json.dumps({"files": len(targets), "violations": all_problems}, ensure_ascii=False, indent=1))
+        report = {"files": len(targets), "violations": all_problems}
+        print(json.dumps(report, ensure_ascii=False, indent=1))
     else:
         for path, problems in all_problems.items():
             print(f"uigeometry: {path}")
@@ -173,7 +175,8 @@ def main() -> int:
                 print(f"  ✗ {problem}")
         if all_problems:
             total = sum(len(v) for v in all_problems.values())
-            print(f"uigeometry: FAIL — {total} violation(s) across {len(all_problems)} file(s)", file=sys.stderr)
+            print(f"uigeometry: FAIL — {total} violation(s) across "
+                  f"{len(all_problems)} file(s)", file=sys.stderr)
             return 1
         print(f"uigeometry: PASS ({len(targets)} file(s) clean)")
     return 0

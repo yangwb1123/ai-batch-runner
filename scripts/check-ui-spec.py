@@ -143,23 +143,27 @@ def check_file(path: Path, checkers: list) -> list:
     return violations
 
 
-_VALUE_FLAGS = {"--mode": "mode", "--dir": "directory",
-                "--ext": "exts", "--exclude": "excludes"}
+_VALUE_FLAGS = {
+    "--mode": "mode", "--dir": "directory", "--ext": "exts",
+    "--exclude": "excludes", "-o": "report_path",
+    "--baseline": "baseline_path", "--update-baseline": "update_path",
+}
+_SWITCH_FLAGS = {"--json": ("want_json", True), "--all": ("mode", "all")}
 
 
 def _take_value(argv: list, i: int, key: str, state: dict) -> int:
     """Consume a two-argument flag (--mode/--dir/--ext/--exclude) into
     state; returns the next index to read."""
     value = argv[i + 1]
-    if key == "mode":
-        state["mode"] = value
-    elif key == "directory":
+    if key == "directory":
         state["directory"] = Path(value)
     elif key == "exts":
         ext = value.lower()
         state["exts"].add(ext if ext.startswith(".") else "." + ext)
-    else:
+    elif key == "excludes":
         state["excludes"].add(value)
+    else:
+        state[key] = value
     return i + 2
 
 
@@ -168,7 +172,8 @@ def parse_argv(argv: list) -> tuple:
     excludes, want_json, report_path)."""
     state = {"mode": "spacing", "directory": None,
              "exts": set(DEFAULT_EXTS), "excludes": set(DEFAULT_EXCLUDES),
-             "want_json": False, "report_path": ""}
+             "want_json": False, "report_path": "",
+             "baseline_path": "", "update_path": ""}
     targets = []
     i = 0
     while i < len(argv):
@@ -176,18 +181,15 @@ def parse_argv(argv: list) -> tuple:
         if arg in _VALUE_FLAGS and i + 1 < len(argv):
             i = _take_value(argv, i, _VALUE_FLAGS[arg], state)
             continue
-        if arg == "--json":
-            state["want_json"] = True
-        elif arg == "--all":
-            state["mode"] = "all"
-        elif arg == "-o" and i + 1 < len(argv):
-            state["report_path"] = argv[i + 1]
-            i += 1
+        if arg in _SWITCH_FLAGS:
+            key, value = _SWITCH_FLAGS[arg]
+            state[key] = value
         else:
             targets.append(arg)
         i += 1
     return (state["mode"], targets, state["directory"], state["exts"],
-            state["excludes"], state["want_json"], state["report_path"])
+            state["excludes"], state["want_json"], state["report_path"],
+            state["baseline_path"], state["update_path"])
 
 
 def resolve_checkers(mode: str) -> list:
@@ -208,25 +210,68 @@ def collect_targets(targets: list, directory: Path, exts: tuple, excludes: set) 
     return paths
 
 
-def main(argv: list) -> int:
-    mode, targets, directory, exts, excludes, want_json, report_path = parse_argv(argv)
-    checkers = resolve_checkers(mode)
-    paths = collect_targets(targets, directory, exts, excludes)
+def _load_baseline(path):
+    """Load a baseline report JSON: {violations: [{file, detail}]}. Absent or
+    malformed baseline fails closed (no violations are grandfathered)."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        items = data.get("violations", []) if isinstance(data, dict) else []
+        return {(str(item.get("file", "")), str(item.get("detail", "")))
+                for item in items if isinstance(item, dict)}
+    except (OSError, ValueError):
+        return set()
 
+
+def _write_baseline(path, violations):
+    """Persist the current full violation set as the baseline snapshot."""
+    payload = json.dumps(
+        {"violations": [{"file": item.split(":")[0], "detail": item}
+                        for item in violations]},
+        ensure_ascii=False, indent=2)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text(payload + "\n", encoding="utf-8")
+
+
+def _apply_baseline(violations, baseline_path, update_path):
+    """Ratchet semantics: only violations NOT in the baseline fail;
+    --update-baseline persists the full set (no fail in that mode)."""
+    if update_path:
+        _write_baseline(update_path, violations)
+        return [], 0
+    if not baseline_path:
+        return violations, len(violations)
+    baseline = _load_baseline(baseline_path)
+    remaining = [v for v in violations
+                 if (v.split(":")[0], v) not in baseline]
+    return remaining, len(remaining)
+
+
+def _scan_paths(paths, checkers):
     violations = []
     for path in paths:
         if not path.exists():
             violations.append(f"{path}: missing target")
             continue
         violations.extend(check_file(path, checkers))
+    return violations
 
-    report = {
+
+def _report_data(mode, directory, paths, violations, baseline_path,
+                 remaining, new_count):
+    return {
         "mode": mode,
         "directory": str(directory) if directory else "",
         "files_scanned": len(paths),
         "violations": [{"file": item.split(":")[0], "detail": item} for item in violations],
         "total": len(violations),
+        "baseline": bool(baseline_path),
+        "new_violations": [{"file": item.split(":")[0], "detail": item}
+                           for item in remaining],
+        "new_total": new_count,
     }
+
+
+def _emit_json_report(report, want_json, report_path):
     if want_json or report_path:
         payload = json.dumps(report, ensure_ascii=False, indent=2)
         if report_path:
@@ -234,24 +279,43 @@ def main(argv: list) -> int:
             Path(report_path).write_text(payload + "\n", encoding="utf-8")
         if want_json:
             print(payload)
-            # stdout carries ONLY the JSON report; summary goes to stderr
-            if violations:
-                print(f"UI-SPEC [{mode}]: {len(violations)} violation(s) in "
-                      f"{len(paths)} file(s); rejected", file=sys.stderr)
-            else:
-                print(f"UI-SPEC [{mode}]: OK ({len(paths)} file(s) scanned)",
-                      file=sys.stderr)
-            return 0 if not violations else 1
-    # Violations go to stderr: the runner feeds validator stderr into the
-    # retry prompt, so the agent sees exactly what must be fixed.
-    for item in violations:
-        print(f"UI-SPEC [{mode}] {item}", file=sys.stderr)
-    if violations:
-        print(f"UI-SPEC [{mode}]: {len(violations)} violation(s) in "
-              f"{len(paths)} file(s); rejected", file=sys.stderr)
-        return 1
-    print(f"UI-SPEC [{mode}]: OK ({len(paths)} file(s) scanned)")
-    return 0
+
+
+def _summary(mode, paths, violations, remaining, baseline_path):
+    if remaining:
+        label = "new violation(s)" if baseline_path else "violation(s)"
+        return (f"UI-SPEC [{mode}]: {len(remaining)} {label} in "
+                f"{len(paths)} file(s); rejected"), 1
+    if violations and baseline_path:
+        return (f"UI-SPEC [{mode}]: OK ({len(violations)} baseline, "
+                "0 new; ratchet held)"), 0
+    return f"UI-SPEC [{mode}]: OK ({len(paths)} file(s) scanned)", 0
+
+
+def _finish_report(mode, paths, violations, remaining, baseline_path, want_json):
+    if not want_json:
+        for item in remaining:
+            print(f"UI-SPEC [{mode}] {item}", file=sys.stderr)
+    message, code = _summary(mode, paths, violations, remaining, baseline_path)
+    stream = sys.stderr if want_json or code else sys.stdout
+    print(message, file=stream)
+    return code
+
+
+def main(argv: list) -> int:
+    parsed = parse_argv(argv)
+    mode, targets, directory, exts, excludes = parsed[:5]
+    want_json, report_path, baseline_path, update_path = parsed[5:]
+    paths = collect_targets(targets, directory, exts, excludes)
+    violations = _scan_paths(paths, resolve_checkers(mode))
+    remaining, new_count = _apply_baseline(violations, baseline_path, update_path)
+    report = _report_data(
+        mode, directory, paths, violations, baseline_path, remaining, new_count,
+    )
+    _emit_json_report(report, want_json, report_path)
+    return _finish_report(
+        mode, paths, violations, remaining, baseline_path, want_json,
+    )
 
 
 if __name__ == "__main__":

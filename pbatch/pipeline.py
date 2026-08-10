@@ -3,12 +3,11 @@ verdict gates, decision logs, archiving, and task-source loading."""
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
 import shlex
-import shutil
+import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -19,6 +18,8 @@ from typing import Optional
 from . import config
 from .config import AGENT_DEFAULT_TIMEOUT, AGENT_DEFAULT_WORKERS, log, yaml
 from .models import Pipeline, Stage, Task
+from .pipeline_archive import (_archive_destination, _archive_output_pairs,
+                               _archive_outputs as _archive_outputs_impl)
 from .pipeline_schema import validate_pipeline
 from .pipeline_resources import normalize_bundled_resources as _normalize_bundled_resources
 from .evidence import combine_outputs, source_manifest
@@ -220,9 +221,7 @@ def _aggregate_tasks(stage: Stage, prev_outputs: list, model_override: str = "",
             continue
         output_path = task_def.get("output", "").replace("{input_stem}", "combined")
         task = _task_from_def(task_def, prompt, output_path, model_override, timeout_override, stage)
-        # T9: fingerprint the task's EFFECTIVE inputs (resolved output path
-        # + task-level model/provider) so the sidecar written after success
-        # matches what the reuse check hashed (round-4 finding M6/P1-3).
+        # T9: fingerprint effective inputs (resolved output + model).
         out_resolved = str(task.output_path()) if task.output else ""
         effective_validate = task.validate if task.validate is not None else validate_cmd
         fp = _expected_fp(prompt, out_resolved, effective_validate, task.model,
@@ -291,10 +290,8 @@ def _stage_from_dir_tasks(stage: Stage, reuse: bool, model_override: str, timeou
     tasks: list[Task] = []
     reused: list[str] = []
     for fpath in files:
-        # Local fix (self-iteration round 2, F1): resolve the output path
-        # absolutely here. The task's cwd is the input dir, so a relative
-        # output would be double-prefixed by output_path()'s cwd-aware
-        # resolution (docs/inputs/docs/inputs/...).
+        # Resolve absolutely: task cwd is the input dir (relative outputs
+        # would double-prefix under output_path()).
         out_path = (fpath.parent / (fpath.stem + stage.output_suffix)).resolve()
         prompt = read_text_bounded(fpath, config.INPUT_MAX_BYTES,
                                    "stage input")
@@ -654,10 +651,7 @@ def _git_commit_stage(stage: Stage, outputs: list) -> bool:
         if not run_argv(["git", "rev-parse", "--git-dir"], git_cwd, timeout=10).ok:
             log.warning("Not a git repository, skipping git commit")
             return False
-        # Real-world lesson (aero-vault campaign): docs/auto/ (the campaign
-        # evidence dir) is gitignored, so `git add` of every stage output
-        # failed with a noisy per-stage warning. Filter ignored outputs
-        # silently; only tracked-worthy deliverables are committed.
+        # docs/auto/ is gitignored; filter ignored outputs silently.
         staged = [out for out in outputs
                   if run_argv(["git", "check-ignore", "-q", "--", out],
                               git_cwd, timeout=10).exit_code != 0]
@@ -683,44 +677,7 @@ def _git_commit_stage(stage: Stage, outputs: list) -> bool:
 _GATE_VERDICT_RE = re.compile(r"^\s*\*{0,2}VERDICT\s*:\s*\*{0,2}(PASS|FAIL|REJECT)\b", re.IGNORECASE | re.MULTILINE)
 
 def _archive_outputs(outputs: list, archive_dir: str, label: str) -> list:
-    """Move finished deliverables into a timestamped archive subdirectory
-    once the stage/pipeline completed (all tasks succeeded, gates passed).
-    The worktree stays clean; git history (committed artifacts) retains
-    everything, and the decision log points at the original paths. Returns
-    the moved destinations for logging."""
-    return [destination for _, destination in
-            _archive_output_pairs(outputs, archive_dir, label)]
-
-def _archive_output_pairs(outputs: list, archive_dir: str, label: str) -> list[tuple[str, str]]:
-    """Move outputs and retain their original-to-archive mapping."""
-    if not archive_dir or not outputs:
-        return []
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    target = Path(archive_dir) / f"{label}-{stamp}"
-    target.mkdir(parents=True, exist_ok=True)
-    moved: list[tuple[str, str]] = []
-    for o in outputs:
-        p = Path(o)
-        if p.exists():
-            dest = _archive_destination(target, p)
-            shutil.move(str(p), str(dest))
-            moved.append((str(o), str(dest)))
-    if moved:
-        log.info("ARCHIVED %d deliverable(s) -> %s", len(moved), target)
-    return moved
-
-def _archive_destination(target: Path, source: Path) -> Path:
-    """Choose a destination without overwriting an earlier deliverable."""
-    direct = target / source.name
-    if not direct.exists():
-        return direct
-    digest = hashlib.sha256(str(source.resolve()).encode("utf-8")).hexdigest()[:8]
-    candidate = target / f"{source.stem}-{digest}{source.suffix}"
-    index = 2
-    while candidate.exists():
-        candidate = target / f"{source.stem}-{digest}-{index}{source.suffix}"
-        index += 1
-    return candidate
+    return _archive_outputs_impl(outputs, archive_dir, label)
 
 def _gate_reuse_blocked(output_path: str) -> bool:
     """A gate deliverable carrying VERDICT: FAIL/REJECT must NEVER be
@@ -763,6 +720,12 @@ def _maybe_reuse_task(stage: Stage, task: Task, out_resolved: str, output_path: 
     if not reuse_decision(out_resolved, effective_validate,
                           legacy=reuse_legacy, expected_fp=fp):
         return False
+    # 完成度校验（sverp UI/UX 实战教训）：产物早于仓库最后一次提交 →
+    # 内容不含最新代码状态，强制重跑（残留/不完整产物曾反复被复用）。
+    if _stale_output(out_resolved, task.workdir()):
+        log.warning("REUSE: %s predates the last commit; regenerating "
+                    "(stale-artifact guard)", output_path)
+        return False
     if stage.gate and _gate_reuse_blocked(out_resolved):
         return False
     if stage.gate:
@@ -770,6 +733,22 @@ def _maybe_reuse_task(stage: Stage, task: Task, out_resolved: str, output_path: 
     log.info("REUSE: %s (reused+validated)", output_path)
     reused.append(output_path)
     return True
+
+def _stale_output(output_path: str, workdir: str) -> bool:
+    """Artifact older than the repo's last commit → stale (cannot reflect
+    the current tree). Non-git repos return False (reuse as before)."""
+    path = Path(output_path)
+    if not path.exists():
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%ct"],
+            cwd=workdir or os.getcwd(), capture_output=True, text=True,
+            timeout=10)
+        head_ts = int(result.stdout.strip())
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+    return result.returncode == 0 and path.stat().st_mtime < head_ts
 
 def _gate_verdict(output_paths: list) -> Optional[str]:
     """Read a gate stage's deliverables and return its verdict
@@ -857,8 +836,8 @@ def _run_pipeline_stage(stage: Stage, stage_outputs: dict, failed_stages: list,
                         reuse_legacy: bool, fingerprint_mode: bool,
                         approval_file: str, original_prompt: str,
                         decision_log: str, retries: int = 0,
-                        retry_delay: float = 10.0,
-                        backoff: float = 2.0) -> tuple[bool, list]:
+                        retry_delay: float = 10.0, backoff: float = 2.0
+                        ) -> tuple[bool, list]:
     """Run one pipeline stage: execute, gate, auto-fix loop, decision log.
     Returns (stop, new_results)."""
     results, stage_ok = execute_stage(stage, stage_outputs, model_override, reuse,
@@ -900,10 +879,8 @@ def run_pipeline(pipeline: Pipeline, model_override: str = "", dry_run: bool = F
                  approval_file: str = "", original_prompt: str = "",
                  retries: int = 0, retry_delay: float = 10.0,
                  backoff: float = 2.0) -> tuple[list[TaskResult], list[str]]:
-    """Execute all stages sequentially; returns (all results, failed stage
-    names). Gates halt; a gate with gate_fix_rounds > 0 auto-remediates:
-    FAIL/REJECT → fix task (findings folded) → gate re-run with the fix
-    report as extra evidence → re-verdict, up to gate_fix_rounds times."""
+    """Execute stages sequentially (gates halt; gate_fix_rounds > 0
+    auto-remediates FAIL/REJECT up to N rounds)."""
     all_results: list[TaskResult] = []
     failed_stages: list[str] = []
     stage_outputs: dict[str, list[str]] = {}  # stage_name -> [output_file_paths]
@@ -970,8 +947,7 @@ def _run_gate_fix_loop(stage: Stage, stage_outputs: dict, validate_cmd: str,
                        reuse_legacy: bool, fingerprint_mode: bool,
                        approval_file: str, original_prompt: str,
                        decision_log: str) -> tuple[Optional[str], list]:
-    """gate FAIL/REJECT + gate_fix_rounds > 0: remediate up to N rounds
-    (returns final verdict + extra results; PASS ends early)."""
+    """gate FAIL/REJECT + gate_fix_rounds > 0: remediate up to N rounds."""
     from .gate_fix import run_gate_fix
     gate_outputs = list(stage_outputs.get(stage.name, []))
     results: list = []

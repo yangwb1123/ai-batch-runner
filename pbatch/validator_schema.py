@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shlex
+from pathlib import Path
 from typing import Optional
 
 
@@ -14,7 +15,8 @@ def schema_validator_command(value: str) -> Optional[str]:
     if not value.startswith(SCHEMA_PREFIX):
         return None
     schema_path = value[len(SCHEMA_PREFIX):].strip()
+    checker = Path(__file__).with_name("json_schema_cli.py").resolve()
     return (
-        "python {tool_root}/scripts/check-json-schema.py --schema "
+        f"python {shlex.quote(str(checker))} --schema "
         f"{shlex.quote(schema_path)} {{output}}"
     )

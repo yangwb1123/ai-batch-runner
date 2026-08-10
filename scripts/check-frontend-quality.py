@@ -59,9 +59,13 @@ _SKIP_RE = re.compile(r"\.skip\s*\(|(?<!EdgeInsets)\.only\s*\(")
 _DISABLE_RE = re.compile(r"(eslint-disable|@ts-ignore|@ts-nocheck|ignore_for_file)")
 _HTML_RE = re.compile(r"(dangerouslySetInnerHTML|v-html|innerHTML\s*=)\s*[^)]")
 _SWALLOWED_RE = re.compile(r"catch\s*\([^)]*\)\s*\{\s*\}")
-_HOOK_RE = re.compile(r"\buse(State|Effect|Ref|Memo|Callback|Reducer|Context|Query|Mutation)\s*\(")
-_HANDLER_RE = re.compile(r"(onClick|onChange|onPress|onSubmit|@click|@change|onPressed|onTap)\s*[=:]")
-_API_RE = re.compile(r"\b(api|axios|http|dio|client|service|repository)\.[a-zA-Z]+\(|\bfetch\s*\(|\b(\.get|\.post|\.put|\.delete)\s*\(")
+_HOOK_RE = re.compile(
+    r"\buse(State|Effect|Ref|Memo|Callback|Reducer|Context|Query|Mutation)\s*\(")
+_HANDLER_RE = re.compile(
+    r"(onClick|onChange|onPress|onSubmit|@click|@change|onPressed|onTap)\s*[=:]")
+_API_RE = re.compile(
+    r"\b(api|axios|http|dio|client|service|repository)\.[a-zA-Z]+\(|\bfetch\s*\(|"
+    r"\b(\.get|\.post|\.put|\.delete)\s*\(")
 _DECISION_RE = re.compile(r"\b(if|for|while|switch)\s*\(|\b&&\b|\b\|\|\b")
 _TODO_RE = re.compile(r"TODO|FIXME|HACK")
 
@@ -218,33 +222,70 @@ def check_text(text: str, path: Path, strict: bool) -> list:
 
 
 def parse_argv(argv: list) -> tuple:
-    """(targets, directory, strict, want_json, report_path)."""
-    targets, directory, strict, want_json, report_path = [], None, False, False, ""
+    """(targets, directory, strict, want_json, report_path, baseline, update)."""
+    value_options = {"--dir", "-o", "--baseline", "--update-baseline"}
+    flag_options = {"--strict", "--json"}
+    values = {option: "" for option in value_options}
+    flags = set()
+    targets = []
     i = 0
     while i < len(argv):
         arg = argv[i]
-        if arg == "--dir" and i + 1 < len(argv):
-            directory = Path(argv[i + 1])
+        if arg in value_options and i + 1 < len(argv):
+            values[arg] = argv[i + 1]
+            i += 2
+            continue
+        if arg in flag_options:
+            flags.add(arg)
             i += 1
-        elif arg == "--strict":
-            strict = True
-        elif arg == "--json":
-            want_json = True
-        elif arg == "-o" and i + 1 < len(argv):
-            report_path = argv[i + 1]
-            i += 1
-        else:
-            targets.append(arg)
+            continue
+        targets.append(arg)
         i += 1
-    return targets, directory, strict, want_json, report_path
+    directory = Path(values["--dir"]) if values["--dir"] else None
+    return (targets, directory, "--strict" in flags, "--json" in flags,
+            values["-o"], values["--baseline"], values["--update-baseline"])
 
 
-def main(argv: list) -> int:
-    targets, directory, strict, want_json, report_path = parse_argv(argv)
-    paths = [Path(t) for t in targets]
-    if directory is not None:
-        paths.extend(scan_directory(directory, DEFAULT_EXTS, DEFAULT_EXCLUDES))
 
+
+def _load_baseline(path):
+    """Load a baseline report JSON: {violations: [{file, detail}]}. Absent or
+    malformed baseline fails closed (no violations are grandfathered)."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        items = data.get("violations", []) if isinstance(data, dict) else []
+        return {(str(item.get("file", "")), str(item.get("detail", "")))
+                for item in items if isinstance(item, dict)}
+    except (OSError, ValueError):
+        return set()
+
+
+def _write_baseline(path, violations):
+    """Persist the current full violation set as the baseline snapshot."""
+    payload = json.dumps(
+        {"violations": [{"file": item.split(":")[0], "detail": item}
+                        for item in violations]},
+        ensure_ascii=False, indent=2)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text(payload + "\n", encoding="utf-8")
+
+
+def _apply_baseline(violations, baseline_path, update_path):
+    """Return (remaining, new_count): ratchet semantics — only violations
+    NOT present in the baseline fail; --update-baseline persists the full
+    set as the new baseline (no fail in that mode)."""
+    if update_path:
+        _write_baseline(update_path, violations)
+        return [], 0
+    if not baseline_path:
+        return violations, len(violations)
+    baseline = _load_baseline(baseline_path)
+    remaining = [v for v in violations
+                 if (v.split(":")[0], v) not in baseline]
+    return remaining, len(remaining)
+
+
+def _scan_paths(paths, strict):
     violations = []
     for path in paths:
         if not path.exists():
@@ -256,15 +297,26 @@ def main(argv: list) -> int:
             violations.append(f"{path}: unreadable ({exc})")
             continue
         violations.extend(check_text(text, path, strict))
+    return violations
 
-    report = {
+
+def _report_data(strict, directory, paths, violations, baseline_path,
+                 remaining, new_count):
+    return {
         "strict": strict,
         "directory": str(directory) if directory else "",
         "files_scanned": len(paths),
         "violations": [{"file": item.split(":")[0], "detail": item}
                        for item in violations],
         "total": len(violations),
+        "baseline": bool(baseline_path),
+        "new_violations": [{"file": item.split(":")[0], "detail": item}
+                           for item in remaining],
+        "new_total": new_count,
     }
+
+
+def _emit_json_report(report, want_json, report_path):
     if want_json or report_path:
         payload = json.dumps(report, ensure_ascii=False, indent=2)
         if report_path:
@@ -272,14 +324,37 @@ def main(argv: list) -> int:
             Path(report_path).write_text(payload + "\n", encoding="utf-8")
         if want_json:
             print(payload)
-    for item in violations:
+
+
+def _finish_report(paths, violations, remaining, baseline_path):
+    for item in remaining:
         print(f"UI-QUALITY {item}", file=sys.stderr)
-    if violations:
-        print(f"UI-QUALITY: {len(violations)} violation(s) in "
+    if remaining:
+        label = "new violation(s)" if baseline_path else "violation(s)"
+        print(f"UI-QUALITY: {len(remaining)} {label} in "
               f"{len(paths)} file(s); rejected", file=sys.stderr)
         return 1
-    print(f"UI-QUALITY: OK ({len(paths)} file(s) scanned)")
+    if violations and baseline_path:
+        print(f"UI-QUALITY: OK ({len(violations)} baseline, "
+              f"0 new; ratchet held)", file=sys.stderr)
+    else:
+        print(f"UI-QUALITY: OK ({len(paths)} file(s) scanned)")
     return 0
+
+
+def main(argv: list) -> int:
+    parsed = parse_argv(argv)
+    targets, directory, strict, want_json, report_path, baseline_path, update_path = parsed
+    paths = [Path(target) for target in targets]
+    if directory is not None:
+        paths.extend(scan_directory(directory, DEFAULT_EXTS, DEFAULT_EXCLUDES))
+    violations = _scan_paths(paths, strict)
+    remaining, new_count = _apply_baseline(violations, baseline_path, update_path)
+    report = _report_data(
+        strict, directory, paths, violations, baseline_path, remaining, new_count,
+    )
+    _emit_json_report(report, want_json, report_path)
+    return _finish_report(paths, violations, remaining, baseline_path)
 
 
 if __name__ == "__main__":

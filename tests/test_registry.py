@@ -54,6 +54,22 @@ def test_heartbeat_updates_last_active(tmp_path: Path):
     assert after > before
 
 
+def test_read_only_home_registry_uses_per_user_fallback(
+        tmp_path: Path, monkeypatch):
+    blocked_parent = tmp_path / "blocked"
+    blocked_parent.write_text("not a directory", encoding="utf-8")
+    fallback = tmp_path / "runtime-runs"
+    monkeypatch.setattr(registry, "_REGISTRY_DIR", blocked_parent / "runs")
+    monkeypatch.setattr(registry, "_registry_candidates",
+                        lambda: [blocked_parent / "runs", fallback])
+
+    path = registry.register_run(mode="batch", repo=str(tmp_path))
+
+    assert path.parent == fallback
+    assert path.exists()
+    assert registry.list_runs()[0]["repo"] == str(tmp_path)
+
+
 def test_dead_pid_marked_and_pruned(tmp_path: Path):
     # a registry file whose pid cannot exist on this host
     dead = registry._registry_dir() / "99999999.json"

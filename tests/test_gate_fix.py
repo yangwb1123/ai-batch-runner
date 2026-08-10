@@ -268,3 +268,36 @@ def test_meta_zero_allowance_still_fails(monkeypatch, tmp_path):
 
     results, ok = meta.run_meta_stage(stage, stage_outputs)
     assert ok is False
+
+
+# ── ratchet 门禁（基线 + 仅查新增）──
+
+def test_ratchet_baseline_holds_and_detects_new(tmp_path):
+    """--update-baseline 建立基线 → 存量放行 → 新增违规拒绝（退出码 1）。"""
+    import subprocess, sys
+    (tmp_path / "a.css").write_text(".a { padding: 7px; }", encoding="utf-8")
+    base = tmp_path / "base.json"
+    r = subprocess.run(
+        [sys.executable, "/home/dwp/ai-batch-runner/scripts/check-ui-spec.py",
+         "--dir", str(tmp_path), "--all", "--ext", "css",
+         "--update-baseline", str(base)],
+        capture_output=True, text=True)
+    assert r.returncode == 0
+    # 存量放行
+    r = subprocess.run(
+        [sys.executable, "/home/dwp/ai-batch-runner/scripts/check-ui-spec.py",
+         "--dir", str(tmp_path), "--all", "--ext", "css",
+         "--baseline", str(base)],
+        capture_output=True, text=True)
+    assert r.returncode == 0
+    assert "ratchet held" in r.stdout
+    # 新增违规 → 拒绝
+    (tmp_path / "b.css").write_text(".b { padding: 9px; }", encoding="utf-8")
+    r = subprocess.run(
+        [sys.executable, "/home/dwp/ai-batch-runner/scripts/check-ui-spec.py",
+         "--dir", str(tmp_path), "--all", "--ext", "css",
+         "--baseline", str(base)],
+        capture_output=True, text=True)
+    assert r.returncode == 1
+    assert "1 new violation" in r.stderr
+    assert "b.css" in r.stderr
