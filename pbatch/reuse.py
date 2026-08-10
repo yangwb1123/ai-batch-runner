@@ -136,13 +136,21 @@ def artifact_is_stale(output_path: str, workdir: str = "") -> bool:
     path = _resolved_output(output_path, workdir)
     if not path.exists():
         return False
-    wd = workdir or os.getcwd()
+    # An absolute output with no explicit task cwd belongs to its parent,
+    # not whichever repository happened to launch pi-batch. Otherwise an
+    # unrelated dirty launcher tree can invalidate a reusable /tmp artifact.
+    wd = workdir or str(path.parent)
     try:
         artifact_mtime = path.stat().st_mtime
+        root, changed = _changed_tracked_paths(wd)
+        if root is not None:
+            try:
+                path.resolve().relative_to(root)
+            except ValueError:
+                return False
         head = _git_stdout(["git", "log", "-1", "--format=%ct"], wd)
         if head and artifact_mtime < int(head.strip()):
             return True
-        _, changed = _changed_tracked_paths(wd)
         candidates = [item for item in changed if item.resolve() != path]
         return any(not item.exists() or item.stat().st_mtime > artifact_mtime
                    for item in candidates)

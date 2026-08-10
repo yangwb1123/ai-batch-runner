@@ -1,0 +1,10 @@
+number: 1
+slug: postgresql
+title: 数据库用 PostgreSQL
+decision: PostgreSQL
+context: ''
+alternatives: []
+rejected_reasons: []
+status: accepted
+created_at: '2026-08-07'
+superseded_by: ''

@@ -20,11 +20,17 @@ Warnings (complexity/coupling budgets, fail only with --strict):
 - > 10 TODO/FIXME markers
 
 Usage:
-    python scripts/check-frontend-quality.py --dir src [--strict] [--json]
+    python scripts/check-frontend-quality.py --dir src [--strict] [--json] [--skip NAMES]
     python scripts/check-frontend-quality.py file.tsx ...
 
+--skip NAMES: extra comma-separated dir-segment excludes (union, never
+replace); --dir scans only. A flag-like value after any value flag
+(--skip/--dir/-o) is a usage error: exit 2 (argparse-family convention,
+matching check-backend-experience/design-intelligence/knowledge-freshness).
+
 Violations go to stderr (the runner's retry-feedback channel); --json
-prints a machine report to stdout and -o writes it to a file.
+prints a machine report to stdout and -o writes it to a file. Under --json,
+stdout carries ONLY the JSON report — the OK/summary lines go to stderr.
 Exit code: 0 compliant, 1 violations (warnings count only with --strict).
 """
 from __future__ import annotations
@@ -222,30 +228,35 @@ def check_text(text: str, path: Path, strict: bool) -> list:
 
 
 def parse_argv(argv: list) -> tuple:
-    """(targets, directory, strict, want_json, report_path, baseline, update)."""
-    value_options = {"--dir", "-o", "--baseline", "--update-baseline"}
-    flag_options = {"--strict", "--json"}
-    values = {option: "" for option in value_options}
-    flags = set()
-    targets = []
+    """Parse targets plus reporting, exclusion, and ratchet options."""
+    values = {"--dir": None, "-o": "", "--skip": "",
+              "--baseline": "", "--update-baseline": ""}
+    targets, strict, want_json = [], False, False
     i = 0
     while i < len(argv):
         arg = argv[i]
-        if arg in value_options and i + 1 < len(argv):
-            values[arg] = argv[i + 1]
-            i += 2
-            continue
-        if arg in flag_options:
-            flags.add(arg)
+        if arg in values and i + 1 < len(argv):
+            nxt = argv[i + 1]
+            if nxt.startswith("-") and nxt != "-":
+                # Flag-like value: argparse-family rejects it (exit 2);
+                # swallowing it would silently drop a flag (--skip --json
+                # -> human mode, exit 0 false pass).
+                print(f"error: {arg}: expected one argument (got {nxt})",
+                      file=sys.stderr)
+                raise SystemExit(2)
+            values[arg] = nxt
             i += 1
-            continue
-        targets.append(arg)
+        elif arg == "--strict":
+            strict = True
+        elif arg == "--json":
+            want_json = True
+        else:
+            targets.append(arg)  # trailing value flag -> visible missing target
         i += 1
-    directory = Path(values["--dir"]) if values["--dir"] else None
-    return (targets, directory, "--strict" in flags, "--json" in flags,
-            values["-o"], values["--baseline"], values["--update-baseline"])
-
-
+    directory = Path(values["--dir"]) if values["--dir"] is not None else None
+    return (targets, directory, strict, want_json, values["-o"],
+            values["--skip"], values["--baseline"],
+            values["--update-baseline"])
 
 
 def _load_baseline(path):
@@ -326,7 +337,7 @@ def _emit_json_report(report, want_json, report_path):
             print(payload)
 
 
-def _finish_report(paths, violations, remaining, baseline_path):
+def _finish_report(paths, violations, remaining, baseline_path, want_json):
     for item in remaining:
         print(f"UI-QUALITY {item}", file=sys.stderr)
     if remaining:
@@ -334,27 +345,31 @@ def _finish_report(paths, violations, remaining, baseline_path):
         print(f"UI-QUALITY: {len(remaining)} {label} in "
               f"{len(paths)} file(s); rejected", file=sys.stderr)
         return 1
+    stream = sys.stderr if want_json else None
     if violations and baseline_path:
         print(f"UI-QUALITY: OK ({len(violations)} baseline, "
-              f"0 new; ratchet held)", file=sys.stderr)
+              f"0 new; ratchet held)", file=stream)
     else:
-        print(f"UI-QUALITY: OK ({len(paths)} file(s) scanned)")
+        print(f"UI-QUALITY: OK ({len(paths)} file(s) scanned)", file=stream)
     return 0
 
 
 def main(argv: list) -> int:
     parsed = parse_argv(argv)
-    targets, directory, strict, want_json, report_path, baseline_path, update_path = parsed
+    (targets, directory, strict, want_json, report_path, skip,
+     baseline_path, update_path) = parsed
     paths = [Path(target) for target in targets]
     if directory is not None:
-        paths.extend(scan_directory(directory, DEFAULT_EXTS, DEFAULT_EXCLUDES))
+        extra = {item for item in skip.split(",") if item}
+        paths.extend(scan_directory(directory, DEFAULT_EXTS,
+                                    DEFAULT_EXCLUDES | extra))
     violations = _scan_paths(paths, strict)
     remaining, new_count = _apply_baseline(violations, baseline_path, update_path)
     report = _report_data(
         strict, directory, paths, violations, baseline_path, remaining, new_count,
     )
     _emit_json_report(report, want_json, report_path)
-    return _finish_report(paths, violations, remaining, baseline_path)
+    return _finish_report(paths, violations, remaining, baseline_path, want_json)
 
 
 if __name__ == "__main__":

@@ -259,6 +259,45 @@ def _atomic_yaml(path: Path, data: dict) -> None:
             pass  # stale worktree cleanup best-effort
 
 
+def _write_wreckage_report(root: Path, pipeline_path: Path) -> None:
+    """Snapshot what a failed direction left in the worktree so a human can
+    take over without re-deriving the diff.
+
+    Real-world lesson (forge-os campaign): the implement stage TIMEOUTed and
+    the campaign process was later killed; ~28 modified files remained with no
+    manifest of which were touched, whether they build, or what the agent was
+    mid-way through. The wreckage report records the porcelain status and
+    diff --stat at failure time (best-effort; a non-git or busy tree just
+    yields no report).
+    """
+    try:
+        status = subprocess.run(["git", "-C", str(root), "status", "--porcelain=v1"],
+                                capture_output=True, text=True, timeout=30, check=False)
+        stat = subprocess.run(["git", "-C", str(root), "diff", "--stat"],
+                              capture_output=True, text=True, timeout=30, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    if status.returncode != 0 or not status.stdout.strip():
+        return
+    lines = [
+        "# Implement wreckage (uncommitted worktree changes at failure)",
+        "",
+        "Status: " + ", ".join(sorted(set(line[:2] for line in
+                                          status.stdout.splitlines() if line.strip()))),
+        "",
+        "```",
+        status.stdout.rstrip(),
+        "```",
+    ]
+    if stat.returncode == 0 and stat.stdout.strip():
+        lines += ["", "## diff --stat", "", "```", stat.stdout.rstrip(), "```"]
+    try:
+        (pipeline_path.parent / "wreckage.md").write_text(
+            "\n".join(lines) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def run_direction(root: Path, settings: CampaignSettings, direction: Direction,
                   analysis_path: Path, model: str = "", provider: str = "",
                   timeout: int = 0, reuse: bool = False) -> PipelineOutcome:
@@ -274,6 +313,8 @@ def run_direction(root: Path, settings: CampaignSettings, direction: Direction,
         session_name=f"campaign-{direction.direction_id}", fingerprint_mode=reuse)
     status, reason = classify_pipeline(results, failed, pipeline)
     evidence = _artifact_evidence(pipeline_path, results)
+    if status != PipelineStatus.PASSED:
+        _write_wreckage_report(root, pipeline_path)
     repository = git_worktree_evidence(root)
     return PipelineOutcome(
         direction, status, reason, time.monotonic() - start, evidence,
@@ -419,10 +460,12 @@ def _kill_pipeline_group(proc: subprocess.Popen) -> None:
         try:
             proc.kill()
         except OSError:
-            pass
+            pass  # best-effort：进程可能已随组退出
+
     try:
         proc.wait(timeout=1)
     except (subprocess.TimeoutExpired, ChildProcessError):
+    # 子进程已死/超时：清理路径（已验证有意）
         pass
 
 

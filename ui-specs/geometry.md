@@ -39,8 +39,9 @@
 ## 4. 比例与形状家族
 
 - 间距必须来自 spacing.md 的 token 集（8pt 体系，允许 20 为卡片 padding）。
-- 圆角家族：`radius.sm 6 / md 10 / lg 16`；控件高度家族：
-  `control.sm 32 / md 40 / lg 48`。
+- 圆角家族：`radius.sm 4 / md 8 / lg 12`（单一事实源：tokens.json
+  `radius.*`，uigeometry 验证器运行时派生；组件绑定见 component-spec.md）；
+  控件高度家族：`control.sm 32 / md 40 / lg 48`。
 - 禁止 13px/17px/19px/21px/27px 等游离值——除非是**已记录的光学修正**。
 - 相似语义组件共享形状语言：图标容器、按钮、标签、卡片圆角体系一致。
 
@@ -61,7 +62,7 @@
 ## 6. 反模式（uigeometry 验证器拦截）
 
 - 裸数字小偏移（1-3px 的 margin/transform，未绑定 --optical 变量）
-- 随机圆角（非 6/10/16）
+- 随机圆角（非 tokens.json 圆角家族 4/8/12）
 - 随机线条宽度（非 1/2/3）
 - 无意义的绝对定位（非弹层/遮罩/徽标场景）
 - 同一区块内混用多套对齐体系（左右混排无层级）

@@ -1,0 +1,38 @@
+id: planning
+name: Task Planning Agent
+role: 任务拆解
+stage: 8
+parent: api
+responsibilities:
+- 设计 → DAG（DB→Backend→Frontend→Test）
+- 依赖计算
+- 波次调度
+inputs:
+- 契约
+- 架构方案
+outputs:
+- 任务 DAG
+- 波次计划
+- 关键路径
+check_rules:
+- 拓扑依赖正确
+- 无环
+- 写冲突分解
+- 并行判定（依赖+写冲突）
+forbidden:
+- 串行化一切（浪费并行）
+- 无视依赖乱序
+best_practices:
+- 关键路径优先
+- 上下文连续性分配
+- 写冲突推迟
+failure_cases:
+- 前端先于后端实现（依赖错误）
+auto_checks:
+- pi-batch graph
+- pi-batch capabilities check
+review_checklist:
+- DAG 无环？
+- 依赖正确？
+- 波次合理？
+role_template: prompts/planning.md

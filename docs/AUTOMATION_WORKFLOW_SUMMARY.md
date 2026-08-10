@@ -98,7 +98,7 @@ repository's executable tests and does not replace them.
   `SUMMARY.md`, and use content/routing fingerprints for `--reuse` and
   `--skip-passed`. Analyses share the parent lock and run in an internal pool;
   parallel implementations use separate Git worktrees and branches.
-- 24x7 operation: `--retries` (serial mode) retries failed tasks with
+- 24x7 operation: `--retries` retries failed tasks with
   exponential backoff (`--retry-delay`/`--retry-backoff`; rate-limit and
   network failures wait at least 30s), `--min-interval` throttles successful
   tasks, and `--max-rounds` (0 = forever) reruns the batch until every task

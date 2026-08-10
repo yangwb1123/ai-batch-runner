@@ -1427,7 +1427,6 @@ class TestRepoScopeValidators:
     def test_reused_stage_collects_declared_task_repo_validators(
             self, tmp_path, monkeypatch):
         from pbatch.repo_gates import run_stage_repo_validators
-
         mod = load_batch()
         monkeypatch.setattr(
             mod.config, "VALIDATOR_SPECS",
@@ -1444,7 +1443,6 @@ class TestRepoScopeValidators:
 
     def test_repo_validator_json_fail_is_enforced(self, tmp_path, monkeypatch):
         from pbatch.repo_gates import run_stage_repo_validators
-
         mod = load_batch()
         monkeypatch.setattr(
             mod.config, "VALIDATOR_SPECS",
@@ -1457,6 +1455,47 @@ class TestRepoScopeValidators:
 
         assert ok is False
         assert failed
+
+    def test_stage_repo_gate_expands_ui_scan_dir(self, monkeypatch):
+        """Repo-scope validator placeholders expand before shell execution."""
+        from types import SimpleNamespace
+
+        mod = load_batch()
+        monkeypatch.setattr(
+            mod.config, "VALIDATOR_SPECS",
+            {"repogate": mod.config.ValidatorSpec(
+                cmd="echo {ui_scan_dir} >&2; exit 1", scope="repo")})
+        monkeypatch.setattr(mod.config, "_BATCH_CFG", {"ui_scan_dir": "lib"})
+        stage = SimpleNamespace(validate_cmd="repogate", cwd=None, name="f3",
+                                tasks=[])
+        ok, detail = mod.repo_gates.run_stage_repo_validators(stage, [], [])
+        assert not ok
+        assert "{ui_scan_dir}" not in detail and "{cwd}" not in detail, detail
+        assert "lib" in detail
+        assert str(Path.cwd()) in detail
+
+    def test_batch_end_repo_gate_expands_ui_scan_dir(self, tmp_path, monkeypatch):
+        """Batch-end repo gates expand repo placeholders, but not output."""
+        mod = load_batch()
+        monkeypatch.setattr(
+            mod.config, "VALIDATOR_SPECS",
+            {"repogate": mod.config.ValidatorSpec(
+                cmd="echo {ui_scan_dir} {output} >&2; exit 1", scope="repo")})
+        monkeypatch.setattr(mod.config, "_BATCH_CFG", {"ui_scan_dir": "lib"})
+        captured = {}
+
+        def fake_validation(cmd, cwd, *args, **kwargs):
+            captured["cmd"] = cmd
+            return mod.runner.ValidationResult(
+                ok=True, exit_code=0, stdout="", stderr="", timed_out=False)
+
+        monkeypatch.setattr(mod.cli_batch, "run_validation", fake_validation)
+        task = mod.Task(prompt="p", output=str(tmp_path / "o.md"))
+        assert mod.cli._run_batch_repo_validators([task], "repogate") == set()
+        assert "{ui_scan_dir}" not in captured["cmd"], captured["cmd"]
+        assert "{cwd}" not in captured["cmd"], captured["cmd"]
+        assert "{output}" in captured["cmd"]  # output=None semantics kept
+        assert "lib" in captured["cmd"]
 
 
 class TestOrphanMarkers:
@@ -1692,9 +1731,12 @@ class TestUsageFeedbackP2P4P7:
         def fake_run_pipeline(*a, **k):
             calls["n"] += 1
             return [fake_result], []  # 阶段成功（failed_stages 空）但有容忍失败
-        monkeypatch.setattr(mod.cli, "run_pipeline", fake_run_pipeline)
-        monkeypatch.setattr(mod.cli, "print_summary", lambda *a, **k: None)
-        failed, keys = mod.cli._run_pipeline_round(args, object(), "s", "", 0, False)
+        import pbatch.cli_batch
+        monkeypatch.setattr(pbatch.cli_batch, "run_pipeline", fake_run_pipeline)
+        monkeypatch.setattr(pbatch.cli_batch, "print_summary",
+                            lambda *a, **k: None)
+        failed, keys = mod.cli_batch._run_pipeline_round(
+            args, object(), "s", "", 0, False)
         assert failed is False and keys == set()
         assert calls["n"] == 1
 
@@ -1707,9 +1749,12 @@ class TestUsageFeedbackP2P4P7:
                                   archive_dir="")
         def fake_run_pipeline(*a, **k):
             return [], ["gate"]
-        monkeypatch.setattr(mod.cli, "run_pipeline", fake_run_pipeline)
-        monkeypatch.setattr(mod.cli, "print_summary", lambda *a, **k: None)
-        failed, keys = mod.cli._run_pipeline_round(args, object(), "s", "", 0, False)
+        import pbatch.cli_batch
+        monkeypatch.setattr(pbatch.cli_batch, "run_pipeline", fake_run_pipeline)
+        monkeypatch.setattr(pbatch.cli_batch, "print_summary",
+                            lambda *a, **k: None)
+        failed, keys = mod.cli_batch._run_pipeline_round(
+            args, object(), "s", "", 0, False)
         assert failed is True and "stage:gate" in keys
 
     def test_p4_provider_broken_waits_longer(self):

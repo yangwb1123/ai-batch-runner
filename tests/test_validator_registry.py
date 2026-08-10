@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 from pbatch.config import VALIDATORS, _resolve_validators
+from pbatch.cmd_expand import expand_cmd
 
 # Validators whose commands are pure shell one-liners on {output} (no repo
 # script involved) — they run against a scratch artifact.
@@ -41,17 +42,40 @@ def test_every_validator_script_exists():
 
 
 def test_validator_commands_parse():
-    """Every command must keep {output}/{cwd} substitutable (no quoting
-    breakage) and compile as a shell line."""
+    """Every command must keep {output}/{cwd}/{ui_scan_dir}/{tool_root}
+    substitutable (no quoting breakage) and compile as a shell line.
+    Expansion goes through the shared helper exactly like the runner does,
+    so a leftover placeholder fails the test instead of reaching the shell
+    (QA F-1 residual half / testing-reviewer F2)."""
     for name, spec in VALIDATORS.items():
         command = spec if isinstance(spec, str) else spec.get("cmd", "")
-        resolved = command.replace("{output}", "/tmp/artifact.md") \
-                          .replace("{cwd}", str(Path.cwd()))
+        resolved = expand_cmd(command, "/tmp/artifact.md", str(Path.cwd()))
         assert "{output}" not in resolved and "{cwd}" not in resolved, \
+            f"{name}: leftover placeholder in {command}"
+        assert "{ui_scan_dir}" not in resolved and "{tool_root}" not in resolved, \
             f"{name}: leftover placeholder in {command}"
         # python-based commands must be runnable with --help or a dry run
         if "python" in resolved:
             assert "python" in command
+
+
+def test_single_expansion_entry_source_anchor():
+    """F-7 anchor: validator-command placeholder expansion has exactly one
+    hand-rolled entry (pbatch/cmd_expand.py). A site that hand-rolls its
+    own replace chain can leak a literal {ui_scan_dir} into the shell —
+    the script scans a nonexistent directory, passes vacuously and the
+    false-green resurrects (design F1). pipeline.py:633 is the documented
+    out-of-scope exception: the stage post-command surface ({tool_root}
+    only, no validator commands — design non-goal)."""
+    root = Path(__file__).resolve().parent.parent / "pbatch"
+    offenders = []
+    for path in sorted(root.glob("*.py")):
+        if path.name in ("cmd_expand.py", "pipeline.py"):
+            continue
+        src = path.read_text(encoding="utf-8")
+        if '.replace("{cwd}"' in src or '.replace("{tool_root}"' in src:
+            offenders.append(path.name)
+    assert offenders == [], f"hand-rolled placeholder expansion in: {offenders}"
 
 
 def test_python_validators_run_dry(tmp_path):
@@ -90,13 +114,13 @@ def test_completion_gate_rejects_fabricated(tmp_path):
 
 
 def test_project_scan_validators_ok_on_empty_dir():
-    """uicheck/uiquality/backendquality scan {cwd}/src; this repo has no
-    src/ so the gates must pass (safe for repos without frontend code).
-    {cwd} must resolve to the repo root (script paths live there)."""
+    """uicheck/uiquality scan {ui_scan_dir} (default {cwd}/src); this
+    repo has no src/ so the gates must pass (safe for repos without
+    frontend code). Expansion goes through the shared helper exactly like
+    the runner does, so no placeholder can leak to the shell."""
     repo = str(Path.cwd())
     for name in ("uicheck", "uiquality", "backendquality"):
-        command = VALIDATORS[name].replace("{output}", "/tmp/artifact.md") \
-                                  .replace("{cwd}", repo)
+        command = expand_cmd(VALIDATORS[name], "/tmp/artifact.md", repo)
         result = subprocess.run(["bash", "-c", command], capture_output=True,
                                 text=True, timeout=120)
         assert result.returncode == 0, f"{name} failed: {result.stderr}"

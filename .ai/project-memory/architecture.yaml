@@ -1,0 +1,5 @@
+# 系统架构状态（边界/服务/禁止项）
+architecture:
+  style: ""
+  services: []
+  never: []

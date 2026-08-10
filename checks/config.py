@@ -130,6 +130,38 @@ def repo_root() -> Path:
     return _resolve_config_path().parent
 
 
+# Directory segments excluded from gate scan discovery (matched at any depth,
+# exact segment name — not substring). Mirrors engineering.yaml's declared
+# scope: "quality rules apply to the code we author here".
+DEFAULT_EXCLUDED_SEGMENTS = ("build", "dist", ".git", "__pycache__", "logs")
+DEFAULT_EXCLUDED_SUFFIXES = (".egg-info",)   # matches ai_batch_runner.egg-info
+
+
+def scan_files(root: Path, suffix: str = ".py",
+               exclude_segments: tuple = DEFAULT_EXCLUDED_SEGMENTS,
+               exclude_suffixes: tuple = DEFAULT_EXCLUDED_SUFFIXES) -> list:
+    """Deterministic, sorted list of absolute Paths under `root` whose name
+    ends with `suffix`, never descending into excluded directory segments.
+
+    Replaces today's `sorted(root.rglob(...))` scan discovery for the three
+    rglob gates. Prunes excluded directories before descending (cheap walk),
+    does not follow symlinked directories, and sorts the result (same
+    ordering as today's `sorted(rglob(...))`). Exclusion is decided purely
+    by directory segment names relative to `root` (a `build/` outside root
+    never matters). Returns absolute Paths, matching rglob-from-absolute-root.
+    """
+    def _excluded(name: str) -> bool:
+        return name in exclude_segments or name.endswith(exclude_suffixes)
+
+    found = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = [d for d in dirnames if not _excluded(d)]  # prune (topdown)
+        for name in filenames:
+            if name.endswith(suffix):
+                found.append(Path(dirpath) / name)
+    return sorted(found)
+
+
 def is_ignored(rel: str, patterns: list) -> bool:
     """Substring match against ignore patterns (snaplink semantics)."""
     return any(p in rel for p in patterns)

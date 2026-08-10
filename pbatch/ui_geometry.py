@@ -2,10 +2,10 @@
 
 包装 scripts/check-ui-geometry.py 为 pi-batch 统一入口：
     pi-batch ui-geometry <artifact.tsx|.css|.dart|.vue>
-    pi-batch ui-geometry --dir <项目前端根> [--all] [--json]
+    pi-batch ui-geometry --dir <项目前端根> [--all] [--json] [-o 报告.json]
 
 拦截（fail closed）：裸数字小偏移（1-3px 未绑 --optical-*）、随机圆角
-（非 {6,10,16}/50%/999px）、随机线条宽度（非 {1,2,3}）。
+（非 tokens.json 圆角家族 4/8/12 或 50%/999px）、随机线条宽度（非 {1,2,3}）。
 """
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ def ui_geometry_main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dir", default="", help="项目前端源码目录")
     ap.add_argument("--all", action="store_true", help="递归扫描 --dir 下全部 UI 源文件")
     ap.add_argument("--json", action="store_true", help="JSON 输出")
+    ap.add_argument("-o", default="", help="JSON 报告写入路径（与 --json 同格式）")
     ap.add_argument("--strict", action="store_true", help="同 --all（兼容别名）")
     args = ap.parse_args(argv)
 
@@ -50,6 +51,8 @@ def ui_geometry_main(argv: list[str] | None = None) -> int:
         cmd.append("--all")
     if args.json:
         cmd.append("--json")
+    if args.o:
+        cmd += ["-o", args.o]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.stdout:

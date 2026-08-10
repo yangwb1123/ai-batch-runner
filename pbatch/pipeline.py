@@ -10,7 +10,6 @@ import shlex
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -18,8 +17,10 @@ from . import config
 from .config import AGENT_DEFAULT_TIMEOUT, AGENT_DEFAULT_WORKERS, log, yaml
 from .context_inject import prepare_task_context
 from .models import Pipeline, Stage, Task, TaskResult
-from .pipeline_archive import (_archive_output_pairs,
-                               _archive_outputs as _archive_outputs_impl)
+from .pipeline_archive import (archive_output_pairs,
+                               archive_outputs as _archive_outputs_impl)
+from .pipeline_decisions import (append_decision_log as _append_decision_log,
+                                 extract_decisions as _extract_decisions)
 from .pipeline_schema import validate_pipeline
 from .pipeline_resources import normalize_bundled_resources as _normalize_bundled_resources
 from .evidence import combine_outputs, source_manifest
@@ -606,6 +607,9 @@ def _execute_stage_tasks(stage: Stage, tasks: list, reused_outputs: list, stage_
                          backoff: float = 2.0) -> tuple[list, list]:
     """Run the stage's tasks (serial or parallel) and collect the output
     paths that downstream stages will consume (reused outputs included)."""
+    if stage.or_tasks:
+        return _execute_or_tasks(stage, tasks, reused_outputs, stage_validate,
+                                 session_mode, session_name, stage_session_id)
     if stage.mode == "parallel":
         results = run_parallel(tasks, stage.workers, validate_cmd=stage_validate,
                                retries=retries, retry_delay=retry_delay,
@@ -621,6 +625,30 @@ def _execute_stage_tasks(stage: Stage, tasks: list, reused_outputs: list, stage_
         if r.success and r.task.output:
             outputs.append(str(r.task.output_path()))
     return results, outputs
+
+def _execute_or_tasks(stage: Stage, tasks: list, reused_outputs: list,
+                        stage_validate: str, session_mode: str,
+                        session_name: str, stage_session_id: str) -> tuple:
+    """OR 算子（AADM §6）：候选任务模板按序执行，**第一个通过验证者
+    胜出**（其余候选跳过）；全部失败 → 阶段失败（fail closed）。"""
+    results = []
+    for index, task in enumerate(tasks, 1):
+        log.info("-- OR candidate [%d/%d]: %s --", index, len(tasks),
+                 " ".join(task.prompt.split())[:60])
+        batch = run_serial([task], retries=0, session_mode=session_mode,
+                           session_id=stage_session_id,
+                           session_name=session_name,
+                           validate_cmd=stage_validate)
+        results.extend(batch)
+        if batch and batch[0].success:
+            log.info("OR: candidate %d 通过，其余候选跳过", index)
+            break
+    outputs = list(reused_outputs)
+    for result in results:
+        if result.success and result.task.output:
+            outputs.append(str(result.task.output_path()))
+    return results, outputs
+
 
 def _run_stage_commands(stage: Stage) -> bool:
     """Run the stage's shell commands (post-task hooks); False when any
@@ -683,6 +711,7 @@ def _log_command_tail(value: str, writer, lines: int) -> None:
 _GATE_VERDICT_RE = re.compile(r"^\s*\*{0,2}VERDICT\s*:\s*\*{0,2}(PASS|FAIL|REJECT)\b", re.IGNORECASE | re.MULTILINE)
 
 def _archive_outputs(outputs: list, archive_dir: str, label: str) -> list:
+    """Compatibility wrapper around the extracted archive implementation."""
     return _archive_outputs_impl(outputs, archive_dir, label)
 
 def _gate_reuse_blocked(output_path: str) -> bool:
@@ -767,51 +796,6 @@ def _gate_verdict(output_paths: list) -> Optional[str]:
             if first_pass is None:
                 first_pass = verdict
     return first_pass
-
-def _extract_decisions(text: str, limit: int = 5) -> list[str]:
-    """Pull decision points (markdown headings) with their first sentence
-    from a deliverable: an index into the full reasoning stored in the
-    artifact, so the decision log stays readable while pointing at the
-    complete rationale."""
-    out = []
-    for i, line in enumerate((text or "").splitlines()):
-        if re.match(r"^#{2,3}\s+", line):
-            heading = line.lstrip("# ").strip()
-            nxt = ""
-            for n in (text or "").splitlines()[i + 1:i + 4]:
-                if n.strip() and not n.lstrip().startswith("#"):
-                    nxt = n.strip()[:120]
-                    break
-            out.append(f"{heading}: {nxt}" if nxt else heading)
-            if len(out) >= limit:
-                break
-    return out
-
-def _append_decision_log(path: str, stage_name: str, results: list, stage_ok: bool, verdict: Optional[str]) -> None:
-    """Append one structured decision record per finished stage: the
-    stage, its status, each decision point extracted from the deliverables
-    (heading + first sentence, the full reasoning lives in the artifacts),
-    and the evidence file paths. Appending keeps the whole history; the
-    log is a first-class deliverable of the pipeline."""
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with open(target, "a", encoding="utf-8") as f:
-        f.write(f"\n## {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} — stage '{stage_name}' — "
-                f"{'PASS' if stage_ok else 'FAIL'}")
-        if verdict:
-            f.write(f" (gate verdict: {verdict})")
-        f.write("\n")
-        for r in results:
-            decisions = _extract_decisions(r.stdout)
-            label = r.task.output or "(stdout)"
-            status = "ok" if r.success else f"FAILED: {r.reason}"
-            f.write(f"- task {label} [{status}]")
-            if decisions:
-                f.write(": " + "; ".join(decisions))
-            f.write("\n")
-        evidence = [r.task.output for r in results if r.task.output]
-        if evidence:
-            f.write(f"- evidence: {', '.join(evidence)}\n")
 
 def _include_reused_results(results: list, outputs: list[str]) -> list:
     if results or not outputs:
@@ -921,7 +905,7 @@ def _archive_pipeline_results(pipeline: Pipeline, results: list[TaskResult],
                               archive_dir: str, session_name: str) -> None:
     outputs = [result.task.output for result in results
                if result.success and result.task.output]
-    moved = dict(_archive_output_pairs(
+    moved = dict(archive_output_pairs(
         outputs, archive_dir or pipeline.archive_dir, pipeline.name))
     for result in results:
         if result.task.output in moved:

@@ -234,10 +234,8 @@ def test_eval_filter_with_no_match_fails(monkeypatch, capsys):
     }])
     with pytest.raises(SystemExit) as exc:
         ev.eval_main(["--filter", "missing", "--json"])
-    assert exc.value.code == 1
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["total"] == 0
-    assert payload["failed"] == 1
+    assert exc.value.code == 2
+    assert "{" not in capsys.readouterr().out
 
 
 def test_eval_coverage_does_not_swallow_failure(monkeypatch, capsys):

@@ -158,6 +158,28 @@ def test_parse_and_select_requires_real_evidence_and_acceptance(tmp_path):
     assert "no evidence path exists" in reason
 
 
+def test_evidence_missing_module_prefix_is_probed_via_direction_module(tmp_path):
+    """Real-world lesson (forge-os campaign): the analysis model cited
+    `internal/statefs/statefs.go:276` where the file actually lives at
+    `forge-core/internal/statefs/statefs.go`. evidence_exists must probe the
+    bare path first, then module/ prefixed."""
+    module = tmp_path / "forge-core" / "internal" / "statefs"
+    module.mkdir(parents=True)
+    (module / "statefs.go").write_text("package statefs\n", encoding="utf-8")
+    direction = Direction(
+        module="forge-core", title="fsync dir",
+        evidence=("internal/statefs/statefs.go:276-313",),
+    )
+    assert evidence_exists(tmp_path, direction) is True
+    # both prefixes present: bare probe wins, module-prefixed probe never
+    # double-prefixes into a miss.
+    direction_prefixed = Direction(
+        module="forge-core", title="fsync dir",
+        evidence=("forge-core/internal/statefs/statefs.go",),
+    )
+    assert evidence_exists(tmp_path, direction_prefixed) is True
+
+
 def test_rejection_reasons_are_precise(tmp_path):
     """Each rejected direction carries its exact reason (real-world lesson:
     a conflated message made a 9-direction rejection impossible to diagnose)."""

@@ -9,6 +9,9 @@
 # (pi-batch.py, ai/run-review.py) — they are kept byte-identical with
 # snaplink/ai-dev (see README provenance), so quality rules apply to the
 # code we author here: cli.py, checks/, and anything new.
+#
+# Gate scan discovery excludes generated dirs: build/ dist/ *.egg-info/
+# .git/ __pycache__/ logs/ (see checks/config.py:scan_files).
 
 project:
   name: ai-batch-runner
@@ -42,7 +45,10 @@ complexity:
 root_policy:
   # Root directory must stay a thin launcher layer: config + entry points
   # only. Business code lives in subdirectories (checks/, ai/, tests/, ...).
-  max_files: 15
+  # Budget: 14 committed files + 2 runtime-only artifacts (.coverage,
+  # .pi-batch.lock — gitignored but counted on disk by the gate).
+  # Adding a new root file requires a deliberate review; prefer subdirs.
+  max_files: 16
   allowed_files:
     - README.md
     - LICENSE
@@ -58,6 +64,8 @@ root_policy:
     - pi-batch.yaml
     - git-auto-commit.sh
     - quality.py           # upstream-synced org-quality scanner (validators.pyquality)
+    - pytest.ini          # 测试分类 markers（unit/contract/property/scenario/chaos）
+    - CHANGELOG.md        # 产品变更日志（Keep a Changelog 格式）
     - .coverage            # pytest-cov data file (gitignored, recreated by make coverage)
     - .pi-batch.lock       # T4 single-instance lock (gitignored, runtime-only)
   banned_patterns:

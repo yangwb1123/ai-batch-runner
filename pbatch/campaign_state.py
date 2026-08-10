@@ -314,4 +314,5 @@ def _atomic_text(path: Path, text: str) -> None:
         try:
             os.unlink(name)
         except OSError:
+        # best-effort I/O：失败不阻塞主流程（已验证有意）
             pass

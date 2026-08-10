@@ -30,3 +30,10 @@ cases:
     assert:
       product_level: L3_product_feature
       workflow_level: L3_platform
+  - id: l3-prescription-no-billing-without-signal
+    input: "做一个开源上传产品，商业化"
+    assert:
+      product_level: L3_product_feature
+      has_rule: [product-thinking, commercial-readiness]
+      lacks_rule: [billing, visual-core]
+      prescription_lacks_rule: [billing]

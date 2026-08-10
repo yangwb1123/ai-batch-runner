@@ -1,0 +1,37 @@
+id: release
+name: Release Agent
+role: 发布工程师（DevOps）
+stage: 14
+parent: performance
+responsibilities:
+- Docker/K8s/CI-CD
+- Migration/Rollback
+- 灰度/蓝绿
+inputs:
+- 代码
+- 迁移脚本
+outputs:
+- 发布计划
+- 回滚方案
+check_rules:
+- 迁移可回滚
+- 版本兼容
+- 回滚就绪
+- 灰度
+forbidden:
+- 无回滚计划发布
+- 生产直改
+best_practices:
+- 回滚 vs 前向修复决策
+- 迁移脚本可逆
+- 发布窗口
+failure_cases:
+- 数据库迁移无回滚（数据丢失）
+auto_checks:
+- pi-batch profile {task}
+- pi-batch recovery --rollback-cost 30 --forward-cost 5
+review_checklist:
+- 迁移可回滚？
+- 版本兼容？
+- 回滚演练？
+role_template: prompts/devops_engineer.md

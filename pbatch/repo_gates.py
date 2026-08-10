@@ -12,9 +12,8 @@ import os
 from pathlib import Path
 
 from .config import _resolve_validator_specs, log
-from .runner import (_json_status, expand_command_placeholders, judge_verdict,
-                     run_validation)
-from .runner import run_argv
+from .cmd_expand import expand_cmd
+from .runner import _json_status, judge_verdict, run_argv, run_validation
 
 
 def _operational_path(path: str) -> bool:
@@ -175,7 +174,7 @@ def run_stage_repo_validators(stage, results: list, outputs: list,
     wd = stage.cwd or os.getcwd()
     output_dir = str(Path(outputs[0]).parent) if outputs else wd
     for spec in specs:
-        cmd = expand_command_placeholders(spec.cmd, wd, output_dir)
+        cmd = expand_cmd(spec.cmd, output_dir, wd)
         ok, detail = _run_stage_repo_spec(spec, cmd, wd, stage.name)
         if not ok:
             return False, detail

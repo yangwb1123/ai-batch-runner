@@ -38,8 +38,16 @@ import re
 import sys
 from pathlib import Path
 
-# 8pt-grid spacing tokens from ui-specs (0 allowed for resets).
-SPACING_TOKENS = {0, 4, 8, 12, 16, 20, 24, 32, 40, 48, 64}
+import ui_tokens
+
+# 8pt-grid spacing tokens 派生自 ui-specs/tokens.json（单一事实源；
+# spacing.md §4 的同一集合由 tests/test_ui_geometry.py A2 pinned 测试
+# 双向校验）。0 允许用于 reset。tokens.json 缺失/不可解析 → fail closed。
+try:
+    SPACING_TOKENS = ui_tokens.spacing_tokens()
+except ui_tokens.TokenLoadError as exc:
+    print(f"UI-SPEC: {exc}", file=sys.stderr)
+    sys.exit(2)
 
 _SPACING_PATTERNS = [
     # spacing sizes; big values (>128, matched below) are component dims
@@ -222,6 +230,21 @@ def _load_baseline(path):
         return set()
 
 
+def _warn_zero_scan(directory, paths: list) -> None:
+    """Project scan with zero frontend files passes vacuously; make it
+    visible on stderr (the runner's retry-feedback channel) while keeping
+    exit 0 — a config hint (check ui_scan_dir), not a failure.
+
+    Known benign false positive: a project whose frontend files are all
+    excluded by --exclude scans 0 files and hits this warning despite
+    having frontend code — harmless (a hint, not a gate failure)."""
+    if directory is None or paths:
+        return
+    print(f"UI-SPEC: warning: 0 file(s) scanned under --dir {directory}; "
+          f"no frontend files found - gate passes vacuously "
+          f"(check ui_scan_dir in pi-batch.yaml)", file=sys.stderr)
+
+
 def _write_baseline(path, violations):
     """Persist the current full violation set as the baseline snapshot."""
     payload = json.dumps(
@@ -307,6 +330,7 @@ def main(argv: list) -> int:
     mode, targets, directory, exts, excludes = parsed[:5]
     want_json, report_path, baseline_path, update_path = parsed[5:]
     paths = collect_targets(targets, directory, exts, excludes)
+    _warn_zero_scan(directory, paths)
     violations = _scan_paths(paths, resolve_checkers(mode))
     remaining, new_count = _apply_baseline(violations, baseline_path, update_path)
     report = _report_data(

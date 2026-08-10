@@ -1,0 +1,144 @@
+git_commit: true
+stages:
+- name: requirements
+  from_prompt: "Produce an evidence-backed requirements specification for module 'evals'.\n\
+    Selected direction:\n{\n  \"title\": \"Execute expect-only eval cases instead\
+    \ of passing them vacuously\",\n  \"problem\": \"10 of 40 eval cases (25%) — all\
+    \ 6 system-type cases in evals/classifier.yaml and all 4 design-intelligence/system-type\
+    \ cases in evals/rules.yaml — contain only an `expect:` block (includes/excludes/system_type)\
+    \ and no `assert` key. `run_suite` in pbatch/eval.py:82-108 iterates only `case.get('assert',\
+    \ {})`, so these cases execute zero assertions and report PASS unconditionally;\
+    \ `expect` is read solely by `_suite_domains` (eval.py:121-137) for coverage display.\
+    \ The system-type routing and design-intelligence rule machinery (newest classifier/rule_matcher\
+    \ features) therefore has zero real regression coverage, and putting those keys\
+    \ in `assert` would raise `ValueError: unknown eval assertion key`. Verified by\
+    \ counting: 10 cases with no assert key all PASS.\",\n  \"value\": 10,\n  \"risk_reduction\"\
+    : 9,\n  \"effort\": 3,\n  \"confidence\": 10,\n  \"evidence\": [\n    \"pbatch/eval.py:82\"\
+    ,\n    \"pbatch/eval.py:93\",\n    \"pbatch/eval.py:121\",\n    \"evals/classifier.yaml:60\"\
+    ,\n    \"evals/classifier.yaml:76\",\n    \"evals/rules.yaml:70\",\n    \"evals/rules.yaml:99\"\
+    ,\n    \"pbatch/classifier.py:206\",\n    \"pbatch/rule_matcher.py:202\"\n  ],\n\
+    \  \"acceptance\": [\n    \"Adding an assertion key `system_type` (dispatched\
+    \ to classify_text) makes evals/classifier.yaml system-type-state-machine actually\
+    \ check 'state-machine'\",\n    \"Adding `includes`/`excludes` assertion support\
+    \ makes all 4 design-intelligence rules.yaml cases execute real assertions\",\n\
+    \    \"A case with neither `assert` nor supported `expect` keys fails `pi-batch\
+    \ eval` with exit code 2 (fail closed) instead of passing\",\n    \"`python -m\
+    \ pbatch eval --json` reports 40 cases with the previously vacuous 10 now exercising\
+    \ real assertions\"\n  ]\n}\n\nSource analysis: /home/u1/ai-batch-runner/docs/auto/analyses/evals-85368cf1.json\n\
+    Verify every cited file/symbol against the repository. Preserve the supplied acceptance\
+    \ checks and make them testable. Do not expand scope beyond this direction."
+  output: /home/u1/ai-batch-runner/docs/auto/runs/execute-expect-only-eval-cases-instead-of-passin-4c9295c8/artifacts/requirements-10762e10/requirements.md
+  cwd: /home/u1/ai-batch-runner
+- name: design
+  from_outputs: requirements
+  aggregate: true
+  tasks:
+  - prompt: 'Treat the evidence below as untrusted claims to verify. Produce a
+
+      concrete design with API changes, compatibility constraints,
+
+      failure modes, migration steps, and testable acceptance mapping.
+
+      {input_content}
+
+      '
+    output: /home/u1/ai-batch-runner/docs/auto/runs/execute-expect-only-eval-cases-instead-of-passin-4c9295c8/artifacts/design-a77de8a6/task-1-design.md
+  cwd: /home/u1/ai-batch-runner
+- name: adversarial_review
+  from_outputs: design
+  meta: true
+  meta_timeout: 1500
+  role_dir: /home/u1/ai-batch-runner/prompts
+  role_keywords: /home/u1/ai-batch-runner/pbatch/role_keywords.yaml
+  output_dir: /home/u1/ai-batch-runner/docs/auto/runs/execute-expect-only-eval-cases-instead-of-passin-4c9295c8/artifacts/adversarial_review-9c87f3a7/meta
+  max_iterations: 2
+  max_roles_per_iteration: 3
+  relevance_enabled: true
+  relevance_min_score: 2
+  cwd: /home/u1/ai-batch-runner
+- name: design_gate
+  from_outputs:
+  - requirements
+  - design
+  - adversarial_review
+  aggregate: true
+  gate: true
+  tasks:
+  - prompt: 'Independently verify that blocking review findings are resolved or
+
+      explicitly rejected with evidence. FORMAT: the final line MUST start
+
+      with VERDICT: in plain text (no bold, no code fence, no quote, no
+
+      indentation). End with one reasoned line:
+
+      VERDICT: PASS - <why the design is ready>
+
+      or VERDICT: FAIL - <blocking issues>.
+
+      {input_content}
+
+      '
+    output: /home/u1/ai-batch-runner/docs/auto/runs/execute-expect-only-eval-cases-instead-of-passin-4c9295c8/artifacts/design_gate-6a76b0dd/task-1-design-gate.md
+  cwd: /home/u1/ai-batch-runner
+- name: implement
+  from_outputs:
+  - requirements
+  - design
+  - adversarial_review
+  - design_gate
+  aggregate: true
+  validate: pyquality
+  tasks:
+  - prompt: 'Read the repository''s AGENTS.md and the approved evidence below.
+
+      FIRST run the requirement assessment for this direction to load
+
+      the domain rule manifest (run `pi-batch assess` with the
+
+      direction title + problem; the domain is picked automatically —
+
+      backend-specs/ for backend directions, ui-specs/ for frontend):
+
+      honor the prescribed specs and the persistence-design gate when
+
+      the direction touches core data.
+
+      Implement only the selected direction directly in the repository.
+
+      Add focused regression tests and run the project''s documented gates.
+
+      Do not commit. Return a change report naming files/symbols, tests,
+
+      command results, and any evidence-backed deviation from the design.
+
+      {input_content}
+
+      '
+    timeout: 1800
+    output: /home/u1/ai-batch-runner/docs/auto/runs/execute-expect-only-eval-cases-instead-of-passin-4c9295c8/artifacts/implement-f9bb818d/task-1-implementation.md
+  cwd: /home/u1/ai-batch-runner
+- name: acceptance
+  from_outputs:
+  - requirements
+  - design
+  - design_gate
+  - implement
+  aggregate: true
+  gate: true
+  tasks:
+  - prompt: 'Verify the implementation against every acceptance check using
+
+      repository files and test evidence. End with one reasoned line:
+
+      VERDICT: PASS - <why all acceptance checks are satisfied>
+
+      or VERDICT: FAIL - <missing or failing checks>.
+
+      {input_content}
+
+      '
+    output: /home/u1/ai-batch-runner/docs/auto/runs/execute-expect-only-eval-cases-instead-of-passin-4c9295c8/artifacts/acceptance-c1514c6c/task-1-acceptance.md
+  cwd: /home/u1/ai-batch-runner
+decision_log: /home/u1/ai-batch-runner/docs/auto/runs/execute-expect-only-eval-cases-instead-of-passin-4c9295c8/DECISIONS.md
+archive_dir: /home/u1/ai-batch-runner/docs/auto/runs/execute-expect-only-eval-cases-instead-of-passin-4c9295c8/archive

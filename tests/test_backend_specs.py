@@ -5,18 +5,35 @@ pipeline."""
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+
+import pytest
 
 from pbatch.rule_matcher import domain_for, load_registry, match_rules
 
-SCRIPT = "scripts/check-backend-quality.py"
+_TESTS_ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = str(_TESTS_ROOT / "scripts" / "check-backend-quality.py")
 
 
-def _run(*args):
+@pytest.fixture
+def clean_repo():
+    """Scratch dir whose ancestor chain is manifest-free. pytest tmp_path
+    lives under /tmp, which on dev boxes may carry stray manifests
+    (e.g. /tmp/go.mod) that would false-close the 'no manifest -> skip'
+    tests; the repo root's ancestors were verified clean (design stage), so
+    a scratch dir inside the repo is a reliable no-manifest environment."""
+    path = Path(tempfile.mkdtemp(prefix=".beq-clean-", dir=Path.cwd()))
+    yield path
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def _run(*args, cwd=None):
     return subprocess.run([sys.executable, SCRIPT, *args],
-                          capture_output=True, text=True, timeout=120)
+                          capture_output=True, text=True, timeout=120, cwd=cwd)
 
 
 def test_backend_domain_selection():
@@ -89,9 +106,426 @@ def test_backend_checker_over_abstraction_warning(tmp_path):
     assert "single-implementation interface" in strict.stderr
 
 
-def test_backend_checker_empty_dir_passes(tmp_path):
-    result = _run("--dir", str(tmp_path), "--strict")
+def test_backend_checker_empty_dir_skips_with_signal(clean_repo):
+    """AC-5: an existing dir without any backend manifest passes with an
+    explicit 'no backend detected' signal — never a silent OK."""
+    result = _run("--dir", str(clean_repo), "--strict")
     assert result.returncode == 0
+    assert "no backend manifest detected; gate skipped" in result.stdout
+
+
+def test_backend_checker_missing_dir_fails_closed(tmp_path):
+    """AC-1: --dir on a missing directory exits non-zero with a scan error
+    instead of the vacuous 'OK (0 file(s) scanned)'."""
+    result = _run("--dir", str(tmp_path / "does-not-exist"), "--strict")
+    assert result.returncode == 1
+    assert "scan error: directory not found" in result.stderr
+
+
+def test_backend_checker_manifest_zero_files_fails_closed(tmp_path):
+    """AC-2: a backend manifest with 0 scanned files fails the gate."""
+    repo = tmp_path / "go-repo"
+    repo.mkdir()
+    (repo / "go.mod").write_text("module x\n", encoding="utf-8")
+    result = _run("--dir", str(repo), "--strict")
+    assert result.returncode == 1
+    assert "manifest go.mod found but 0 backend files scanned" in result.stderr
+
+
+def test_backend_checker_no_manifest_dir_skipped_not_scanned(clean_repo):
+    """Auto mode without a manifest never falls back to the union scan
+    (a root union scan would false-close on this repo's own TS/Python
+    files — the repo root must skip cleanly)."""
+    (clean_repo / "bad.ts").write_text("this.status = 'paid';\n",
+                                       encoding="utf-8")
+    result = _run("--dir", str(clean_repo), "--strict")
+    assert result.returncode == 0
+    assert "no backend manifest detected; gate skipped" in result.stdout
+    assert "bad.ts" not in result.stderr
+
+
+def test_backend_checker_go_manifest_scans_only_go(tmp_path):
+    """Manifest detection pins the language: .ts violations are not scanned
+    in a Go repo (union scan would false-close hybrid repos)."""
+    repo = tmp_path / "go-repo"
+    repo.mkdir()
+    (repo / "go.mod").write_text("module x\n", encoding="utf-8")
+    (repo / "bad.go").write_text("this.status = 'paid';\n", encoding="utf-8")
+    (repo / "bad.ts").write_text("this.status = 'paid';\n", encoding="utf-8")
+    result = _run("--dir", str(repo), "--strict")
+    assert result.returncode == 1
+    assert "bad.go" in result.stderr
+    assert "bad.ts" not in result.stderr
+
+
+def test_backend_checker_rust_manifest(tmp_path):
+    repo = tmp_path / "rust-repo"
+    repo.mkdir()
+    (repo / "Cargo.toml").write_text("[package]\nname = 'x'\n",
+                                      encoding="utf-8")
+    (repo / "bad.rs").write_text("console.log('x');\n", encoding="utf-8")
+    (repo / "bad.go").write_text("this.status = 'paid';\n", encoding="utf-8")
+    result = _run("--dir", str(repo), "--strict")
+    assert result.returncode == 1
+    assert "bad.rs" in result.stderr
+    assert "bad.go" not in result.stderr
+
+
+def test_backend_checker_java_manifest(tmp_path):
+    repo = tmp_path / "java-repo"
+    repo.mkdir()
+    (repo / "pom.xml").write_text("<project/>", encoding="utf-8")
+    (repo / "App.java").write_text("console.log('x');\n", encoding="utf-8")
+    (repo / "App.kt").write_text("console.log('x');\n", encoding="utf-8")
+    result = _run("--dir", str(repo), "--strict")
+    assert result.returncode == 1
+    assert "App.java" in result.stderr
+    assert "App.kt" in result.stderr
+
+
+def test_backend_checker_node_manifest(tmp_path):
+    repo = tmp_path / "node-repo"
+    repo.mkdir()
+    (repo / "package.json").write_text('{"name": "x"}', encoding="utf-8")
+    (repo / "api.ts").write_text("this.status = 'paid';\n", encoding="utf-8")
+    (repo / "api.go").write_text("this.status = 'paid';\n", encoding="utf-8")
+    result = _run("--dir", str(repo), "--strict")
+    assert result.returncode == 1
+    assert "api.ts" in result.stderr
+    assert "api.go" not in result.stderr
+
+
+def test_backend_checker_relative_dir_resolves_for_walkup(tmp_path):
+    """A relative --dir must behave like its absolute form: the manifest
+    walk-up applies to the resolved path, not the lexical '.' root."""
+    root = tmp_path / "proj"
+    root.mkdir(parents=True)
+    (root / "go.mod").write_text("module x\n", encoding="utf-8")
+    sub = root / "services"
+    sub.mkdir()
+    (sub / "bad.go").write_text("this.status = 'paid';\n", encoding="utf-8")
+    result = _run("--dir", ".", "--strict", cwd=str(sub))
+    assert result.returncode == 1
+    assert "bad.go" in result.stderr
+
+
+def test_backend_checker_manifest_walkup(tmp_path):
+    """A manifest above the scanned dir (e.g. --dir services/orders in a Go
+    repo) is found within the bounded walk-up."""
+    root = tmp_path / "proj"
+    root.mkdir(parents=True)
+    (root / "go.mod").write_text("module x\n", encoding="utf-8")
+    sub = root / "services" / "orders"
+    sub.mkdir(parents=True)
+    (sub / "bad.go").write_text("this.status = 'paid';\n", encoding="utf-8")
+    result = _run("--dir", str(sub), "--strict")
+    assert result.returncode == 1
+    assert "bad.go" in result.stderr
+
+
+def test_backend_checker_manifest_walkup_stops_at_git_boundary(tmp_path):
+    """An unrelated ancestor manifest must not classify a nested checkout."""
+    outer = tmp_path / "outer"
+    project = outer / "project"
+    source = project / "nested"
+    source.mkdir(parents=True)
+    (outer / "package.json").write_text('{"name": "outer"}', encoding="utf-8")
+    (project / ".git").mkdir()
+    (source / "bad.ts").write_text("this.status = 'paid';\n", encoding="utf-8")
+
+    result = _run("--dir", str(source), "--strict", "--json")
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "skipped"
+    assert payload["manifest"] == ""
+    assert payload["files_scanned"] == 0
+
+
+def test_backend_checker_manifest_precedence(tmp_path):
+    """Same-level go.mod + package.json: go.mod wins (fixed precedence)."""
+    repo = tmp_path / "mono"
+    repo.mkdir()
+    (repo / "go.mod").write_text("module x\n", encoding="utf-8")
+    (repo / "package.json").write_text('{"name": "x"}', encoding="utf-8")
+    (repo / "bad.go").write_text("this.status = 'paid';\n", encoding="utf-8")
+    (repo / "bad.ts").write_text("this.status = 'paid';\n", encoding="utf-8")
+    result = _run("--dir", str(repo), "--strict")
+    assert result.returncode == 1
+    assert "bad.go" in result.stderr
+    assert "bad.ts" not in result.stderr
+
+
+def test_backend_checker_manifest_flag_known(tmp_path):
+    """--manifest go asserts the language even without a go.mod file;
+    0 files under a forced manifest still fails closed."""
+    repo = tmp_path / "no-manifest"
+    repo.mkdir()
+    (repo / "bad.go").write_text("this.status = 'paid';\n", encoding="utf-8")
+    result = _run("--dir", str(repo), "--strict", "--manifest", "go")
+    assert result.returncode == 1
+    assert "bad.go" in result.stderr
+    empty = tmp_path / "empty-forced"
+    empty.mkdir()
+    result = _run("--dir", str(empty), "--strict", "--manifest", "go")
+    assert result.returncode == 1
+    assert "manifest go.mod (--manifest) found but 0 backend files scanned" \
+        in result.stderr
+
+
+def test_backend_checker_manifest_flag_unknown_union(tmp_path):
+    """Unknown --manifest names (e.g. 'python') fall back to the union
+    extension set but still fail closed on 0 files."""
+    repo = tmp_path / "py-repo"
+    repo.mkdir()
+    (repo / "app.py").write_text("this.status = 'paid';\n", encoding="utf-8")
+    result = _run("--dir", str(repo), "--strict", "--manifest", "python")
+    assert result.returncode == 1
+    assert "app.py" in result.stderr
+    empty = tmp_path / "py-empty"
+    empty.mkdir()
+    result = _run("--dir", str(empty), "--strict", "--manifest", "python")
+    assert result.returncode == 1
+    assert "--manifest python: 0 backend files scanned" in result.stderr
+
+
+def test_backend_checker_dir_json_additive_fields(tmp_path):
+    """JSON stays byte-compatible: existing fields unchanged, only
+    manifest/scan_error/status are added."""
+    repo = tmp_path / "go-repo"
+    repo.mkdir()
+    (repo / "go.mod").write_text("module x\n", encoding="utf-8")
+    (repo / "bad.go").write_text("this.status = 'paid';\n", encoding="utf-8")
+    result = _run("--dir", str(repo), "--strict", "--json")
+    start = result.stdout.index("{")
+    decoded, _ = json.JSONDecoder().raw_decode(result.stdout[start:])
+    assert decoded["strict"] is True
+    assert decoded["files_scanned"] == 1
+    assert decoded["total"] == 1
+    assert decoded["manifest"] == "go.mod"
+    assert decoded["status"] == "ok"
+    assert "scan_error" not in decoded
+    for v in decoded["violations"]:
+        assert "file" in v and "detail" in v
+
+
+def test_backend_checker_dir_skipped_json_status(clean_repo):
+    result = _run("--dir", str(clean_repo), "--strict", "--json")
+    start = result.stdout.index("{")
+    decoded, _ = json.JSONDecoder().raw_decode(result.stdout[start:])
+    assert decoded["status"] == "skipped"
+    assert decoded["manifest"] == ""
+    assert decoded["files_scanned"] == 0
+    assert decoded["total"] == 0
+
+
+def test_backend_checker_scan_error_json(tmp_path):
+    """F4: scan_error path also keeps the --json stdout contract — exactly
+    one JSON document, strict-parseable (a summary-line regression would
+    make json.loads raise)."""
+    missing = tmp_path / "nope"
+    result = _run("--dir", str(missing), "--strict", "--json")
+    assert result.returncode == 1
+    decoded = json.loads(result.stdout)
+    assert decoded["status"] == "scan_error"
+    assert "directory not found" in decoded["scan_error"]
+    assert decoded["total"] == 0
+
+
+def test_backend_json_stdout_contract(tmp_path, clean_repo):
+    """AC1: under --json, stdout is exactly one JSON document on every
+    status path (ok / skipped / violation) — no trailing summary lines."""
+    def run(*args):
+        return _run("--dir", str(args[0]), "--json", *args[1:])
+
+    # (a) ok: manifest + clean source -> exit 0, pure JSON on stdout
+    ok = tmp_path / "ok"
+    ok.mkdir()
+    (ok / "go.mod").write_text("module x\n", encoding="utf-8")
+    (ok / "src" / "main.go").parent.mkdir(parents=True)
+    (ok / "src" / "main.go").write_text("package main\n\nfunc main() {}\n",
+                                          encoding="utf-8")
+    result = run(ok)
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "ok"
+    assert payload["total"] == 0
+    assert "BACKEND-QUALITY" not in result.stdout
+    assert "BACKEND-QUALITY: OK" in result.stderr
+
+    # (b) skipped: no manifest anywhere in the walk-up
+    skipped = clean_repo / "empty"
+    skipped.mkdir()
+    result = run(skipped)
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "skipped"
+    assert "gate skipped" in result.stderr
+    assert "gate skipped" not in result.stdout
+
+    # (c) violation: manifest + offending source -> exit 1, stdout still pure
+    viol = tmp_path / "viol"
+    viol.mkdir()
+    (viol / "go.mod").write_text("module x\n", encoding="utf-8")
+    (viol / "src" / "a.go").parent.mkdir(parents=True)
+    (viol / "src" / "a.go").write_text("console.log('x');\n", encoding="utf-8")
+    result = run(viol)
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["total"] >= 1
+    assert "console.log" in result.stderr
+    assert "BACKEND-QUALITY" not in result.stdout
+
+
+def test_backend_skip_flag(clean_repo):
+    """AC2: --skip unions with DEFAULT_EXCLUDES (never replaces), matches
+    directory segments, and --skip "" is a no-op.
+
+    Negative control: tests/ is a default-excluded segment. A replace
+    implementation would drop the defaults and scan tests/x.go -> 2 under
+    --skip scratch; the union keeps it excluded -> 1 (asserted below)."""
+    repo = clean_repo / "repo"
+    repo.mkdir()
+    (repo / "go.mod").write_text("module x\n", encoding="utf-8")
+    for name in ("src/a.go", "scratch/b.go", "tests/x.go"):
+        path = repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("package main\n\nfunc main() {}\n", encoding="utf-8")
+
+    def scanned(*extra):
+        result = _run("--dir", str(repo), "--json", *extra)
+        assert result.returncode == 0
+        return json.loads(result.stdout)["files_scanned"]
+
+    assert scanned() == 2
+    assert scanned("--skip", "scratch") == 1
+    # both names already in DEFAULT_EXCLUDES: the union keeps them excluded
+    assert scanned("--skip", "generated,migrations") == 2
+    assert scanned("--skip", "") == 2  # empty value -> no-op
+
+
+def test_backend_trailing_skip_diagnostic(clean_repo):
+    """F1: trailing --skip (no value) is a visible missing-target violation
+    (exit 1), never a silent accept; stdout stays strict-parseable JSON."""
+    repo = clean_repo / "repo"
+    repo.mkdir()
+    (repo / "go.mod").write_text("module x\n", encoding="utf-8")
+    (repo / "src" / "main.go").parent.mkdir(parents=True)
+    (repo / "src" / "main.go").write_text(
+        "package main\n\nfunc main() {}\n", encoding="utf-8")
+    result = _run("--dir", str(repo), "--json", "--skip")
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)  # stdout stays one JSON doc
+    files = [v["file"] for v in payload["violations"]]
+    assert "--skip" in files
+    assert "missing target" in result.stderr
+
+
+def test_backend_skip_explicit_file_immune(tmp_path, clean_repo):
+    """F2/C5: --skip filters --dir scans only. Explicit file targets are
+    scanned regardless; positional mode (no --dir) is a --skip no-op."""
+    repo = clean_repo / "repo"
+    repo.mkdir()
+    (repo / "go.mod").write_text("module x\n", encoding="utf-8")
+    (repo / "src" / "a.go").parent.mkdir(parents=True)
+    (repo / "src" / "a.go").write_text(
+        "package main\n\nfunc main() {}\n", encoding="utf-8")
+    viol = repo / "scratch" / "b.go"
+    viol.parent.mkdir(parents=True)
+    viol.write_text("package main\n\nfunc main() { console.log('x'); }\n",
+                    encoding="utf-8")
+
+    # explicit target under a --skip'd dir: still scanned, still reported
+    result = _run("--dir", str(repo), "--skip", "scratch", "--json",
+                  str(viol))
+    payload = json.loads(result.stdout)
+    assert payload["files_scanned"] == 2  # src/a.go (dir) + explicit viol
+    assert payload["total"] == 1
+    assert any(v["file"] == str(viol) for v in payload["violations"])
+
+    # positional mode: --skip is a no-op, output byte-identical
+    with_skip = _run(str(viol), "--skip", "scratch")
+    without = _run(str(viol))
+    assert with_skip.returncode == without.returncode == 1
+    assert with_skip.stdout == without.stdout
+    assert with_skip.stderr == without.stderr
+
+
+def test_backend_skip_all_excluded_fails_closed(clean_repo):
+    """F3: --skip cannot manufacture a hollow pass — excluding every source
+    under a manifest trips the same empty-scan fail-closed as an empty repo."""
+    repo = clean_repo / "repo"
+    repo.mkdir()
+    (repo / "go.mod").write_text("module x\n", encoding="utf-8")
+    (repo / "src" / "a.go").parent.mkdir(parents=True)
+    (repo / "src" / "a.go").write_text(
+        "package main\n\nfunc main() {}\n", encoding="utf-8")
+    (repo / "scratch" / "b.go").parent.mkdir(parents=True)
+    (repo / "scratch" / "b.go").write_text(
+        "package main\n\nfunc main() {}\n", encoding="utf-8")
+
+    result = _run("--dir", str(repo), "--json", "--skip",
+                  "src,scratch,extra")
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "empty"
+    assert payload["files_scanned"] == 0
+    assert "0 backend files scanned" in result.stderr
+
+
+def test_backend_flaglike_value_rejected(tmp_path):
+    """F1: a flag following a value flag is a usage error (exit 2), never
+    silently swallowed. --skip --json must NOT degrade to human mode with
+    exit 0; --dir --strict is the same shared-branch guard (was a visible
+    scan error, now argparse-family exit 2)."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "go.mod").write_text("module x\n", encoding="utf-8")
+    (repo / "src" / "main.go").parent.mkdir(parents=True)
+    (repo / "src" / "main.go").write_text("package main\n\nfunc main() {}\n",
+                                            encoding="utf-8")
+
+    for args in (("--skip", "--json"), ("--skip", "--strict"),
+                 ("--dir", "--strict"), ("--manifest", "--json")):
+        result = _run("--dir", str(repo), *args)
+        assert result.returncode == 2, args
+        assert "expected one argument" in result.stderr, args
+        assert "{" not in result.stdout, args  # no JSON, no false pass
+
+    # bare dash is still a legal value (argparse-family convention)
+    result = _run("--dir", str(repo), "--skip", "-")
+    assert result.returncode == 0
+
+
+def test_backend_non_json_unchanged(tmp_path):
+    """C1: without --json the human summary stays on stdout — the --json
+    fix must not leak into non-json runs (byte-identical human mode)."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "go.mod").write_text("module x\n", encoding="utf-8")
+    (repo / "src" / "main.go").parent.mkdir(parents=True)
+    (repo / "src" / "main.go").write_text("package main\n\nfunc main() {}\n",
+                                            encoding="utf-8")
+    result = _run("--dir", str(repo))
+    assert result.returncode == 0
+    assert "BACKEND-QUALITY: OK (1 file(s) scanned)" in result.stdout
+    assert "{" not in result.stdout
+
+
+def test_backend_o_flag_summary_on_stdout(tmp_path):
+    """C2: -o without --json keeps the human summary on stdout; the report
+    file bytes are the unchanged JSON payload."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "go.mod").write_text("module x\n", encoding="utf-8")
+    (repo / "src" / "main.go").parent.mkdir(parents=True)
+    (repo / "src" / "main.go").write_text("package main\n\nfunc main() {}\n",
+                                            encoding="utf-8")
+    report = tmp_path / "report.json"
+    result = _run("--dir", str(repo), "-o", str(report))
+    assert result.returncode == 0
+    assert "BACKEND-QUALITY: OK" in result.stdout
+    assert json.loads(report.read_text(encoding="utf-8"))["total"] == 0
 
 
 def test_backend_quality_validator_resolves():

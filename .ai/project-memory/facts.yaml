@@ -1,0 +1,3 @@
+# Confirmed Facts（已确认事实，非推理）
+# 每个事实应可在 truth 或代码中验证
+facts: []

@@ -5,11 +5,12 @@
 # Base 类、Factory 泛滥）、事务边界。规范 = backend-specs/ 决策表；
 # 可机器检查的由 backendquality 门禁拦截，需要推理的由审查角色对抗发现。
 #
-# 运行（把 pi-batch.yaml 的 backendquality --dir 改成后端源码根目录）：
+# 运行（backendquality 已按项目 manifest 自动定位后端源码根，无需手改 --dir）：
 #   pi-batch examples/backend-engineering-review.yaml \
 #     --retries 3 --log-file logs/be-review.log
-# 只跑机器门禁：
-#   python scripts/check-backend-quality.py --dir src --strict --json
+# 只跑机器门禁（manifest 感知：go.mod/Cargo.toml/pom.xml/package.json；
+# 无 manifest 时显式跳过，--manifest 可强制指定语言）：
+#   python scripts/check-backend-quality.py --dir . --strict --json
 # 需求评估（先评估再决定用哪套规则）：
 #   pi-batch assess "写一个订单创建接口，含支付审批，生产环境"
 

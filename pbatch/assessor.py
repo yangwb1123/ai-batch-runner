@@ -388,6 +388,45 @@ def format_execution_prompt(assessment: dict) -> str:
     return "\n".join(lines)
 
 
+def _assess_text(args, parser) -> str:
+    """需求文本来源：--file 或位置参数（有界读取）。"""
+    if args.file:
+        try:
+            return read_text_bounded(Path(args.file), config.INPUT_MAX_BYTES,
+                                     "assess source")
+        except ValueError as exc:
+            parser.error(str(exc))
+    text = " ".join(args.task)
+    if not text.strip():
+        parser.error("Provide a requirement (positional text or --file)")
+    return text
+
+
+def _assess_registry(text: str, override: str, parser):
+    """Load the selected domain registry, failing through argparse."""
+    try:
+        return (load_registry(override, domain=domain_for(text))
+                if override else load_registry(domain=domain_for(text)))
+    except ValueError as exc:
+        parser.error(str(exc))
+
+
+def print_profile_block(assessment: dict) -> None:
+    """画像 + 假设记录的人类可读输出（assess 文本模式尾部）。"""
+    from .profile import format_profile
+    print("")
+    print(format_profile(assessment["task_profile"]))
+    records = assessment.get("assumptions") or []
+    if not records:
+        return
+    print("")
+    print("## 假设记录（待确认问题 → 处理决策）")
+    for record in records:
+        print(f"- 风险{record['assumption_risk']:.2f} "
+              f"{record['statement']} → {record['verification_plan']} "
+              f"[{record['status']}]")
+
+
 def assess_main(argv: list) -> None:
     """`pi-batch assess "<requirement>" [--json] [--llm-json '...']`."""
     import argparse
@@ -406,21 +445,8 @@ def assess_main(argv: list) -> None:
                         help='LLM selection JSON {"apply":[],"skip":[]} to reconcile')
     parser.add_argument("--registry", default="", help="rule registry YAML override")
     args = parser.parse_args(argv)
-    if args.file:
-        try:
-            text = read_text_bounded(Path(args.file), config.INPUT_MAX_BYTES,
-                                     "assess source")
-        except ValueError as exc:
-            parser.error(str(exc))
-    else:
-        text = " ".join(args.task)
-    if not text.strip():
-        parser.error("Provide a requirement (positional text or --file)")
-    try:
-        registry = (load_registry(args.registry, domain=domain_for(text))
-                    if args.registry else load_registry(domain=domain_for(text)))
-    except ValueError as exc:
-        parser.error(str(exc))
+    text = _assess_text(args, parser)
+    registry = _assess_registry(text, args.registry, parser)
     assessment = prescription(text, registry)
     if args.llm_json:
         try:
@@ -429,6 +455,13 @@ def assess_main(argv: list) -> None:
             log.error("Invalid --llm-json: %s", exc)
             sys.exit(2)
         _apply_llm_selection(text, assessment, registry, selection)
+    # Multi-dimensional profile, discretion envelope and explicit
+    # assumptions are additive metadata; the assessor's tier/risk policy
+    # above remains authoritative for the prescribed rule set.
+    # P1/P3/P4：多维画像 + 裁量包络 + 假设记录（惰性导入避免循环依赖）
+    from .profile import assumption_records, task_profile
+    assessment["task_profile"] = task_profile(text, registry)
+    assessment["assumptions"] = assumption_records(text)
     if args.json:
         print(json.dumps(assessment, ensure_ascii=False, indent=2))
         return
@@ -436,3 +469,4 @@ def assess_main(argv: list) -> None:
         print(format_execution_prompt(assessment))
         return
     print(format_assessment(assessment))
+    print_profile_block(assessment)

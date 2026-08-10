@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -500,6 +501,153 @@ def test_serial_retry_exhausts(tmp_path, monkeypatch):
     assert results[0].reason
     assert not output.exists()
     assert counter.read_text(encoding="utf-8").count("x") == 3  # 1 + 2 retries
+
+
+def test_parallel_retry_recovers_after_transient_failure(tmp_path, monkeypatch):
+    """T1a: parallel retry — a transient agent failure is retried and the
+    task succeeds (the retry flags are no longer silently ignored)."""
+    counter = tmp_path / "counter"
+    agent = _flaky_agent(tmp_path, counter, fail_times=1)
+    mod = load_batch()
+    mod.config.AGENT_BIN = str(agent)
+    monkeypatch.setattr(mod.time, "sleep", lambda _: None)  # no real backoff wait
+    output = tmp_path / "o.md"
+    results = mod.run_parallel([mod.Task(prompt="x", output=str(output))],
+                               workers=2, retries=2, retry_delay=0)
+    assert results[0].success is True
+    assert output.exists()
+    assert counter.read_text(encoding="utf-8").count("x") == 2  # 1 + 1 retry
+
+
+def test_parallel_retry_exhausts(tmp_path, monkeypatch):
+    """T1a': parallel retries exhaust — a persistent failure leaves no
+    output and the last reason is preserved."""
+    counter = tmp_path / "counter"
+    agent = _flaky_agent(tmp_path, counter, fail_times=999)
+    mod = load_batch()
+    mod.config.AGENT_BIN = str(agent)
+    monkeypatch.setattr(mod.time, "sleep", lambda _: None)
+    output = tmp_path / "o.md"
+    results = mod.run_parallel([mod.Task(prompt="x", output=str(output))],
+                               workers=2, retries=2, retry_delay=0)
+    assert results[0].success is False
+    assert results[0].reason
+    assert not output.exists()
+    assert counter.read_text(encoding="utf-8").count("x") == 3  # 1 + 2 retries
+
+
+def test_parallel_retry_prompt_carries_validator_stderr(tmp_path, monkeypatch):
+    """T2: a validator rejection in parallel feeds its capped stderr and the
+    exit code into the retry prompt so the agent can fix the gate directly."""
+    args_log = tmp_path / "args.log"
+    agent = _recording_agent(tmp_path, args_log)
+    counter = tmp_path / "vcounter"
+    mod = load_batch()
+    mod.config.AGENT_BIN = str(agent)
+    monkeypatch.setattr(mod.time, "sleep", lambda _: None)
+    output = tmp_path / "o.md"
+    validate = (f"echo 'BROKEN-GATE' >&2; echo x >> {counter}; "
+                f"[ $(wc -l < {counter}) -le 1 ] && exit 3 || exit 0")
+    results = mod.run_parallel([mod.Task(prompt="fix me", output=str(output))],
+                               workers=1, retries=1, retry_delay=0,
+                               validate_cmd=validate)
+    assert results[0].success is True
+    assert output.exists()
+    text = args_log.read_text(encoding="utf-8")
+    prompts = text.split("-p\n")[1:]
+    assert len(prompts) == 2  # initial attempt + one retry
+    assert "BROKEN-GATE" in prompts[1]
+    assert "exit=3" in prompts[1]
+
+
+def test_parallel_min_interval_between_completions(tmp_path, monkeypatch):
+    """T3a: min_interval throttles BETWEEN successful completions — two
+    tasks yield exactly one sleep (first success undelayed)."""
+    agent = tmp_path / "ok-agent.sh"
+    agent.write_text("#!/bin/sh\necho OK\n", encoding="utf-8")
+    agent.chmod(0o755)
+    mod = load_batch()
+    mod.config.AGENT_BIN = str(agent)
+    sleeps = []
+    monkeypatch.setattr(mod.time, "sleep", sleeps.append)
+    tasks = [mod.Task(prompt=f"p{i}", output=str(tmp_path / f"o{i}.md")) for i in range(2)]
+    results = mod.run_parallel(tasks, workers=2, min_interval=5.0)
+    assert all(r.success for r in results)
+    assert sleeps == [5.0]  # total sleep in [5, 10) — not 0, not 2*5
+
+
+def test_parallel_min_interval_three_successes(tmp_path, monkeypatch):
+    """T3a': three successes yield exactly two between-completion sleeps."""
+    agent = tmp_path / "ok-agent.sh"
+    agent.write_text("#!/bin/sh\necho OK\n", encoding="utf-8")
+    agent.chmod(0o755)
+    mod = load_batch()
+    mod.config.AGENT_BIN = str(agent)
+    sleeps = []
+    monkeypatch.setattr(mod.time, "sleep", sleeps.append)
+    tasks = [mod.Task(prompt=f"p{i}", output=str(tmp_path / f"o{i}.md")) for i in range(3)]
+    results = mod.run_parallel(tasks, workers=3, min_interval=5.0)
+    assert all(r.success for r in results)
+    assert sleeps == [5.0, 5.0]  # total in [10, 15)
+
+
+def test_cli_parallel_retries(tmp_path):
+    """T1b: --mode parallel honors --retries end to end; the agent fails
+    once per task (exit 1, so no 30s rate-limit floor) and recovers.
+    workers=1 keeps the shared counter deterministic (one retry total)."""
+    counter = tmp_path / "counter"
+    agent = tmp_path / "flaky-exit1.sh"
+    agent.write_text(
+        "#!/bin/sh\n"
+        f"echo x >> {counter}\n"
+        f"if [ $(wc -l < {counter}) -le 1 ]; then\n"
+        "  echo 'boom' >&2\n"
+        "  exit 1\n"
+        "else\n"
+        "  echo OK\n"
+        "fi\n"
+    )
+    agent.chmod(0o755)
+    inputs = _inputs_dir(tmp_path)
+    result = subprocess.run(
+        [
+            sys.executable, str(PI_BATCH),
+            "--from-dir", str(inputs),
+            "--agent-bin", str(agent),
+            "--mode", "parallel",
+            "--workers", "1",
+            "--retries", "2",
+            "--retry-delay", "0",
+        ],
+        capture_output=True, text=True, timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (inputs / "task1.out.md").exists()
+    assert (inputs / "task2.out.md").exists()
+
+
+def test_cli_parallel_min_interval(tmp_path):
+    """T3b: --mode parallel honors --min-interval (real wall clock)."""
+    agent = tmp_path / "ok-agent.sh"
+    agent.write_text("#!/bin/sh\necho OK\n", encoding="utf-8")
+    agent.chmod(0o755)
+    inputs = _inputs_dir(tmp_path)  # two tasks -> one between-success sleep
+    start = time.monotonic()
+    result = subprocess.run(
+        [
+            sys.executable, str(PI_BATCH),
+            "--from-dir", str(inputs),
+            "--agent-bin", str(agent),
+            "--mode", "parallel",
+            "--workers", "2",
+            "--min-interval", "1",
+        ],
+        capture_output=True, text=True, timeout=60,
+    )
+    elapsed = time.monotonic() - start
+    assert result.returncode == 0, result.stderr
+    assert elapsed >= 1.0
+    assert elapsed < 10.0
 
 
 def test_task_result_carries_reason(tmp_path, fake_agent, error_agent):

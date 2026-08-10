@@ -12,6 +12,7 @@ from typing import NamedTuple, Optional
 
 from .assets import (PACKAGE_ROOT, TOOL_ROOT, asset_candidates, expand_validator_registry,
                      is_tool_asset, placeholder_values, resolve_asset_path)
+from .config_device import _bool_setting, load_device_fabric
 from .config_values import _choice_setting, _float_setting, _int_setting, _string_setting
 from .validator_schema import schema_validator_command
 
@@ -48,7 +49,6 @@ def _find_batch_config() -> Optional[dict]:
             return data
     return None
 
-
 def _load_batch_config(path: str = "pi-batch.yaml") -> dict:
     """Optional defaults for pi-batch. Missing file -> {} (built-in defaults
     below apply), so the tool still runs standalone with zero config -- copy
@@ -56,7 +56,6 @@ def _load_batch_config(path: str = "pi-batch.yaml") -> dict:
     CLI."""
     data = _find_batch_config()
     return data if data is not None else {}
-
 
 _BATCH_CFG = _load_batch_config()
 
@@ -69,7 +68,6 @@ def _section(name: str) -> dict:
     log.warning("Config section '%s' must be a mapping; using defaults", name)
     return {}
 
-
 _AGENT_CFG = _section("agent")
 # Optional per-agent override sections: agent.agents.<bin>.* win over the
 # global agent.* settings for that binary (G line: claude/codex/gemini have
@@ -78,7 +76,6 @@ _AGENTS_CFG = _AGENT_CFG.get("agents")
 if not isinstance(_AGENTS_CFG, dict):
     _AGENTS_CFG = {}
 
-
 def _agent_section(bin_name: str) -> dict:
     """Per-agent config section for a binary name (agent.agents.<bin>),
     or {} when the section is absent/malformed."""
@@ -86,7 +83,6 @@ def _agent_section(bin_name: str) -> dict:
         return {}
     section = _AGENTS_CFG.get(bin_name)
     return section if isinstance(section, dict) else {}
-
 
 _DEFAULT_ARGUMENT_FLAGS = {
     "prompt": ("-p",),
@@ -171,8 +167,6 @@ def agent_preflight_errors(bin_name: str) -> list[str]:
     except (TypeError, ValueError) as exc:
         errors.append(f"invalid adapter for {name}: {exc}")
     return errors
-
-
 # Default provider/CLI failure signatures (G line). Per-agent overrides:
 #   agent.error_patterns: [...]      (all agents)
 #   agent.agents.<bin>.error_patterns: [...]   (one binary)
@@ -222,11 +216,9 @@ _DEFAULT_ERROR_PATTERNS = (
     r"(?im)^fatal:",
 )
 
-
 @lru_cache(maxsize=16)
 def _compile_patterns(patterns: tuple) -> tuple:
     return tuple(re.compile(pattern, re.IGNORECASE) for pattern in patterns)
-
 
 def agent_error_patterns(bin_name: str = "") -> tuple:
     """Failure-signature patterns for the current agent binary: per-agent
@@ -263,16 +255,9 @@ _MEMORY_CFG = _section("memory")
 _CLASSIFIER_CFG = _section("classifier")
 _LIMITS_CFG = _section("limits")
 
-
 AGENT_BIN = _string_setting(_AGENT_CFG, "bin", "pi", allow_empty=False)
-
-
 AGENT_DEFAULT_MODEL = _string_setting(_AGENT_CFG, "default_model", "")
-
-
 AGENT_DEFAULT_TIMEOUT = _int_setting(_AGENT_CFG, "default_timeout", 900, 1)
-
-
 AGENT_DEFAULT_WORKERS = _int_setting(_AGENT_CFG, "default_workers", 4, 1)
 
 
@@ -373,6 +358,19 @@ RATE_LIMIT_PROVIDERS = {
     str(key): value for key, value in _LIMIT_PROVIDERS.items()
     if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
 }
+
+
+# Each fabric capability remains independently off by default. Loading the
+# module never implies scanning, execution, migration, or installation.
+_DEVICE_FABRIC = load_device_fabric(_section("device_fabric"))
+DEVICE_FABRIC_ENABLED = _DEVICE_FABRIC.enabled
+DEVICE_FABRIC_MODE = _DEVICE_FABRIC.mode
+DEVICE_FABRIC_LAN_SCAN = _DEVICE_FABRIC.lan_scan
+DEVICE_FABRIC_BENCHMARK = _DEVICE_FABRIC.benchmark
+DEVICE_FABRIC_AUTO_INSTALL = _DEVICE_FABRIC.auto_install
+DEVICE_FABRIC_APPROVAL_REQUIRED = _DEVICE_FABRIC.approval_required
+DEVICE_FABRIC_STATIC = _DEVICE_FABRIC.static
+DEVICE_FABRIC_CLUSTERS = _DEVICE_FABRIC.clusters
 
 
 # Task type classifier (pbatch/classifier.py): deterministic keyword gate

@@ -1,0 +1,26 @@
+id: PY-CYCLE-EXPORT
+title: 模块级循环依赖通过底部 re-export 形成：config↔runtime_policy 的 import 期循环
+category: backend
+severity: warning
+scope:
+  languages: []
+  paths:
+  - src/**
+trigger:
+  operations: []
+rationale: 'Observed failure: 模块级循环依赖通过底部 re-export 形成：config↔runtime_policy 的 import
+  期循环. Root-cause analysis is required before this draft can be promoted (edit requirements/forbidden/verification
+  with the actual RCA).'
+requirements: []
+forbidden: []
+exceptions:
+- condition: ''
+verification:
+  static: []
+  tests: []
+examples:
+  good: []
+  bad: []
+owner: ''
+version: 0.1.0
+status: draft

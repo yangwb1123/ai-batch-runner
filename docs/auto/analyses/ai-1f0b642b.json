@@ -1,0 +1,74 @@
+Based on my analysis of `ai/run-review.py`, `ai/sdlc.yaml`, `ai/prompts/`, `tests/test_run_review.py`, and the shared interfaces in `pbatch/config.py` / `pbatch/runner.py` / `pi-batch.yaml`, here are the top 3 improvement directions:
+
+```json
+[
+  {
+    "title": "Reuse config-driven failure signatures instead of the frozen duplicate table in run-review.py",
+    "problem": "ai/run-review.py:405 hard-codes its own _AGENT_ERROR_PATTERNS (39 regexes) and agent_failure_reason (line 451), duplicating the identical gate in pbatch/runner.py:89 which resolves pbatch/config.py:206 agent_error_patterns(). The runner honors global agent.error_patterns and per-agent agent.agents.<bin>.error_patterns overrides (documented as commented knobs in pi-batch.yaml:25,35), but the review runner ignores all of them. Any signature added or fixed for a new agent adapter (claude/codex) silently does not apply to review runs, so a provider-error reply can be saved as a stage-NN.out.md artifact; the two copies drift — the same defect class the repo already eliminated elsewhere (drifting duplicate of check-no-refusal.py).",
+    "value": 8,
+    "risk_reduction": 9,
+    "effort": 2,
+    "confidence": 9,
+    "evidence": [
+      "ai/run-review.py:405",
+      "ai/run-review.py:451",
+      "pbatch/runner.py:89",
+      "pbatch/config.py:206",
+      "pi-batch.yaml:25",
+      "pi-batch.yaml:35"
+    ],
+    "acceptance": [
+      "Set agent.agents.<custom>.error_patterns in pi-batch.yaml, run python ai/run-review.py --agent-bin custom, and verify a matching provider banner rejects the stage (no output file written)",
+      "grep the pattern table out of ai/run-review.py and pbatch/config.py and diff — tables must be identical or the runner must delegate with zero local copies",
+      "tests/test_run_review.py passes with a new case asserting per-agent error_patterns override is honored"
+    ]
+  },
+  {
+    "title": "Bound chained stage-output injection so --all cannot deterministically blow the prompt argv limit in late stages",
+    "problem": "chain_variables (ai/run-review.py:373) concatenates full prior stage outputs; _chain_stage_output (line 738) reads each output up to OUTPUT_MAX_BYTES (default 2 MiB, pbatch/config.py:272). Stage 07 chains 7 sources and stage 09 chains 9 sources, so a --all run with realistic outputs can build a prompt of many MiB, exceeding PROMPT_MAX_BYTES=122880 (pi-batch.yaml:94, pbatch/config.py:289). _prompt_size_error (line 507) then fails the final stage after all earlier agent calls were already burned — a deterministic, late, untested failure (tests/test_run_review.py::test_all_chains_stage_outputs_end_to_end only covers tiny fake outputs). pi-batch.py's aggregate/meta prompts already have the evidence.max_bytes=65536 / max_sources budget (pi-batch.yaml:88-89) that run-review.py does not use.",
+    "value": 8,
+    "risk_reduction": 7,
+    "effort": 4,
+    "confidence": 9,
+    "evidence": [
+      "ai/run-review.py:373",
+      "ai/run-review.py:738",
+      "ai/run-review.py:507",
+      "pi-batch.yaml:94",
+      "pbatch/config.py:289",
+      "pbatch/config.py:272",
+      "pi-batch.yaml:88",
+      "tests/test_run_review.py:test_all_chains_stage_outputs_end_to_end"
+    ],
+    "acceptance": [
+      "Run --all with a fake agent emitting >64 KiB per stage; the run completes and stage 09's rendered prompt stays under PROMPT_MAX_BYTES with explicit truncation markers in chained variables",
+      "New unit test asserting chain_variables truncates per-source and in total with a budget constant (proposed: reuse evidence.max_bytes)",
+      "No chained stage output may ever render without a truncation/omission marker when cut"
+    ]
+  },
+  {
+    "title": "Stop fabricating '0 Critical / 0 High / N/A grades' in the CTO stage; synthesize counts from chained findings or render as (not provided)",
+    "problem": "ai/prompts/09-cto-review.md:19 and :25-31 require {{CRITICAL_COUNT}}, {{HIGH_COUNT}} and {{GRADE_00..06}}, but CHAIN_SOURCES (ai/run-review.py:358) only fills ALL_PRIOR_FINDINGS_SUMMARY; ai/sdlc.yaml:102-104 defaults the counts to \"0\" and grades to \"N/A\". Unless the user hand-writes stage_09 overrides, the final decision stage presents '0 Critical; 0 High' as if verified even when prior stages reported critical findings — contradicting ai/README.md's claim that the runner 'no longer fabricates' project facts. prompts-shared/output-format.md requires each stage to conclude with Critical/High counts, so a bounded severity extraction from chained outputs is feasible; unfilled fields should render as '(not provided: ...)' like every other omitted variable (fill_template behavior, ai/run-review.py:395).",
+    "value": 7,
+    "risk_reduction": 7,
+    "effort": 5,
+    "confidence": 8,
+    "evidence": [
+      "ai/prompts/09-cto-review.md:19",
+      "ai/prompts/09-cto-review.md:25",
+      "ai/run-review.py:358",
+      "ai/sdlc.yaml:102",
+      "ai/prompts-shared/output-format.md",
+      "ai/README.md",
+      "ai/run-review.py:395"
+    ],
+    "acceptance": [
+      "Fake agent emitting a 'Severity: Critical' finding in stage 02 output; rendered stage 09 prompt must not contain '0 Critical' and must derive CRITICAL_COUNT >= 1 or render '(not provided: CRITICAL_COUNT)'",
+      "No context overrides supplied: stage 09 prompt renders '(not provided: ...)' for every unsynthesized count/grade, never bare '0' or 'N/A'",
+      "New unit test in tests/test_run_review.py asserting severity-count synthesis (or explicit non-fabrication) for stage 09"
+    ]
+  }
+]
+```
+
+Note: all three directions are verified by direct code inspection (`run-review.py`, `config.py`, `runner.py`, `sdlc.yaml`, `pi-batch.yaml`, `tests/test_run_review.py`); the only proposed element is the truncation-budget constant and severity-extraction heuristic in the acceptance criteria.

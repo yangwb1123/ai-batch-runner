@@ -26,10 +26,10 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `pbatch/pipeline_schema.py` / `evidence.py` | Pipeline fail-closed schema 与有界证据注入 |
 | `pbatch/relevance.py` | meta 角色关键词评分、命中证据、去重与运行时数量上限 |
 | `pbatch/classifier.py` / `task_keywords.yaml` | 任务类型判断器：执行前双语关键词判定，前端→前端实现流水线、后端→后端实现流水线（`classifier.frontend_pipeline` / `backend_pipeline`，均为 plan→implement+门禁→对抗审查→gate 结构），`--classify` / `classify` 子命令，零 LLM 成本 |
-| `pbatch/rule_matcher.py` / `ui-specs/rules.yaml` | 规则匹配器：按 scale（demo/standard/production）× page_type × risk 三轴算法式筛选适用规范；**双向校验**——算法 manifest 与 LLM 独立选择对比裁决（`rules --summary/--llm-json/--llm-prompt`），必选规则不可被 LLM 跳过（fail closed） |
+| `pbatch/rule_matcher.py` / `ui-specs/rules.yaml` | 规则匹配器：按 scale（demo/standard/production）× page_type × risk 三轴算法式筛选适用规范；**双向校验**——算法 manifest 与 LLM 独立选择对比裁决（`rules --summary/--llm-json/--llm-prompt`），必选规则不可被 LLM 跳过（fail closed）；三域注册表（frontend/backend/product，`product-specs/rules.yaml` 按 productization_level L1+ 路由，L0 克制不加载） |
 | `pbatch/advance.py` | 自推进迭代引擎（`advance` 子命令）：扫描项目全部规范维度（UI 间距/颜色/样式、前端工程错误/N+1/复杂度、后端工程/架构）→ 按细颗粒度分批（P0 可恢复性 > P1 视觉 token > P2 架构）→ 状态记录（docs/advance/state.jsonl）逐轮可续 |
 | `pbatch/assessor.py` | 需求评估器（`assess` 子命令）：资深经验式评审——8 维需求完整性检查、规模信号（S/M/L）克制处方（"企业登录页"不会全量上规则）、缺失维度建议、刻意未选用清单、**产品化分级评估**（L0-L3）、**工作流风险分级**（L0 直改 / L1 标准 / L2 高风险对抗 / L3 平台产品） |
-| `pbatch/product.py` / `product-specs/` | 产品思维层：productization_level（L0 小工具不推演 / L1 模块 / L2 平台 / L3 产品）→ 场景推演链（登录/上传/审批/聊天/ERP/搜索，产出待确认问题非功能）、开源要素、商业要素（低成本预留 vs 高成本实现红线）、完成证据报告 |
+| `pbatch/product.py` / `product-specs/` | 产品思维层：productization_level（L0 小工具不推演 / L1 模块 / L2 平台 / L3 产品）→ 场景推演链（登录/上传/审批/聊天/ERP/搜索，产出待确认问题非功能）、开源要素、商业要素（低成本预留 vs 高成本实现红线）、完成证据报告；`product-specs/rules.yaml` 声明式注册表（L1=demo/L2=standard/L3=production 派生 specs，billing 双重门禁：min_tier production + page_types） |
 | `pbatch/learn.py` | 自演进闭环（Evolution Engineering）：`learn` 子命令把事故/RCA 沉淀为统一 Rule Schema 草案（docs/rules/drafts/），人工批准后并入域注册表 |
 | `pbatch/ratelimit.py` | F 线 provider 令牌桶限速（`limits.per_second/burst/providers` 或 `--rate-limit/--rate-burst`）：并行 worker 与 meta 角色并发在 spawn 前排队；重试等待带 jitter（速率/网络类 30–60s 分散、普通 ±50%）防惊群重试 |
 | `pbatch/context.py` / `docs/agent-context/` | 上下文路由（Context Engineering）：按文件路径 glob + 任务关键词加载项目文档（ADR/契约/安全基线），`context` 子命令，缺失文档显式警告 |
@@ -42,6 +42,19 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `scripts/check-frontend-quality.py` | 前端工程门禁（纯标准库启发式）：console.log/any/不安全 html/空 catch 吞异常/测试 skip 恒失败，`--strict` 下上帝文件/复杂度/useEffect 泄漏/循环 await（N+1）失败（`uiquality` 验证器）；需推理的交给工程审查角色 |
 | `ui-specs/engineering/` | 前端工程规范资产：异步/防抖竞态/幂等决策表、表单表格状态、交互模式库（操作分级/反馈闭环/批量报告）、错误恢复与权限、架构预算、缺陷模式库（12 种事故档案） |
 | `pbatch/memory*.py` / `index_io.py` | 渐进式 message memory：稳定会话、有界索引、按需 recent/find/read |
+| `pbatch/profile.py` + `governance_policy.py` | 多维任务画像（12 维向量/自主性/L0-L3 路由/裁量包络/假设/StopPolicy/不确定性分类/进展度量/软规则权重） |
+| `pbatch/atomize.py` / `pareto.py` / `racing.py` / `decision.py` / `proposal.py` / `diversity.py` | 原子化 / Pareto+Utility+MUC / 分阶段竞跑+should_fork / 字典序决策+证据仲裁 / 多 Agent 提案 / 独立性评分 |
+| `pbatch/truth.py` / `causality.py` / `temporal.py` / `pinned.py` / `capsule.py` / `nversion.py` / `world.py` / `metrics.py` / `events.py` / `recovery.py` | 真值维护 / 因果假设 / 证据衰减 / Pinned 上下文 / 决策胶囊 / N-version / 世界状态漂移 / 五类指标 / 交互事件账本 / 回滚决策+错误预算 |
+| `pbatch/transaction.py` / `states.py` / `contracts.py` / `waves.py` / `hypergraph.py` / `tools.py` | 决策事务状态机 / 设备+尝试状态机 / 假设-保证契约 / 波次调度+图操作+并行判定 / 类型化超图 / 命令索引+分派自检 |
+| `pbatch/cli_rounds.py` / `cli_batch.py` | cli.py 拆分出的轮循环治理层与批执行层（dogfooding：自家 backend-quality 门禁发现 god-file 后拆分） |
+| `pbatch/cli_residue.py` / `campaign_exec.py` | 残留标记扫描（cli_batch 拆分）与 campaign 执行层（campaign.py 拆分）——第二轮 dogfooding 产出 |
+| `pbatch/fabric*.py`（fabric/fabric_cli/fabric_cmds/fabric_devices/fabric_exec/fabric_ssh/fabric_runner/fabric_rpc/fabric_sched/fabric_server/fabric_server_http/fabric_server_cli/fabric_server_util） | 设备感知执行织网 D0-D5：ExecutionTarget 抽象、SSH 受控执行、Runner+控制平面（Lease/Fencing/对账）、调度/迁移/检查点/投机执行/预算上限/退役吊销/事件账本 |
+| `docs/AADM.md` / `AADM_RUNTIME.md` / `AADM_GOVERNANCE.md` / `AADM_DEVICE.md` | AADM 四文档：理论模型 / 运行时内核 / 治理模型 / 设备织网（全部机制已落地，见各文档映射表 ✅） |
+| `pbatch/reflect.py` + `docs/REFLECTION.md` | Reflection Engine（Critic Layer）：12 维度二阶审视 + 假设审计 + 反方验证 + 知识提取，发现对接 truth/learn/eval 闭环 |
+| `pbatch/impact.py` + `adr.py` + `project_memory.py` + `docs/PROJECT_MEMORY.md` | 工程知识循环：Change Impact 增量路由（受影响面→角色→工作等级→变化成本）、ADR 决策记忆库（状态机+决策缓存查询）、Project Memory（facts/架构/索引，防记忆过期） |
+| `pbatch/refactor.py` + `docs/REFACTORING.md` | God File 重构分析器：度量（行数/圈复杂度分级）→ 职责识别（SRP）→ 模式信号（Strategy/DI/AOP）→ 迁移计划（测试保护→渐进提取→知识更新） |
+| `agent-engineering/*.yaml` + `pbatch/org.py` + `docs/AGENT_ORGANIZATION.md` | AI 软件工程组织规范：17 个流程节点岗位说明书（职责/输入/输出/检查规则/禁止事项/最佳实践/失败案例/自动检测/Review Checklist），`pi-batch org check` 校验完整性；`org gate --log` 注入 {log}，残留占位符 fail closed（campaign 实战修复） |
+| `pbatch/capabilities.py` + `docs/ARCHITECTURE.md` | Capability Registry（命令驱动→能力驱动）+ Agent OS 内核冻结（分层架构/ABI 契约/复杂度预算） |
 | `pbatch/campaign*.py` | 项目级模块发现、方向选择、状态/指纹、流水线与 worktree 隔离 |
 | `pbatch/cli.py` | 命令行：参数解析、main、轮循环、单批/流水线分发 |
 | `quality.py` | 代码组织质量扫描器（纯标准库）：函数 ≤50 行、复杂度 ≤15、文件 ≤1000 行 |
@@ -54,7 +67,7 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `tests/` | 387 个回归测试（`make ci`，含 25 个 eval 规则回归用例） |
 | `docs/SPEC_SYSTEM.md` | 规范体系总览：资产分层/注册表/决策链/门禁/角色/沉淀闭环/克制原则 |
 | `docs/` | 机制文档（`RUNNING_247.md`、`AUTOMATION_WORKFLOW_SUMMARY.md` 等） |
-| `pi-batch.yaml` | 声明式配置：agent 二进制、会话标志、6 个验证器（含 `pyquality`） |
+| `pi-batch.yaml` | 声明式配置：agent 二进制、会话标志、24 个验证器（含 `pyquality`、`refusalcheck`） |
 
 **可移植性**：把 `pi-batch.py`（薄壳）+ `pbatch/` 目录 + `pi-batch.yaml`
 复制到其他项目即可用；配置查找顺序为入口脚本旁 → 包目录 → 工作目录。
@@ -427,7 +440,7 @@ pi-batch.py rules "生成一个登录页 demo"
 pi-batch.py rules "企业订单+支付审批，生产" --json
 # 双向校验：压缩需求给 LLM 独立选择 → 与算法对比裁决
 pi-batch.py rules "企业支付审批，生产" --summary          # 压缩后的需求文本
-pi-batch.py rules --check                                  # 注册表 schema 校验（双域）
+pi-batch.py rules --check                                  # 注册表 schema 校验（三域：frontend/backend/product）
 pi-batch.py rules "企业支付审批，生产" --llm-prompt p.txt  # 生成 LLM 检查 prompt
 pi-batch.py rules "企业支付审批，生产" --llm-json '{"apply":[],"skip":[]}'
 # 裁决规则：两边一致→保留；必选/风险强制规则 LLM 跳过→算法否决；
@@ -518,6 +531,98 @@ python ai/run-review.py --all --context ctx.yaml \
 python quality.py --strict 
 ```
 
+## 3.1 AADM 工具集命令速查（docs/AADM*.md 四文档的落地实现）
+
+### 量化画像与路由（零 LLM 成本，确定性启发式）
+
+```bash
+pi-batch atomize "审批人可以拒绝文件申请，审批完成后必须记录审计"   # 认知原子（MUST #1）
+pi-batch atomize "..." --graph graph.json        # 原子 → 超图 JSON
+pi-batch profile "企业订单管理：新建订单表单，含支付审批流程" --json  # 12 维画像
+pi-batch profile "..." --budget-time 300          # 预算不足 → infeasible_under_budget
+pi-batch pareto --input candidates.json           # Pareto 前沿 + Utility + MUC
+pi-batch race --input race.json                   # 分阶段竞跑（Successive Halving）
+pi-batch proposal --input proposals.json          # 多 Agent 提案冲突/合并/收益公式
+pi-batch diversity '[{"model":"pi","method":"implement",...}]'  # 独立性评分
+```
+
+### 治理与生命周期
+
+```bash
+pi-batch learn draft "事故描述" --rule-id X       # 事故 → 规则草案
+pi-batch learn shadow --rule-id X --log run.log   # 影子命中率裁决
+pi-batch learn exception --rule-id X --reason ...  # 软规则例外（90 天复查）
+pi-batch learn promote --rule-id X --files spec.md # 草案并入注册表（闭环）
+pi-batch truth claim|invalidate|status            # 真值维护（前提级联失效）
+pi-batch causal new --symptom ... --cause ...     # 因果假设（先测量后干预）
+pi-batch temporal --validity volatile --age-hours 12  # 证据衰减
+pi-batch pinned [--fingerprint F]                 # Pinned 上下文 + 摘要失效
+pi-batch graph validate|deps|cycles --input g.json # 类型化超图
+pi-batch metrics [--json]                         # 五类运营指标
+pi-batch budget report --allowance 5              # 错误预算（耗尽→强制降级）
+pi-batch recovery --rollback-cost 30 --forward-cost 5  # 回滚 vs 前向修复
+pi-batch capsule --prompt "..." --out cap.json    # 决策胶囊（版本化重放）
+pi-batch nversion --n 3 -- python3 -c "print(1)"  # N-version 一致性
+pi-batch world bind|drift --out/--bound           # 世界状态版本化 + 漂移
+```
+
+### 设备织网（AADM-D；默认关闭，`device_fabric.enabled: false`）
+
+```bash
+pi-batch devices list|probe [NAME]|ssh-hosts|placement   # 探测/清单/放置
+pi-batch devices run NAME -- CMD                        # SSH 受控执行（D2）
+pi-batch serve --port 8765 [--auto-approve]             # 控制平面（D3）
+pi-batch runner --control HOST:PORT --name NODE          # 设备 Runner（出站连接）
+pi-batch devices schedule [--device X|--os linux] -- CMD # 经 Runner 调度（D4）
+pi-batch devices task TASK_ID --device X                 # 任务状态
+pi-batch devices migrate TASK_ID --device NEW            # 迁移（fencing 换发）
+pi-batch devices cordon|drain|halt --device X            # 停收/排空/一键冻结
+pi-batch devices revoke --device X                       # 退役吊销（永久失效）
+pi-batch devices schedule --checkpoint-save state.json --mobility checkpointable -- CMD
+                                                         # 断点续传（D5）
+pi-batch devices schedule --speculative --devices a,b -- CMD   # 双设备竞跑
+pi-batch serve --budget-cap 10                                # 设备预算上限
+pi-batch events recent [--state-dir DIR]                      # 交互事件账本
+pi-batch devices schedule --model qwen3-35b -- CMD            # 模型缓存感知放置
+pi-batch serve --tenant-quota "team-a=2,team-b=4"             # 多租户配额（D6）
+pi-batch runner --tenant team-a --region cn-east --attestation sha256:... --name N
+pi-batch devices schedule --cluster gpu-pool -- CMD           # 集群目标
+pi-batch devices schedule --gang --devices a,b -- CMD         # Gang 原子提交
+pi-batch devices schedule --region cn-east -- CMD             # 跨区域过滤
+pi-batch reflect [quick|full] --task "需求" --code src       # 二阶反思（Critic）
+pi-batch reflect assumption --task "..." --evidence "测试输出"  # 假设审计
+pi-batch capabilities list|check                             # 能力注册表
+pi-batch capabilities trust --agent-level 3                    # 信任授权矩阵
+pi-batch devices desired apply --file desired.yaml             # Desired-State 控制器
+pi-batch retro --failures-only logs/ --actions                 # 自动改进动作
+pi-batch impact --task "需求" --code src                        # 变更影响分析（增量路由）
+pi-batch adr new --title "文件存储用 MinIO" --decision "MinIO"   # 决策记忆
+pi-batch adr find "文件存储"                                    # 决策缓存查询
+pi-batch project init|facts|index|verify                       # 项目状态记忆
+pi-batch refactor --file src/service.py                       # God File 重构分析
+pi-batch org check|flow|show [NODE]                        # 工程组织规范（17 节点）
+pi-batch org prompt NODE                                    # 岗位说明书→角色注入
+pi-batch org gate NODE --task "需求" --code DIR             # 节点门禁执行
+pi-batch org run --task "需求"                                # 流程串联执行（impact 分流）
+pi-batch org run --task "需求" --save                         # 流程工件落盘（可审计）
+pi-batch org runs                                            # 历史流程记录
+pi-batch org lesson NODE                                     # 失败案例 → learn 沉淀
+pi-batch test-report                                        # 测试分类统计（5 类 markers）
+pi-batch replay --capsule cap.json                         # 决策重放：版本对比+eval 回归
+pi-batch org run --task "需求" --artifact DIR              # 节点工件链（下游输入）
+pi-batch org gate evolution --log logs/run.log         # {log} 注入（残留占位符 fail closed）
+pi-batch profile "多租户 SaaS..." --json                   # 反事实推理（预留建议）
+pi-batch check [--steps org,capabilities]                  # 全面自检（7 门禁聚合）
+pi-batch probe "任务" [--budget-tokens N]                     # Dry-run 标准输出（区间+置信度；预算不足→infeasible）
+pi-batch pareto --input f.json --quality quality --quality-floor 0.7  # §19 质量底线先于资源优化
+pi-batch serve --device-quota "node-a=1"                    # per-device 并发上限（超限拒绝/完成后释放）
+pi-batch devices clock-skew                                 # 时钟纪律：last_seen 偏差（stale 告警）
+pi-batch learn promote --rule-id X --registry backend --files backend-specs/rules.yaml  # 草案→注册表（RCA 完成后）
+# 自检闭环：pi-batch check 现含 knowledge 门禁（信任信号假阳性回归测试在 checks/test_knowledge_freshness.py）
+make ci                                                   # 含 org/capabilities/graph 校验
+pi-batch health                                              # Health Score (0-100)
+```
+
 ## 4. 测试与门禁
 
 ```bash
@@ -549,6 +654,7 @@ python quality.py --strict .   # 组织质量门禁（当前全绿）
 |---|---|
 | 本文件 | 能力总览与使用指南 |
 | `docs/RUNNING_247.md` | 7×24 运营、验证门禁、会话、meta 编排细节 |
+| `docs/CAMPAIGN_LESSONS.md` | Campaign 实战经验内化（2026-08：失败分布/占位符修复/模块发现/运营） |
 | `docs/AUTOMATION_WORKFLOW_SUMMARY.md` | runner 状态与机制速览 |
 | `docs/ROLES_SUMMARY.md` | 角色 prompt 边界说明 |
 | `ai/README.md` | 十阶段评审框架用法 |

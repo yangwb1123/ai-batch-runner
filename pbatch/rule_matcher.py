@@ -36,6 +36,7 @@ DEFAULT_TIER = "standard"
 DOMAIN_REGISTRIES = {
     "backend": ["backend-specs/rules.yaml"],
     "frontend_ui": ["ui-specs/rules.yaml"],
+    "product": ["product-specs/rules.yaml"],
     "generic": [],
 }
 DEFAULT_DOMAIN = "generic"
@@ -60,6 +61,7 @@ _DEFAULT_REGISTRY = {
     "rules": {
         "visual-core": {"files": ["ui-specs/spacing.md", "ui-specs/anti-patterns.md"],
                         "min_tier": "demo", "required": True,
+                        "level": "invariant",
                         "description": "8pt 间距 token 与反例清单"},
         "component-spec": {"files": ["ui-specs/component-spec.md"], "min_tier": "demo",
                            "description": "组件尺寸/状态/行为规范"},
@@ -71,12 +73,18 @@ _DEFAULT_REGISTRY = {
 
 def domain_for(text: str, classification: Optional[TaskClassification] = None) -> str:
     """Which spec domain a task belongs to (backend / frontend_ui /
-    generic — code-maintenance and analysis tasks get NO domain specs)."""
+    product / generic — code-maintenance and analysis tasks get NO domain
+    specs; L0 local-feature tasks also stay generic (restraint))."""
     cls = classification or classify_text(text)
     if cls.task_type == "backend":
         return "backend"
     if cls.task_type == "frontend_ui":
         return "frontend_ui"
+    # Lazy import: pbatch.product imports this module at module level
+    # (specs derivation); a module-level import here would be a cycle.
+    from .product import productization_level
+    if productization_level(text)[0] != "L0_local_feature":
+        return "product"
     return DEFAULT_DOMAIN
 
 
@@ -125,7 +133,7 @@ def load_registry(path: str = "", domain: str = "") -> dict:
     sections extend the built-in defaults; a missing backend registry
     degrades to an empty rule set (fail closed, never the frontend rules)."""
     merged = {section: dict(value) for section, value in _DEFAULT_REGISTRY.items()}
-    if domain in ("backend", "generic"):
+    if domain in ("backend", "generic", "product"):
         merged = {"scale": {}, "signals": {}, "signal_weights": {},
                   "page_types": {}, "use_case_types": {},
                   "risk": {}, "rules": {}}
@@ -165,9 +173,40 @@ def detect_scale(text: str, registry: dict) -> tuple:
     return DEFAULT_TIER, ()
 
 
-def _rule_skip_reason(rule: dict, tier_rank: int, page_types: list,
+LEVELS = ("invariant", "contract", "policy", "heuristic", "suggestion")
+
+
+def _rule_item(rule_id: str, rule: dict, tier: str, tier_evidence: tuple,
+                page_types: list, high_risk: bool, profile: str) -> dict:
+    """规则清单条目：层级 + 激活度（AADM §14 的确定性简化）。"""
+    files = _resolve_files(rule, profile)
+    level = str(rule.get("level", "policy"))
+    if level not in LEVELS:
+        level = "policy"
+    is_invariant = level == "invariant"
+    required = (bool(rule.get("required", False)) or is_invariant
+                or (high_risk and bool(rule.get("required_when_risk"))))
+    return {
+        "id": rule_id, "tier": rule.get("min_tier", "standard"),
+        "required": required,
+        "level": level,
+        # 宪法 1.0 > 必选 0.9 > 选用 0.7
+        "activation": 1.0 if is_invariant else (0.9 if required else 0.7),
+        "description": rule.get("description", ""),
+        "files": files, "evidence": {
+            "scale": list(tier_evidence), "page_types": page_types,
+            "risk": "high" if high_risk else "low",
+            "profile": profile,
+        },
+    }
+
+
+def _rule_skip_reason(rule: dict, tier: str, tier_rank: int, page_types: list,
                       high_risk: bool, profile: str) -> str:
-    """Why a rule does NOT apply (empty string = it applies)."""
+    """Why a rule does NOT apply (empty string = it applies).
+    Invariant（宪法层）永不跳过；suppress_on 命中 → 显式抑制（AADM §14）。"""
+    if rule.get("level") == "invariant":
+        return ""
     min_rank = TIER_ORDER.get(rule.get("min_tier", "standard"), 1)
     if tier_rank < min_rank:
         return f"tier below required {rule.get('min_tier')}"
@@ -177,6 +216,17 @@ def _rule_skip_reason(rule: dict, tier_rank: int, page_types: list,
         return f"profile '{profile or 'unknown'}' not in {rule.get('profiles')}"
     if rule.get("required_when_risk") and not high_risk:
         return "not high-risk"
+    if rule.get("required"):
+        return ""  # 必选规则不受显式抑制（fail closed）
+    suppressed_on = rule.get("suppress_on") or []
+    matched_signals = {tier} | set(page_types)
+    if high_risk:
+        matched_signals.add("high")
+    if profile:
+        matched_signals.add(profile)
+    hit = sorted(matched_signals & set(suppressed_on))
+    if hit:
+        return f"suppressed on {hit[0]}"
     return ""
 
 
@@ -209,22 +259,13 @@ def match_rules(text: str, classification: Optional[TaskClassification] = None,
 
     rules, skipped = [], []
     for rule_id, rule in registry.get("rules", {}).items():
-        reason = _rule_skip_reason(rule, tier_rank, page_types, high_risk, profile)
+        reason = _rule_skip_reason(rule, tier, tier_rank, page_types,
+                                   high_risk, profile)
         if reason:
             skipped.append({"id": rule_id, "reason": reason})
             continue
-        files = _resolve_files(rule, profile)
-        rules.append({
-            "id": rule_id, "tier": rule.get("min_tier", "standard"),
-            "required": bool(rule.get("required", False)) or (
-                high_risk and bool(rule.get("required_when_risk"))),
-            "description": rule.get("description", ""),
-            "files": files, "evidence": {
-                "scale": list(tier_evidence), "page_types": page_types,
-                "risk": "high" if high_risk else "low",
-                "profile": profile,
-            },
-        })
+        rules.append(_rule_item(rule_id, rule, tier, tier_evidence,
+                                page_types, high_risk, profile))
     _inject_system_type_methodology(cls, rules)
     rules.sort(key=lambda item: (0 if item["required"] else 1, item["tier"]))
     return {"tier": tier, "page_types": page_types, "risk": "high" if high_risk else "low",
@@ -435,16 +476,17 @@ def _reconcile_cli(text: str, llm_json: str, registry: dict, want_json: bool) ->
               ", ".join(item["id"] for item in dropped))
 
 
-def check_registry(registry: dict, asset_base: Optional[Path] = None) -> list:
-    """Schema integrity wrapper kept as the public compatibility API."""
-    from .rule_registry import check_registry as validate
-    return validate(registry, asset_base)
+def check_registry(registry: dict, asset_base: Optional[Path] = None,
+                   registry_paths: Optional[list] = None) -> list:
+    """Public compatibility wrapper for strict registry validation."""
+    from .rule_registry_helpers import validate_registry
+    return validate_registry(registry, asset_base, registry_paths)
 
 
 def _check_registries_cli() -> None:
-    """Lazy wrapper for the dual-domain registry CLI check."""
-    from .rule_registry import check_registries_cli
-    check_registries_cli()
+    """Lazy wrapper for the three-domain registry CLI check."""
+    from .rule_cli import _check_registries_cli as check
+    check()
 
 
 def rules_main(argv: list) -> None:

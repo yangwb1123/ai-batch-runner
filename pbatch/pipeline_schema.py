@@ -14,6 +14,7 @@ _STAGE_FIELDS = frozenset((
     "gate_fix_validate", "approval", "from_prompt", "output", "tasks",
     "commands", "commands_parallel", "command_timeout",
     "command_output_max_bytes", "cwd", "git_commit", "commit_message",
+    "or_tasks",
 ))
 _TASK_FIELDS = frozenset((
     "prompt", "prompt_template", "output", "model", "provider", "thinking",
@@ -27,7 +28,7 @@ _STRING_FIELDS = ("model", "provider", "from_dir", "suffix", "output_suffix",
                   "from_prompt", "output", "cwd", "commit_message",
                   "gate_fix_prompt")
 _BOOL_FIELDS = ("aggregate", "meta", "relevance_enabled", "gate", "approval",
-                "commands_parallel", "git_commit")
+                "commands_parallel", "git_commit", "or_tasks")
 _TASK_STRING_FIELDS = ("prompt", "prompt_template", "output", "model", "provider",
                        "thinking", "tools", "exclude_tools", "cwd", "role")
 _NULLABLE_TASK_STRINGS = ("model", "provider", "thinking", "tools", "exclude_tools")
@@ -126,6 +127,9 @@ def _source_contract(stage: dict, prefix: str, from_outputs) -> list[str]:
         sources = sum(bool(stage.get(key)) for key in ("from_prompt", "from_dir", "from_outputs"))
         if sources != 1:
             errors.append(f"{prefix} requires exactly one input source")
+        if stage.get("or_tasks") and not stage.get("tasks"):
+            errors.append(f"{prefix} or_tasks stage requires a 'tasks' "
+                          "candidate list")
         if stage.get("from_prompt") and not stage.get("output"):
             errors.append(f"{prefix} from_prompt requires output")
         if from_outputs and not stage.get("tasks"):

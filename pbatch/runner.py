@@ -6,7 +6,6 @@ import json
 import os
 import random
 import re
-import shlex
 import signal
 import subprocess
 import sys
@@ -21,6 +20,7 @@ from typing import NamedTuple, Optional
 
 from . import config
 from .config import AGENT_BIN, AGENT_DEFAULT_WORKERS, _resolve_validator_specs, _resolve_validators, _session_flags, log
+from .cmd_expand import expand_cmd
 from .context_inject import inject_task_context
 from .models import Task, TaskResult
 from .runner_results import (overflow_result as _overflow_result,
@@ -38,19 +38,17 @@ from .triage import clear_marker, task_key, write_marker
 # able to kill in-flight agents so the executor shutdown is prompt)
 _ACTIVE_PROCS: set = set()
 _ACTIVE_LOCK = threading.Lock()
+_PROCESS_POLL_WAIT = threading.Event()
 _BUDGET_MESSAGE = ("BUDGET: invocation limit reached; stopping — 调整 "
                    "--max-rounds/limits 后可续跑（已保留现场）")
-
 
 def _register_proc(proc: subprocess.Popen) -> None:
     with _ACTIVE_LOCK:
         _ACTIVE_PROCS.add(proc)
 
-
 def _unregister_proc(proc: subprocess.Popen) -> None:
     with _ACTIVE_LOCK:
         _ACTIVE_PROCS.discard(proc)
-
 
 def kill_active_procs() -> None:
     """Kill every currently-running agent process group (T8 parallel cap:
@@ -59,7 +57,6 @@ def kill_active_procs() -> None:
         procs = list(_ACTIVE_PROCS)
     for proc in procs:
         _kill_group(proc)
-
 
 def _read_stream(stream, prefix: str, collector: list, cap: int = 0,
                  overflow: Optional[list] = None, emit: bool = False,
@@ -91,7 +88,6 @@ def _read_stream(stream, prefix: str, collector: list, cap: int = 0,
     finally:
         stream.close()
 
-
 def agent_failure_reason(returncode: int, output: str) -> str:
     """Return a short reason when the agent result must be discarded, or ''
     when the output is a usable result. Non-zero exit, empty output, and
@@ -108,7 +104,6 @@ def agent_failure_reason(returncode: int, output: str) -> str:
             return f"agent reported provider failure ({pattern.pattern})"
     return ""
 
-
 def _budget_gate(task: Task, key: str, workdir: str, session_name: str = "") -> None:
     """Stop before spawn when the atomic parallel-safe budget is exhausted."""
     if not budget_try_consume():
@@ -117,14 +112,11 @@ def _budget_gate(task: Task, key: str, workdir: str, session_name: str = "") -> 
         clear_marker(key, workdir)
         raise SystemExit(3)
 
-
-
 def session_file_path(cwd: str, session_name: str) -> Optional[str]:
     """Active pi session file for a shared/per-stage session (T10)."""
     from .session import session_file
     f = session_file(cwd, session_name)
     return str(f) if f else None
-
 
 def _prompt_brief(task: Task, cmd: list) -> str:
     """One-line log summary with the prompt truncated (prompt content is
@@ -133,7 +125,6 @@ def _prompt_brief(task: Task, cmd: list) -> str:
     if len(brief_prompt) == 80:
         return f"{cmd[0]} -p {brief_prompt}..."
     return f"{cmd[0]} -p {brief_prompt}"
-
 
 def _kill_group(proc: Optional[subprocess.Popen]) -> None:
     """Kill the whole child process group, tolerating an already-dead
@@ -150,12 +141,15 @@ def _kill_group(proc: Optional[subprocess.Popen]) -> None:
     try:
         proc.wait(timeout=1)
     except (subprocess.TimeoutExpired, ChildProcessError):
+    # 子进程已死/超时：清理路径（已验证有意）
         pass
+
 def _spawn_agent(cmd: list, workdir: str, env: dict) -> subprocess.Popen:
     """Spawn the agent in its own process group so the whole child tree
     can be killed on timeout or interrupt."""
     return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, cwd=workdir, env=env, start_new_session=True)
+
 def _agent_not_found(task: Task) -> TaskResult:
     """The agent binary is missing from PATH: a permanent, non-retryable
     failure (never saved as an artifact)."""
@@ -166,7 +160,6 @@ def _agent_not_found(task: Task) -> TaskResult:
     )
     return TaskResult(task=task, success=False, stderr=f"{config.AGENT_BIN} not found in PATH",
                       reason="agent binary not found")
-
 
 def _context_rejection(task: Task) -> Optional[TaskResult]:
     try:
@@ -195,7 +188,6 @@ def _task_invocation(task: Task, session_flags: Optional[list],
     if prompt_limit := _prompt_limit_result(task, cmd):
         return _attach_session(prompt_limit, session_id, effective_name, workdir)
     return cmd, workdir, session_id, effective_name
-
 
 def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = False, session_flags: Optional[list] = None, session_name: str = "") -> TaskResult:
     if rejected := _context_rejection(task):
@@ -247,7 +239,6 @@ def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = F
             _unregister_proc(proc)
         clear_marker(key, workdir)
 
-
 def _prepare_task_run(task: Task, cmd: list, task_index: int, total: int,
                       parallel: bool, workdir: str, session_name: str,
                       session_id: str = "") -> tuple:
@@ -262,7 +253,6 @@ def _prepare_task_run(task: Task, cmd: list, task_index: int, total: int,
     usage = metering.session_usage(workdir, usage_ref) if metering.EVENTS_FILE else None
     return prefix, env, key, usage
 
-
 def _rate_gate(task: Task, session_name: str = "") -> None:
     """F line: wait for a provider token before spawning the agent. Runs
     AFTER the budget gate so a capped run stops before waiting; blocks
@@ -274,7 +264,6 @@ def _rate_gate(task: Task, session_name: str = "") -> None:
         log.warning("RATE: token wait timed out for provider '%s' (300s); spawning anyway",
                     task.provider or "default")
 
-
 def _finish_task_result(result: TaskResult, task: Task, session_id: str,
                         session_name: str, workdir: str,
                         usage_before: Optional[dict]) -> TaskResult:
@@ -282,12 +271,10 @@ def _finish_task_result(result: TaskResult, task: Task, session_id: str,
     _record_metering(result, task, workdir, session_id or session_name, usage_before)
     return result
 
-
 def _record_metering(result: TaskResult, task: Task, workdir: str,
                      session_name: str, usage_before: Optional[dict]) -> None:
     record_event("task_finish" if result.success else "task_fail",
                  task.prompt, result.reason, workdir, session_name, usage_before)
-
 
 def _memory_invocation(task: Task, session_flags: Optional[list],
                        session_name: str) -> tuple[list, str, str, str]:
@@ -303,7 +290,6 @@ def _memory_invocation(task: Task, session_flags: Optional[list],
             flags = _session_flags("start", session_id, name)
     return replace(task, prompt=prompt).to_cmd(flags), workdir, session_id, name
 
-
 def _attach_session(result: TaskResult, session_id: str, session_name: str,
                     workdir: str) -> TaskResult:
     result.session_id = session_id
@@ -314,7 +300,6 @@ def _attach_session(result: TaskResult, session_id: str, session_name: str,
         result.raw_session = str(path) if path else ""
     return result
 
-
 def _output_path_is_symlink(task: Task) -> bool:
     """T0.1: probe the UNRESOLVED output path — output_path() resolves
     symlinks away, which would hide a link planted at the output location
@@ -323,7 +308,6 @@ def _output_path_is_symlink(task: Task) -> bool:
     if not probe.is_absolute():
         probe = Path(task.workdir()) / probe
     return probe.is_symlink()
-
 
 def save_result(task: Task, result: TaskResult) -> None:
     """Write a successful task result to its output file, or print to stdout.
@@ -362,11 +346,9 @@ def save_result(task: Task, result: TaskResult) -> None:
     tmp.rename(out_path)
     log.info("WROTE %s  (%d bytes)", out_path, len(result.stdout))
 
-
 _RETRYABLE_REASON = re.compile(r"rate|429|quota|network|connect|unreachable|timeout", re.IGNORECASE)
 # P4（使用反馈）：provider 侧模型不可用/过载——快速失败后需要更长冷却
 _PROVIDER_BROKEN = re.compile(r"model is unavailable|model_unavailable|upstream request failed|server_error", re.IGNORECASE)
-
 
 def _retry_wait(result: TaskResult, attempt: int, retry_delay: float, backoff: float) -> float:
     """Exponential backoff for a retry attempt; provider/network failures wait
@@ -391,7 +373,6 @@ def _retry_wait(result: TaskResult, attempt: int, retry_delay: float, backoff: f
         wait *= random.uniform(0.5, 1.5)
     return wait
 
-
 class ValidationResult(NamedTuple):
     """Outcome of one validator command execution. ok is True only when the
     command finished within the hard deadline and exited 0; exit_code is -1
@@ -402,15 +383,9 @@ class ValidationResult(NamedTuple):
     stderr: str
     timed_out: bool
 
-
 def expand_command_placeholders(cmd: str, cwd: str, output: str = "") -> str:
-    """Expand every supported command placeholder with shell-quoted paths."""
-    values = config.command_placeholder_values(cwd)
-    values["{output}"] = str(output)
-    expanded = cmd
-    for placeholder, value in values.items():
-        expanded = expanded.replace(placeholder, shlex.quote(value))
-    return expanded
+    """Compatibility adapter for the centralized command expander."""
+    return expand_cmd(cmd, output, cwd, config.TOOL_ROOT)
 
 
 def run_validation(cmd: str, cwd: str, timeout: float = 600,
@@ -424,7 +399,6 @@ def run_validation(cmd: str, cwd: str, timeout: float = 600,
     output_cap = config.VALIDATION_OUTPUT_MAX_BYTES if cap is None else max(1, cap)
     return _run_bounded_process(cmd, cwd, timeout, output_cap, True, "validator")
 
-
 def run_argv(cmd: list[str], cwd: str, timeout: float = 30,
              cap: Optional[int] = None) -> ValidationResult:
     """Run an argv command with the same bounded process-tree contract."""
@@ -435,7 +409,6 @@ def run_argv(cmd: list[str], cwd: str, timeout: float = 30,
         raise ValueError("process timeout must be non-negative")
     output_cap = config.COMMAND_OUTPUT_MAX_BYTES if cap is None else max(1, cap)
     return _run_bounded_process(list(cmd), cwd, timeout, output_cap, False, "process")
-
 
 def _run_bounded_process(cmd, cwd: str, timeout: float, output_cap: int,
                          shell: bool, label: str) -> ValidationResult:
@@ -459,9 +432,7 @@ def _run_bounded_process(cmd, cwd: str, timeout: float, output_cap: int,
     return ValidationResult(ok=proc.returncode == 0, exit_code=proc.returncode,
                             stdout=stdout, stderr=stderr, timed_out=False)
 
-
 REJECTED_EXCERPT_MAX_BYTES = 65536  # bounded diagnostics, never the deliverable
-
 
 def _save_rejected_excerpt(tmp: Path, workdir: str, cmd: str, reason: str) -> Optional[str]:
     """Keep a bounded excerpt of a validator-rejected artifact under
@@ -492,7 +463,6 @@ def _save_rejected_excerpt(tmp: Path, workdir: str, cmd: str, reason: str) -> Op
         log.warning("could not keep rejected excerpt: %s", exc)
         return ""
 
-
 def _apply_gate_commands(tmp: Path, task: Task, commands: list, result: TaskResult) -> bool:
     """Run file gate commands concurrently and fold them with AND semantics;
     a failure deletes the artifact, records the outcome on the result
@@ -517,7 +487,6 @@ def _apply_gate_commands(tmp: Path, task: Task, commands: list, result: TaskResu
     result.validation_exit = 0
     return True
 
-
 def _reject_artifact(tmp: Path, workdir: str, cmd: str, reason: str,
                      stdout: str = "", stderr: str = "") -> None:
     """Fail-closed disposal of a gate-rejected artifact: keep a bounded
@@ -532,7 +501,6 @@ def _reject_artifact(tmp: Path, workdir: str, cmd: str, reason: str,
         log.warning("  | %s", line)
     for line in (stderr or "").strip().splitlines()[-10:]:
         log.warning("  | %s", line)
-
 
 def _gate_spec_passed(spec, cmd: str, tmp: Path, result: TaskResult, v, workdir: str = "") -> bool:
     """Decide whether one gate command passed: exit 0, optional JSON status
@@ -566,7 +534,6 @@ def _gate_spec_passed(spec, cmd: str, tmp: Path, result: TaskResult, v, workdir:
     if status == "warn":
         log.warning("VALIDATE WARN: %s (output saved with warning)", cmd)
     return True
-
 
 def _save_validated(task: Task, result: TaskResult, validate_cmd: str) -> bool:
     """Save a successful result through the engineering gates. The output is
@@ -610,7 +577,6 @@ def _save_validated(task: Task, result: TaskResult, validate_cmd: str) -> bool:
     log.info("WROTE %s (validated)", out_path)
     return True
 
-
 def _json_status(stdout: str) -> str:
     """T12a: extract a validator's JSON status ({"status": "pass|warn|fail"});
     empty when the output carries no JSON status line. When a validator emits
@@ -630,10 +596,8 @@ def _json_status(stdout: str) -> str:
             strongest = status
     return strongest
 
-
 _JUDGE_VERDICT_RE = re.compile(r"^\s*\*{0,2}VERDICT\s*:\s*\*{0,2}(PASS|FAIL|REJECT)\b",
                                re.IGNORECASE | re.MULTILINE)
-
 
 def judge_verdict(text: str) -> Optional[str]:
     """H line (LLM-as-judge protocol): extract a VERDICT: PASS|FAIL|REJECT
@@ -655,7 +619,6 @@ def judge_verdict(text: str) -> Optional[str]:
             first = verdict
     return first
 
-
 def _cap_feedback(text: str, max_chars: int = 4000, max_lines: int = 40) -> str:
     """Cap validator stderr for retry feedback (decision D4): 4000 chars /
     40 lines, keeping the head of the output (where CLI banners land)."""
@@ -664,7 +627,6 @@ def _cap_feedback(text: str, max_chars: int = 4000, max_lines: int = 40) -> str:
     if len(text) > len(capped):
         capped += "\n... (truncated)"
     return capped
-
 
 def _retry_task_with_feedback(task: Task, result: TaskResult) -> Task:
     """T2: build the retry task with the previous validator failure appended
@@ -678,7 +640,6 @@ def _retry_task_with_feedback(task: Task, result: TaskResult) -> Task:
         f"{result.validation_stderr}"
     )
     return replace(task, prompt=task.prompt + feedback)
-
 
 def revalidate_existing(path: Path, validate_cmd: Optional[str], workdir: str = "") -> bool:
     """Re-run the effective validators against an already-written artifact
@@ -713,14 +674,13 @@ def revalidate_existing(path: Path, validate_cmd: Optional[str], workdir: str = 
     log.info("REVALIDATED %s", path)
     return True
 
-
 def _revalidate_one(spec, path: Path, wd: str) -> bool:
     """Re-run a single validator spec against an existing artifact. T12a:
     the JSON status protocol applies on the reuse path too — an exit-0
     validator reporting {"status":"fail"} must not promote the artifact
     when the fresh-save path would reject it (round-4 finding M3/P2-4).
     H line: judge validators apply the same fail-closed verdict protocol."""
-    cmd = expand_command_placeholders(spec.cmd, wd, str(path))
+    cmd = expand_cmd(spec.cmd, path, wd, config.TOOL_ROOT)
     log.info("REVALIDATE: %s", cmd)
     v = run_validation(cmd, wd)
     return _revalidation_passed(spec, path, cmd, v)
@@ -753,7 +713,6 @@ def _revalidation_passed(spec, path: Path, cmd: str, v) -> bool:
             return False
     return True
 
-
 def _result_from_proc(task: Task, proc: subprocess.Popen, stdout_lines: list, stderr_lines: list, elapsed: float) -> TaskResult:
     """Build a result; failure signatures override a nominal exit code 0."""
     stdout_text = "".join(stdout_lines)
@@ -779,7 +738,6 @@ def _result_from_proc(task: Task, proc: subprocess.Popen, stdout_lines: list, st
         elapsed=elapsed, returncode=proc.returncode, reason=reason or "",
     )
 
-
 def _timeout_result(task: Task, proc: subprocess.Popen, start: float) -> TaskResult:
     """Kill the whole process group (the direct child may have spawned
     helpers that keep pipes open) and return a timed-out result."""
@@ -791,12 +749,10 @@ def _timeout_result(task: Task, proc: subprocess.Popen, start: float) -> TaskRes
         elapsed=elapsed, returncode=-1, reason="task timed out",
     )
 
-
 def _stream_output_enabled() -> bool:
     """Whether agent response bodies should be displayed while running."""
     mode = str(config.STREAM_OUTPUT).lower()
     return mode == "full" or (mode == "auto" and sys.stdout.isatty())
-
 
 def _stream_proc(proc: subprocess.Popen, prefix: str, start: float,
                  timeout: int, emit: bool = False) -> tuple[list[str], list[str], list]:
@@ -804,7 +760,6 @@ def _stream_proc(proc: subprocess.Popen, prefix: str, start: float,
     stdout_lines, stderr_lines, overflow, _ = _drain_process(
         proc, prefix, start, timeout, config.OUTPUT_MAX_BYTES, emit)
     return stdout_lines, stderr_lines, overflow
-
 
 def _drain_process(proc: subprocess.Popen, prefix: str, start: float,
                    timeout: float, cap: int, emit: bool = False) -> tuple:
@@ -823,9 +778,12 @@ def _drain_process(proc: subprocess.Popen, prefix: str, start: float,
     deadline = start + timeout
     tout.join(timeout=max(0, deadline - time.monotonic()))
     terr.join(timeout=max(0, deadline - time.monotonic()))
-    proc.wait(timeout=max(0.1, deadline - time.monotonic()))
+    while proc.poll() is None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(proc.args, timeout)
+        _PROCESS_POLL_WAIT.wait(min(0.05, remaining))
     return stdout_lines, stderr_lines, stdout_overflow, stderr_overflow
-
 
 def _rotation_flags(session_id: str, session_name: str, workdir: str = "") -> list:
     """T10: continue flags, or fork flags past the session size watermark
@@ -842,7 +800,6 @@ def _rotation_flags(session_id: str, session_name: str, workdir: str = "") -> li
                     sfile, config.SESSION_MAX_BYTES)
         return fork_flags(str(sfile))
     return flags
-
 
 def _run_with_gate(task: Task, validate_cmd: str, index: int, total: int,
                     session_flags: Optional[list] = None, parallel: bool = False,
@@ -865,12 +822,11 @@ def _run_with_gate(task: Task, validate_cmd: str, index: int, total: int,
     record_task(result)
     return result
 
-
 def _run_retried(task: Task, validate_cmd: str, index: int, total: int,
                  retries: int, retry_delay: float, backoff: float,
                  session_flags=None, retry_flags=None, parallel: bool = False,
                  session_name: str = "") -> TaskResult:
-    """Run once plus exactly ``retries`` bounded retry attempts."""
+    """Run once plus exactly retries bounded retry attempts."""
     result = _run_with_gate(task, validate_cmd, index, total, session_flags,
                             parallel, session_name)
     for attempt in range(1, retries + 1):
@@ -888,11 +844,12 @@ def _run_retried(task: Task, validate_cmd: str, index: int, total: int,
     return result
 
 
-def run_serial(tasks: list[Task], retries: int = 0, retry_delay: float = 10.0, backoff: float = 2.0, min_interval: float = 0.0,
-               session_mode: str = "new", session_id: str = "", session_name: str = "", validate_cmd: str = "") -> list[TaskResult]:
-    """Run serially with validation, retries, throttling, and stable sessions.
-    A rejected artifact is never committed; shared/per-stage retries continue
-    their current conversation."""
+def run_serial(tasks: list[Task], retries: int = 0, retry_delay: float = 10.0,
+               backoff: float = 2.0, min_interval: float = 0.0,
+               session_mode: str = "new", session_id: str = "",
+               session_name: str = "",
+               validate_cmd: str = "") -> list[TaskResult]:
+    """Run serially with validation, retries, throttling, and stable sessions."""
     results = []
     total = len(tasks)
     session_active = False
@@ -916,54 +873,67 @@ def run_serial(tasks: list[Task], retries: int = 0, retry_delay: float = 10.0, b
     return results
 
 
+def _run_parallel_one(task: Task, index: int, total: int, validate_cmd: str,
+                      retries: int, retry_delay: float,
+                      backoff: float) -> Optional[TaskResult]:
+    """Run one parallel task with the shared bounded retry contract."""
+    try:
+        return _run_retried(task, validate_cmd, index, total, retries,
+                            retry_delay, backoff, parallel=True)
+    except SystemExit as exc:
+        if exc.code == 3:
+            return None
+        raise
+
+
+def _collect_parallel(fut_map, total: int, min_interval: float,
+                      capped: bool = False) -> tuple[list[TaskResult], bool]:
+    """Drain futures, applying completion throttling and prompt cap stops."""
+    results: list[TaskResult] = []
+    successes = 0
+    for future in as_completed(fut_map):
+        result = future.result()
+        if result is None:
+            capped = True
+            log.error(_BUDGET_MESSAGE)
+        else:
+            if result.success:
+                if successes > 0 and min_interval > 0:
+                    time.sleep(min_interval)
+                successes += 1
+            results.append(result)
+            log.info("PROGRESS: %d/%d done", len(results), total)
+        if capped:
+            kill_active_procs()
+    return results, capped
+
+
 def run_parallel(tasks: list[Task], workers: int = 0, validate_cmd: str = "",
                  retries: int = 0, retry_delay: float = 10.0,
-                 backoff: float = 2.0) -> list[TaskResult]:
-    """Concurrent execution with per-result validation gates (fail-closed).
-    T8: budget cap pre-submit + atomic consume; cap trip exits 3 promptly."""
+                 backoff: float = 2.0,
+                 min_interval: float = 0.0) -> list[TaskResult]:
+    """Run tasks concurrently with validation, retries, and throttling."""
     workers = workers or config.AGENT_DEFAULT_WORKERS
     total = len(tasks)
     log.info("PARALLEL x%d  (%d tasks)", workers, total)
     capped = False
-
-    def _run_one(task: Task, index: int) -> Optional[TaskResult]:
-        try:
-            return _run_retried(task, validate_cmd, index, total, retries,
-                                retry_delay, backoff, parallel=True)
-        except SystemExit as e:
-            # T8: the budget cap raises SystemExit(3) inside a worker thread;
-            # the executor captures it into the future instead of exiting, so
-            # translate it into a None marker the main loop understands.
-            if e.code == 3:
-                return None
-            raise
-
-    results: list[TaskResult] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
         fut_map = {}
-        for i, t in enumerate(tasks, 1):
+        for index, task in enumerate(tasks, 1):
             if not budget_allows():
                 capped = True
                 log.error(_BUDGET_MESSAGE)
                 break
-            # Pass task_index so parallel output lines are prefixed
-            fut_map[pool.submit(_run_one, t, i)] = t
-        for fut in as_completed(fut_map):
-            result = fut.result()
-            if result is None:
-                capped = True
-                log.error(_BUDGET_MESSAGE)
-            else:
-                results.append(result)
-                log.info("PROGRESS: %d/%d done", len(results), total)
-            if capped:
-                # stop in-flight agents NOW so executor shutdown is prompt
-                kill_active_procs()
+            future = pool.submit(
+                _run_parallel_one, task, index, total, validate_cmd,
+                retries, retry_delay, backoff)
+            fut_map[future] = task
+        results, capped = _collect_parallel(
+            fut_map, total, min_interval, capped)
 
     if capped:
         raise SystemExit(3)
     return results
-
 
 def print_summary(results: list[TaskResult]) -> None:
     """Print an execution summary table."""

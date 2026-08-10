@@ -135,6 +135,7 @@ def unregister() -> None:
         try:
             _own_path.unlink(missing_ok=True)
         except OSError:
+        # best-effort I/O：失败不阻塞主流程（已验证有意）
             pass
         _own_path = None
 
@@ -196,6 +197,7 @@ def prune_dead() -> int:
                 Path(run["_file"]).unlink(missing_ok=True)
                 removed += 1
             except OSError:
+            # best-effort I/O：失败不阻塞主流程（已验证有意）
                 pass
     return removed
 

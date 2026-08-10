@@ -55,27 +55,27 @@ cases:
     assert:
       lacks_rule: [visual-core, async-data, architecture]
 
-  - name: system-type-state-machine
+  - id: system-type-state-machine
     input: "订单审批流，状态流转，审核流程"
     expect:
       system_type: state-machine
-  - name: system-type-event-driven
+  - id: system-type-event-driven
     input: "事件驱动的消息队列通知"
     expect:
       system_type: event-driven
-  - name: system-type-search
+  - id: system-type-search
     input: "客户搜索检索，模糊匹配"
     expect:
       system_type: search
-  - name: system-type-optimization
+  - id: system-type-optimization
     input: "生产排程调度，资源分配优化"
     expect:
       system_type: optimization
-  - name: system-type-knowledge
+  - id: system-type-knowledge
     input: "知识库问答，文档检索"
     expect:
       system_type: knowledge
-  - name: system-type-default
+  - id: system-type-default
     input: "做一个登录页 demo"
     expect:
       system_type: deterministic

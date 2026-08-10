@@ -19,7 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from checks.config import ComplexityGate, get_config, is_ignored, repo_root
+from checks.config import ComplexityGate, get_config, is_ignored, repo_root, scan_files
 
 _NESTING_NODES = (
     ast.If, ast.For, ast.AsyncFor, ast.While, ast.ExceptHandler,
@@ -119,7 +119,7 @@ def run(files: list = None) -> int:
     root = repo_root()
     gate = get_config().complexity
     if files is None:
-        files = sorted(root.rglob("*.py"))
+        files = scan_files(root)
     failed = 0
     for f in files:
         failed += check_file(Path(f), root, gate)

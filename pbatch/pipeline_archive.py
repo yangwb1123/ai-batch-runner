@@ -1,4 +1,8 @@
-"""Pipeline deliverable archiving with collision-safe destinations."""
+"""Pipeline archive helpers (split from pbatch/pipeline.py for line budget).
+
+完成即处理：阶段/流水线全部成功后，把交付物移入时间戳归档目录，工作区
+保持整洁；git 历史保留一切。归档函数被 pipeline.py 与 cli.py 共用。
+"""
 
 from __future__ import annotations
 
@@ -10,30 +14,34 @@ from pathlib import Path
 from .config import log
 
 
-def _archive_outputs(outputs: list, archive_dir: str, label: str) -> list:
-    """Move completed deliverables and return their destination paths."""
-    return [destination for _, destination in
-            _archive_output_pairs(outputs, archive_dir, label)]
-
-
-def _archive_output_pairs(outputs: list, archive_dir: str,
-                          label: str) -> list[tuple[str, str]]:
+def archive_output_pairs(outputs: list, archive_dir: str,
+                         label: str) -> list:
     """Move outputs and retain their original-to-archive mapping."""
     if not archive_dir or not outputs:
         return []
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     target = Path(archive_dir) / f"{label}-{stamp}"
     target.mkdir(parents=True, exist_ok=True)
-    moved: list[tuple[str, str]] = []
-    for output in outputs:
-        source = Path(output)
-        if source.exists():
-            destination = _archive_destination(target, source)
-            shutil.move(str(source), str(destination))
-            moved.append((str(output), str(destination)))
+    moved = []
+    for o in outputs:
+        p = Path(o)
+        if p.exists():
+            dest = _archive_destination(target, p)
+            shutil.move(str(p), str(dest))
+            moved.append((str(o), str(dest)))
     if moved:
         log.info("ARCHIVED %d deliverable(s) -> %s", len(moved), target)
     return moved
+
+
+def archive_outputs(outputs: list, archive_dir: str, label: str) -> list:
+    """Move finished deliverables into a timestamped archive subdirectory
+    once the stage/pipeline completed (all tasks succeeded, gates passed).
+    The worktree stays clean; git history (committed artifacts) retains
+    everything, and the decision log points at the original paths. Returns
+    the moved destinations for logging."""
+    return [destination for _, destination in
+            archive_output_pairs(outputs, archive_dir, label)]
 
 
 def _archive_destination(target: Path, source: Path) -> Path:

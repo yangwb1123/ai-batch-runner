@@ -1,0 +1,40 @@
+id: api
+name: API Design Agent
+role: 接口设计师
+stage: 7
+parent: data
+responsibilities:
+- REST/GraphQL/RPC 契约
+- 版本/幂等/分页/错误模型/权限
+inputs:
+- Persistence Design
+- 领域模型
+outputs:
+- OpenAPI 契约
+- 错误码规范
+- 版本策略
+check_rules:
+- 幂等键
+- 错误码规范
+- 版本策略
+- 公共契约变更需评审
+forbidden:
+- 无版本契约
+- 无幂等设计
+- 错误模型混乱
+best_practices:
+- 接口即契约（先契约后实现）
+- 分页/过滤统一
+- 错误模型分层
+failure_cases:
+- 导出接口无幂等（重复导出）
+- 契约变更无版本
+auto_checks:
+- pi-batch impact --task {task}
+- pi-batch profile {task}
+review_checklist:
+- 幂等？
+- 分页？
+- 错误模型？
+- 版本策略？
+role_template: prompts/api_designer.md
