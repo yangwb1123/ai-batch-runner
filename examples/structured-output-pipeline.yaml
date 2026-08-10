@@ -1,0 +1,15 @@
+# Pure JSON output guarded by a declared JSON Schema.
+# Run from any project with:
+#   pi-batch examples/structured-output-pipeline.yaml -p "inspect retry risks" --retries 1
+
+stages:
+  - name: structured_direction
+    from_prompt: |
+      Analyze this request: {prompt}
+      Return one pure JSON object with a non-empty string `summary` and a
+      non-empty `directions` array. Every direction must contain string
+      `id`, string `problem`, non-empty string array `evidence`, and non-empty
+      string array `acceptance`; do not add undeclared fields.
+      Do not use Markdown fences or prose outside the JSON object.
+    output: docs/directions.json
+    validate_cmd: "jsonschema={tool_root}/examples/schemas/direction.schema.json"

@@ -140,6 +140,7 @@ python pi-batch.py campaign --max-directions 2 --reuse --retry-failed
 | `meta-review-pipeline.yaml` | 通用分析流水线（一句话起点 + meta 动态角色） | 显式 |
 | `quickstart-full-sdlc.yaml` | 完整闭环示例（一句话→提案→归档） | 显式 |
 | `repository-campaign*.yaml` | 项目级自动发现→分析→Top N 实现（implement 阶段自动加载域规则处方） | `campaign` |
+| `structured-output-pipeline.yaml` | 纯 JSON 产物 + 声明式 JSON Schema 原子落盘门禁 | 显式 |
 
 配套评估/上下文/规则命令：`assess`（需求评估：处方+产品化+工作流分级）、
 `rules`（规则匹配+双向校验）、`context`（项目文档路由）、`eval`（规则
