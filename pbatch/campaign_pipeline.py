@@ -16,7 +16,17 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .campaign_models import CampaignSettings, Direction, safe_slug
-from .campaign_state import digest, file_digest, tool_digest, tree_digest
+from .campaign_state import (digest, file_digest, git_worktree_evidence,
+                             tool_digest, tree_digest)
+from .campaign_worktree import (_git_failure,
+                                _sync_worktree_baseline,
+                                _validate_existing_worktree,
+                                ensure_worktree as _ensure_worktree,
+                                finalize_worktree as _finalize_worktree,
+                                git_ok as _git_ok, git_path as _git_path,
+                                git_text as _git_text,
+                                isolated_status as _isolated_status,
+                                run_git as _run_git)
 from . import config
 from .config import log, yaml
 from .pipeline import load_pipeline, run_pipeline
@@ -36,6 +46,10 @@ class PipelineOutcome:
     evidence: list[str]
     branch: str = ""
     commit: str = ""
+    baseline_commit: str = ""
+    clean_commit: str = ""
+    dirty_evidence: list[str] | None = None
+    dirty_digest: str = ""
 
 
 def direction_fingerprint(root: Path, settings: CampaignSettings, direction: Direction,
@@ -249,6 +263,7 @@ def run_direction(root: Path, settings: CampaignSettings, direction: Direction,
                   analysis_path: Path, model: str = "", provider: str = "",
                   timeout: int = 0, reuse: bool = False) -> PipelineOutcome:
     start = time.monotonic()
+    baseline = _git_text(root, ["rev-parse", "HEAD"])
     pipeline_path = materialize_pipeline(root, settings, direction, analysis_path)
     pipeline = load_pipeline(str(pipeline_path))
     for stage in pipeline.stages:
@@ -259,7 +274,13 @@ def run_direction(root: Path, settings: CampaignSettings, direction: Direction,
         session_name=f"campaign-{direction.direction_id}", fingerprint_mode=reuse)
     status, reason = classify_pipeline(results, failed, pipeline)
     evidence = _artifact_evidence(pipeline_path, results)
-    return PipelineOutcome(direction, status, reason, time.monotonic() - start, evidence)
+    repository = git_worktree_evidence(root)
+    return PipelineOutcome(
+        direction, status, reason, time.monotonic() - start, evidence,
+        commit=repository["head_commit"], baseline_commit=baseline,
+        clean_commit=repository["clean_commit"],
+        dirty_evidence=repository["dirty_evidence"],
+        dirty_digest=repository["dirty_digest"])
 
 
 def _artifact_evidence(pipeline_path: Path, results: list) -> list[str]:
@@ -311,29 +332,36 @@ def run_directions_isolated(root: Path, settings: CampaignSettings,
     prepared = []
     for direction, analysis in items:
         try:
-            worktree, branch = _ensure_worktree(root, settings, direction)
-            prepared.append((direction, analysis, worktree, branch))
+            worktree, branch, baseline = _ensure_worktree(root, settings, direction)
+            prepared.append((direction, analysis, worktree, branch, baseline))
         except Exception as exc:
             outcomes.append(PipelineOutcome(direction, "PIPELINE_FAILED", str(exc), 0, []))
     with ThreadPoolExecutor(max_workers=jobs) as pool:
         futures = [pool.submit(_safe_worktree_run, settings, direction, analysis,
-                               worktree, branch, agent_args)
-                   for direction, analysis, worktree, branch in prepared]
+                               worktree, branch, baseline, agent_args)
+                   for direction, analysis, worktree, branch, baseline in prepared]
         for future in as_completed(futures):
             outcomes.append(future.result())
     return outcomes
 
 
 def _safe_worktree_run(settings: CampaignSettings, direction: Direction, analysis_path: Path,
-                       worktree: Path, branch: str, agent_args: list[str]) -> PipelineOutcome:
+                       worktree: Path, branch: str, baseline: str,
+                       agent_args: list[str]) -> PipelineOutcome:
     try:
-        return _run_in_worktree(settings, direction, analysis_path, worktree, branch, agent_args)
+        return _run_in_worktree(
+            settings, direction, analysis_path, worktree, branch, baseline, agent_args)
     except Exception as exc:
-        return PipelineOutcome(direction, "PIPELINE_FAILED", str(exc), 0, [str(worktree)], branch)
+        repository = git_worktree_evidence(worktree)
+        return PipelineOutcome(
+            direction, "PIPELINE_FAILED", str(exc), 0, [str(worktree)], branch,
+            repository["head_commit"], baseline, repository["clean_commit"],
+            repository["dirty_evidence"], repository["dirty_digest"])
 
 
 def _run_in_worktree(settings: CampaignSettings, direction: Direction, analysis_path: Path,
-                     worktree: Path, branch: str, agent_args: list[str]) -> PipelineOutcome:
+                     worktree: Path, branch: str, baseline: str,
+                     agent_args: list[str]) -> PipelineOutcome:
     start = time.monotonic()
     local_analysis = worktree / ".pi-batch" / "campaign" / f"{direction.direction_id}-analysis.json"
     local_analysis.parent.mkdir(parents=True, exist_ok=True)
@@ -366,62 +394,21 @@ def _run_in_worktree(settings: CampaignSettings, direction: Direction, analysis_
     finally:
         with _ACTIVE_LOCK:
             _ACTIVE_PIPELINES.discard(proc)
-    commit = _git_text(worktree, ["rev-parse", "HEAD"])
     status = PipelineStatus.PIPELINE_FAILED if timed_out else _isolated_status(returncode, logfile)
     reason = (f"isolated pipeline timed out after {settings.pipeline_timeout}s"
               if timed_out else
               ("" if returncode == 0 else f"isolated pipeline exited {returncode}"))
+    repository = git_worktree_evidence(worktree)
+    if returncode == 0 and not timed_out:
+        reason, repository = _finalize_worktree(
+            worktree, branch, baseline, direction.direction_id)
+        if reason:
+            status = PipelineStatus.PIPELINE_FAILED
     evidence = [str(worktree), str(pipeline_path), str(logfile)]
-    return PipelineOutcome(direction, status, reason, time.monotonic() - start,
-                           evidence, branch, commit)
-
-
-def _isolated_status(returncode: int, logfile: Path) -> str:
-    if returncode == 0:
-        return PipelineStatus.PASSED
-    try:
-        tail = logfile.read_text(encoding="utf-8")[-100_000:]
-    except OSError:
-        tail = ""
-    if "GATE REJECTED" in tail:
-        return PipelineStatus.GATE_REJECTED
-    if "VALIDATION FAILED" in tail:
-        return PipelineStatus.VALIDATION_FAILED
-    return PipelineStatus.PIPELINE_FAILED
-
-
-def _ensure_worktree(root: Path, settings: CampaignSettings,
-                     direction: Direction) -> tuple[Path, str]:
-    campaign_id = safe_slug(settings.name)
-    base = settings.path(root, settings.worktree_root) / campaign_id
-    worktree = base / direction.direction_id
-    branch = f"pbatch-campaign/{campaign_id}/{direction.direction_id}"
-    if (worktree / ".git").exists():
-        actual = _git_text(worktree, ["branch", "--show-current"])
-        if actual != branch:
-            raise RuntimeError(f"worktree branch mismatch: expected {branch}, found {actual}")
-        return worktree, branch
-    worktree.parent.mkdir(parents=True, exist_ok=True)
-    exists = bool(_git_text(root, ["show-ref", "--verify", f"refs/heads/{branch}"]))
-    args = ["worktree", "add", str(worktree), branch] if exists else [
-        "worktree", "add", "-b", branch, str(worktree), "HEAD"]
-    try:
-        proc = subprocess.run(["git", "-C", str(root), *args], capture_output=True,
-                              text=True, timeout=30, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError(f"git worktree add failed: {exc}") from exc
-    if proc.returncode != 0:
-        raise RuntimeError(f"git worktree add failed: {proc.stderr.strip()}")
-    return worktree, branch
-
-
-def _git_text(root: Path, args: list[str]) -> str:
-    try:
-        proc = subprocess.run(["git", "-C", str(root), *args], capture_output=True,
-                              text=True, timeout=30, check=False)
-    except (OSError, subprocess.TimeoutExpired):
-        return ""
-    return proc.stdout.strip() if proc.returncode == 0 else ""
+    return PipelineOutcome(
+        direction, status, reason, time.monotonic() - start, evidence, branch,
+        repository["head_commit"], baseline, repository["clean_commit"],
+        repository["dirty_evidence"], repository["dirty_digest"])
 
 
 def _kill_pipeline_group(proc: subprocess.Popen) -> None:

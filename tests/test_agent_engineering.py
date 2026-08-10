@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 
 from pbatch.assessor import prescription, workflow_level
-from pbatch.learn import make_draft, rule_schema_template
+from pbatch.learn import (failure_to_draft, make_draft, memory_hit_to_failure,
+                          rule_schema_template)
 
 SCRIPT = "scripts/check-completion-report.py"
 
@@ -139,6 +140,55 @@ def test_learn_schema_complete():
         assert key in schema
 
 
+def test_learn_never_overwrites_same_day_draft(tmp_path, monkeypatch):
+    import pbatch.learn as learn
+    monkeypatch.setattr(learn, "DRAFT_DIR", tmp_path)
+    first, _ = learn.make_draft("first failure", "backend", "error", "SAFE-1")
+    second, _ = learn.make_draft("second failure", "backend", "error", "SAFE-1")
+    assert first != second
+    assert "first failure" in first.read_text(encoding="utf-8")
+    assert "second failure" in second.read_text(encoding="utf-8")
+
+
+def test_learn_rejects_symlink_draft_directory(tmp_path, monkeypatch):
+    import pbatch.learn as learn
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    linked = tmp_path / "drafts"
+    linked.symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(learn, "DRAFT_DIR", linked)
+    with pytest.raises(ValueError, match="symlink"):
+        learn.make_draft("failure", "backend", "error", "SAFE-2")
+
+
+def test_learn_uses_one_bounded_failure_to_schema_conversion():
+    failure = "  duplicate   order  " + "x" * 1200
+    draft = failure_to_draft(failure, "database", "error", "DB-BOUNDED-001")
+    assert draft["title"].startswith("duplicate order")
+    observed = draft["rationale"].split(". Root-cause", 1)[0]
+    assert len(observed.removeprefix("Observed failure: ")) == 1000
+    with pytest.raises(ValueError, match="must not be empty"):
+        failure_to_draft(" \n ", "database", "error", "DB-EMPTY-001")
+
+
+def test_memory_hit_maps_public_memory_fields_to_incident():
+    failure = memory_hit_to_failure("订单并发", {
+        "session_id": "s1", "domains": ["backend", "database"],
+        "stage": "gate", "status": "FAILED_OBSERVED",
+        "observed_failure": "订单并发创建重复记录",
+        "reason": "less-specific fallback",
+    })
+    assert failure.startswith("订单并发创建重复记录")
+    assert "domains=backend,database" in failure
+    assert "stage=gate" in failure
+    assert "less-specific fallback" not in failure
+    with pytest.raises(ValueError, match="no incident evidence"):
+        memory_hit_to_failure("订单并发", {"status": "PASSED", "session_id": "ok"})
+    with pytest.raises(ValueError, match="no incident evidence"):
+        memory_hit_to_failure("订单并发", {
+            "status": "PASSED", "reason": "all checks passed", "session_id": "ok"})
+
+
 def test_assess_from_file(tmp_path, capsys):
     req = tmp_path / "req.md"
     req.write_text("做一个开源文件上传产品，断点续传，商业化收费", encoding="utf-8")
@@ -174,8 +224,12 @@ def test_learn_from_memory(tmp_path, monkeypatch, capsys):
     import pbatch.learn as learn
     import pbatch.memory as memory
     monkeypatch.chdir(tmp_path)
-    hits = [{"session_id": "s1", "domain": "backend",
-             "error": "订单并发创建重复记录"}]
+    hits = [
+        {"session_id": "passed", "domains": ["backend"], "status": "PASSED"},
+        {"session_id": "s1", "domains": ["backend"],
+         "status": "FAILED_OBSERVED",
+         "observed_failure": "订单并发创建重复记录"},
+    ]
     monkeypatch.setattr(memory, "find", lambda q, **kw: hits)
     sys.argv = ["pi-batch.py", "learn", "--from-memory", "订单并发",
                 "--category", "database", "--rule-id", "DB-002"]

@@ -26,6 +26,8 @@ CATEGORIES = ("backend", "frontend", "product", "database", "security",
               "testing", "devops")
 SEVERITIES = ("error", "warning", "advice")
 _RULE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
+_FAILURE_MAX_CHARS = 1000
+_FAILURE_STATE_RE = re.compile(r"(?i)(fail|reject|error|timeout|halt|cancel)")
 
 
 def rule_schema_template() -> dict:
@@ -49,30 +51,118 @@ def rule_schema_template() -> dict:
     }
 
 
-def make_draft(failure: str, category: str, severity: str,
-               rule_id: str, owner: str = "") -> tuple:
-    """Create a draft file; returns (path, draft_dict)."""
+def failure_to_draft(failure: str, category: str, severity: str,
+                     rule_id: str, owner: str = "") -> dict:
+    """Normalize one incident into the unified in-memory Rule Schema."""
+    failure = " ".join(str(failure).split())[:_FAILURE_MAX_CHARS]
+    if not failure:
+        raise ValueError("failure description must not be empty")
+    if category not in CATEGORIES:
+        raise ValueError(f"unknown rule category: {category}")
+    if severity not in SEVERITIES:
+        raise ValueError(f"unknown rule severity: {severity}")
     draft = rule_schema_template()
     draft["id"] = rule_id or f"DRAFT-{date.today():%Y%m%d}"
     if not _RULE_ID_RE.fullmatch(draft["id"]):
         raise ValueError(
             "rule id must match [A-Za-z0-9][A-Za-z0-9_-]{0,79}")
-    draft["title"] = " ".join(failure.split())[:80]
+    draft["title"] = failure[:80]
     draft["category"] = category
     draft["severity"] = severity
-    draft["rationale"] = ("Observed failure: " + " ".join(failure.split()) +
+    draft["rationale"] = ("Observed failure: " + failure +
                           ". Root-cause analysis is required before this "
                           "draft can be promoted (edit requirements/forbidden/"
                           "verification with the actual RCA).")
     draft["owner"] = owner
-    DRAFT_DIR.mkdir(parents=True, exist_ok=True)
-    path = DRAFT_DIR / f"{draft['id']}-{date.today():%Y%m%d}.yaml"
-    if path.exists():
-        path = DRAFT_DIR / f"{draft['id']}-{date.today():%Y%m%d}-{id(path) % 1000:03d}.yaml"
+    return draft
+
+
+def make_draft(failure: str, category: str, severity: str,
+               rule_id: str, owner: str = "") -> tuple:
+    """Convert an incident through Rule Schema and persist its draft."""
+    draft = failure_to_draft(failure, category, severity, rule_id, owner)
+    _ensure_draft_dir()
     from .config import yaml
     payload = yaml.safe_dump(draft, allow_unicode=True, sort_keys=False) if yaml else str(draft)
-    path.write_text(payload, encoding="utf-8")
+    path = _write_new_draft(draft["id"], payload)
     return path, draft
+
+
+def _ensure_draft_dir() -> None:
+    target = DRAFT_DIR if DRAFT_DIR.is_absolute() else Path.cwd() / DRAFT_DIR
+    if any(item.is_symlink() for item in (target, *target.parents)):
+        raise ValueError(f"rule draft directory contains a symlink: {DRAFT_DIR}")
+    DRAFT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _write_new_draft(rule_id: str, payload: str) -> Path:
+    """Create without following or overwriting an existing draft path."""
+    stem = f"{rule_id}-{date.today():%Y%m%d}"
+    for number in range(1000):
+        suffix = "" if number == 0 else f"-{number:03d}"
+        path = DRAFT_DIR / f"{stem}{suffix}.yaml"
+        try:
+            with path.open("x", encoding="utf-8") as handle:
+                handle.write(payload)
+            return path
+        except FileExistsError:
+            continue
+    raise ValueError(f"too many existing drafts for rule id: {rule_id}")
+
+
+def memory_hit_to_failure(query: str, hit: dict) -> str:
+    """Map public Memory fields to one bounded incident description."""
+    if not isinstance(hit, dict):
+        raise ValueError("memory search returned an invalid record")
+    domains = _memory_domains(hit)
+    evidence, status = _failure_evidence(hit)
+    if not evidence:
+        raise ValueError("memory record has no incident evidence")
+    details = [evidence, f"query={query.strip()}" if query.strip() else ""]
+    if domains:
+        details.append("domains=" + ",".join(str(item) for item in domains[:8]))
+    for key in ("stage", "role", "status", "verdict", "observed_verdict", "session_id"):
+        value = str(hit.get(key, "")).strip()
+        if value and not (key == "status" and value == evidence):
+            details.append(f"{key}={value}")
+    failure = " | ".join(item for item in details if item)
+    return " ".join(failure.split())[:_FAILURE_MAX_CHARS]
+
+
+def _memory_domains(hit: dict) -> list:
+    domains = hit.get("domains", hit.get("domain", []))
+    if isinstance(domains, str):
+        return [domains]
+    return domains if isinstance(domains, list) else []
+
+
+def _failure_evidence(hit: dict) -> tuple[str, str]:
+    status = str(hit.get("status", "")).strip()
+    states = [status, str(hit.get("observed_verdict", "")).strip(),
+              str(hit.get("verdict", "")).strip()]
+    failure_state = next((state for state in states if _FAILURE_STATE_RE.search(state)), "")
+    evidence = _first_text(hit, "observed_failure", "error")
+    if not evidence:
+        reason = _first_text(hit, "reason")
+        evidence = reason if failure_state or not any(states) else ""
+    return evidence or failure_state, status
+
+
+def _first_text(item: dict, *keys: str) -> str:
+    for key in keys:
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _memory_incident(query: str, hits: list) -> tuple[dict, str]:
+    for hit in hits:
+        try:
+            return hit, memory_hit_to_failure(query, hit)
+        except ValueError:
+            continue
+    raise ValueError("matching memory records contain no failure evidence")
 
 
 def learn_main(argv: list) -> None:
@@ -91,8 +181,8 @@ def learn_main(argv: list) -> None:
     parser.add_argument("--rule-id", default="", help="rule id (default DRAFT-<date>)")
     parser.add_argument("--owner", default="", help="rule owner")
     parser.add_argument("--from-memory", default="",
-                        help="use the top memory search hit as the failure "
-                             "description (Evolution loop: incident -> draft)")
+                        help="use the highest-ranked failure-bearing memory hit "
+                             "(Evolution loop: incident -> draft)")
     args = parser.parse_args(argv)
     if not args.failure and not args.from_memory:
         parser.error("Provide a failure description or --from-memory TERM")
@@ -102,9 +192,11 @@ def learn_main(argv: list) -> None:
         if not hits:
             log.error("No memory records match %r", args.from_memory)
             sys.exit(1)
-        top = hits[0]
-        failure = (f"{args.from_memory} | {top.get('domain') or top.get('stage') or ''} "
-                   f"{str(top.get('error') or top.get('status') or top)[:200]}")
+        try:
+            top, failure = _memory_incident(args.from_memory, hits)
+        except ValueError as exc:
+            log.error("Cannot learn from memory: %s", exc)
+            sys.exit(1)
         log.info("Using memory hit %r as the observed failure", top.get("session_id", ""))
     else:
         failure = " ".join(args.failure)

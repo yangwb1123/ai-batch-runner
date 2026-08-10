@@ -271,6 +271,32 @@ def test_state_store_reuse_corrupt_tolerance_summary_and_history(tmp_path):
         store.append({"module": "m", "direction_id": "too-large", "payload": "x" * 1000})
 
 
+def test_state_store_keys_by_campaign_and_safely_reads_legacy_events(tmp_path):
+    state_path = tmp_path / "state.jsonl"
+    legacy = StateStore(state_path)
+    legacy.append({"module": "m", "direction_id": "d", "status": "PASSED",
+                   "fingerprint": "legacy"})
+    assert StateStore(state_path, campaign="new").reusable(
+        "m", "d", "legacy", ("PASSED",))
+
+    first = StateStore(state_path, campaign="first")
+    first.append({"campaign": "first", "module": "m", "direction_id": "d",
+                  "status": "PASSED", "fingerprint": "one"})
+    second = StateStore(state_path, campaign="second")
+    second.append({"campaign": "second", "module": "m", "direction_id": "d",
+                   "status": "PASSED", "fingerprint": "two"})
+
+    latest = StateStore(state_path).latest()
+    assert ("first", "m", "d") in latest
+    assert ("second", "m", "d") in latest
+    assert StateStore(state_path, campaign="first").reusable(
+        "m", "d", "one", ("PASSED",))
+    assert not StateStore(state_path, campaign="first").reusable(
+        "m", "d", "two", ("PASSED",))
+    assert not StateStore(state_path, campaign="third").reusable(
+        "m", "d", "legacy", ("PASSED",))
+
+
 def test_git_snapshot_ignores_campaign_outputs(tmp_path):
     _init_git(tmp_path)
     clean = git_snapshot(tmp_path, ("docs/auto",))
@@ -480,6 +506,84 @@ def test_parallel_directions_use_real_isolated_worktrees(tmp_path):
         run_log = Path(outcome.evidence[2]).read_text(encoding="utf-8")
         assert run_log == "CHILD-LOG\n"
         assert "ISOLATED-MODEL-BODY" not in run_log
+        assert outcome.baseline_commit
+        assert outcome.commit
+        assert outcome.clean_commit == outcome.commit
+        assert outcome.commit != outcome.baseline_commit
+        assert outcome.dirty_evidence == []
+        assert subprocess.run(
+            ["git", "-C", str(worktree), "merge-base", "--is-ancestor",
+             outcome.baseline_commit, outcome.commit], check=False).returncode == 0
+        committed = subprocess.run(
+            ["git", "-C", str(worktree), "show", "--pretty=", "--name-only",
+             outcome.commit], capture_output=True, text=True, check=True).stdout
+        assert f"docs/auto/runs/{outcome.direction.direction_id}/pipeline.yaml" in committed
+
+
+def test_isolated_pipeline_rejects_failed_final_commit_hook(tmp_path):
+    (tmp_path / "pi-batch.py").write_text(
+        "import pathlib, sys\n"
+        "log = pathlib.Path(sys.argv[sys.argv.index('--log-file') + 1])\n"
+        "log.write_text('CHILD-LOG\\n', encoding='utf-8')\n",
+        encoding="utf-8")
+    (tmp_path / "pipeline.yaml").write_text(
+        "stages:\n  - name: requirements\n    from_prompt: old\n    output: report.md\n",
+        encoding="utf-8")
+    analysis = tmp_path / "analysis.json"
+    analysis.write_text("[]", encoding="utf-8")
+    _init_git(tmp_path, extra=["pi-batch.py", "pipeline.yaml", "analysis.json"])
+    hook = tmp_path / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\necho hook-rejected >&2\nexit 17\n", encoding="utf-8")
+    hook.chmod(0o755)
+    settings = CampaignSettings(
+        name="hook-failure", pipeline_template="pipeline.yaml",
+        output_dir="docs/auto", worktree_root=".worktrees")
+    direction = Direction.from_mapping("src", {
+        "title": "Rejected final commit", "problem": "hook blocks commit",
+        "evidence": ["source.py"], "acceptance": ["failure is recorded"],
+    })
+
+    outcome = run_directions_isolated(
+        tmp_path, settings, [(direction, analysis)], 1, [])[0]
+
+    assert outcome.status == "PIPELINE_FAILED"
+    assert "final campaign commit failed" in outcome.reason
+    assert "hook-rejected" in outcome.reason
+    assert outcome.commit == outcome.baseline_commit
+    assert outcome.clean_commit == ""
+    assert outcome.dirty_evidence
+
+
+def test_existing_worktree_fast_forwards_baseline_and_rejects_dirty(tmp_path):
+    from pbatch.campaign_pipeline import _ensure_worktree
+
+    _init_git(tmp_path)
+    settings = CampaignSettings(name="sync", worktree_root=".worktrees")
+    direction = Direction(module="src", title="Synchronize branch")
+    worktree, branch, original = _ensure_worktree(tmp_path, settings, direction)
+    assert branch
+    assert original == subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"], capture_output=True,
+        text=True, check=True).stdout.strip()
+
+    fresh = tmp_path / "fresh.py"
+    fresh.write_text("fresh\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "fresh.py"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "fresh"], check=True)
+    expected = subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"], capture_output=True,
+        text=True, check=True).stdout.strip()
+
+    same, same_branch, baseline = _ensure_worktree(tmp_path, settings, direction)
+    assert (same, same_branch, baseline) == (worktree, branch, expected)
+    assert (worktree / "fresh.py").read_text(encoding="utf-8") == "fresh\n"
+    assert subprocess.run(
+        ["git", "-C", str(worktree), "rev-parse", "HEAD"], capture_output=True,
+        text=True, check=True).stdout.strip() == expected
+
+    (worktree / "dirty.py").write_text("local\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="worktree is dirty"):
+        _ensure_worktree(tmp_path, settings, direction)
 
 
 def test_isolated_pipeline_has_hard_wall_clock_timeout(tmp_path):
@@ -524,6 +628,13 @@ def test_campaign_end_to_end_and_fingerprint_reuse(tmp_path):
     assert len(calls) == 3  # analysis, requirements, gate
     summary = (tmp_path / "docs" / "auto" / "SUMMARY.md").read_text(encoding="utf-8")
     assert "PASSED" in summary
+    events = [json.loads(line) for line in (tmp_path / "docs" / "auto" / "state.jsonl")
+              .read_text(encoding="utf-8").splitlines()]
+    passed = [event for event in events if event.get("status") == "PASSED"]
+    assert passed
+    assert all("head_commit" in event for event in passed)
+    assert all(event.get("clean_commit") or event.get("dirty_evidence")
+               for event in passed)
 
     second = subprocess.run([*command, "--skip-passed"], cwd=tmp_path,
                             capture_output=True, text=True, timeout=60)
@@ -568,6 +679,26 @@ def test_campaign_rounds_reuse_between_rounds(tmp_path):
     assert len(calls.read_text(encoding="utf-8").splitlines()) == 3  # round 2 reused all
 
 
+def test_campaign_loop_refreshes_repository_snapshot_each_round(monkeypatch, tmp_path):
+    from pbatch import campaign as C
+
+    snapshots = iter(({"head": "one", "dirty": "a"},
+                      {"head": "two", "dirty": "b"}))
+    observed = []
+    settings = CampaignSettings(output_dir="out", worktree_root="worktrees")
+    args = SimpleNamespace(dry_run=False, rounds=2, round_commit=False,
+                           round_delay=0, log_file="")
+    context = C.CampaignContext(tmp_path, settings, args,
+                                StateStore(tmp_path / "state.jsonl"), {})
+    monkeypatch.setattr(C, "git_snapshot", lambda _root, _excludes: next(snapshots))
+    monkeypatch.setattr(C, "run_campaign",
+                        lambda ctx: observed.append(dict(ctx.snapshot)) or 0)
+
+    assert C.run_campaign_loop(context) == 0
+    assert observed == [{"head": "one", "dirty": "a"},
+                        {"head": "two", "dirty": "b"}]
+
+
 def test_campaign_rounds_rejects_negative_and_nonfinite(tmp_path):
     _campaign_fixture(tmp_path)
     for flag, value in (("--rounds", "-1"), ("--round-delay", "nan"),
@@ -585,7 +716,7 @@ def test_campaign_rounds_rejects_negative_and_nonfinite(tmp_path):
 
 def test_round_commit_commits_and_skips_clean(tmp_path, monkeypatch):
     """--round-commit: after a round, non-ignored changes are committed;
-    a clean tree is skipped without error (advisory semantics)."""
+    an already-clean tree is a successful no-op."""
     from pbatch import campaign as C
     from pbatch.campaign_models import CampaignSettings
     from pbatch.campaign_state import StateStore
@@ -599,7 +730,7 @@ def test_round_commit_commits_and_skips_clean(tmp_path, monkeypatch):
     ctx = C.CampaignContext(tmp_path, settings, args, store, {})
     # dirty tree -> committed
     (tmp_path / "source.py").write_text("changed\n", encoding="utf-8")
-    C._round_commit(ctx, 1)
+    assert C._round_commit(ctx, 1) is True
     head = subprocess.run(["git", "-C", str(tmp_path), "log", "--oneline", "-1"],
                           capture_output=True, text=True, check=True).stdout
     assert "[pi-batch] campaign round 1" in head
@@ -610,14 +741,14 @@ def test_round_commit_commits_and_skips_clean(tmp_path, monkeypatch):
     (tmp_path / "ignored.txt").write_text("nope", encoding="utf-8")
     before = subprocess.run(["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
                             capture_output=True, text=True, check=True).stdout
-    C._round_commit(ctx, 3)
+    assert C._round_commit(ctx, 3) is True
     after = subprocess.run(["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
                            capture_output=True, text=True, check=True).stdout
     assert before == after
     # clean tree -> skipped too
     before2 = subprocess.run(["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
                              capture_output=True, text=True, check=True).stdout
-    C._round_commit(ctx, 2)
+    assert C._round_commit(ctx, 2) is True
     after2 = subprocess.run(["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
                             capture_output=True, text=True, check=True).stdout
     assert before2 == after2
@@ -631,12 +762,38 @@ def test_round_loop_commits_the_final_and_single_round(monkeypatch):
     context = SimpleNamespace(args=SimpleNamespace(
         dry_run=False, rounds=1, round_commit=True, round_delay=0))
     commits = []
+    monkeypatch.setattr(C, "_refresh_repository_snapshot", lambda _context: None)
     monkeypatch.setattr(C, "run_campaign", lambda _context: 0)
     monkeypatch.setattr(C, "_round_commit",
-                        lambda _context, round_no: commits.append(round_no))
+                        lambda _context, round_no: commits.append(round_no) or True)
 
     assert C.run_campaign_loop(context) == 0
     assert commits == [1]
+
+
+def test_round_commit_failure_fails_campaign_and_reports_dirty_evidence(
+        tmp_path, monkeypatch, caplog):
+    from pbatch import campaign as C
+
+    _init_git(tmp_path)
+    hook = tmp_path / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\necho policy-denied >&2\nexit 1\n", encoding="utf-8")
+    hook.chmod(0o755)
+    (tmp_path / "source.py").write_text("dirty\n", encoding="utf-8")
+    settings = CampaignSettings(summary_file="summary.md")
+    context = C.CampaignContext(
+        tmp_path, settings,
+        SimpleNamespace(dry_run=False, rounds=1, round_commit=True,
+                        round_delay=0, log_file=""),
+        StateStore(tmp_path / "state.jsonl"), {})
+
+    assert C._round_commit(context, 1) is False
+    assert "policy-denied" in caplog.text
+    assert "dirty digest=" in caplog.text
+    monkeypatch.setattr(C, "_refresh_repository_snapshot", lambda _context: None)
+    monkeypatch.setattr(C, "run_campaign", lambda _context: 0)
+    monkeypatch.setattr(C, "_round_commit", lambda _context, _round: False)
+    assert C.run_campaign_loop(context) == 1
 
 
 def test_default_six_stage_pipeline_runs_meta_gates_validator_and_archive(monkeypatch, tmp_path):

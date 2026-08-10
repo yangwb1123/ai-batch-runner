@@ -22,7 +22,10 @@ from .campaign_paths import (campaign_config_path as _campaign_config_path,
                              validate_paths as _validate_paths)
 from .campaign_pipeline import (direction_fingerprint, parallel_ready,
                                 run_direction, run_directions_isolated)
-from .campaign_state import StateStore, _git_output, git_snapshot, tool_digest, tool_head, write_summary
+from .campaign_runtime import _agent_args, _print_plan, _reuse_enabled
+from .campaign_state import (StateStore, _git_output, git_snapshot,
+                             git_worktree_evidence, tool_digest, tool_head,
+                             write_summary)
 from .config import log, yaml
 from .lock import acquire_lock, release_lock
 from .registry import mark_running, unregister
@@ -74,7 +77,7 @@ def build_campaign_parser() -> argparse.ArgumentParser:
                         help="pause between campaign rounds (pacing/rate limit)")
     parser.add_argument("--round-commit", action="store_true",
                         help="git add -A + commit all changes after each round "
-                             "(respects .gitignore; advisory, never fails the round)")
+                             "(respects .gitignore; commit errors fail the campaign)")
     parser.add_argument("--no-lock", action="store_true")
     parser.add_argument("--wait-lock", type=int, default=0, metavar="MINUTES",
                         help="queue behind a held lock (poll 30s up to MINUTES) instead of exit 5")
@@ -267,10 +270,19 @@ def _implement(context: CampaignContext, items: list[tuple[Direction, Path, str]
                     for direction, analysis, _ in items]
     fingerprints = {direction.direction_id: fp for direction, _, fp in items}
     for outcome in outcomes:
+        dirty_evidence = outcome.dirty_evidence or []
+        if (outcome.status == PipelineStatus.PASSED and not outcome.clean_commit
+                and not dirty_evidence):
+            dirty_evidence = ["repository state evidence unavailable"]
         _event(context, outcome.direction.module, outcome.direction.direction_id,
                outcome.direction.title, outcome.status, fingerprints[outcome.direction.direction_id],
                outcome.evidence, outcome.reason, outcome.elapsed,
-               {"branch": outcome.branch, "commit": outcome.commit})
+               {"branch": outcome.branch, "commit": outcome.commit,
+                "head_commit": outcome.commit,
+                "baseline_commit": outcome.baseline_commit,
+                "clean_commit": outcome.clean_commit,
+                "dirty_evidence": dirty_evidence,
+                "dirty_digest": outcome.dirty_digest})
     return outcomes
 
 
@@ -283,16 +295,6 @@ def _run_direction_safe(context: CampaignContext, direction: Direction,
                              _reuse_enabled(context.args))
     except Exception as exc:
         return PipelineOutcome(direction, "PIPELINE_FAILED", str(exc), 0, [str(analysis)])
-
-
-def _agent_args(args: argparse.Namespace) -> list[str]:
-    values = ["--agent-bin", args.agent_bin, "--memory-mode", args.memory_mode,
-              "--stream-output", args.stream_output]
-    for flag, value in (("--model", args.model), ("--provider", args.provider),
-                        ("--timeout", args.timeout)):
-        if value:
-            values.extend([flag, str(value)])
-    return values
 
 
 def _event(context: CampaignContext, module: str, direction_id: str, direction: str,
@@ -312,29 +314,6 @@ def _direction_event(context: CampaignContext, direction: Direction, status: str
                      fingerprint: str, analysis: Path, reason: str = "") -> None:
     _event(context, direction.module, direction.direction_id, direction.title, status,
            fingerprint, [str(analysis)], reason)
-
-
-def _reuse_enabled(args: argparse.Namespace) -> bool:
-    return not args.force and (args.reuse or args.skip_passed or args.retry_failed)
-
-
-def _print_plan(context: CampaignContext, modules: list[str]) -> None:
-    analysis_sec = context.store.median_elapsed(("ANALYZED",), context.settings.analysis_minutes * 60)
-    pipeline_sec = context.store.median_elapsed(
-        (PipelineStatus.PASSED, PipelineStatus.GATE_REJECTED,
-                 PipelineStatus.PIPELINE_FAILED, PipelineStatus.VALIDATION_FAILED),
-        context.settings.pipeline_minutes * 60)
-    analysis_wall = len(modules) * analysis_sec / context.settings.analysis_jobs
-    pipeline_wall = (len(modules) * context.settings.max_directions * pipeline_sec /
-                     context.settings.pipeline_concurrency)
-    print(f"== Campaign: {context.settings.name} ==")
-    print(f"Modules: {len(modules)}; directions/module: {context.settings.max_directions}")
-    for module in modules:
-        print(f"  - {module}")
-    print(f"Estimated analysis: {analysis_wall / 60:.0f} min")
-    print(f"Estimated pipelines: {pipeline_wall / 60:.0f} min")
-    print(f"Estimated total: {(analysis_wall + pipeline_wall) / 60:.0f} min")
-    print("Dry-run made no files or state changes.")
 
 
 def _wire_runtime(args: argparse.Namespace) -> None:
@@ -373,7 +352,8 @@ def main(argv: list[str] | None = None) -> None:
                                                        backupCount=config.LOG_BACKUP_COUNT, encoding="utf-8")
         handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
         log.addHandler(handler)
-    store = StateStore(settings.path(root, settings.state_file), settings.state_line_max_bytes)
+    store = StateStore(settings.path(root, settings.state_file),
+                       settings.state_line_max_bytes, settings.name)
     excluded = _snapshot_excludes(root, settings, args)
     context = CampaignContext(root, settings, args, store, git_snapshot(root, excluded))
     _register_campaign_run(root, args)
@@ -411,11 +391,13 @@ def run_campaign_loop(context: CampaignContext) -> int:
         label = str(rounds) if rounds else "\u221e"
         log.info("")
         log.info("========== CAMPAIGN ROUND %d/%s ==========", round_no, label)
+        _refresh_repository_snapshot(context)
         rc = run_campaign(context)
         if rc and code == 0:
             code = rc
         if context.args.round_commit:
-            _round_commit(context, round_no)
+            if not _round_commit(context, round_no) and code == 0:
+                code = 1
         if rounds > 0 and round_no >= rounds:
             break
         if context.args.round_delay > 0:
@@ -426,31 +408,60 @@ def run_campaign_loop(context: CampaignContext) -> int:
     return code
 
 
-def _round_commit(context: CampaignContext, round_no: int) -> None:
-    """Commit all non-ignored changes after a round (advisory: a commit
-    problem must not fail the round; respects .gitignore via git add -A)."""
+def _refresh_repository_snapshot(context: CampaignContext) -> None:
+    """Refresh the fingerprint input immediately before every real round."""
+    excludes = _snapshot_excludes(context.root, context.settings, context.args)
+    context.snapshot = git_snapshot(context.root, excludes)
+
+
+def _round_commit(context: CampaignContext, round_no: int) -> bool:
+    """Commit all non-ignored changes and return whether the request succeeded.
+
+    ``--round-commit`` is an explicit durability request.  A Git/add/commit
+    failure therefore fails the campaign, while an already-clean repository
+    is a successful no-op.  Evidence is logged rather than appended to the
+    campaign state after committing, which would dirty a tracked state file.
+    """
     root = context.root
     if not run_argv(["git", "rev-parse", "--git-dir"], str(root), timeout=10).ok:
-        log.info("ROUND %d: not a git repository, skipping round commit", round_no)
-        return
+        log.error("ROUND %d COMMIT FAILED: not a Git repository", round_no)
+        return False
     status = _git_output(root, ["status", "--porcelain=v1"])
     if not status.strip():
-        log.info("ROUND %d: no uncommitted changes", round_no)
-        return
+        evidence = git_worktree_evidence(root)
+        if evidence["clean_commit"]:
+            log.info("ROUND %d: no uncommitted changes; clean commit=%s",
+                     round_no, evidence["clean_commit"])
+            return True
+        log.error("ROUND %d COMMIT FAILED: could not verify Git status; evidence=%s",
+                  round_no, evidence["dirty_evidence"])
+        return False
     msg = ("[pi-batch] campaign round %d: implemented directions "
            "(see %s)" % (round_no, context.settings.summary_file))
     add = run_argv(["git", "add", "-A"], str(root), timeout=30)
     if not add.ok:
-        log.warning("ROUND %d: git add -A failed (exit=%d): %s", round_no,
-                    add.exit_code, (add.stderr or "").strip()[:300])
-        return
+        _log_round_commit_failure(root, round_no, "git add -A", add)
+        return False
     commit = run_argv(["git", "commit", "-m", msg], str(root), timeout=30)
     if not commit.ok:
-        log.warning("ROUND %d: git commit failed (exit=%d): %s", round_no,
-                    commit.exit_code, (commit.stderr or "").strip()[:300])
-        return
-    log.info("ROUND %d: committed %d changed file(s): %s",
-             round_no, len(status.splitlines()), msg)
+        _log_round_commit_failure(root, round_no, "git commit", commit)
+        return False
+    evidence = git_worktree_evidence(root)
+    if not evidence["clean_commit"]:
+        log.error("ROUND %d COMMIT FAILED: commit left dirty state digest=%s entries=%s",
+                  round_no, evidence["dirty_digest"], evidence["dirty_evidence"])
+        return False
+    log.info("ROUND %d: committed %d changed file(s); clean commit=%s: %s",
+             round_no, len(status.splitlines()), evidence["clean_commit"], msg)
+    return True
+
+
+def _log_round_commit_failure(root: Path, round_no: int, action: str, result) -> None:
+    evidence = git_worktree_evidence(root)
+    detail = (result.stderr or result.stdout or "").strip()[:300]
+    log.error("ROUND %d COMMIT FAILED: %s exit=%d: %s; dirty digest=%s entries=%s",
+              round_no, action, result.exit_code, detail,
+              evidence["dirty_digest"], evidence["dirty_evidence"])
 
 
 def _register_campaign_run(root: Path, args) -> None:

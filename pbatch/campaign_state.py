@@ -65,6 +65,34 @@ def git_snapshot(root: Path, excludes: tuple[str, ...] = ()) -> dict:
     return {"head": head.strip(), "dirty": digest([status, diff])}
 
 
+def git_worktree_evidence(root: Path, max_entries: int = 40) -> dict:
+    """Return bounded, reviewable evidence for the current Git state.
+
+    A successful pipeline may intentionally leave implementation changes
+    uncommitted.  In that case ``HEAD`` alone is not evidence of what passed,
+    so callers persist the porcelain status (bounded) and its full digest.
+    Git lookup failures are represented as explicit dirty/unverifiable
+    evidence instead of being mistaken for a clean repository.
+    """
+    head = (_git_output(root, ["rev-parse", "HEAD"]) or "").strip()
+    result = _run_git(root, ["status", "--porcelain=v1", "--untracked-files=all"])
+    if not head or result is None or result.returncode != 0:
+        detail = "git repository state unavailable"
+        if result is not None and result.stderr.strip():
+            detail += f": {result.stderr.strip()[:300]}"
+        return {"head_commit": head, "clean_commit": "",
+                "dirty_evidence": [detail], "dirty_digest": digest(detail)}
+    lines = result.stdout.splitlines()
+    if not lines:
+        return {"head_commit": head, "clean_commit": head,
+                "dirty_evidence": [], "dirty_digest": ""}
+    shown = lines[:max(1, max_entries)]
+    if len(lines) > len(shown):
+        shown.append(f"... {len(lines) - len(shown)} more status entries omitted")
+    return {"head_commit": head, "clean_commit": "",
+            "dirty_evidence": shown, "dirty_digest": digest(lines)}
+
+
 def tool_digest() -> str:
     """Digest of the tool's own code (pbatch package + entry script + config).
 
@@ -106,20 +134,26 @@ def _filtered_status(status: str, excludes: tuple[str, ...]) -> str:
 
 
 def _git_output(root: Path, args: list[str]) -> str:
+    proc = _run_git(root, args)
+    return proc.stdout if proc is not None and proc.returncode == 0 else ""
+
+
+def _run_git(root: Path, args: list[str]):
     try:
-        proc = subprocess.run(["git", "-C", str(root), *args], capture_output=True,
+        return subprocess.run(["git", "-C", str(root), *args], capture_output=True,
                               text=True, timeout=30, check=False)
     except (OSError, subprocess.TimeoutExpired):
-        return ""
-    return proc.stdout if proc.returncode == 0 else ""
+        return None
 
 
 class StateStore:
     """Append-only campaign events with latest-state and summary helpers."""
 
-    def __init__(self, path: Path, max_line_bytes: int = 256 * 1024):
+    def __init__(self, path: Path, max_line_bytes: int = 256 * 1024,
+                 campaign: str = ""):
         self.path = path
         self.max_line_bytes = max(1, max_line_bytes)
+        self.campaign = str(campaign)
         self._latest_cache = None
 
     def _iter_events(self):
@@ -165,7 +199,7 @@ class StateStore:
             self._latest_cache[self._key(payload)] = payload
         return payload
 
-    def latest(self) -> dict[tuple[str, str], dict]:
+    def latest(self) -> dict[tuple[str, str, str], dict]:
         if self._latest_cache is not None:
             return dict(self._latest_cache)
         states = {}
@@ -175,14 +209,36 @@ class StateStore:
         return dict(states)
 
     @staticmethod
-    def _key(event: dict) -> tuple[str, str]:
-        return (str(event.get("module", "")), str(event.get("direction_id", "")))
+    def _key(event: dict) -> tuple[str, str, str]:
+        return (str(event.get("campaign", "")), str(event.get("module", "")),
+                str(event.get("direction_id", "")))
 
     def reusable(self, module: str, direction_id: str, fingerprint: str,
-                 statuses: tuple[str, ...]) -> bool:
-        event = self.latest().get((module, direction_id), {})
+                 statuses: tuple[str, ...], campaign: str | None = None) -> bool:
+        event = self._latest_for(campaign, module, direction_id)
         return (event.get("fingerprint") == fingerprint and
                 event.get("status") in statuses)
+
+    def _latest_for(self, campaign: str | None, module: str,
+                    direction_id: str) -> dict:
+        """Resolve identity-aware state, with a safe legacy fallback.
+
+        Old JSONL events have no campaign field.  They remain reusable only
+        while no campaign-qualified event exists for the same direction;
+        once named campaigns appear, an unqualified record is ambiguous and
+        therefore cannot cross-contaminate another campaign.
+        """
+        states = self.latest()
+        identity = self.campaign if campaign is None else str(campaign)
+        if identity:
+            exact = states.get((identity, module, direction_id))
+            if exact:
+                return exact
+        matches = [event for (owner, item_module, item_direction), event in states.items()
+                   if item_module == module and item_direction == direction_id and owner]
+        if matches:
+            return matches[0] if not identity and len(matches) == 1 else {}
+        return states.get(("", module, direction_id), {})
 
     def median_elapsed(self, statuses: tuple[str, ...], fallback: float) -> float:
         values = []
@@ -208,7 +264,7 @@ def write_summary(store: StateStore, path: Path, campaign_name: str) -> None:
         raise ValueError(f"refusing symlink summary file: {path}")
     latest = store.latest()
     rows = []
-    for (_, direction), event in sorted(latest.items()):
+    for (_, _, direction), event in sorted(latest.items()):
         if direction != "__analysis__":
             rows.append(event)
         elif event.get("status") == "ANALYSIS_FAILED":

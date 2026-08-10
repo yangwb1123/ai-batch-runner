@@ -61,6 +61,34 @@ def test_append_recent_find_and_secret_redaction(memory_root, monkeypatch):
     assert memory.find("MFA implementation", str(memory_root), 1)[0]["status"] == "PASSED"
 
 
+def test_memory_redacts_nested_and_legacy_secret_shapes(memory_root):
+    memory.append_event({
+        "type": "campaign", "status": "FAILED",
+        "reason": 'Authorization: Bearer header-secret "token":"json-secret"',
+        "evidence": [{"password": "nested-secret",
+                      "detail": "sk-proj-abcdefghijklmnop"}],
+    }, str(memory_root))
+    stored = memory.index_path(str(memory_root)).read_text(encoding="utf-8")
+    for secret in ("header-secret", "json-secret", "nested-secret",
+                   "sk-proj-abcdefghijklmnop"):
+        assert secret not in stored
+
+    with memory.index_path(str(memory_root)).open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"type": "campaign", "status": "FAILED",
+                                 "reason": "access_token=legacy-secret"}) + "\n")
+    assert "legacy-secret" not in json.dumps(memory.recent(str(memory_root), 1))
+
+    line = json.dumps({"type": "message", "message": {
+        "role": "assistant", "content": [
+            {"type": "text", "text": "Bearer content-secret"},
+            {"type": "toolCall", "arguments": {"api_key": "argument-secret"}},
+        ], "usage": {"credentials": "usage-secret"}}})
+    view = memory._message_view(line)
+    assert "content-secret" not in json.dumps(view)
+    assert "argument-secret" not in json.dumps(view)
+    assert "usage-secret" not in json.dumps(view)
+
+
 def test_reverse_lines_handles_utf8_across_small_blocks(tmp_path):
     path = tmp_path / "index.jsonl"
     path.write_text("first\n第二条\nthird\n", encoding="utf-8")
@@ -151,6 +179,34 @@ def test_read_session_is_capped_and_rejects_index_path_escape(memory_root, monke
     memory.append_event({"type": "task", "session_id": "evil", "raw_session": str(outside),
                          "cwd": workdir}, workdir)
     assert memory.read_session("evil", workdir)["missing"] is True
+
+
+def test_ingest_streams_directory_and_bounds_identity_batches(memory_root, monkeypatch):
+    monkeypatch.chdir(memory_root)
+    directory = Path("relative-sessions")
+    directory.mkdir()
+    for index in range(5):
+        (directory / f"session-{index}.jsonl").write_text(
+            json.dumps({"type": "session", "id": f"s{index}",
+                        "cwd": str(memory_root)}) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(memory, "_INGEST_BATCH_SIZE", 2)
+    monkeypatch.setattr(memory, "iter_events", lambda *_args, **_kwargs: pytest.fail(
+        "ingest must not materialize the complete import index"))
+    batch_sizes = []
+    original = memory._latest_imports
+
+    def observed(paths, cwd, override):
+        batch_sizes.append(len(paths))
+        return original(paths, cwd, override)
+
+    monkeypatch.setattr(memory, "_latest_imports", observed)
+    first = memory.ingest_sessions(str(memory_root), str(directory))
+    second = memory.ingest_sessions(str(memory_root), str(directory))
+
+    assert first == {"imported": 5, "skipped": 0, "source": str(directory)}
+    assert second == {"imported": 0, "skipped": 5, "source": str(directory)}
+    assert batch_sizes == [2, 2, 1, 2, 2, 1]
 
 
 def test_runner_assigns_stable_pi_identity_injects_manifest_and_indexes(memory_root, monkeypatch):
