@@ -479,7 +479,7 @@ def test_serial_retry_recovers_after_transient_failure(tmp_path, monkeypatch):
     agent = _flaky_agent(tmp_path, counter, fail_times=1)
     mod = load_batch()
     mod.config.AGENT_BIN = str(agent)
-    monkeypatch.setattr(mod.time, "sleep", lambda _: None)  # no real backoff wait
+    monkeypatch.setattr("pbatch.runner._scheduled_sleep", lambda _: None)
     output = tmp_path / "o.md"
     results = mod.run_serial([mod.Task(prompt="x", output=str(output))], retries=2, retry_delay=0)
     assert results[0].success is True
@@ -494,7 +494,7 @@ def test_serial_retry_exhausts(tmp_path, monkeypatch):
     agent = _flaky_agent(tmp_path, counter, fail_times=999)
     mod = load_batch()
     mod.config.AGENT_BIN = str(agent)
-    monkeypatch.setattr(mod.time, "sleep", lambda _: None)
+    monkeypatch.setattr("pbatch.runner._scheduled_sleep", lambda _: None)
     output = tmp_path / "o.md"
     results = mod.run_serial([mod.Task(prompt="x", output=str(output))], retries=2, retry_delay=0)
     assert results[0].success is False
@@ -510,7 +510,7 @@ def test_parallel_retry_recovers_after_transient_failure(tmp_path, monkeypatch):
     agent = _flaky_agent(tmp_path, counter, fail_times=1)
     mod = load_batch()
     mod.config.AGENT_BIN = str(agent)
-    monkeypatch.setattr(mod.time, "sleep", lambda _: None)  # no real backoff wait
+    monkeypatch.setattr("pbatch.runner._scheduled_sleep", lambda _: None)
     output = tmp_path / "o.md"
     results = mod.run_parallel([mod.Task(prompt="x", output=str(output))],
                                workers=2, retries=2, retry_delay=0)
@@ -526,7 +526,7 @@ def test_parallel_retry_exhausts(tmp_path, monkeypatch):
     agent = _flaky_agent(tmp_path, counter, fail_times=999)
     mod = load_batch()
     mod.config.AGENT_BIN = str(agent)
-    monkeypatch.setattr(mod.time, "sleep", lambda _: None)
+    monkeypatch.setattr("pbatch.runner._scheduled_sleep", lambda _: None)
     output = tmp_path / "o.md"
     results = mod.run_parallel([mod.Task(prompt="x", output=str(output))],
                                workers=2, retries=2, retry_delay=0)
@@ -544,7 +544,7 @@ def test_parallel_retry_prompt_carries_validator_stderr(tmp_path, monkeypatch):
     counter = tmp_path / "vcounter"
     mod = load_batch()
     mod.config.AGENT_BIN = str(agent)
-    monkeypatch.setattr(mod.time, "sleep", lambda _: None)
+    monkeypatch.setattr("pbatch.runner._scheduled_sleep", lambda _: None)
     output = tmp_path / "o.md"
     validate = (f"echo 'BROKEN-GATE' >&2; echo x >> {counter}; "
                 f"[ $(wc -l < {counter}) -le 1 ] && exit 3 || exit 0")
@@ -569,7 +569,7 @@ def test_parallel_min_interval_between_completions(tmp_path, monkeypatch):
     mod = load_batch()
     mod.config.AGENT_BIN = str(agent)
     sleeps = []
-    monkeypatch.setattr(mod.time, "sleep", sleeps.append)
+    monkeypatch.setattr("pbatch.runner._scheduled_sleep", sleeps.append)
     tasks = [mod.Task(prompt=f"p{i}", output=str(tmp_path / f"o{i}.md")) for i in range(2)]
     results = mod.run_parallel(tasks, workers=2, min_interval=5.0)
     assert all(r.success for r in results)
@@ -584,7 +584,7 @@ def test_parallel_min_interval_three_successes(tmp_path, monkeypatch):
     mod = load_batch()
     mod.config.AGENT_BIN = str(agent)
     sleeps = []
-    monkeypatch.setattr(mod.time, "sleep", sleeps.append)
+    monkeypatch.setattr("pbatch.runner._scheduled_sleep", sleeps.append)
     tasks = [mod.Task(prompt=f"p{i}", output=str(tmp_path / f"o{i}.md")) for i in range(3)]
     results = mod.run_parallel(tasks, workers=3, min_interval=5.0)
     assert all(r.success for r in results)

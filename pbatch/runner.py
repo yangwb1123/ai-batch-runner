@@ -42,6 +42,16 @@ _PROCESS_POLL_WAIT = threading.Event()
 _BUDGET_MESSAGE = ("BUDGET: invocation limit reached; stopping — 调整 "
                    "--max-rounds/limits 后可续跑（已保留现场）")
 
+
+def _scheduled_sleep(seconds: float) -> None:
+    """Wait for runner-level retry/throttle scheduling.
+
+    Keeping this boundary separate from the stdlib ``time`` module lets
+    tests replace runner waits without also changing subprocess' timeout
+    polling in other threads.
+    """
+    time.sleep(seconds)
+
 def _register_proc(proc: subprocess.Popen) -> None:
     with _ACTIVE_LOCK:
         _ACTIVE_PROCS.add(proc)
@@ -836,7 +846,7 @@ def _run_retried(task: Task, validate_cmd: str, index: int, total: int,
         log.warning("RETRY %d/%d for task [%d/%d] in %.0fs (reason: %s)",
                     attempt, retries, index, total, wait,
                     result.reason or f"exit {result.returncode}")
-        time.sleep(wait)
+        _scheduled_sleep(wait)
         retry_task = (_retry_task_with_feedback(task, result)
                       if result.validation_stderr else task)
         result = _run_with_gate(retry_task, validate_cmd, index, total,
@@ -869,7 +879,7 @@ def run_serial(tasks: list[Task], retries: int = 0, retry_delay: float = 10.0,
                               session_name=session_name)
         results.append(result)
         if result.success and min_interval > 0:
-            time.sleep(min_interval)
+            _scheduled_sleep(min_interval)
     return results
 
 
@@ -899,7 +909,7 @@ def _collect_parallel(fut_map, total: int, min_interval: float,
         else:
             if result.success:
                 if successes > 0 and min_interval > 0:
-                    time.sleep(min_interval)
+                    _scheduled_sleep(min_interval)
                 successes += 1
             results.append(result)
             log.info("PROGRESS: %d/%d done", len(results), total)
