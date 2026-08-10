@@ -170,10 +170,10 @@ def _registry_rule_item(rule_id: str, rule: dict, matched: dict) -> dict:
     }
 
 
-def _with_backend_risk_rules(matched: dict, registry: dict) -> list[dict]:
-    """Risk-mandated backend rules override tier, but no other applicability gate."""
+def _with_risk_rules(matched: dict, registry: dict) -> list[dict]:
+    """Risk-mandated rules override scale tier in every specification domain."""
     rules = [dict(item) for item in matched.get("rules", [])]
-    if matched.get("domain") != "backend" or matched.get("risk") != "high":
+    if matched.get("risk") != "high":
         return rules
     present = {item["id"] for item in rules}
     skipped = {item["id"]: item.get("reason", "")
@@ -195,12 +195,12 @@ def _prescription_policy(matched: dict, registry: dict, effective: str,
     """Apply the scale cap and backend risk invariant to any rule manifest."""
     rank = TIER_ORDER.get(effective, 1)
     selected, not_selected = [], []
-    for item in _with_backend_risk_rules(matched, registry):
+    for item in _with_risk_rules(matched, registry):
         rule = registry.get("rules", {}).get(item["id"], {})
         risk_only = bool(rule.get("required_when_risk"))
         if risk_only and matched.get("risk") != "high":
             reason = "该规则仅适用于高风险需求，本需求风险评估为 low"
-        elif risk_only and matched.get("domain") == "backend":
+        elif risk_only:
             selected.append({**item, "required": True})
             continue
         elif TIER_ORDER.get(item.get("tier", "standard"), 1) <= rank:
@@ -245,6 +245,8 @@ def prescription(text: str, registry: Optional[dict] = None) -> dict:
         "classification": {
             "task_type": cls.task_type,
             "profile": matched["profile"], "platform": cls.platform,
+            "system_type": cls.system_type,
+            "system_evidence": list(cls.system_evidence),
         },
         "product": product_manifest(text),
         "workflow": workflow_level(text, reg, None),
@@ -268,6 +270,7 @@ def format_assessment(assessment: dict) -> str:
     lines.append(
         f"画像: {cls['task_type'] or 'unknown'} "
         f"[{cls['platform'] or '-'}/{cls['profile'] or 'generic'}] | "
+        f"系统 {cls['system_type']} | "
         f"匹配档 {assessment['matched_tier']} → 处方档 "
         f"{assessment['effective_tier']}（规模 {assessment['scale']}）| "
         f"风险 {assessment['risk']}")
@@ -360,6 +363,8 @@ def format_execution_prompt(assessment: dict) -> str:
         f"CLASSIFICATION: {assessment['classification']['task_type']} "
         f"[{assessment['classification']['platform'] or '-'}/"
         f"{assessment['classification']['profile'] or 'generic'}]",
+        f"SYSTEM_TYPE: {assessment['classification']['system_type']} "
+        f"(evidence: {', '.join(assessment['classification']['system_evidence']) or '-'})",
     ]
     product = assessment["product"]
     lines.append(f"PRODUCTIZATION: {product['level']} — implicit-requirement "
@@ -389,7 +394,7 @@ def assess_main(argv: list) -> None:
     parser = argparse.ArgumentParser(
         prog="pi-batch.py assess",
         description="Evaluate a requirement (completeness, scale, risk) and "
-                    "prescribe the minimal necessary ui-spec rules.")
+                    "prescribe the minimal necessary domain rules.")
     parser.add_argument("task", nargs="*", default=[], help="requirement text")
     parser.add_argument("--file", default="",
                         help="read the requirement from FILE (markdown/txt)")
@@ -402,9 +407,11 @@ def assess_main(argv: list) -> None:
     parser.add_argument("--registry", default="", help="rule registry YAML override")
     args = parser.parse_args(argv)
     if args.file:
-        from .text_io import read_text_bounded
-        text = read_text_bounded(Path(args.file), config.INPUT_MAX_BYTES,
-                                 "assess source")
+        try:
+            text = read_text_bounded(Path(args.file), config.INPUT_MAX_BYTES,
+                                     "assess source")
+        except ValueError as exc:
+            parser.error(str(exc))
     else:
         text = " ".join(args.task)
     if not text.strip():

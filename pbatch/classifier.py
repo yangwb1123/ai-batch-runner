@@ -1,7 +1,7 @@
 """Task type classifier: a deterministic, bilingual keyword gate that runs
-BEFORE execution and decides whether a task/batch is frontend UI work, so
-the CLI can route it to the UI generation pipeline (--classify flag or the
-`pi-batch.py classify` subcommand).
+BEFORE execution and decides whether a task/batch is frontend, backend, or
+generic work, so the CLI can route confident domain majorities to their
+implementation pipelines (--classify flag or the `classify` subcommand).
 
 Scoring mirrors pbatch.relevance: CJK terms match by substring, Latin terms
 by word boundaries, 2 points per hit, capped at 10 per type. A platform
@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import config
+from .classifier_keywords import _DEFAULT_KEYWORDS, _SYSTEM_TYPE_TERMS
 from .config import log, yaml
 from .relevance import _keyword_hit
 from .text_io import read_text_bounded
@@ -33,74 +34,6 @@ UNKNOWN = "unknown"
 FRONTEND = "frontend_ui"
 BACKEND = "backend"
 PLATFORM_BOOST = 2
-
-# Built-in defaults so the classifier works standalone (no YAML, no PyYAML);
-# pbatch/task_keywords.yaml overrides sections wholesale when present.
-# 问题系统类型关键词（哥德尔启发：先分类再求解）。
-_SYSTEM_TYPE_TERMS = {
-    "state-machine": ["状态机", "状态流转", "状态迁移", "审批流", "workflow",
-                      "状态变更", "审核", "审批", "生命周期"],
-    "event-driven": ["事件", "消息队列", "事件驱动", "kafka", "mq", "pub/sub",
-                     "event", "webhook", "通知"],
-    "realtime": ["实时", "websocket", "推送", "监控大屏", "告警", "alert",
-                 "realtime", "live", "流式"],
-    "search": ["搜索", "检索", "推荐", "查询优化", "索引", "search",
-               "autocomplete", "模糊匹配"],
-    "optimization": ["优化", "排程", "调度", "路径规划", "资源分配",
-                     "optimize", "scheduling", "成本最小"],
-    "knowledge": ["知识库", "文档检索", "问答", "rag", "知识图谱", "faq",
-                  "知识管理", "chat"],
-    "batch": ["批量", "定时任务", "批处理", "cron", "导入导出", "etl",
-              "batch", "job"],
-    "adaptive": ["自适应", "智能推荐", "预测", "风险评估", "机器学习",
-                 "ai", "模型", "agent", "智能"],
-    "collaboration": ["协作", "多人", "团队", "权限", "角色", "组织",
-                      "collaboration", "分配"],
-    "deterministic": ["crud", "增删改查", "表单", "台账", "记录", "报表"],
-}
-
-_DEFAULT_KEYWORDS: dict = {
-    "task_types": {
-        "frontend_ui": [
-            "page", "ui", "layout", "component", "spacing", "widget", "screen",
-            "tsx", "dart", "flutter", "react", "vue", "css", "styled",
-            "admin", "页面", "前端", "界面", "后台", "管理后台", "布局", "组件", "间距", "按钮", "表单",            "弹窗", "卡片", "导航", "侧边栏", "表格", "分页",
-            "登录页", "列表页", "详情页", "设计稿", "视觉",
-        ],
-        "backend": [
-            "api", "server", "endpoint", "database", "schema", "service",
-            "后端", "接口", "服务端", "数据库", "表结构",
-            "微服务", "分布式", "领域模型", "实体", "聚合", "事务",
-            "消息队列", "对账", "库存", "工作流",
-            "domain", "entity", "workflow", "transaction",
-        ],
-        "data": ["sql", "etl", "数据管道", "报表", "指标", "数据仓库"],
-        "code_engineering": [
-            "重构", "维护", "修复", "优化", "清理", "重构代码", "技术债",
-            "refactor", "maintain", "fix", "optimize", "cleanup", "refactoring",
-        ],
-        "docs": ["documentation", "spec", "readme", "文档", "需求", "规范", "说明", "手册"],
-        "devops": ["ci/cd", "deploy", "docker", "kubernetes", "部署", "运维", "发布", "流水线"],
-        "analysis": ["review", "audit", "分析", "审查", "评审", "评估", "调研"],
-    },
-    "platforms": {
-        "tsx": ["tsx", "react", "typescript", "antd", "前端组件"],
-        "dart": ["dart", "flutter", "widget", "sizedbox", "material"],
-        "vue": ["vue", "nuxt", "template"],
-        "rn": ["react native", "rn"],
-    },
-    "profiles": {
-        "erp": ["erp", "mes", "排程", "库存", "采购单", "工单", "单据"],
-        "cms": ["cms", "内容管理", "文章", "审核", "发布"],
-        "oa": ["oa", "审批", "待办", "流程", "通知公告"],
-        "dashboard": ["dashboard", "大屏", "图表", "数据可视化", "看板"],
-        "immersive": ["特效", "3d", "沉浸", "动画", "滚动叙事", "粒子"],
-        "marketing": ["官网", "落地页", "营销", "转化", "landing"],
-        "mobile": ["移动端", "app", "mobile"],
-    },
-    "system_types": _SYSTEM_TYPE_TERMS,
-}
-
 
 @dataclass(frozen=True)
 class TaskClassification:
@@ -137,6 +70,56 @@ def _default_keyword_paths() -> list[Path]:
     return [Path(__file__).with_name("task_keywords.yaml")]
 
 
+def _keyword_file(path: Path, strict: bool) -> dict:
+    if not path.is_file() or path.is_symlink():
+        if strict:
+            raise ValueError(f"task keyword file not found or unsafe: {path}")
+        return {}
+    if not yaml:
+        if strict:
+            raise ValueError("task keyword YAML requires PyYAML")
+        return {}
+    try:
+        data = yaml.safe_load(read_text_bounded(
+            path, config.INPUT_MAX_BYTES, "task keyword file")) or {}
+    except Exception as exc:
+        if strict:
+            raise ValueError(f"invalid task keyword file: {exc}") from exc
+        return {}
+    if not isinstance(data, dict):
+        if strict:
+            raise ValueError("task keyword file must contain a mapping")
+        return {}
+    return data
+
+
+def _keyword_schema_error(data: dict, allowed: set[str]) -> str:
+    unknown = sorted(set(data) - allowed)
+    if unknown:
+        return "unknown section(s): " + ", ".join(unknown)
+    if not data:
+        return "at least one keyword section is required"
+    for section, section_map in data.items():
+        if not isinstance(section_map, dict) or not section_map:
+            return f"section '{section}' must be a non-empty mapping"
+        for name, terms in section_map.items():
+            if not isinstance(name, str) or not name.strip():
+                return f"section '{section}' has an invalid name"
+            if not isinstance(terms, list) or not terms or not all(
+                    isinstance(term, str) and term.strip() for term in terms):
+                return f"section '{section}.{name}' must be a non-empty string list"
+    return ""
+
+
+def _merge_keyword_sections(merged: dict, data: dict) -> None:
+    for section, section_map in data.items():
+        if section not in merged or not isinstance(section_map, dict):
+            continue
+        for name, terms in section_map.items():
+            current = merged[section].setdefault(name, [])
+            current.extend(str(term) for term in terms if str(term) not in current)
+
+
 def load_keywords(path: str = "") -> dict:
     """Load the keyword map: YAML entries are ADDITIVE to the built-in
     defaults (per type list, deduped) so projects can extend vocabulary
@@ -144,25 +127,14 @@ def load_keywords(path: str = "") -> dict:
     defaults."""
     merged = {section: {name: list(terms) for name, terms in section_map.items()}
               for section, section_map in _DEFAULT_KEYWORDS.items()}
-    if not yaml:
-        return merged
     candidates = [Path(path)] if path else _default_keyword_paths()
     for candidate in candidates:
-        try:
-            data = yaml.safe_load(read_text_bounded(
-                candidate, config.INPUT_MAX_BYTES, "task keyword file")) or {}
-        except Exception:
-            continue
-        if not isinstance(data, dict):
-            continue
-        for section, section_map in data.items():
-            if section not in merged or not isinstance(section_map, dict):
-                continue
-            for name, terms in section_map.items():
-                if not isinstance(terms, list):
-                    continue
-                extra = [str(term) for term in terms if str(term) not in merged[section].get(name, [])]
-                merged[section].setdefault(name, []).extend(extra)
+        data = _keyword_file(candidate, bool(path))
+        if path:
+            error = _keyword_schema_error(data, set(merged))
+            if error:
+                raise ValueError(f"invalid task keyword file: {error}")
+        _merge_keyword_sections(merged, data)
     return merged
 
 
@@ -354,21 +326,21 @@ def _texts_from_file(src: Path) -> list:
     """Extract prompts from a YAML/JSON task file (tasks list) or treat
     the whole file as one prompt text."""
     text = read_text_bounded(src, config.INPUT_MAX_BYTES, "classify source")
-    if yaml and src.suffix in (".yaml", ".yml"):
+    suffix = src.suffix.lower()
+    if suffix in (".yaml", ".yml"):
+        if not yaml:
+            raise ValueError("structured classifier input requires PyYAML")
         try:
             data = yaml.safe_load(text) or {}
-        except Exception:
-            data = {}
-        prompts = _task_prompts(data)
-        if prompts:
-            return prompts
-    if src.suffix == ".json":
+        except Exception as exc:
+            raise ValueError(f"invalid classifier YAML: {exc}") from exc
+        return _task_prompts_strict(data)
+    if suffix == ".json":
         try:
-            prompts = _task_prompts(json.loads(text))
-        except Exception:
-            prompts = []
-        if prompts:
-            return prompts
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid classifier JSON: {exc}") from exc
+        return _task_prompts_strict(data)
     return [text]
 
 
@@ -382,13 +354,25 @@ def _task_prompts(data) -> list:
     return [str(t.get("prompt", "")) for t in tasks if isinstance(t, dict) and t.get("prompt")]
 
 
+def _task_prompts_strict(data) -> list[str]:
+    if not isinstance(data, dict) or not isinstance(data.get("tasks"), list):
+        raise ValueError("classifier task file must contain a tasks list")
+    tasks = data["tasks"]
+    if not tasks:
+        raise ValueError("classifier task file must contain a non-empty tasks list")
+    prompts = _task_prompts(data)
+    if len(prompts) != len(tasks) or not all(prompt.strip() for prompt in prompts):
+        raise ValueError("every classifier task must have a non-empty prompt")
+    return prompts
+
+
 def _texts_from_dir(directory: Path, suffix: str) -> list:
+    if not directory.is_dir():
+        raise ValueError(f"classifier source is not a directory: {directory}")
     texts = []
     for p in sorted(directory.glob("*" + (suffix or ".md"))):
-        try:
-            texts.append(read_text_bounded(p, config.INPUT_MAX_BYTES, "classify source"))
-        except Exception as exc:
-            log.error("Cannot read %s: %s", p, exc)
+        texts.append(read_text_bounded(p, config.INPUT_MAX_BYTES,
+                                       "classify source"))
     return texts
 
 
@@ -421,18 +405,22 @@ def classify_main(argv: list) -> None:
     import argparse
     parser = argparse.ArgumentParser(
         prog="pi-batch.py classify",
-        description="Classify task(s) by type before execution (frontend UI detection).")
+        description="Classify frontend, backend, or generic tasks and show pipeline routing.")
     parser.add_argument("source", nargs="?", help="prompt text, or a YAML/JSON/txt task file path")
     parser.add_argument("-p", "--prompt", help="inline prompt")
     parser.add_argument("--from-dir", dest="from_dir", help="classify every file in DIR")
     parser.add_argument("--suffix", default=".md", help="file suffix for --from-dir (default: .md)")
     parser.add_argument("--json", action="store_true", help="machine-readable JSON output")
-    parser.add_argument("--index", default="", help="task keywords YAML override")
+    parser.add_argument("--index", default="",
+                        help="additive task-keywords YAML extension")
     args = parser.parse_args(argv)
-    texts = _collect_texts(args)
+    try:
+        texts = _collect_texts(args)
+        keywords = load_keywords(args.index)
+    except ValueError as exc:
+        parser.error(str(exc))
     if not texts:
         parser.error("Provide a prompt (-p), a task file path, or --from-dir")
-    keywords = load_keywords(args.index)
     per_task = [classify_text(text, keywords) for text in texts]
     dominant = classify_tasks(per_task, keywords)[0]
     target = routing_target(per_task)
@@ -454,3 +442,4 @@ def classify_main(argv: list) -> None:
         print(format_classification(item, index))
     print(f"dominant: {dominant.task_type}; route target: {target}")
     print(f"route to frontend pipeline: {route}")
+    print(f"route to backend pipeline: {route_backend}")

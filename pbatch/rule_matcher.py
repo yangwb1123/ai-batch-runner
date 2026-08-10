@@ -103,6 +103,23 @@ def _read_registry_candidate(candidate: Path, strict_path: str = "") -> Optional
     return None
 
 
+def _merge_registry_sections(merged: dict, data: dict, strict: bool) -> None:
+    """Validate and merge one registry document into the domain defaults."""
+    if strict:
+        unknown = sorted(set(data) - set(merged))
+        if unknown:
+            raise ValueError("custom registry has unknown section(s): "
+                             + ", ".join(unknown))
+        invalid = sorted(key for key, value in data.items()
+                         if not isinstance(value, dict))
+        if invalid:
+            raise ValueError("custom registry section(s) must be mappings: "
+                             + ", ".join(invalid))
+    for section, value in data.items():
+        if section in merged and isinstance(value, dict):
+            merged[section].update({str(key): item for key, item in value.items()})
+
+
 def load_registry(path: str = "", domain: str = "") -> dict:
     """Load the rule registry for a domain (default: frontend). YAML
     sections extend the built-in defaults; a missing backend registry
@@ -123,9 +140,7 @@ def load_registry(path: str = "", domain: str = "") -> dict:
         data = _read_registry_candidate(candidate, path)
         if data is None:
             continue
-        for section, value in data.items():
-            if section in merged and isinstance(value, dict):
-                merged[section].update({str(k): v for k, v in value.items()})
+        _merge_registry_sections(merged, data, bool(path))
     return merged
 
 
@@ -351,7 +366,8 @@ def reconcile(algorithm: dict, llm_apply: list, llm_skip: list,
 
 def format_manifest(matched: dict, limit: int = 8) -> str:
     """Human/markdown manifest for prompt injection (bounded)."""
-    lines = [f"## Applicable UI rules (deterministic manifest, tier={matched['tier']}, "
+    domain = "backend" if matched.get("domain") == "backend" else "UI"
+    lines = [f"## Applicable {domain} rules (deterministic manifest, tier={matched['tier']}, "
              f"risk={matched['risk']}, profile={matched['profile'] or 'generic'})"]
     # 信任感：system_type 证据透明（AI 建议带依据——认知负担 §7）
     system_type = matched.get("system_type", "")
@@ -371,6 +387,9 @@ def format_manifest(matched: dict, limit: int = 8) -> str:
     if hidden:
         lines.append(f"- ... and {len(hidden)} more rule(s) in this manifest: "
                      + ", ".join(item["id"] for item in hidden))
+        for item in hidden:
+            files = ", ".join(item.get("files", [])) or "(no files)"
+            lines.append(f"  - {item['id']}: {files}")
     skipped = matched.get("skipped", [])
     if skipped:
         lines.append("Skipped: " + ", ".join(
@@ -416,63 +435,16 @@ def _reconcile_cli(text: str, llm_json: str, registry: dict, want_json: bool) ->
               ", ".join(item["id"] for item in dropped))
 
 
-def _check_rule(rule_id: str, rule, violations: list) -> None:
-    """One rule's schema: required fields, tier, referenced files."""
-    if not isinstance(rule, dict):
-        violations.append(f"rule '{rule_id}': must be a mapping")
-        return
-    for key in ("description", "min_tier"):
-        if not str(rule.get(key, "")).strip():
-            violations.append(f"rule '{rule_id}': missing '{key}'")
-    if rule.get("min_tier") not in TIER_ORDER:
-        violations.append(f"rule '{rule_id}': invalid min_tier "
-                          f"{rule.get('min_tier')!r}")
-    files = rule.get("files", [])
-    template = rule.get("files_template")
-    if not files and not template:
-        violations.append(f"rule '{rule_id}': missing 'files' or "
-                          f"'files_template'")
-    for file in files:
-        if not Path(config.resolve_asset_path(str(file))).exists():
-            violations.append(f"rule '{rule_id}': missing file {file}")
-    if template:
-        for profile in rule.get("profiles", []):
-            target = str(template).replace("{profile}", str(profile))
-            if not Path(config.resolve_asset_path(target)).exists():
-                violations.append(f"rule '{rule_id}': missing profile file "
-                                  f"{target}")
-
-
-def check_registry(registry: dict) -> list:
-    """Schema integrity of one rule registry: rule fields, tiers, files."""
-    rules = registry.get("rules", {})
-    if not isinstance(rules, dict):
-        return ["'rules' section must be a mapping"]
-    violations = []
-    for rule_id, rule in rules.items():
-        _check_rule(rule_id, rule, violations)
-    for section in ("scale", "risk", "page_types", "use_case_types",
-                    "signals", "signal_weights"):
-        value = registry.get(section)
-        if value is not None and not isinstance(value, dict):
-            violations.append(f"section '{section}' must be a mapping")
-    return violations
+def check_registry(registry: dict, asset_base: Optional[Path] = None) -> list:
+    """Schema integrity wrapper kept as the public compatibility API."""
+    from .rule_registry import check_registry as validate
+    return validate(registry, asset_base)
 
 
 def _check_registries_cli() -> None:
-    """--check: validate schema integrity of both domain registries."""
-    for domain, path in (("frontend", "ui-specs/rules.yaml"),
-                         ("backend", "backend-specs/rules.yaml")):
-        resolved = Path(config.resolve_asset_path(path))
-        if not resolved.exists():
-            log.error("registry not found: %s", path)
-            sys.exit(1)
-        violations = check_registry(load_registry(str(resolved), domain=domain))
-        if violations:
-            for item in violations:
-                log.error("%s registry: %s", domain, item)
-            sys.exit(1)
-        log.info("%s registry: OK", domain)
+    """Lazy wrapper for the dual-domain registry CLI check."""
+    from .rule_registry import check_registries_cli
+    check_registries_cli()
 
 
 def rules_main(argv: list) -> None:

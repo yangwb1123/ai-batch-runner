@@ -17,6 +17,17 @@ def test_level_local_tool():
     assert "内部" in evidence
 
 
+def test_explicit_local_tool_outweighs_broad_product_word():
+    level, evidence = productization_level("写个内部产品小工具脚本")
+    assert level == "L0_local_feature"
+    assert {"内部", "小工具", "脚本"} & set(evidence)
+
+
+def test_strong_commercial_signal_can_escalate_internal_tool():
+    level, _ = productization_level("内部小工具，准备商业化并对外发布")
+    assert level == "L3_product_feature"
+
+
 def test_level_reusable_module():
     level, _ = productization_level("做一个通用文件上传模块，给多个项目复用")
     assert level == "L1_reusable_module"

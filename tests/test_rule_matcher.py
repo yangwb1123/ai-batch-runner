@@ -195,6 +195,7 @@ def test_llm_json_wrong_shape_fails_closed(selection):
 
 def test_custom_backend_registry_uses_backend_domain(tmp_path, capsys):
     registry = tmp_path / "backend-rules.yaml"
+    (tmp_path / "custom.md").write_text("custom", encoding="utf-8")
     registry.write_text(
         "scale:\n  demo: [demo]\n"
         "rules:\n"
@@ -218,6 +219,32 @@ def test_missing_custom_registry_fails_closed(tmp_path):
     with pytest.raises(SystemExit) as exc:
         rules_main(["用 Go 实现后端 API", "--registry",
                     str(tmp_path / "missing.yaml")])
+    assert exc.value.code == 2
+
+
+def test_manifest_lists_file_paths_for_rules_beyond_description_limit():
+    matched = match_rules(
+        "用 Go 实现后端企业订单支付审批 API，生产环境，高并发分布式")
+    manifest = format_manifest(matched, limit=1)
+    hidden = matched["rules"][1:]
+    assert hidden
+    for item in hidden:
+        for path in item["files"]:
+            assert path in manifest
+
+
+@pytest.mark.parametrize("body", [
+    "unknown: {}\nrules: {}\n",
+    "rules: []\n",
+    "rules:\n  bad:\n    description: x\n    min_tier: demo\n    files: bad\n",
+    "rules:\n  bad:\n    description: x\n    min_tier: demo\n"
+    "    files: [custom.md]\n    typo: true\n",
+])
+def test_custom_registry_schema_fails_closed(tmp_path, body):
+    registry = tmp_path / "bad.yaml"
+    registry.write_text(body, encoding="utf-8")
+    with pytest.raises(SystemExit) as exc:
+        rules_main(["用 Go 实现后端 API", "--registry", str(registry)])
     assert exc.value.code == 2
 
 

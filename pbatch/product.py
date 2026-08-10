@@ -50,6 +50,7 @@ _PRODUCT_SIGNALS = {
 }
 
 _OPEN_SOURCE_SIGNALS = ("开源", "open source", "open-source", "oss")
+_BROAD_PRODUCT_SIGNALS = {"产品", "product"}
 
 # Scenario keyword -> implicit-requirement question chains (QUESTIONS to
 # confirm with the requester, never features to implement silently).
@@ -102,6 +103,17 @@ _SPECS_BY_LEVEL = {
 def productization_level(text: str) -> tuple:
     """(level, evidence): the highest signal level matched; default L0."""
     lowered = (text or "").lower()
+    local_hits = tuple(str(term) for term in _PRODUCT_SIGNALS[LEVELS[0]]
+                       if _keyword_hit(lowered, str(term)))
+    explicit_higher = [
+        str(term)
+        for level in LEVELS[1:]
+        for term in _PRODUCT_SIGNALS[level]
+        if term not in _BROAD_PRODUCT_SIGNALS
+        and _keyword_hit(lowered, str(term))
+    ]
+    if local_hits and not explicit_higher:
+        return LEVELS[0], local_hits
     for level in reversed(LEVELS):
         terms = _PRODUCT_SIGNALS.get(level, [])
         matched = tuple(str(t) for t in terms if _keyword_hit(lowered, str(t)))

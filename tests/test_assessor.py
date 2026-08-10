@@ -43,14 +43,16 @@ def test_prescription_is_restrained_by_scale():
     assert assessment["matched_tier"] == "production"
     assert assessment["effective_tier"] == "demo"
     ids = [item["id"] for item in assessment["prescription"]]
-    # Demo tier keeps the design-intelligence core (product thinking +
-    # information priority are mandatory at every scale) plus visual core.
+    # Demo tier keeps the design-intelligence/visual core plus the two
+    # login-risk invariants; optional standard/production rules stay capped.
     assert ids == [
         "visual-core",
         "geometry",
         "design-intelligence-product",
         "design-intelligence-priority",
         "animation-overshoot-clamp",
+        "error-recovery",
+        "defect-patterns",
         "component-spec",
     ]
     excluded = {item["id"] for item in assessment["not_selected"]}
@@ -89,6 +91,16 @@ def test_backend_risk_rules_survive_demo_scale_cap_deterministically():
             "design-intelligence-lifecycle"} <= required
 
 
+def test_frontend_risk_rules_survive_demo_scale_cap():
+    assessment = prescription(
+        "企业支付审批页面，生产环境，用 React 实现")
+    assert assessment["risk"] == "high"
+    assert assessment["effective_tier"] == "demo"
+    rules = {item["id"]: item for item in assessment["prescription"]}
+    for rule_id in ("error-recovery", "defect-patterns"):
+        assert rules[rule_id]["required"] is True
+
+
 def test_under_specified_requirement_gets_suggestions():
     assessment = prescription("做一个页面")
     missing = assessment["completeness"]["missing"]
@@ -113,6 +125,14 @@ def test_assess_cli_json(capsys):
     assert "prescription" in payload
     assert "not_selected" in payload
     assert "completeness" in payload
+    assert payload["classification"]["system_type"] == "state-machine"
+
+
+def test_assessment_system_type_drives_focus_advice():
+    assessment = prescription("实现订单审批流，包含状态流转")
+    assert assessment["classification"]["system_type"] == "state-machine"
+    assert assessment["classification"]["system_evidence"]
+    assert "待办/异常置顶" in format_assessment(assessment)
 
 
 def test_assess_llm_json_reconciles(capsys):
@@ -155,6 +175,18 @@ def test_assess_llm_json_rejects_wrong_shape():
     with pytest.raises(SystemExit) as exc:
         assess_main(sys.argv[2:])
     assert exc.value.code == 2
+
+
+def test_assess_file_errors_are_parser_errors(tmp_path):
+    with pytest.raises(SystemExit) as missing:
+        assess_main(["--file", str(tmp_path / "missing.md")])
+    assert missing.value.code == 2
+
+    invalid = tmp_path / "invalid.md"
+    invalid.write_bytes(b"\xff\xfe")
+    with pytest.raises(SystemExit) as bad_encoding:
+        assess_main(["--file", str(invalid)])
+    assert bad_encoding.value.code == 2
 
 
 def test_format_assessment_contains_restraint_section():

@@ -3,6 +3,7 @@ subcommand, and the --classify auto-routing hook in pbatch/cli.py."""
 
 from __future__ import annotations
 
+import io
 import json
 import sys
 
@@ -83,6 +84,35 @@ def test_keywords_yaml_overrides_defaults(tmp_path):
     assert item.task_type == FRONTEND
 
 
+@pytest.mark.parametrize("name,body", [
+    ("missing.yaml", None),
+    ("bad.yaml", "task_types: [broken"),
+    ("shape.yaml", "task_types: []\n"),
+    ("unknown.yaml", "mystery:\n  x: [y]\n"),
+])
+def test_explicit_keyword_index_fails_closed(tmp_path, name, body):
+    index = tmp_path / name
+    if body is not None:
+        index.write_text(body, encoding="utf-8")
+    with pytest.raises(SystemExit) as exc:
+        classify_main(["--index", str(index), "做一个页面"])
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("name,body", [
+    ("bad.yaml", "tasks: [broken"),
+    ("bad.json", '{"tasks": [}'),
+    ("empty.yaml", "tasks: []\n"),
+    ("missing-prompt.json", '{"tasks": [{"output": "x"}]}'),
+])
+def test_structured_classifier_source_fails_closed(tmp_path, name, body):
+    source = tmp_path / name
+    source.write_text(body, encoding="utf-8")
+    with pytest.raises(SystemExit) as exc:
+        classify_main([str(source)])
+    assert exc.value.code == 2
+
+
 def test_platform_boost_lifts_tied_frontend():
     # "实现一个 flutter 后端接口" mentions backend words but flutter is a
     # decisive platform signal for UI work.
@@ -145,6 +175,20 @@ def test_maybe_classify_route_backend_routes_to_backend_pipeline(monkeypatch, tm
         classify=True, pipeline="", prompt="写一个订单创建接口，含支付，go 实现",
         source="", from_dir="", output="", model="", provider="", timeout=0)
     cli._maybe_classify_route(args)
+    assert args.pipeline == str(pipeline)
+
+
+def test_stdin_is_buffered_and_classified_before_execution(monkeypatch, tmp_path):
+    pipeline = tmp_path / "be-impl.yaml"
+    pipeline.write_text("stages: []\n", encoding="utf-8")
+    monkeypatch.setattr(classifier.config, "CLASSIFIER_BACKEND_PIPELINE", str(pipeline))
+    monkeypatch.setattr(sys, "stdin", io.StringIO("写一个订单后端 API，用 Go 实现"))
+    args = cli.argparse.Namespace(
+        classify=True, pipeline="", prompt="", source="", from_dir="",
+        output="", model="", provider="", timeout=0, suffix=".md")
+    cli._buffer_stdin(args)
+    cli._maybe_classify_route(args)
+    assert args.stdin_prompt == "写一个订单后端 API，用 Go 实现"
     assert args.pipeline == str(pipeline)
 
 

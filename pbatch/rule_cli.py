@@ -8,8 +8,8 @@ from pathlib import Path
 
 from .classifier import classify_text
 from .rule_matcher import (_check_registries_cli, _reconcile_cli, domain_for,
-                           format_llm_prompt, format_manifest, load_registry,
-                           match_rules, summarize_task)
+                           check_registry, format_llm_prompt, format_manifest,
+                           load_registry, match_rules, summarize_task)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -34,10 +34,15 @@ def _parser() -> argparse.ArgumentParser:
 def _registry(text: str, override: str, parser: argparse.ArgumentParser):
     classification = classify_text(text)
     try:
-        return (load_registry(override, domain_for(text, classification))
-                if override else None)
+        registry = (load_registry(override, domain_for(text, classification))
+                    if override else None)
     except ValueError as exc:
         parser.error(str(exc))
+    if override:
+        errors = check_registry(registry, Path(override).resolve().parent)
+        if errors:
+            parser.error("invalid custom registry: " + "; ".join(errors[:5]))
+    return registry
 
 
 def rules_main(argv: list) -> None:
