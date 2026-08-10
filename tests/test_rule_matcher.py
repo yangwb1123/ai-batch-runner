@@ -8,6 +8,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 from pbatch.rule_matcher import (format_manifest, format_llm_prompt,
                                  load_registry, match_rules, reconcile,
                                  rules_main, summarize_task)
@@ -181,6 +183,42 @@ def test_invalid_llm_json_fails_closed():
     except SystemExit as exc:
         raised = exc.code == 2
     assert raised
+
+
+@pytest.mark.parametrize("selection", ["[]", '{"apply":"visual-core"}',
+                                        '{"apply":[],"skip":[],"reason":7}'])
+def test_llm_json_wrong_shape_fails_closed(selection):
+    with pytest.raises(SystemExit) as exc:
+        rules_main(["登录页", "--llm-json", selection])
+    assert exc.value.code == 2
+
+
+def test_custom_backend_registry_uses_backend_domain(tmp_path, capsys):
+    registry = tmp_path / "backend-rules.yaml"
+    registry.write_text(
+        "scale:\n  demo: [demo]\n"
+        "rules:\n"
+        "  custom-backend:\n"
+        "    description: custom backend rule\n"
+        "    files: [custom.md]\n"
+        "    min_tier: demo\n"
+        "    required: true\n",
+        encoding="utf-8")
+
+    rules_main(["用 Go 实现后端 API demo", "--registry", str(registry), "--json"])
+
+    payload = json.loads(capsys.readouterr().out)
+    ids = {item["id"] for item in payload["rules"]}
+    assert payload["domain"] == "backend"
+    assert "custom-backend" in ids
+    assert "visual-core" not in ids
+
+
+def test_missing_custom_registry_fails_closed(tmp_path):
+    with pytest.raises(SystemExit) as exc:
+        rules_main(["用 Go 实现后端 API", "--registry",
+                    str(tmp_path / "missing.yaml")])
+    assert exc.value.code == 2
 
 
 def test_interaction_patterns_rule_triggered_on_form_table():

@@ -66,7 +66,7 @@ def match_context(text: str, paths: Optional[list] = None,
     """(matches, files, missing) for the given task text and touched paths."""
     routes = context_map if context_map is not None else load_context_map()
     lowered = (text or "").lower()
-    files, missing = [], []
+    files, missing, matched_routes = [], [], 0
     for route in routes:
         when = route.get("when", {}) if isinstance(route.get("when"), dict) else {}
         path_patterns = when.get("paths", [])
@@ -74,8 +74,9 @@ def match_context(text: str, paths: Optional[list] = None,
         path_hit = bool(paths) and any(
             _path_matches(p, str(pattern)) for p in paths for pattern in path_patterns)
         term_hit = any(_keyword_hit(lowered, str(t)) for t in terms)
-        if not (path_hit or (term_hit and not path_patterns)):
+        if not (path_hit or term_hit):
             continue
+        matched_routes += 1
         for file in route.get("load", []):
             target = Path(str(file))
             if target.exists():
@@ -88,7 +89,8 @@ def match_context(text: str, paths: Optional[list] = None,
         if f not in seen:
             seen.add(f)
             unique.append(f)
-    return {"files": unique, "missing": missing, "routes_matched": len(routes) > 0}
+    return {"files": unique, "missing": missing,
+            "routes_matched": matched_routes > 0}
 
 
 def format_context(manifest: dict) -> str:

@@ -49,6 +49,8 @@ _PRODUCT_SIGNALS = {
     ],
 }
 
+_OPEN_SOURCE_SIGNALS = ("开源", "open source", "open-source", "oss")
+
 # Scenario keyword -> implicit-requirement question chains (QUESTIONS to
 # confirm with the requester, never features to implement silently).
 _SCENARIOS = {
@@ -124,6 +126,11 @@ def product_manifest(text: str, level: Optional[str] = None) -> dict:
     Returns {level, evidence, scenarios, specs, restraint_notes}."""
     resolved, evidence = productization_level(text) if level is None else (level, ())
     scenarios = scenario_questions(text) if resolved != "L0_local_feature" else []
+    specs = list(_SPECS_BY_LEVEL.get(resolved, []))
+    open_source = any(_keyword_hit((text or "").lower(), signal)
+                      for signal in _OPEN_SOURCE_SIGNALS)
+    if not open_source and "product-specs/open-source-readiness.md" in specs:
+        specs.remove("product-specs/open-source-readiness.md")
     notes = []
     if resolved == "L0_local_feature":
         notes.append("L0 小工具需求：禁止产品化结构，只实现需求本身（克制原则）")
@@ -134,11 +141,13 @@ def product_manifest(text: str, level: Optional[str] = None) -> dict:
                      "插件市场禁止提前设计")
     if scenarios:
         notes.append("推演出的隐含需求是待确认问题，不得未经确认直接实现")
+    if resolved == "L3_product_feature" and not open_source:
+        notes.append("未检测到开源意图：刻意不加载 open-source readiness")
     return {
         "level": resolved,
         "evidence": list(evidence),
         "scenarios": scenarios,
-        "specs": _SPECS_BY_LEVEL.get(resolved, []),
+        "specs": specs,
         "asset_root": config.TOOL_ROOT,
         "restraint_notes": notes,
     }

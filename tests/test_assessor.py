@@ -6,6 +6,8 @@ from __future__ import annotations
 import json
 import sys
 
+import pytest
+
 from pbatch.assessor import (assess_dimensions, assess_main, format_assessment,
                              prescription, scale_signal)
 
@@ -19,6 +21,14 @@ def test_dimensions_present_and_missing():
     assert "tech_stack" in present
     assert "acceptance" not in present
     assert "user_role" not in present
+
+
+def test_backend_tech_stacks_satisfy_dimension():
+    for stack in ("Go", "Golang", "Python", "Java", "Kotlin", "Rust",
+                  "Node", "Node.js", "NestJS"):
+        result = assess_dimensions(f"用 {stack} 实现订单接口")
+        present = {name for name, _, ok in result if ok}
+        assert "tech_stack" in present, stack
 
 
 def test_scale_signal():
@@ -61,6 +71,24 @@ def test_prescription_full_requirement():
     assert assessment["completeness"]["score"] >= 6
 
 
+def test_backend_risk_rules_survive_demo_scale_cap_deterministically():
+    # "简单接口" makes the matcher itself demo-tier; "订单" is high-risk.
+    text = "用 Go 实现订单模块的简单接口"
+    first = prescription(text)
+    second = prescription(text)
+    assert first["risk"] == "high"
+    assert first["matched_tier"] == "demo"
+    assert first["effective_tier"] == "demo"
+    ids = [item["id"] for item in first["prescription"]]
+    assert ids == [item["id"] for item in second["prescription"]]
+    assert {"domain-modeling", "persistence-modeling",
+            "design-intelligence-lifecycle"} <= set(ids)
+    assert "design-patterns" not in ids  # optional standard rule stays capped
+    required = {item["id"] for item in first["prescription"] if item["required"]}
+    assert {"domain-modeling", "persistence-modeling",
+            "design-intelligence-lifecycle"} <= required
+
+
 def test_under_specified_requirement_gets_suggestions():
     assessment = prescription("做一个页面")
     missing = assessment["completeness"]["missing"]
@@ -93,6 +121,40 @@ def test_assess_llm_json_reconciles(capsys):
     assess_main(sys.argv[2:])
     out = capsys.readouterr().out
     assert "vetoed" in out or "必选" in out  # required rule survives the LLM skip
+
+
+def test_assess_llm_json_cannot_skip_backend_risk_rules(capsys):
+    sys.argv = ["pi-batch.py", "assess", "--json", "用 Go 实现简单订单接口",
+                "--llm-json", '{"apply":[],"skip":["domain-modeling",'
+                '"persistence-modeling","design-intelligence-lifecycle"]}']
+    assess_main(sys.argv[2:])
+    payload = json.loads(capsys.readouterr().out)
+    rules = {item["id"]: item for item in payload["prescription"]}
+    for rule_id in ("domain-modeling", "persistence-modeling",
+                    "design-intelligence-lifecycle"):
+        assert rules[rule_id]["required"] is True
+        assert rules[rule_id]["provenance"] == "algorithm-vetoed-llm-skip"
+
+
+def test_assess_llm_json_cannot_bypass_tier_or_risk(capsys):
+    sys.argv = ["pi-batch.py", "assess", "--json", "用 Rust 实现简单查询接口",
+                "--llm-json", '{"apply":["evolution","domain-modeling"],"skip":[]}']
+    assess_main(sys.argv[2:])
+    payload = json.loads(capsys.readouterr().out)
+    ids = {item["id"] for item in payload["prescription"]}
+    assert payload["effective_tier"] == "demo"
+    assert payload["risk"] == "low"
+    assert "evolution" not in ids       # production rule cannot bypass tier cap
+    assert "domain-modeling" not in ids  # risk-only rule cannot enter low-risk work
+    dropped = {item["id"] for item in payload["dropped"]}
+    assert {"evolution", "domain-modeling"} <= dropped
+
+
+def test_assess_llm_json_rejects_wrong_shape():
+    sys.argv = ["pi-batch.py", "assess", "需求", "--llm-json", "[]"]
+    with pytest.raises(SystemExit) as exc:
+        assess_main(sys.argv[2:])
+    assert exc.value.code == 2
 
 
 def test_format_assessment_contains_restraint_section():

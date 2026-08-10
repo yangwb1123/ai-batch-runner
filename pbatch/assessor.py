@@ -65,7 +65,10 @@ DIMENSIONS = [
       "test", "checklist"]),
     ("tech_stack", "技术栈",
      ["tsx", "react", "vue", "flutter", "dart", "typescript", "ts",
-      "antd", "技术栈", "框架", "组件库"]),
+      "antd", "go", "golang", "python", "java", "kotlin", "rust",
+      "node", "node.js", "nodejs", "javascript", "js", "c#", ".net",
+      "php", "ruby", "spring", "spring boot", "fastapi", "django",
+      "flask", "gin", "nestjs", "技术栈", "框架", "组件库"]),
 ]
 
 _SCALE_TIERS = {"S": "demo", "M": "standard", "L": "production"}
@@ -77,7 +80,7 @@ _SUGGESTIONS = {
     "permission": "未提及权限：审批/删除等敏感操作的可见性无法评估",
     "error_path": "未提及异常路径：失败恢复与重试策略无法设计",
     "acceptance": "未提及验收标准：完成定义缺失，无法判定交付",
-    "tech_stack": "未指定技术栈：平台适配（tsx/dart/vue）为假设",
+    "tech_stack": "未指定技术栈：平台适配（前端框架/后端语言与框架）为假设",
 }
 
 
@@ -147,6 +150,79 @@ def workflow_level(text: str, registry: Optional[dict] = None,
             "suggestion": WORKFLOW_SUGGESTIONS[level]}
 
 
+def _registry_rule_item(rule_id: str, rule: dict, matched: dict) -> dict:
+    """Materialize a registry rule that the matcher skipped only by tier."""
+    profile = matched.get("profile", "")
+    template = rule.get("files_template")
+    files = ([str(template).replace("{profile}", profile)]
+             if template and profile else list(rule.get("files", [])))
+    return {
+        "id": rule_id,
+        "tier": rule.get("min_tier", "standard"),
+        "required": True,
+        "description": rule.get("description", ""),
+        "files": files,
+        "evidence": {
+            "scale": [], "page_types": matched.get("page_types", []),
+            "risk": "high", "profile": profile,
+            "prescription_override": "required_when_risk",
+        },
+    }
+
+
+def _with_backend_risk_rules(matched: dict, registry: dict) -> list[dict]:
+    """Risk-mandated backend rules override tier, but no other applicability gate."""
+    rules = [dict(item) for item in matched.get("rules", [])]
+    if matched.get("domain") != "backend" or matched.get("risk") != "high":
+        return rules
+    present = {item["id"] for item in rules}
+    skipped = {item["id"]: item.get("reason", "")
+               for item in matched.get("skipped", [])}
+    recovered = []
+    for rule_id, rule in registry.get("rules", {}).items():
+        if rule_id in present or not rule.get("required_when_risk"):
+            continue
+        if not skipped.get(rule_id, "").startswith("tier below required"):
+            continue
+        recovered.append(_registry_rule_item(rule_id, rule, matched))
+    insert_at = next((i for i, item in enumerate(rules)
+                      if not item.get("required")), len(rules))
+    return rules[:insert_at] + recovered + rules[insert_at:]
+
+
+def _prescription_policy(matched: dict, registry: dict, effective: str,
+                         scale: str) -> tuple[list[dict], list[dict]]:
+    """Apply the scale cap and backend risk invariant to any rule manifest."""
+    rank = TIER_ORDER.get(effective, 1)
+    selected, not_selected = [], []
+    for item in _with_backend_risk_rules(matched, registry):
+        rule = registry.get("rules", {}).get(item["id"], {})
+        risk_only = bool(rule.get("required_when_risk"))
+        if risk_only and matched.get("risk") != "high":
+            reason = "该规则仅适用于高风险需求，本需求风险评估为 low"
+        elif risk_only and matched.get("domain") == "backend":
+            selected.append({**item, "required": True})
+            continue
+        elif TIER_ORDER.get(item.get("tier", "standard"), 1) <= rank:
+            selected.append(item)
+            continue
+        else:
+            reason = (f"需求评估为 {effective} 档（规模 {scale}），"
+                      f"该规则需要 {item.get('tier', 'standard')} 档")
+        not_selected.append({"id": item["id"], "tier": item.get("tier", "standard"),
+                             "reason": reason})
+    return selected, not_selected
+
+
+def _merge_not_selected(*groups: list[dict]) -> list[dict]:
+    """Stable de-duplication keeps the restraint report deterministic."""
+    merged = {}
+    for group in groups:
+        for item in group:
+            merged.setdefault(item["id"], item)
+    return list(merged.values())
+
+
 def prescription(text: str, registry: Optional[dict] = None) -> dict:
     """The minimal necessary rule set for THIS requirement.
 
@@ -159,17 +235,8 @@ def prescription(text: str, registry: Optional[dict] = None) -> dict:
     cls = classify_text(text)
     scale = scale_signal(text, reg)
     effective = _SCALE_TIERS.get(scale, "standard")
-    rank = TIER_ORDER.get(effective, 1)
-    selected, not_selected = [], []
-    for item in matched["rules"]:
-        if TIER_ORDER.get(item["tier"], 1) <= rank:
-            selected.append(item)
-        else:
-            not_selected.append({
-                "id": item["id"], "tier": item["tier"],
-                "reason": f"需求评估为 {effective} 档（规模 {scale}），"
-                          f"该规则需要 {item['tier']} 档",
-            })
+    selected, not_selected = _prescription_policy(
+        matched, reg, effective, scale)
     dimensions = assess_dimensions(text)
     present = [name for name, _, ok in dimensions if ok]
     missing = [name for name, _, ok in dimensions if not ok]
@@ -253,6 +320,37 @@ def _focus_advice(assessment: dict) -> str:
             "高对比；异常优先置顶；普通数据降权（design-intelligence/03）")
 
 
+def _parse_llm_selection(raw: str) -> dict:
+    """Validate the two-sided selection shape before policy reconciliation."""
+    selection = json.loads(raw)
+    if not isinstance(selection, dict):
+        raise ValueError("top level must be an object")
+    for key in ("apply", "skip"):
+        value = selection.get(key, [])
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise ValueError(f"{key} must be a string list")
+    return selection
+
+
+def _apply_llm_selection(text: str, assessment: dict, registry: dict,
+                         selection: dict) -> None:
+    """Reconcile LLM advice, then re-apply assessor tier/risk invariants."""
+    base = match_rules(text, classification=classify_text(text), registry=registry)
+    constrained = {**base, "rules": assessment["prescription"]}
+    reconciled = reconcile(constrained, selection.get("apply", []),
+                           selection.get("skip", []), registry)
+    selected, rejected = _prescription_policy(
+        reconciled, registry, assessment["effective_tier"], assessment["scale"])
+    assessment["prescription"] = selected
+    assessment["not_selected"] = _merge_not_selected(
+        assessment["not_selected"], rejected)
+    assessment["provenance"] = reconciled["provenance"]
+    assessment["dropped"] = reconciled["dropped"] + [
+        {"id": item["id"], "reason": "assessor-policy: " + item["reason"]}
+        for item in rejected if item["id"] in reconciled.get("llm_apply", [])
+    ]
+
+
 def format_execution_prompt(assessment: dict) -> str:
     """Compile an assessment into a ready-to-use instruction block for the
     implementing agent — the last mile of assessment-driven execution."""
@@ -311,20 +409,19 @@ def assess_main(argv: list) -> None:
         text = " ".join(args.task)
     if not text.strip():
         parser.error("Provide a requirement (positional text or --file)")
-    registry = load_registry(args.registry) if args.registry else None
+    try:
+        registry = (load_registry(args.registry, domain=domain_for(text))
+                    if args.registry else load_registry(domain=domain_for(text)))
+    except ValueError as exc:
+        parser.error(str(exc))
     assessment = prescription(text, registry)
     if args.llm_json:
         try:
-            selection = json.loads(args.llm_json)
+            selection = _parse_llm_selection(args.llm_json)
         except Exception as exc:
             log.error("Invalid --llm-json: %s", exc)
             sys.exit(2)
-        matched = reconcile(match_rules(text, registry=registry),
-                            selection.get("apply", []),
-                            selection.get("skip", []), registry)
-        assessment["prescription"] = matched["rules"]
-        assessment["provenance"] = matched["provenance"]
-        assessment["dropped"] = matched["dropped"]
+        _apply_llm_selection(text, assessment, registry, selection)
     if args.json:
         print(json.dumps(assessment, ensure_ascii=False, indent=2))
         return

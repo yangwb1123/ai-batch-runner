@@ -86,6 +86,23 @@ def _default_registry_paths(domain: str) -> list:
             + [Path(rel) for rel in rels])
 
 
+def _read_registry_candidate(candidate: Path, strict_path: str = "") -> Optional[dict]:
+    """Read one registry; explicit overrides fail instead of falling back."""
+    try:
+        data = yaml.safe_load(read_text_bounded(
+            candidate, config.INPUT_MAX_BYTES, "rule registry")) or {}
+    except Exception as exc:
+        if strict_path:
+            raise ValueError(f"invalid custom registry {strict_path}: {exc}") from exc
+        return None
+    if isinstance(data, dict):
+        return data
+    if strict_path:
+        raise ValueError(
+            f"invalid custom registry {strict_path}: top level must be a mapping")
+    return None
+
+
 def load_registry(path: str = "", domain: str = "") -> dict:
     """Load the rule registry for a domain (default: frontend). YAML
     sections extend the built-in defaults; a missing backend registry
@@ -96,15 +113,15 @@ def load_registry(path: str = "", domain: str = "") -> dict:
                   "page_types": {}, "use_case_types": {},
                   "risk": {}, "rules": {}}
     if not yaml:
+        if path:
+            raise ValueError("PyYAML is required to load a custom registry")
         return merged
     candidates = [Path(path)] if path else _default_registry_paths(domain or DEFAULT_DOMAIN)
+    if path and not candidates[0].is_file():
+        raise ValueError(f"custom registry not found: {path}")
     for candidate in candidates:
-        try:
-            data = yaml.safe_load(read_text_bounded(
-                candidate, config.INPUT_MAX_BYTES, "rule registry")) or {}
-        except Exception:
-            continue
-        if not isinstance(data, dict):
+        data = _read_registry_candidate(candidate, path)
+        if data is None:
             continue
         for section, value in data.items():
             if section in merged and isinstance(value, dict):
@@ -361,11 +378,28 @@ def format_manifest(matched: dict, limit: int = 8) -> str:
     return "\n".join(lines)
 
 
+def _parse_llm_selection(raw: str) -> dict:
+    """Validate the untrusted two-sided rule selection."""
+    selection = json.loads(raw)
+    if not isinstance(selection, dict):
+        raise ValueError("top level must be an object")
+    unknown = sorted(set(selection) - {"apply", "skip", "reason"})
+    if unknown:
+        raise ValueError("unknown field(s): " + ", ".join(unknown))
+    for key in ("apply", "skip"):
+        value = selection.get(key, [])
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise ValueError(f"{key} must be a string list")
+    if "reason" in selection and not isinstance(selection["reason"], str):
+        raise ValueError("reason must be a string")
+    return selection
+
+
 def _reconcile_cli(text: str, llm_json: str, registry: dict, want_json: bool) -> None:
     """--llm-json branch: parse the LLM selection (fail closed on bad
     JSON), reconcile with the algorithm manifest, and print the result."""
     try:
-        selection = json.loads(llm_json)
+        selection = _parse_llm_selection(llm_json)
     except Exception as exc:
         log.error("Invalid --llm-json: %s", exc)
         sys.exit(2)
@@ -442,50 +476,6 @@ def _check_registries_cli() -> None:
 
 
 def rules_main(argv: list) -> None:
-    """`pi-batch rules "<task>"` — deterministic rule manifest;
-    `--summary` prints the compressed requirement for the LLM side;
-    `--llm-prompt FILE` writes the two-sided-check prompt;
-    `--llm-json '{...}'` reconciles the LLM selection with the algorithm
-    (agreed rules stay; REQUIRED rules are veto-protected; LLM additions
-    are admitted with provenance)."""
-    import argparse
-    parser = argparse.ArgumentParser(
-        prog="pi-batch.py rules",
-        description="Match ui-spec rules to a task (algorithm) and reconcile "
-                    "the LLM's independent selection (two-sided check).")
-    parser.add_argument("task", nargs="*", default=[], help="task prompt text")
-    parser.add_argument("--json", action="store_true", help="machine-readable output")
-    parser.add_argument("--summary", action="store_true",
-                        help="print the compressed requirement (LLM input)")
-    parser.add_argument("--llm-prompt", default="",
-                        help="write the two-sided-check prompt to FILE")
-    parser.add_argument("--llm-json", default="",
-                        help='LLM selection JSON {"apply":[],"skip":[]} to reconcile')
-    parser.add_argument("--registry", default="", help="rule registry YAML override")
-    parser.add_argument("--check", action="store_true",
-                        help="validate registry schema integrity (both domains)")
-    args = parser.parse_args(argv)
-    if args.check:
-        _check_registries_cli()
-        return
-    text = " ".join(args.task)
-    if not text.strip():
-        parser.error("Provide a task (positional text) or --check")
-    registry = load_registry(args.registry) if args.registry else None
-    if args.summary:
-        print(summarize_task(text, registry))
-        return
-    if args.llm_prompt:
-        Path(args.llm_prompt).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.llm_prompt).write_text(
-            format_llm_prompt(text, registry), encoding="utf-8")
-        print(f"LLM check prompt written to {args.llm_prompt}")
-        return
-    if args.llm_json:
-        _reconcile_cli(text, args.llm_json, registry, args.json)
-        return
-    matched = match_rules(text, registry=registry)
-    if args.json:
-        print(json.dumps(matched, ensure_ascii=False, indent=2))
-        return
-    print(format_manifest(matched))
+    """Lazy CLI wrapper keeps matching logic independent of argument parsing."""
+    from .rule_cli import rules_main as cli_main
+    cli_main(argv)

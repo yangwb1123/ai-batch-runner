@@ -15,6 +15,7 @@ Writes docs/rules/drafts/<rule-id>-<date>.yaml and prints the draft.
 from __future__ import annotations
 
 import sys
+import re
 from datetime import date
 from pathlib import Path
 
@@ -24,6 +25,7 @@ DRAFT_DIR = Path("docs/rules/drafts")
 CATEGORIES = ("backend", "frontend", "product", "database", "security",
               "testing", "devops")
 SEVERITIES = ("error", "warning", "advice")
+_RULE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
 
 
 def rule_schema_template() -> dict:
@@ -52,6 +54,9 @@ def make_draft(failure: str, category: str, severity: str,
     """Create a draft file; returns (path, draft_dict)."""
     draft = rule_schema_template()
     draft["id"] = rule_id or f"DRAFT-{date.today():%Y%m%d}"
+    if not _RULE_ID_RE.fullmatch(draft["id"]):
+        raise ValueError(
+            "rule id must match [A-Za-z0-9][A-Za-z0-9_-]{0,79}")
     draft["title"] = " ".join(failure.split())[:80]
     draft["category"] = category
     draft["severity"] = severity
@@ -103,8 +108,11 @@ def learn_main(argv: list) -> None:
         log.info("Using memory hit %r as the observed failure", top.get("session_id", ""))
     else:
         failure = " ".join(args.failure)
-    path, draft = make_draft(failure, args.category,
-                             args.severity, args.rule_id, args.owner)
+    try:
+        path, draft = make_draft(failure, args.category,
+                                 args.severity, args.rule_id, args.owner)
+    except ValueError as exc:
+        parser.error(str(exc))
     log.info("Rule draft written to %s", path)
     log.info("Review the draft, fill requirements/forbidden/verification "
              "with the RCA, then merge it into the domain rules.yaml "

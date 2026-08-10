@@ -51,6 +51,15 @@ def test_l3_gets_scenarios_specs_and_restraint():
     assert "待确认" in notes
 
 
+def test_commercial_l3_without_open_source_intent_skips_open_source_spec():
+    manifest = product_manifest("面向企业发布一个商业化 SaaS 产品并上线收费")
+    assert manifest["level"] == "L3_product_feature"
+    assert "product-specs/commercial-readiness.md" in manifest["specs"]
+    assert "product-specs/open-source-readiness.md" not in manifest["specs"]
+    assert any("未检测到开源意图" in note
+               for note in manifest["restraint_notes"])
+
+
 def test_login_scenario_chain():
     questions = scenario_questions("给系统加登录功能")
     assert any("权限/RBAC" in s["questions"] for s in questions)

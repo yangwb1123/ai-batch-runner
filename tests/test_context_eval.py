@@ -7,6 +7,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 from pbatch import context as ctx
 from pbatch import eval as ev
 
@@ -35,6 +37,18 @@ def test_keyword_routing_without_paths(tmp_path, monkeypatch):
     assert manifest["files"] == ["docs/p.md"]
 
 
+def test_keyword_can_match_route_that_also_declares_paths(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "p.md").write_text("x", encoding="utf-8")
+    routes = [{"when": {"paths": ["src/payment/**"],
+                         "task_contains": ["支付", "payment"]},
+               "load": ["docs/p.md"]}]
+    manifest = ctx.match_context("实现支付逻辑", None, routes)
+    assert manifest["files"] == ["docs/p.md"]
+    assert manifest["routes_matched"] is True
+
+
 def test_missing_referenced_file_reported(tmp_path):
     routes = [{"when": {"paths": ["src/**"]}, "load": ["docs/nope.md"]}]
     manifest = ctx.match_context("x", ["src/a.ts"], routes)
@@ -47,6 +61,7 @@ def test_no_match_loads_nothing(tmp_path):
     manifest = ctx.match_context("做表格页面", None, routes)
     assert manifest["files"] == []
     assert manifest["missing"] == []
+    assert manifest["routes_matched"] is False
 
 
 def test_context_cli_json(capsys):
@@ -88,6 +103,73 @@ def test_eval_failure_detected(tmp_path, monkeypatch):
     case_id, ok, detail = results[0]
     assert ok is False
     assert "task_type" in detail
+
+
+def test_eval_expect_schema_checks_system_type_and_rule_sets():
+    suite = {"name": "compat", "cases": [
+        {"name": "state", "input": "订单审批流，状态流转，审核流程",
+         "expect": {"system_type": "state-machine"}},
+        {"name": "rules", "input": "生成一个登录页 demo",
+         "expect": {"includes": ["visual-core"],
+                    "excludes": ["architecture-budgets"]}},
+    ]}
+    results = ev.run_suite(suite)
+    assert [case_id for case_id, _, _ in results] == ["state", "rules"]
+    assert all(ok for _, ok, _ in results), results
+
+
+def test_eval_empty_unknown_and_extra_fields_fail_closed():
+    cases = [
+        {"id": "empty", "input": "x", "assert": {}},
+        {"id": "unknown", "input": "x", "assert": {"mystery": "x"}},
+        {"id": "extra", "input": "x", "assert": {"task_type": "unknown"},
+         "typo": True},
+    ]
+    results = ev.run_suite({"name": "bad-schema", "cases": cases})
+    assert len(results) == 3
+    assert all(not ok and "schema:" in detail for _, ok, detail in results)
+
+
+def test_eval_loader_rejects_invalid_case_schema(tmp_path, monkeypatch):
+    eval_dir = tmp_path / "evals"
+    eval_dir.mkdir()
+    eval_dir.joinpath("bad.yaml").write_text(
+        "name: bad\ncases:\n  - id: empty\n    input: x\n    assert: {}\n",
+        encoding="utf-8")
+    monkeypatch.setattr(ev, "EVAL_DIR", eval_dir)
+    with pytest.raises(SystemExit) as exc:
+        ev.load_eval_files()
+    assert exc.value.code == 2
+
+
+def test_eval_filter_with_no_match_fails(monkeypatch, capsys):
+    monkeypatch.setattr(ev, "load_eval_files", lambda: [{
+        "name": "one", "cases": [
+            {"id": "known", "input": "随便写点什么",
+             "assert": {"task_type": "unknown"}},
+        ],
+    }])
+    with pytest.raises(SystemExit) as exc:
+        ev.eval_main(["--filter", "missing", "--json"])
+    assert exc.value.code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["total"] == 0
+    assert payload["failed"] == 1
+
+
+def test_eval_coverage_does_not_swallow_failure(monkeypatch, capsys):
+    monkeypatch.setattr(ev, "load_eval_files", lambda: [{
+        "name": "broken", "cases": [
+            {"id": "wrong", "input": "随便写点什么",
+             "assert": {"task_type": "frontend_ui"}},
+        ],
+    }])
+    with pytest.raises(SystemExit) as exc:
+        ev.eval_main(["--coverage", "--json"])
+    assert exc.value.code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["failed"] == 1
+    assert payload["coverage"][0]["suite"] == "broken"
 
 
 def test_dangerous_ddl_detected(tmp_path):

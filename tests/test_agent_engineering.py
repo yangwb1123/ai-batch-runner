@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from pbatch.assessor import prescription, workflow_level
 from pbatch.learn import make_draft, rule_schema_template
 
@@ -118,6 +120,15 @@ def test_learn_creates_rule_draft(tmp_path, monkeypatch):
     assert draft["status"] == "draft"
     assert "Observed failure" in draft["rationale"]
     assert "concurrency" not in draft["requirements"]  # RCA fields left to fill
+
+
+@pytest.mark.parametrize("rule_id", ["../escaped", "/tmp/escaped", "bad/id", " bad"])
+def test_learn_rule_id_cannot_escape_draft_directory(
+        tmp_path, monkeypatch, rule_id):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ValueError, match="rule id must match"):
+        make_draft("failure", "backend", "error", rule_id)
+    assert not (tmp_path / "escaped").exists()
 
 
 def test_learn_schema_complete():
