@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 
+import json
 import pytest
 
 from pbatch import (fabric, fabric_cli, fabric_runner, fabric_server,
@@ -344,3 +345,115 @@ def test_campaign_excludes_package_artifact_dirs():
     assert _excluded(Path("pbatch/__pycache__"), ()) is True
     assert _excluded(Path("dist"), ()) is True
     assert _excluded(Path("pbatch"), ()) is False
+
+
+# ---------------------------------------------------------------------------
+# 产品化：用户级目录 / 密钥迁移 / version / init / clean / completion
+# ---------------------------------------------------------------------------
+
+def test_user_dirs_xdg_layout(tmp_path, monkeypatch):
+    """XDG 布局：config/cache/data 分目录；项目状态仍留在项目内。"""
+    from pbatch import user_dirs
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    assert user_dirs.pbatch_config_home() == tmp_path / "cfg" / "pbatch"
+    assert user_dirs.pbatch_cache_home() == tmp_path / "cache" / "pbatch"
+    assert user_dirs.pbatch_data_home() == tmp_path / "data" / "pbatch"
+    assert user_dirs.keys_dir() == tmp_path / "data" / "pbatch" / "keys"
+
+
+def test_user_dirs_unified_home(tmp_path, monkeypatch):
+    """PBATCH_HOME 统一模式：三目录收拢到 ~/.pbatch 下。"""
+    from pbatch import user_dirs
+    monkeypatch.setenv("PBATCH_HOME", str(tmp_path / "pbatch-home"))
+    assert user_dirs.pbatch_config_home() == tmp_path / "pbatch-home" / ".config"
+    assert user_dirs.pbatch_cache_home() == tmp_path / "pbatch-home" / ".cache"
+    assert user_dirs.keys_dir() == (
+        tmp_path / "pbatch-home" / ".local" / "share" / "keys")
+
+
+def test_keymigrate_moves_project_keys(tmp_path, monkeypatch):
+    """keymigrate：旧项目内密钥 → 用户级；目标已存在不覆盖。"""
+    from pbatch import fabric_runner
+    from pbatch import user_dirs
+    monkeypatch.setenv("PBATCH_HOME", str(tmp_path / "home"))
+    old = tmp_path / "old-keys"
+    old.mkdir()
+    (old / "node-a.json").write_text(
+        '{"device_id": "rn-old", "secret": "s"}', encoding="utf-8")
+    from pbatch.fabric_devices import keymigrate_main
+    with pytest.raises(SystemExit) as exc:
+        keymigrate_main([f"--from={old}"])
+    assert exc.value.code == 0
+    migrated = fabric_runner.load_or_create_key("", "node-a")
+    assert migrated["device_id"] == "rn-old"
+
+
+def test_version_and_init_cli(capsys, tmp_path, monkeypatch):
+    """version/init 输出版本与目录骨架。"""
+    import pytest as _pytest
+    from pbatch import product_cli
+    monkeypatch.setenv("PBATCH_HOME", str(tmp_path / "home"))
+    with _pytest.raises(SystemExit) as exc:
+        product_cli.version_main(["--json"])
+    assert exc.value.code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["product"] == "pi-batch"
+    assert report["version"]
+    with _pytest.raises(SystemExit):
+        product_cli.init_main([])
+    out = capsys.readouterr().out
+    assert "用户目录已就绪" in out
+    assert (tmp_path / "home" / ".config" / "settings.yaml").exists()
+
+
+def test_completion_script_lists_commands():
+    """completion：注册表驱动，命令清单非空。"""
+    from pbatch import product_cli
+    bash = product_cli._completion_script("bash")
+    assert "pi-batch" in bash and "compgen" in bash
+    zsh = product_cli._completion_script("zsh")
+    assert "compdef" in zsh
+    for cmd in ("campaign", "org", "assess"):
+        assert cmd in bash
+
+
+def test_user_settings_layer_merges(tmp_path, monkeypatch):
+    """分层：项目 pi-batch.yaml 覆盖用户 settings.yaml（节内键级）。"""
+    import importlib
+    import pbatch.config as config
+    monkeypatch.setenv("PBATCH_HOME", str(tmp_path / "home"))
+    from pbatch import user_dirs
+    user_dirs.ensure_user_dirs()
+    user_dirs.user_settings_path().write_text(
+        "agent:\n  bin: codex\n  session_mode: shared\n", encoding="utf-8")
+    # 项目配置无 agent.bin → 用户层生效
+    importlib.reload(config)
+    assert config._string_setting(config._section("agent"),
+                                  "session_mode", "new") == "shared"
+
+
+def test_config_merge_precedence():
+    """_merge_config：项目键覆盖用户键，双方独有键都保留。"""
+    from pbatch.config import _merge_config
+    project = {"agent": {"bin": "pi"}, "limits": {"timeout": 10}}
+    user = {"agent": {"bin": "codex", "session_mode": "shared"}}
+    merged = _merge_config(project, user)
+    assert merged["agent"]["bin"] == "pi"          # 项目覆盖
+    assert merged["agent"]["session_mode"] == "shared"  # 用户独有保留
+    assert merged["limits"]["timeout"] == 10       # 项目独有保留
+
+
+def test_doctor_reports_environment(capsys, tmp_path, monkeypatch):
+    """doctor：环境诊断清单完整（安装/目录/配置/agent/密钥/锁）。"""
+    import pytest as _pytest
+    from pbatch import product_cli
+    monkeypatch.setenv("PBATCH_HOME", str(tmp_path / "home"))
+    with _pytest.raises(SystemExit) as exc:
+        product_cli.doctor_main([])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    for marker in ("安装", "目录 config", "agent 二进制", "设备密钥",
+                   "实例锁"):
+        assert marker in out

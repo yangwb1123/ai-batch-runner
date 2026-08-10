@@ -20,6 +20,8 @@ import pytest
 from pbatch import gate_fix
 from pbatch.models import Stage, Task
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
 
 def _stage(**kw):
     base = dict(name="gate", gate=True, gate_fix_rounds=2,
@@ -278,14 +280,14 @@ def test_ratchet_baseline_holds_and_detects_new(tmp_path):
     (tmp_path / "a.css").write_text(".a { padding: 7px; }", encoding="utf-8")
     base = tmp_path / "base.json"
     r = subprocess.run(
-        [sys.executable, "/home/dwp/ai-batch-runner/scripts/check-ui-spec.py",
+        [sys.executable, str(REPO_ROOT / "scripts/check-ui-spec.py"),
          "--dir", str(tmp_path), "--all", "--ext", "css",
          "--update-baseline", str(base)],
         capture_output=True, text=True)
     assert r.returncode == 0
     # 存量放行
     r = subprocess.run(
-        [sys.executable, "/home/dwp/ai-batch-runner/scripts/check-ui-spec.py",
+        [sys.executable, str(REPO_ROOT / "scripts/check-ui-spec.py"),
          "--dir", str(tmp_path), "--all", "--ext", "css",
          "--baseline", str(base)],
         capture_output=True, text=True)
@@ -294,7 +296,7 @@ def test_ratchet_baseline_holds_and_detects_new(tmp_path):
     # 新增违规 → 拒绝
     (tmp_path / "b.css").write_text(".b { padding: 9px; }", encoding="utf-8")
     r = subprocess.run(
-        [sys.executable, "/home/dwp/ai-batch-runner/scripts/check-ui-spec.py",
+        [sys.executable, str(REPO_ROOT / "scripts/check-ui-spec.py"),
          "--dir", str(tmp_path), "--all", "--ext", "css",
          "--baseline", str(base)],
         capture_output=True, text=True)

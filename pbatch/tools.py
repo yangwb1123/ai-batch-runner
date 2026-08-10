@@ -57,7 +57,21 @@ DESCRIPTIONS = {
     "nversion": "N-version 一致性判定",
     "world": "世界状态版本化 + 漂移检查",
     "events": "交互事件账本（不可变追加式）",
+    "init": "创建用户级工作目录（~/.config|.cache/.local/share/pbatch）",
+    "version": "版本与环境信息",
+    "clean": "清空用户级缓存（--all 连配置/密钥）",
+    "completion": "生成 shell 补全（bash/zsh）",
+    "test-report": "测试分类报告（Unit/Contract/Property/Scenario/Chaos）",
+    "probe": "Dry-run 标准探测（区间估计+置信度）",
+    "replay": "决策重放：胶囊版本对比 + eval 回归",
 }
+
+
+def list_subcommands() -> list:
+    """注册表驱动的命令清单（权威来源 cli._SUBCOMMANDS——completion 用它，
+    避免 DESCRIPTIONS 描述表遗漏新命令）。"""
+    from .cli import _SUBCOMMANDS
+    return sorted(_SUBCOMMANDS)
 
 
 def tools_main(argv: Optional[list] = None) -> int:

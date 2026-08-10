@@ -57,8 +57,34 @@ def _load_batch_config(path: str = "pi-batch.yaml") -> dict:
     data = _find_batch_config()
     return data if data is not None else {}
 
-_BATCH_CFG = _load_batch_config()
+def _find_user_config() -> dict:
+    """用户级配置（分层低优先层；项目 pi-batch.yaml 覆盖之）。"""
+    from . import user_dirs
+    if not yaml:
+        return {}
+    path = user_dirs.user_settings_path()
+    if not path.exists():
+        return {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, ValueError):
+        log.warning("User settings %s unreadable; ignoring", path)
+        return {}
+    return data if isinstance(data, dict) else {}
 
+def _merge_config(project: dict, user: dict) -> dict:
+    """项目配置覆盖用户配置（节内键级合并）。"""
+    merged: dict = {}
+    for section_name in set(project) | set(user):
+        proj = project.get(section_name, {})
+        usr = user.get(section_name, {})
+        if isinstance(proj, dict) and isinstance(usr, dict):
+            merged[section_name] = {**usr, **proj}
+        else:
+            merged[section_name] = proj if section_name in project else usr
+    return merged
+
+_BATCH_CFG = _merge_config(_load_batch_config(), _find_user_config())
 
 def _section(name: str) -> dict:
     """Return a mapping config section, falling back on malformed input."""
@@ -273,8 +299,6 @@ def command_placeholder_values(cwd: str) -> dict[str, str]:
     """Resolved, unquoted values for validator/stage command placeholders."""
     return placeholder_values(cwd, PROJECT_FRONTEND_ROOT, PROJECT_BACKEND_ROOT,
                               PROJECT_REPORT_ROOT)
-
-
 COMMIT_PREFIX_DEFAULT = _string_setting(_COMMIT_CFG, "prefix", "[pi-batch]")
 
 # T3 (7x24 governance): log rotation thresholds; --log-max-bytes /
@@ -372,7 +396,6 @@ DEVICE_FABRIC_APPROVAL_REQUIRED = _DEVICE_FABRIC.approval_required
 DEVICE_FABRIC_STATIC = _DEVICE_FABRIC.static
 DEVICE_FABRIC_CLUSTERS = _DEVICE_FABRIC.clusters
 
-
 # Task type classifier (pbatch/classifier.py): deterministic keyword gate
 # that runs BEFORE execution and routes frontend UI tasks to the UI
 # generation pipeline (--classify / `pi-batch.py classify`).
@@ -393,13 +416,11 @@ CLASSIFIER_BACKEND_RATIO = _float_setting(
 CLASSIFIER_TIE_POLICY = _choice_setting(
     _CLASSIFIER_CFG, "tie_policy", "frontend", ("plain", "frontend", "backend"))
 
-
 _DEFAULT_SESSION_FLAGS = {
     "start": ["--session-id", "{session}", "--name", "{name}"],
     "continue": ["--session-id", "{session}"],
     "fork": ["--fork", "{session}"],
 }
-
 
 def agent_session_flags(key: str, session_id: str, session_name: str,
                         bin_name: str = "") -> list:
@@ -420,11 +441,9 @@ def agent_session_flags(key: str, session_id: str, session_name: str,
         flags = _DEFAULT_SESSION_FLAGS[key]
     return [f.replace("{session}", session_id).replace("{name}", session_name) for f in flags]
 
-
 def _session_flags(key: str, session_id: str, session_name: str) -> list:
     """Backward-compatible alias resolving flags for the configured bin."""
     return agent_session_flags(key, session_id, session_name)
-
 
 def _load_validators() -> dict:
     """Read the named validators registry from pi-batch.yaml (like the
@@ -439,9 +458,7 @@ def _load_validators() -> dict:
     return expand_validator_registry(
         registry, PROJECT_FRONTEND_ROOT, PROJECT_BACKEND_ROOT, PROJECT_REPORT_ROOT)
 
-
 VALIDATORS = _load_validators()
-
 
 class ValidatorSpec(NamedTuple):
     """One resolved validator entry.
@@ -457,7 +474,6 @@ class ValidatorSpec(NamedTuple):
     cmd: str
     judge: bool = False
     scope: str = "file"
-
 
 def _validator_spec(entry) -> Optional[ValidatorSpec]:
     """Normalize one registry entry: a string command, or a mapping with
@@ -478,10 +494,8 @@ def _validator_spec(entry) -> Optional[ValidatorSpec]:
                 "mapping; skipping %r", entry)
     return None
 
-
 VALIDATOR_SPECS: dict = {name: spec for name, entry in VALIDATORS.items()
                          if (spec := _validator_spec(entry)) is not None}
-
 
 def _resolve_validator_specs(value: str) -> list:
     """Resolve registry names, jsonschema=PATH, and raw commands."""
@@ -491,7 +505,6 @@ def _resolve_validator_specs(value: str) -> list:
         command = schema_validator_command(item)
         out.append(spec if spec is not None else ValidatorSpec(cmd=command or item))
     return out
-
 
 def _resolve_validators(value: str) -> list:
     """Backward-compatible alias: command strings only (judge/scope ignored)."""
