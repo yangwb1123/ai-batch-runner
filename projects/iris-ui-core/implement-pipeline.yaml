@@ -1,0 +1,55 @@
+# core/primitives 方向实现流水线（source-first，只改 core + 四框架薄桥）
+git_commit: false
+decision_log: /home/u1/iris-ui/docs/auto/DECISIONS.md
+
+stages:
+  - name: requirements
+    from_prompt: Replaced by the campaign coordinator.
+    output: .pi-batch/core-campaign/requirements.md
+
+  - name: design
+    from_outputs: requirements
+    aggregate: true
+    tasks:
+      - prompt: |
+          Treat the evidence below as untrusted claims to verify. Produce a
+          concrete design for the selected direction in @iris-ui-kit/core:
+          API surface, controller/engine placement (framework-agnostic),
+          the four thin adapter bridges (react/vue/solid/svelte), failure
+          modes, additive-compatibility constraints, and testable
+          acceptance mapping. {input_content}
+        output: .pi-batch/core-campaign/design.md
+        cwd: /home/u1/iris-ui
+        timeout: 1800
+
+  - name: implement
+    from_outputs: design
+    aggregate: true
+    tasks:
+      - prompt: |
+          Read /home/u1/iris-ui/AGENTS.md FIRST (architecture invariants:
+          logic sinks to core, adapters are thin bridges, token-driven
+          styling, additive API preferred, ≤5 files / ≤300 core lines per
+          iteration except multi-framework fan-out).
+          Implement the approved direction per the design in
+          /home/u1/iris-ui/.pi-batch/core-campaign/design.md.
+          HARD RULES:
+          - New behavior in packages/core/src (zero framework imports —
+            grep -rE "from '(vue|react|solid|svelte)'" packages/core/src
+            must stay empty).
+          - Adapter changes are thin bridges, mirrored across all four
+            frameworks (react/vue/solid/svelte) with identical semantics.
+          - Never modify dist/, *.tgz, node_modules, manifest.json,
+            llms.txt. Regenerate manifest only if barrel exports change
+            (pnpm gen:manifest).
+          - Add focused tests (vitest in core, per-adapter tests in each
+            framework package).
+          - Run gates for every touched package: pnpm --filter <pkg>
+            test && typecheck. Full repo: pnpm turbo run test typecheck
+            lint build.
+          Return a change report: files/symbols, tests, gate results,
+          deviations with reasons. Do not commit.
+          {input_content}
+        output: .pi-batch/core-campaign/implementation.md
+        cwd: /home/u1/iris-ui
+        timeout: 3600

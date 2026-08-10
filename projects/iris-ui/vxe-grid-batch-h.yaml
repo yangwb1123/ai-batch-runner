@@ -1,0 +1,191 @@
+# iris-ui vxe-grid 批 H：select 单元格编辑器 + contextMenu 右键菜单
+#
+# 目标：
+# 1. 单元格编辑器扩展：editor: 'select'（列 editOptions 下拉编辑，vxe
+#    edit-render name=select parity）
+# 2. contextMenu：右键单元格弹出菜单（vxe @context-menu 事件 parity）
+# 3. 验证跨页选择记忆（vxe checkbox-config.reserve 语义）并文档化
+# 范围：react only；additive。
+#
+# 执行：python pi-batch.py projects/iris-ui/vxe-grid-batch-h.yaml \
+#   --log-file logs/iris-ui-batch-h.log --retries 2
+
+git_commit: false
+decision_log: /home/u1/iris-ui/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      You are preparing the baseline for iris-ui vxe-grid batch H (select
+      cell editor + contextMenu). Monorepo: /home/u1/iris-ui.
+
+      Read:
+      1. /home/u1/iris-ui/packages/react/src/primitives/table/types.ts —
+         IrisTableEditor ('text' | 'number'), IrisTableColumn.editor.
+      2. /home/u1/iris-ui/packages/react/src/primitives/table/Table.tsx —
+         the editing input render (around line 1580: type number/text,
+         Enter commit / Escape cancel / blur commit), the cell onClick/dblclick
+         edit trigger, and the row render for onContextMenu wiring points.
+      3. /home/u1/iris-ui/packages/react/src/floating/useFloating.ts — the
+         positioning hook (supports virtual anchors via getBoundingClientRect).
+      4. /home/u1/iris-ui/packages/react/src/primitives/menu/ — IrisMenu/
+         IrisMenuItem API (to decide: self-drawn floating menu vs IrisMenu).
+      5. /home/u1/iris-ui/packages/react/src/primitives/table/props.ts.
+
+      Write a markdown baseline to the output path:
+      - vxe semantics: edit-render select (options, change commits),
+        @context-menu event (row/column/rowIndex/columnIndex + $event),
+        checkbox reserve (cross-page selection memory)
+      - proposed iris design (react only, additive):
+        a) IrisTableEditor = 'text' | 'number' | 'select'; column
+           `editOptions?: Array<{ value: string | number; label: string }>`
+           — editing a select column renders a NATIVE <select> (styled with
+           --iris-* tokens; jsdom-testable; Enter/blur commits, Escape
+           cancels, consistent with the text editor; commit coerces the value
+           back to the option's value type — number options stay numbers)
+        b) contextMenu?: { items: (params: { row: Row; column:
+           IrisTableColumn<Row>; rowIndex: number; columnIndex: number }) =>
+           Array<{ key: string; label: string; disabled?: boolean }>;
+           onSelect: (key: string, params: { row; column; rowIndex;
+           columnIndex }) => void } — right-click on a BODY cell opens a
+           floating menu at the mouse position (useFloating with a virtual
+           anchor: getBoundingClientRect → { x, y, width: 0, height: 0 });
+           Esc / outside-pointerdown / scroll closes; selecting an item
+           closes + fires onSelect; header cells NOT included
+        c) cross-page selection: verify displaySelection already survives
+           proxy page changes (it should — selection lives outside bodyData);
+           if it does, document it in the comparison doc; if not, fix it
+           (selection state must not be reset by proxy page loads)
+      - file map + tests
+      Do NOT modify source files.
+    output: /home/u1/iris-ui/docs/vxe-grid/batch-h-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Implement iris-ui vxe-grid batch H (select editor + contextMenu) in
+          /home/u1/iris-ui, per /home/u1/iris-ui/docs/vxe-grid/batch-h-baseline.md.
+          Read it first, then AGENTS.md.
+
+          HARD CONSTRAINTS:
+          - Core framework-free; React only; additive only.
+          - No dist/tgz/node_modules/manifest.json edits.
+          - Test files ≤500 lines; ≤5 changed files + tests.
+          - MANIFEST SCANNER HYGIENE: function-type props on ONE line; inline
+            object params use named exported interfaces; export new types
+            from packages/react/src/primitives/table/index.ts.
+          - CSS uses --iris-* tokens only.
+
+          IMPLEMENT:
+          1. types.ts: IrisTableEditor adds 'select'; IrisTableColumn adds
+             `editOptions?: Array<{ value: string | number; label: string }>`.
+             Export nothing new unless a param interface is needed.
+          2. Table.tsx select editor:
+             - when col.editor === 'select' && col.editOptions: render a
+               native <select data-iris-table-editor-select> inside the
+               editing cell with the options; value = String(draft) (the
+               draft is the raw committed value; match by String(value));
+               onChange → cellEdit.setDraft (coerce back to the option's
+               value type: if the option value is a number, draft becomes the
+               number); Enter/blur → commitEdit; Escape → cancelEdit; same
+               focus/aria behavior as the text editor
+             - the commit coerce path already exists (coerceValue) — make sure
+               number options produce number commits
+          3. Table.tsx contextMenu:
+             - prop contextMenu?: { items: (params: IrisTableContextMenuParams) =>
+               Array<{ key: string; label: string; disabled?: boolean }>;
+               onSelect: (key: string, params: IrisTableContextMenuParams) =>
+               void }
+             - named interface IrisTableContextMenuParams { row: Row; column:
+               IrisTableColumn<Row>; rowIndex: number; columnIndex: number }
+               exported from index.ts
+             - body cell onContextMenu (preventDefault): compute items via the
+               callback, store params + menu state (open + x/y), render a
+               floating menu (useFloating with a virtual anchor whose
+               getBoundingClientRect returns { left: x, top: y, right: x,
+               bottom: y, width: 0, height: 0, x, y, toJSON(){} }); menu =
+               a simple div (data-iris-table-context-menu) with the items
+               (button per item, disabled items inert); Esc / outside
+               pointerdown / scroll closes; item click closes + onSelect;
+               z-index via --iris-z-popover; --iris-* styling
+          4. cross-page selection: verify and document (fix only if broken).
+          5. Tests (new context-menu-select.test.tsx):
+             - select editor: click cell → select appears with options;
+               choose an option → commit fires with the typed value (number
+               option commits a number); Escape cancels
+             - contextMenu: right-click a cell → menu opens at the position
+               with the items; click an item → onSelect with params; Esc
+               closes; disabled item does not fire; header right-click does
+               NOT open the menu
+             - cross-page: proxy mode page change keeps the selection (assert
+               displaySelection rows still marked after page flip)
+
+          VERIFY:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm --filter @iris-ui-kit/react typecheck`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react lint` (0 errors)
+          - `python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json` → 0 violations
+          Report: files changed, tests added, counts, deviations.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-h-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are the adversarial reviewer for iris-ui batch H (select editor
+          + contextMenu). Read batch-h-baseline.md and batch-h-adapt.md,
+          inspect the implementation (Table.tsx, types.ts, props.ts, tests).
+
+          Check:
+          1. select editor: opens with options; commit coerces number
+             options to numbers; Escape cancels; Enter/blur commits; behaves
+             like the text editor otherwise (aria-invalid, editRules still
+             validate the committed value)
+          2. contextMenu: opens on body cell right-click only (header
+             excluded); positioned at the mouse point (virtual anchor);
+             items render; disabled items inert; Esc/outside/scroll close;
+             onSelect fires with correct params; additive (no contextMenu →
+             right-click does nothing)
+          3. cross-page selection preserved (if it needed a fix, it's fixed)
+          4. additive only; manifest hygiene; core framework-free; CSS tokens
+          Run verification commands (react test/typecheck/lint, audit). Write
+          verdict markdown: PASS or FAIL with numbered findings (severity,
+          file:line, fix). Do NOT modify files.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-h-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Gate stage for iris-ui batch H. Read the review verdict
+          /home/u1/iris-ui/docs/vxe-grid/batch-h-review.md.
+
+          If PASS: run the full repo gate:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm turbo run test typecheck lint build --concurrency=2`
+          - audit → 0; `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm gen:manifest`
+          - Update /home/u1/iris-ui/docs/vxe-grid-comparison.md: mark batch H
+            rows (select editor / contextMenu / cross-page selection) done
+            (react).
+          - Commit: `git add -A -- . ':!apps/ssr-solidstart/.vinxi' && git
+            commit -m "feat(table): vxe-grid 批 H——select 单元格编辑器/contextMenu 右键菜单（react only）"`
+          Report commit hash and final test counts.
+
+          If FAIL with concrete fixes: apply fixes, rerun, full gate, commit.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-h-gate.md

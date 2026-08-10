@@ -618,6 +618,14 @@ pi-batch test-report                                        # 测试分类统计
 pi-batch replay --capsule cap.json                         # 决策重放：版本对比+eval 回归
 pi-batch org run --task "需求" --artifact DIR              # 节点工件链（下游输入）
 pi-batch org gate evolution --log logs/run.log         # {log} 注入（残留占位符 fail closed）
+# 产品 CLI 规整（用户级工作目录，XDG 兼容）：
+pi-batch init                                            # 创建 ~/.config|.cache/.local/share/pbatch 骨架
+pi-batch version                                         # 版本 + 环境（pyproject 单事实源）
+pi-batch clean [--all]                                   # 清用户级缓存（--all 连配置/密钥）
+pi-batch completion bash|zsh >> ~/.bashrc                # shell 补全（注册表驱动）
+pi-batch devices keymigrate                              # 旧项目内密钥 → 用户级（跨项目复用）
+# 分层：CLI > 项目 pi-batch.yaml > ~/.config/pbatch/settings.yaml > 默认
+# 边界：项目相关状态（会话/记忆/被拒产物）留项目内 .pi-batch/；用户级只放跨项目数据
 pi-batch profile "多租户 SaaS..." --json                   # 反事实推理（预留建议）
 pi-batch check [--steps org,capabilities]                  # 全面自检（7 门禁聚合）
 pi-batch probe "任务" [--budget-tokens N]                     # Dry-run 标准输出（区间+置信度；预算不足→infeasible）

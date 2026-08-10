@@ -55,6 +55,37 @@ STATE_FILE_MAX_BYTES = 4 * 1024 * 1024
 # 设备清单（INVENTORY 模式）
 # ---------------------------------------------------------------------------
 
+def keymigrate_main(argv: Optional[list] = None) -> int:
+    """`devices keymigrate [--from DIR]`：项目内旧密钥 → 用户级。
+
+    产品化迁移（旧版密钥在 .pi-batch/devices/keys/）；迁移后原文件保留
+    （不删除——用户确认后手动清理）。"""
+    import argparse
+    from .fabric_devices import DEVICE_STATE_DIR as _OLD
+    from . import user_dirs
+    parser = argparse.ArgumentParser(
+        prog="pi-batch.py devices keymigrate",
+        description="把旧项目内设备密钥迁移到用户级目录")
+    parser.add_argument("--from", dest="src", default=str(
+        Path(DEVICE_STATE_DIR) / "keys"))
+    args = parser.parse_args(argv)
+    src = Path(args.src)
+    target = user_dirs.keys_dir()
+    if not src.is_dir():
+        print(f"keymigrate: 无旧密钥目录 {src}（无需迁移）")
+        raise SystemExit(0)
+    target.mkdir(parents=True, exist_ok=True)
+    moved = 0
+    for path in sorted(src.glob("*.json")):
+        dest = target / path.name
+        if dest.exists():
+            continue  # 目标已有同名密钥（不覆盖）
+        dest.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+        moved += 1
+    print(f"keymigrate: {moved} 个密钥已迁入 {target}（原文件保留，确认后手动删）")
+    raise SystemExit(0)
+
+
 def _remote_device_id(target: dict) -> str:
     """远程设备标识（D1）：由 ssh 目标地址派生，静态配置与 ssh alias 解析
     保持一致。注意：地址不是密码学身份（AADM-D §7），D3 登记证书后替换。"""

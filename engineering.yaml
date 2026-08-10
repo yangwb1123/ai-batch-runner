@@ -23,6 +23,7 @@ filesize:
     - "pbatch/pipeline.py"  # upstream-synced; quality.py enforces the 1000-line budget
     - "pbatch/runner.py"    # upstream-synced; quality.py enforces the 1000-line budget
     - "pbatch/cli.py"       # upstream-synced; quality.py enforces the 1000-line budget
+    - "pbatch/config.py"    # upstream-synced; quality.py enforces the 1000-line budget
     - "pi-batch.py"       # upstream-synced entry shim
     - "ai/run-review.py"  # upstream-synced runner
     - "tests/"            # regression suite files

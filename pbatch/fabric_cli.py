@@ -189,6 +189,11 @@ def _add_clock_skew_parser(sub) -> None:
         help="时钟纪律：设备 last_seen 与本机时钟偏差（失联/漂移告警）")
     p_clock.add_argument("--json", action="store_true")
 
+    p_key = sub.add_parser("keymigrate",
+                          help="旧项目内设备密钥 → 用户级目录（跨项目复用）")
+    p_key.add_argument("--from", dest="src", default="",
+                       help="旧密钥目录（默认 .pi-batch/devices/keys）")
+
 
 def _cmd_clock_skew(args) -> None:
     """设备 last_seen 与本机时钟对比：偏差秒数 + 状态（fresh/stale）。"""
@@ -325,6 +330,10 @@ def devices_main(argv: Optional[list] = None) -> int:
         _cmd_ssh_hosts(args)
     elif args.command == "clock-skew":
         _cmd_clock_skew(args)
+    elif args.command == "keymigrate":
+        from .fabric_devices import keymigrate_main
+        keymigrate_main([f"--from={args.src}"] if args.src else [])
+        raise SystemExit(0)
     else:
         _cmd_placement(args)
     raise SystemExit(0)

@@ -5,6 +5,42 @@ one vendor. Point it at `pi`, [Claude Code](https://github.com/anthropics/claude
 Gemini CLI, OpenCode, or configure `agent.argument_flags` for another argv contract. The
 built-in adapter accepts:
 
+---
+
+## 快速开始（产品 CLI）
+
+```bash
+pip install -e .          # 或 pipx install . / uv tool install .
+pi-batch doctor           # 环境诊断：安装/目录/配置/agent/密钥/锁
+pi-batch init             # 创建用户级工作目录骨架
+pi-batch version          # 版本 + 环境
+pi-batch -p "写一个订单接口，含支付审批，生产，go" --classify   # 一句话 → 全流程
+pi-batch completion bash >> ~/.bashrc    # shell 补全（zsh 同理）
+```
+
+### 用户级工作目录（XDG 兼容）
+
+| 目录 | 用途 |
+|---|---|
+| `~/.config/pbatch/settings.yaml` | 用户配置（跨项目偏好） |
+| `~/.cache/pbatch/` | 可丢弃缓存 |
+| `~/.local/share/pbatch/keys/` | 设备身份密钥（跨项目复用） |
+| `~/.local/share/pbatch/logs/` | 全局运行日志 |
+
+`PBATCH_HOME=~/.pbatch` 可统一收拢三目录。**配置分层**：
+CLI 参数 > 项目 `pi-batch.yaml` > 用户 settings.yaml > 内置默认。
+项目相关状态（会话/记忆/被拒产物）保留在项目内 `.pi-batch/`——随仓库共享。
+
+### 功能全景
+
+- **49+ 子命令**：需求评估（assess/classify/profile/probe）→ 流程编排
+  （campaign/org/advance/race/pareto）→ 规则知识（rules/learn/adr/context/
+  memory/capsule/replay）→ 治理（truth/causal/temporal/pinned/metrics/
+  budget/recovery/events）→ 设备织网（devices/serve/runner）
+- **1086+ 回归测试 + 42 eval 用例**；`pi-batch check` 8 门禁聚合自检
+- 零 LLM 确定性核心：所有检测/路由/校验纯 stdlib + ast，可测试、fail closed
+- 详见 `docs/`（AADM 理论四卷、AGENT_ORGANIZATION、CAMPAIGN_LESSONS）与 `AGENTS.md`
+
 ```
 <bin> -p PROMPT [--model M] [--provider P] [--thinking T] [--tools T] [--exclude-tools T]
 ```

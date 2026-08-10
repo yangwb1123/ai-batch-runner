@@ -1,0 +1,215 @@
+# iris-ui vxe-grid 批 C：proxyConfig 服务端数据源
+#
+# 目标：IrisTable 补齐 vxe-grid proxyConfig 同等能力——服务端数据源
+# （远程查询 + 远程排序/筛选/分页），与已有编辑回写/工具栏/分页 UI 集成。
+# 范围：react only（沿用批 1-5 约定）；逻辑下沉 core，适配器薄桥。
+#
+# 执行（在 ai-batch-runner 根目录）：
+#   python pi-batch.py projects/iris-ui/vxe-grid-batch-c.yaml \
+#     --log-file logs/iris-ui-batch-c.log --retries 2
+# 阶段：baseline（官方语义 + 现状盘点）→ adapt（core + react 实现，机械门禁）
+#       → review（对照 vxe-grid 语义对抗审查）→ gate（turbo + 审计 + VERDICT）
+
+git_commit: false
+decision_log: /home/u1/iris-ui/docs/vxe-grid/DECISIONS.md
+
+stages:
+  # ── 1. 基线：proxyConfig 官方语义 + iris-ui 现状 ──
+  - name: baseline
+    from_prompt: |
+      You are preparing the baseline for the iris-ui vxe-grid batch C
+      (proxyConfig server-side data source parity). The monorepo is at
+      /home/u1/iris-ui; the vxe-grid reference types are extracted at
+      /tmp/vxe-grid/package/types/components/grid.d.ts (look for
+      `interface ProxyConfig` around line 144 and `ProxyConfigResponseConfig`
+      around line 777).
+
+      Read:
+      1. /tmp/vxe-grid/package/types/components/grid.d.ts — ProxyConfig fields
+         (enabled / autoLoad / showLoading / sort / filter / paging / seq /
+         ajax.query / response.list+total).
+      2. /home/u1/iris-ui/packages/react/src/primitives/table/props.ts —
+         IrisTableProps current surface.
+      3. /home/u1/iris-ui/packages/core/src/index.ts — available core exports
+         (createDataSource / createResourceController / resilient-fetcher).
+      4. /home/u1/iris-ui/docs/vxe-grid-comparison.md — parity matrix.
+
+      Write a markdown baseline to the output path:
+      - proxyConfig official semantics (query params, response contract,
+        remote sort/filter/paging/seq behavior, autoLoad, loading UI)
+      - what iris-ui already covers (loading/error states, pagination UI,
+        sortable/filters props, edit write-back)
+      - the gap: proposed IrisTable `proxyConfig` prop shape (TS-first:
+        query returns Promise<{ rows, total }>; remoteSort/remoteFilter flags;
+        pageSize/page + onPageChange; autoLoad) and the core controller
+        `createRemoteTableSource` interface (params → { data, total, loading,
+        error, request, refetch }, framework-agnostic, zero framework imports)
+      - file map for the adapt stage (core file, react file, test files)
+      Do NOT modify source files. Read-only documentation stage.
+    output: /home/u1/iris-ui/docs/vxe-grid/batch-c-baseline.md
+    mode: serial
+
+  # ── 2. 实现：core 控制器 + react 薄桥 + 测试 ──
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Implement the iris-ui vxe-grid proxyConfig parity (batch C) in the
+          monorepo at /home/u1/iris-ui, following the design in
+          /home/u1/iris-ui/docs/vxe-grid/batch-c-baseline.md. Read it first.
+
+          HARD CONSTRAINTS (from AGENTS.md):
+          - Logic lives in packages/core (ZERO framework imports — grep for
+            `from '(react|vue|solid|svelte)'` in packages/core/src must stay empty).
+          - React adapter is a thin bridge only. React only — do NOT touch
+            vue/solid/svelte packages.
+          - Additive API only (new props default off). No breaking changes.
+          - Do NOT edit dist/, *.tgz, node_modules, or packages/manifest/*.json
+            (manifest regenerates via `pnpm gen:manifest`).
+          - Test files ≤500 lines. Prefer adding tests under
+            packages/react/src/primitives/table/test/ and
+            packages/core/src/ (next to existing tests).
+          - Core logic budget ≤300 lines for this task; ≤5 changed files
+            (test files count). If you exceed, split — ask nothing, just
+            prioritize the essentials.
+
+          IMPLEMENT:
+          1. packages/core/src/remote-table.ts (new):
+             `createRemoteTableSource<Row>` — framework-agnostic controller:
+             - state: { data: Row[]; total: number; loading: boolean; error:
+               Error | null; params: { page, pageSize, sort, filters } }
+             - options: { query(params): Promise<{ rows: Row[]; total:
+               number }>; autoLoad?: boolean (default true); initialParams? }
+             - methods: request(params?) (dedupes concurrent; latest-wins via
+               a token), refetch(), setParams(partial), subscribe(listener),
+               getState()
+             - params changes trigger auto-request (when autoLoad); sort/filter
+               changes RESET page to 1 (vxe behavior).
+             Export from packages/core/src/index.ts. Write unit tests
+             (packages/core/src/remote-table.test.ts) covering: initial load,
+             setParams triggers reload with page reset, latest-wins on
+             concurrent requests, error state, refetch.
+          2. packages/react/src/primitives/table/props.ts — IrisTableProps:
+             `proxyConfig?: { query(params: { page: number; pageSize: number;
+             sort: { key: string; direction: 'asc' | 'desc' } | null; filters:
+             Record<string, string> }): Promise<{ rows: Row[]; total: number }>;
+             autoLoad?: boolean; remoteSort?: boolean; remoteFilter?: boolean;
+             pageSize?: number; defaultPage?: number; onPageChange?: (page:
+             number, pageSize: number) => void }` (all optional, additive).
+          3. packages/react/src/primitives/table/Table.tsx — bridge:
+             - when proxyConfig is set: create the core controller in a memo;
+             subscribe via useSyncExternalStore; wire table loading/error
+             states to controller state (reuse existing loading/error props
+             rendering); data flows into liveData (edit write-back keeps
+             working).
+             - local sort/filter: when remoteSort is set, sort change triggers
+             controller.setParams (do NOT sort locally); same for filters with
+             remoteFilter. When the flags are off, existing local behavior
+             stays.
+             - pagination: when proxyConfig is set, render the existing
+             pagination UI (look for how paging is currently done in Table.tsx
+             — the table already has a pager; wire page/pageSize/total to the
+             controller; page changes call controller.setParams and
+             onPageChange). autoLoad=false means no initial request until the
+             first setParams.
+             - IMPORTANT: proxyConfig + edit write-back must coexist — committed
+             edits update liveData locally and the next refetch replaces it.
+          4. Tests (packages/react/src/primitives/table/test/proxy-config.test.tsx):
+             - renders loading state then rows after query resolves
+             - error state renders the error UI (reuse existing error state)
+             - remoteSort: clicking a sortable header calls query again with
+               the sort param (mock query, assert calls)
+             - page change calls query with page=2
+             - autoLoad=false does not query on mount
+
+          VERIFY (all must pass):
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0 corepack
+            pnpm --filter @iris-ui-kit/core test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react typecheck && ... test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react lint` (0 errors; a complexity warning on
+            IrisTable is pre-existing and acceptable)
+          - `python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json` → 0 violations (new CSS must use --iris-* tokens;
+            register any new runtime vars in that script if genuinely needed)
+          - filesize check passes when committing (husky): each changed file
+            ≤500 lines.
+          Report in your final message: files changed, tests added, exact test
+          counts, and any deviation from the baseline design.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-c-adapt.md
+
+  # ── 3. 对抗审查：对照 vxe-grid 语义逐项核对 ──
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are the adversarial reviewer for iris-ui batch C (proxyConfig
+          parity). Read /home/u1/iris-ui/docs/vxe-grid/batch-c-baseline.md and
+          batch-c-adapt.md, then inspect the actual implementation:
+          - packages/core/src/remote-table.ts
+          - packages/react/src/primitives/table/Table.tsx (proxyConfig parts)
+          - packages/react/src/primitives/table/props.ts
+          - the new tests
+
+          Check against vxe-grid ProxyConfig semantics:
+          1. autoLoad=false truly skips the initial query
+          2. sort/filter change with remoteSort/remoteFilter triggers a query
+             AND resets page to 1; local (flag off) keeps existing behavior
+          3. loading/error states render (not just state) and don't break
+             empty/loading/error precedence
+          4. pagination wiring: total drives the pager, page change queries,
+             onPageChange fires
+          5. concurrent requests: latest-wins (stale response cannot overwrite)
+          6. edit write-back coexists: commit updates liveData, no crash on
+             next refetch
+          7. core has ZERO framework imports; react bridge only
+          8. additive: no existing prop changed semantics
+
+          Run the verification commands (core test, react test/typecheck/lint,
+          the audit script — same commands as the adapt stage) and confirm they
+          pass. Write a verdict markdown: PASS or FAIL with a numbered list of
+          findings (each finding: severity, file:line, fix suggestion). If any
+          finding is a real defect, still write FAIL with the concrete fix —
+          the gate stage will handle repair. Do NOT modify files.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-c-review.md
+
+  # ── 4. 门禁：全仓验证 + 文档 ──
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Gate stage for iris-ui batch C (proxyConfig parity). Read the review
+          verdict /home/u1/iris-ui/docs/vxe-grid/batch-c-review.md.
+
+          If the verdict is PASS: run the full repo gate:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm turbo run test typecheck lint build --concurrency=2`
+            (all 180 tasks must pass)
+          - `python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json` → 0 violations
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm gen:manifest`
+            (regenerates manifest; commit it)
+          - Update /home/u1/iris-ui/docs/vxe-grid-comparison.md: mark the
+            proxyConfig row as done (react).
+          - `cd /home/u1/iris-ui && git add -A -- . ':!apps/ssr-solidstart/.vinxi'
+            && git commit -m "feat(table): vxe-grid 批 C——proxyConfig 服务端数据源（react only）"`
+            (husky filesize/budget gates run on commit; if budget exceeds,
+            split the commit: core first, then react+tests).
+          Report the commit hash and final test counts.
+
+          If the verdict is FAIL with concrete fixes: apply the fixes
+          (implementation + tests), rerun the failing checks until green,
+          then run the full repo gate as above and commit. Do not silence
+          checks; fix root causes.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-c-gate.md

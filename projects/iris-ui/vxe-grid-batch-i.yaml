@@ -1,0 +1,215 @@
+# iris-ui vxe-grid 批 I：表头筛选面板 + textarea 编辑器 + formatter 列格式化
+#
+# 目标：
+# 1. 表头筛选面板（vxe filter panel parity）：列 filterable + filterOptions
+#    多选 checkbox 面板，本地过滤（值包含），与现有 filters 机制共存
+# 2. editor: 'textarea' 多行单元格编辑器（vxe edit-render textarea parity）
+# 3. 列 formatter：显示层格式化（vxe formatter parity，不影响排序/编辑）
+# 范围：react only；additive。
+#
+# 执行：python pi-batch.py projects/iris-ui/vxe-grid-batch-i.yaml \
+#   --log-file logs/iris-ui-batch-i.log --retries 2
+# 时间预算：先做轻的（formatter/textarea），再做重的（filter 面板）；
+# 若超时留下已完成部分由维护者收尾。
+
+git_commit: false
+decision_log: /home/u1/iris-ui/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      You are preparing the baseline for iris-ui vxe-grid batch I (filter
+      panel + textarea editor + formatter). Monorepo: /home/u1/iris-ui.
+
+      Read:
+      1. /home/u1/iris-ui/packages/react/src/primitives/table/Table.tsx —
+         the filters mechanism (filteredData memo, filters prop,
+         filterMethod column option), the editing input render (~1580),
+         the header cell render (for the filter icon button), and the
+         floating primitives used by ContextMenu.tsx (virtual anchor
+         pattern from batch H — reuse it for the filter panel).
+      2. /home/u1/iris-ui/packages/react/src/primitives/table/types.ts +
+         props.ts — IrisTableColumn (filterMethod, editor), IrisTableProps
+         (filters).
+      3. /home/u1/iris-ui/packages/react/src/primitives/checkbox/ — the
+         checkbox primitive for the multi-select filter panel.
+      4. /tmp/vxe-grid/package/types/components/table.d.ts — filter panel
+         semantics (filters checked, filter-multiple) if useful.
+
+      Write a markdown baseline to the output path:
+      - vxe semantics: header filter icon → panel with checkbox options /
+        input, confirm/clear, filter-multiple
+      - proposed iris design (react only, additive):
+        a) column `formatter?: (value: unknown, row: Row) => import('react').ReactNode`
+           — display-only (cell render + tooltip content); edit/sort/filter
+           still use the RAW value; summary unaffected
+        b) IrisTableEditor adds 'textarea' — editing renders a <textarea
+           data-iris-table-editor-textarea> (same commit/cancel/aria
+           behavior as the text editor)
+        c) column `filterable?: boolean` + `filterOptions?: Array<{ value:
+           string; label: string }>`; IrisTableProps adds `filterValues?:
+           Record<string, string[]>` (controlled) + `onFilterValuesChange?:
+           (next: Record<string, string[]>) => void` — when filterable, the
+           header renders a small filter icon button (data-iris-filter-trigger)
+           that opens a floating panel (virtual anchor at the icon, reuse the
+           batch-H ContextMenu floating pattern: useFloating + useDismiss +
+           portal; panel data-iris-filter-panel) with a checkbox list of
+           filterOptions + 确认/清除 buttons (i18n keys table.filterConfirm /
+           table.filterClear); confirming writes filterValues[key] = checked
+           values (or drops the key when empty); the filteredData memo gains
+           an OR-match on filterValues (row kept when the cell value is in the
+           checked set — string comparison); empty/absent → no filter;
+           remote mode: merge filterValues into the query filters as
+           comma-joined strings (documented)
+      - file map + tests
+      Do NOT modify source files.
+    output: /home/u1/iris-ui/docs/vxe-grid/batch-i-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Implement iris-ui vxe-grid batch I (filter panel + textarea editor +
+          formatter) in /home/u1/iris-ui, per
+          /home/u1/iris-ui/docs/vxe-grid/batch-i-baseline.md. Read it first,
+          then AGENTS.md.
+
+          HARD CONSTRAINTS:
+          - Core framework-free; React only; additive only.
+          - No dist/tgz/node_modules/manifest.json edits.
+          - Test files ≤500 lines; ≤5 changed files + tests.
+          - MANIFEST SCANNER HYGIENE: function-type props on ONE line; inline
+            object params use named exported interfaces; export new types
+            from index.ts.
+          - CSS uses --iris-* tokens only.
+          - TIME BUDGET: implement in this order: (1) formatter + textarea
+            (light); (2) filter panel (heavy); (3) tests. If low on time,
+            finish (1) + the filter panel render + its core filtering, then
+            tests for what exists.
+
+          IMPLEMENT:
+          1. formatter (types.ts + Table.tsx):
+             - IrisTableColumn.formatter?: (value: unknown, row: Row) =>
+               import('react').ReactNode — single line in the type
+             - body cell render: when col.formatter exists, render
+               col.formatter(raw, row) instead of raw (keep editing/col.render
+               precedence: render > formatter > raw — check how col.render
+               currently wins and slot formatter between render and raw);
+               tooltip content also uses the formatted text
+             - sorting/filtering/editing use the raw value (untouched)
+          2. textarea editor (types.ts + Table.tsx):
+             - IrisTableEditor = 'text' | 'number' | 'select' | 'textarea'
+             - editing a textarea column renders <textarea
+               data-iris-table-editor-textarea rows={3}> with the same
+               onKeyDown (Enter commit, Escape cancel), onChange → setDraft,
+               onBlur commit, aria-invalid/aria-describedby as the text
+               editor
+          3. filter panel (types.ts + props.ts + Table.tsx):
+             - IrisTableColumn: filterable?: boolean; filterOptions?:
+               Array<{ value: string; label: string }>
+             - IrisTableProps: filterValues?: Record<string, string[]>;
+               onFilterValuesChange?: (next: Record<string, string[]>) => void
+             - header cell: when col.filterable, render a small icon button
+               (data-iris-filter-trigger, e.g. "▾" or "⏷", muted color,
+               --iris-* tokens) at the end of the title; clicking opens the
+               panel (stopPropagation so it does not trigger sort); the icon
+               is highlighted (--iris-primary) when filterValues has entries
+               for the column
+             - panel: a self-drawn floating panel (copy the batch-H
+               ContextMenu pattern: useFloating with a virtual anchor at the
+               icon rect — measure via getBoundingClientRect on the trigger,
+               or simpler: anchor the trigger element directly since it is a
+               real DOM node — use the trigger ref as the anchor with
+               placement 'bottom-start'; useDismiss + scroll close; portal);
+               content: checkbox list (IrisCheckbox per option, checked from
+               filterValues[col.key]), footer buttons 确认 (data-iris-filter-
+               confirm) / 清除 (data-iris-filter-clear) with i18n keys
+               table.filterConfirm / table.filterClear (en + zh plugin);
+               confirm writes filterValues via onFilterValuesChange (or
+               internal state when uncontrolled — filterValues is controlled;
+               if no onChange is provided keep it controlled-only and document
+               it, matching the filters prop pattern)
+             - filteredData: after the existing substring filter, ALSO apply
+               filterValues OR-match: for each column with a non-empty
+               checked set, the row's raw String(value) must be in the set
+               (checked sets apply only when present in the map)
+             - remote mode (proxy): merge filterValues into the query filters
+               as comma-joined strings in the existing merge point
+          4. i18n: table.filterConfirm / table.filterClear in
+             packages/core/src/i18n.ts + packages/plugin-locale-zh.
+          5. Tests (new filter-panel.test.tsx):
+             - formatter renders formatted text; sorting uses raw value
+               (assert order unchanged by formatter)
+             - textarea editor opens, commits on Enter, cancels on Escape
+             - filterable header shows the trigger; clicking opens the panel;
+               checking options + confirm filters rows (OR-match); clear
+               removes the filter; panel closes on outside click; trigger
+               highlight state
+             - remote: filterValues merged into query filters (comma-joined)
+
+          VERIFY:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm --filter @iris-ui-kit/react typecheck`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react lint` (0 errors)
+          - `python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json` → 0 violations
+          Report: files changed, tests added, counts, what is unfinished if
+          any.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-i-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are the adversarial reviewer for iris-ui batch I (filter panel +
+          textarea + formatter). Read batch-i-baseline.md and
+          batch-i-adapt.md, inspect the implementation.
+
+          Check:
+          1. formatter: display-only (raw used for sort/filter/edit);
+             render > formatter > raw precedence; tooltip uses formatted
+          2. textarea: commit/cancel/aria parity with the text editor
+          3. filter panel: trigger does not sort; panel anchors under the
+             trigger; checkbox list from filterOptions; confirm/clear write
+             filterValues; OR-match filtering correct (empty set = no
+             filter); remote comma-join; outside click / scroll / Esc closes;
+             trigger highlight when active
+          4. additive only; manifest hygiene; core framework-free; CSS tokens
+          Run verification commands (react test/typecheck/lint, audit). Write
+          verdict markdown: PASS or FAIL with numbered findings (severity,
+          file:line, fix). Do NOT modify files.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-i-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Gate stage for iris-ui batch I. Read the review verdict
+          /home/u1/iris-ui/docs/vxe-grid/batch-i-review.md.
+
+          If PASS: run the full repo gate:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm turbo run test typecheck lint build --concurrency=2`
+          - audit → 0; `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm gen:manifest`
+          - Update /home/u1/iris-ui/docs/vxe-grid-comparison.md: mark batch I
+            rows (filter panel / textarea editor / formatter) done (react).
+          - Commit: `git add -A -- . ':!apps/ssr-solidstart/.vinxi' && git
+            commit -m "feat(table): vxe-grid 批 I——表头筛选面板/textarea 编辑器/formatter（react only）"`
+          Report commit hash and final test counts.
+
+          If FAIL with concrete fixes: apply fixes, rerun, full gate, commit.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-i-gate.md

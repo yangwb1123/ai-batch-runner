@@ -38,9 +38,16 @@ KEY_DIR = "keys"
 REGISTER_BACKOFF_MAX = 30.0
 
 
+def _default_key_dir() -> Path:
+    """默认密钥目录：用户级（跨项目复用设备身份）；显式 state_dir
+    仍用项目内（测试隔离/多环境）。"""
+    from . import user_dirs
+    return user_dirs.keys_dir()
+
+
 def key_path(state_dir: str = "", name: str = "") -> Path:
-    return (Path(state_dir or DEVICE_STATE_DIR) / KEY_DIR
-            / f"{name}.json")
+    base = Path(state_dir or _default_key_dir())
+    return base / KEY_DIR / f"{name}.json" if state_dir else base / f"{name}.json"
 
 
 def load_or_create_key(state_dir: str = "", name: str = "") -> dict:

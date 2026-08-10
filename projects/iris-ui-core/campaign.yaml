@@ -1,0 +1,67 @@
+# iris-ui core + primitives 推进 campaign：证据驱动发现实现方向
+name: iris-core-primitives-advance
+
+discovery:
+  roots:
+    - packages/core/src
+    - packages/react/src/primitives
+    - packages/react/src/behaviors
+    - packages/react/src/layouts
+  exclude:
+    - node_modules
+    - dist
+    - .git
+    - .pi-batch
+    - docs
+    - testdata
+    - generated
+    - __tests__
+  max_depth: 2
+  fallback_top_level: false
+
+analysis:
+  jobs: 4
+  retries: 2
+  candidate_limit: 4
+  prompt: |
+    Analyze module '{module}' at {module_path} in the iris-ui monorepo
+    (/home/u1/iris-ui). Iris UI is a token-driven, four-framework
+    (react/vue/solid/svelte) component library. The CORE package
+    (@iris-ui-kit/core) is framework-agnostic — engines (store/machine/
+    form/i18n/virtual/async/pagination/tabsNav), controllers (selection/
+    expansion/data-view/roving/admin-shell/resource/cell-edit/sortable/
+    window/profile/commands/notifications/fs/clipboard-history) and 9
+    resilience primitives (disposable/query-cache/realtime/outbox/
+    event-bus/circuit-breaker/rate-limiter/resilient-fetcher/data-source).
+    Primitives are single-purpose components (88 directories).
+    The design system, visual parity and aesthetics are DONE and gated.
+    Your job: find ADVANCEMENT opportunities — new capabilities, deeper
+    features, or hardening — with evidence.
+    Return ONLY a JSON array with at most {candidate_limit} high-value
+    directions, sorted by value. Each object:
+    {title, problem, value (1-10), risk_reduction (1-10), effort (1-10),
+     confidence (1-10), evidence (array of file/symbol paths),
+     acceptance (array of testable checks)}
+    evidence and acceptance MUST be JSON arrays of strings.
+    Do not modify code. Claims without repository evidence must be
+    identified as proposed, not verified.
+    DISIPLINE: new behavior belongs in packages/core/src (framework-
+    agnostic); primitives stay thin bridges. Additive API preferred;
+    breaking changes flagged "[breaking]" in title.
+
+selection:
+  max_directions: 3
+  minimum_score: 0
+
+implementation:
+  pipeline: /home/u1/ai-batch-runner/projects/iris-ui-core/implement-pipeline.yaml
+  requirement_stage: requirements
+  concurrency: 1
+  timeout: 14400
+  worktree_root: /home/u1/iris-ui/.pi-batch/worktrees
+
+state:
+  output_dir: /home/u1/iris-ui/.pi-batch/core-campaign
+  state_file: /home/u1/iris-ui/.pi-batch/core-campaign/state.jsonl
+  summary_file: /home/u1/iris-ui/.pi-batch/core-campaign/SUMMARY.md
+  line_max_bytes: 262144

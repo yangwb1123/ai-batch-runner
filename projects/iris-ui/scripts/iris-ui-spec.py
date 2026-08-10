@@ -164,64 +164,100 @@ def _classify_hex(text: str, path: Path, line_no: int) -> list:
     return out
 
 
+
+def _line_of(text: str, match) -> int:
+    """匹配位置的行号（1-based）——报告定位。"""
+    return text[:match.start()].count(chr(10)) + 1
+
+
+def _check_spacing_value(text: str, path: Path, out: list) -> None:
+    """魔法间距：值型 token 不在刻度内。"""
+    for m in _SPACING_VALUE_RE.finditer(text):
+        for px in _spacing_tokens(m.group(2)):
+            if px not in SPACING_SCALE:
+                out.append(
+                    f"{path}:{_line_of(text, m)}: "
+                    f"魔法间距 {m.group(0)[:60]}"
+                    f"（token 刻度 {sorted(SPACING_SCALE - {0})}）"
+                )
+                break
+
+
+def _check_spacing_num(text: str, path: Path, out: list) -> None:
+    """魔法间距：数字型不在刻度内。"""
+    for m in _SPACING_NUM_RE.finditer(text):
+        v = int(m.group(1))
+        if v not in SPACING_SCALE:
+            out.append(
+                f"{path}:{_line_of(text, m)}: "
+                f"魔法间距 {m.group(0)[:40]}"
+                f"（数字型，token 刻度 {sorted(SPACING_SCALE - {0})}）"
+            )
+
+
+def _check_spacing_css(text: str, path: Path, out: list) -> None:
+    """魔法间距：CSS 值不在刻度内。"""
+    for m in _SPACING_CSS_RE.finditer(text):
+        for px in _spacing_tokens(m.group(1)):
+            if px not in SPACING_SCALE:
+                out.append(
+                    f"{path}:{_line_of(text, m)}: "
+                    f"魔法间距 {m.group(0)[:60]}（CSS）"
+                )
+                break
+
+
+def _check_spacing(text: str, path: Path) -> list:
+    """间距三类检查（值/数字/CSS）。"""
+    out = []
+    _check_spacing_value(text, path, out)
+    _check_spacing_num(text, path, out)
+    _check_spacing_css(text, path, out)
+    return out
+
+
 def _check_shadow(text: str, path: Path) -> list:
+    """硬编码阴影：复合 var()/全屏遮罩 9999px 豁免。"""
     out = []
     for m in _SHADOW_RE.finditer(text):
-        if "var(" in m.group(1) or "9999px" in m.group(1):
-            continue  # token 引用/全屏遮罩（Tour/Modal mask）豁免
+        if "var(" in m.group(1):
+            continue  # 复合阴影含 token 引用（focus ring 等），豁免
+        if "9999px" in m.group(1):
+            continue  # 全屏遮罩模式（Tour/Modal mask），功能性写法非阴影家族
         out.append(
-            f"{path}:{text[:m.start()].count(chr(10)) + 1}: "
+            f"{path}:{_line_of(text, m)}: "
             f"硬编码阴影 {m.group(1)[:60]}（应消费 --iris-shadow-*）"
         )
     for m in _SHADOW_CSS_RE.finditer(text):
         if "var(" in m.group(0) or "9999px" in m.group(0):
             continue
         out.append(
-            f"{path}:{text[:m.start()].count(chr(10)) + 1}: "
+
+            f"{path}:{_line_of(text, m)}: "
             f"硬编码阴影 {m.group(0)[:60]}（CSS，应消费 --iris-shadow-*）"
         )
     return out
 
 
 def _check_font(text: str, path: Path) -> list:
+
+    """裸字号：JS/CSS 两形态。"""
     out = []
     for m in _FONT_STYLE_RE.finditer(text):
         out.append(
-            f"{path}:{text[:m.start()].count(chr(10)) + 1}: "
+            f"{path}:{_line_of(text, m)}: "
             f"裸字号 {m.group(0)}（应消费 --iris-font-size-*）"
+        )
+    for m in _FONT_CSS_RE.finditer(text):
+        out.append(
+            f"{path}:{_line_of(text, m)}: "
+            f"裸字号 {m.group(0)}（CSS，应消费 --iris-font-size-*）"
         )
     return out
 
 
-def _check_spacing(text: str, path: Path) -> list:
-    out = []
-    for m in _SPACING_VALUE_RE.finditer(text):
-        for px in _spacing_tokens(m.group(2)):
-            if px not in SPACING_SCALE:
-                out.append(
-                    f"{path}:{text[:m.start()].count(chr(10)) + 1}: "
-                    f"魔法间距 {m.group(0)[:60]}（token 刻度 {sorted(SPACING_SCALE - {0})}）"
-                )
-                break
-    for m in _SPACING_NUM_RE.finditer(text):
-        v = int(m.group(1))
-        if v not in SPACING_SCALE:
-            out.append(
-                f"{path}:{text[:m.start()].count(chr(10)) + 1}: "
-                f"魔法间距 {m.group(0)[:40]}（数字型，token 刻度 {sorted(SPACING_SCALE - {0})}）"
-            )
-    for m in _SPACING_CSS_RE.finditer(text):
-        for px in _spacing_tokens(m.group(1)):
-            if px not in SPACING_SCALE:
-                out.append(
-                    f"{path}:{text[:m.start()].count(chr(10)) + 1}: "
-                    f"魔法间距 {m.group(0)[:60]}（CSS）"
-                )
-                break
-    return out
-
-
 def _check_file(path: Path, mode: str) -> list:
+    """按模式分派检查：hex/spacing/shadow/font。"""
     text = path.read_text(encoding="utf-8", errors="replace")
     out = []
     if mode in ("hex", "all"):
@@ -232,11 +268,7 @@ def _check_file(path: Path, mode: str) -> list:
         out += _check_shadow(text, path)
     if mode in ("font", "all"):
         out += _check_font(text, path)
-        for m in _FONT_CSS_RE.finditer(text):
-            out.append(
-                f"{path}:{text[:m.start()].count(chr(10)) + 1}: "
-                f"裸字号 {m.group(0)}（CSS，应消费 --iris-font-size-*）"
-            )
+
     return out
 
 
@@ -256,39 +288,45 @@ def scan(root: Path, mode: str, exclude: set) -> tuple:
     return files, violations
 
 
-def _take_value(argv, i, flag):
-    """--flag value 双参数；不足返回 (None, i)。"""
-    if i + 1 < len(argv):
-        return argv[i + 1], i + 2
-    return None, i
+
+_OPTION_KEYS = ("--mode", "--dir", "-o", "--pkg")
 
 
 def _parse_argv(argv):
-    mode, directory, out_file, want_json, pkg = "all", None, None, False, None
-    flags = {"--mode": "mode", "--dir": "directory", "-o": "out_file", "--pkg": "pkg"}
+    """选项解析（表驱动）：--mode/--dir/-o/--pkg 带值，--json 布尔。"""
+    values = {"--mode": "all", "--dir": None, "-o": None, "--pkg": None}
+    want_json = False
     i = 0
     while i < len(argv):
-        a = argv[i]
-        if a == "--json":
+        arg = argv[i]
+        if arg == "--json":
             want_json = True
             i += 1
-            continue
-        slot = flags.get(a)
-        if slot is None:
-            i += 1
-            continue
-        value, i = _take_value(argv, i, a)
-        if value is None:
-            continue
-        if slot == "mode":
-            mode = value
-        elif slot == "directory":
-            directory = value
-        elif slot == "out_file":
-            out_file = value
+        elif arg in _OPTION_KEYS and i + 1 < len(argv):
+            values[arg] = argv[i + 1]
+            i += 2
         else:
-            pkg = value
-    return mode, directory, out_file, want_json, pkg
+            i += 1
+    return (values["--mode"], values["--dir"], values["-o"],
+            want_json, values["--pkg"])
+
+
+def _resolve_roots(directory: str, pkg: str) -> list:
+    """扫描根：--dir 优先，其次 --pkg，默认全部包。"""
+    if directory:
+        return [Path(directory)]
+    root = Path("/home/u1/iris-ui")
+    if pkg:
+        if pkg in ("react", "vue", "solid", "svelte"):
+            return [root / f"packages/{pkg}/src"]
+        if pkg == "plugins":
+            return sorted((root / "packages").glob("plugin-*/src"))
+        return []
+    roots = [root / p for p in
+             ("packages/react/src", "packages/vue/src", "packages/solid/src",
+              "packages/svelte/src")]
+    roots += sorted((root / "packages").glob("plugin-*/src"))
+    return roots
 
 
 def _scan_roots(directory, pkg):
@@ -315,8 +353,9 @@ def main(argv):
         print(f"IRIS-UI-SPEC: unknown mode '{mode}'", file=sys.stderr)
         return 2
 
-    roots = _scan_roots(directory, pkg)
-    if roots is None:
+    roots = _resolve_roots(directory, pkg)
+    if pkg and not roots:
+        print(f"IRIS-UI-SPEC: unknown --pkg '{pkg}'", file=sys.stderr)
         return 2
 
     total_files, total_violations = 0, []
