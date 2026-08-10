@@ -125,6 +125,8 @@ def main(argv: list[str]) -> int:
     # --exclude=PATH or --exclude PATH (repeatable) skips trees that
     # legitimately carry legacy/vendored code (e.g. ai-dev/).
     argv_list = list(argv)
+    fail_on_legacy = "--strict" in argv_list
+    argv_list = [arg for arg in argv_list if arg != "--strict"]
     excludes: list = []
     index = 0
     while index < len(argv_list):
@@ -143,7 +145,6 @@ def main(argv: list[str]) -> int:
     if not targets:
         print("quality: no targets found", file=sys.stderr)
         return 1
-    fail_on_legacy = "--strict" in argv_list
     total = 0
     for t in targets:
         files = sorted(t.rglob("*.py")) if t.is_dir() else [t]

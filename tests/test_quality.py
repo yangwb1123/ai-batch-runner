@@ -33,6 +33,16 @@ def test_clean_file_passes(tmp_path):
     assert "quality: OK" in result.stdout
 
 
+def test_bare_strict_flag_scans_current_directory(tmp_path):
+    (tmp_path / "good.py").write_text("def ok():\n    return 1\n", encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(QUALITY), "--strict"], cwd=tmp_path,
+        capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "quality: OK" in result.stdout
+
+
 def test_long_function_reported(tmp_path):
     bad = tmp_path / "bad.py"
     lines = ["def big():"]
