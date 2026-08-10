@@ -163,12 +163,18 @@ def _one_task_errors(task, label: str) -> list[str]:
     timeout = task.get("timeout", 1)
     if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 1:
         errors.append(f"{label}.timeout must be an integer >= 1")
-    if "env" in task and not isinstance(task["env"], dict):
-        errors.append(f"{label}.env must be a mapping")
+    if "env" in task and not _valid_env(task["env"]):
+        errors.append(f"{label}.env must map strings to strings")
     for key in ("validate", "validate_cmd"):
         if key in task and task[key] is not None and not isinstance(task[key], str):
             errors.append(f"{label}.{key} must be a string or null")
     return errors
+
+
+def _valid_env(value) -> bool:
+    return isinstance(value, dict) and all(
+        isinstance(key, str) and isinstance(item, str)
+        for key, item in value.items())
 
 
 def _unknown_field_errors(value: dict, allowed: frozenset, prefix: str) -> list[str]:

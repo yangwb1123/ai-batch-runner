@@ -20,6 +20,8 @@ def test_python_m_pbatch_help():
     assert result.returncode == 0
     assert "--classify" in result.stdout
     assert "campaign" in result.stdout
+    assert "export-template" in result.stdout
+    assert "health" in result.stdout
 
 
 def test_python_m_pbatch_classify_subcommand():
@@ -27,6 +29,13 @@ def test_python_m_pbatch_classify_subcommand():
     assert result.returncode == 0
     assert "frontend_ui" in result.stdout
     assert "route to frontend pipeline: True" in result.stdout
+
+
+def test_classify_human_output_reports_backend_route():
+    result = _run([sys.executable, "-m", "pbatch", "classify",
+                   "用 Go 实现后端订单 API"])
+    assert result.returncode == 0
+    assert "route to backend pipeline: True" in result.stdout
 
 
 def test_python_m_pbatch_classify_json():

@@ -18,6 +18,15 @@ def test_pipeline_schema_allows_zero_meta_timeout_to_inherit_default():
     assert validate_pipeline(data) == []
 
 
+def test_pipeline_schema_rejects_non_string_environment_values():
+    data = {"stages": [{
+        "name": "source", "from_prompt": "p", "output": "source.md",
+        "tasks": [{"prompt": "work", "env": {"COUNT": 2}}],
+    }]}
+    assert any("env must map strings to strings" in error
+               for error in validate_pipeline(data))
+
+
 def test_failed_stage_never_attempts_git_commit(tmp_path, monkeypatch):
     calls = []
     stage = Stage(name="failed", git_commit=True, cwd=str(tmp_path))

@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import config
+from .context_inject import prepare_task_context
 from .models import Task, Stage
 from .pipeline import _expected_fp, reuse_decision
 from .text_io import read_text_bounded
@@ -41,7 +42,9 @@ def _stage_from_dir_aggregate(
         task.model = model_override
     if timeout_override:
         task.timeout = timeout_override
-    fp = _expected_fp(prompt, str(out_path), validate_cmd, task.model, task.provider, fingerprint_mode)
+    prepare_task_context(task, [path.resolve() for path in files], strict=False)
+    fp = _expected_fp(task.prompt, str(out_path), validate_cmd, task.model,
+                      task.provider, fingerprint_mode, task.workdir())
     if reuse and reuse_decision(str(out_path), validate_cmd, str(dir_path.resolve()), reuse_legacy, fp):
         log.info("REUSE: %s (reused+validated)", out_path.name)
         return [], [str(out_path)]
@@ -78,4 +81,3 @@ def _describe_stage(stage: Stage, reuse: bool) -> None:
     if stage.git_commit:
         log.info("  Git commit: YES")
     log.info("  Mode: %s", stage.mode)
-

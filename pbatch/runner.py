@@ -1,5 +1,4 @@
-"""Task execution: run one agent call with a hard deadline, failure
-signatures, retries, validation gates, and summaries."""
+"""Task execution with hard deadlines, retries, gates, and summaries."""
 
 from __future__ import annotations
 
@@ -22,6 +21,7 @@ from typing import NamedTuple, Optional
 
 from . import config
 from .config import AGENT_BIN, AGENT_DEFAULT_WORKERS, _resolve_validator_specs, _resolve_validators, _session_flags, log
+from .context_inject import inject_task_context
 from .models import Task, TaskResult
 from .runner_results import (overflow_result as _overflow_result,
                              prompt_limit_result as _prompt_limit_result)
@@ -30,6 +30,7 @@ from . import ratelimit
 from .metering import budget_allows, budget_try_consume, record_event
 from .memory import (enrich_prompt, memory_enabled, new_session_id,
                      record_task, session_id_from_flags)
+from .reuse import capture_worktree_state, preserve_failed_worktree
 from .session import fork_flags, has_compaction, session_size_bytes
 from .triage import clear_marker, task_key, write_marker
 
@@ -37,6 +38,8 @@ from .triage import clear_marker, task_key, write_marker
 # able to kill in-flight agents so the executor shutdown is prompt)
 _ACTIVE_PROCS: set = set()
 _ACTIVE_LOCK = threading.Lock()
+_BUDGET_MESSAGE = ("BUDGET: invocation limit reached; stopping — 调整 "
+                   "--max-rounds/limits 后可续跑（已保留现场）")
 
 
 def _register_proc(proc: subprocess.Popen) -> None:
@@ -107,15 +110,9 @@ def agent_failure_reason(returncode: int, output: str) -> str:
 
 
 def _budget_gate(task: Task, key: str, workdir: str, session_name: str = "") -> None:
-    """T8: the budget cap wins over everything — a capped run stops before
-    spawning, never after burning quota (exit 3, budget_cap event).
-    budget_try_consume is atomic, so parallel workers cannot overshoot the
-    cap (round-4 finding M2/DS-4)."""
+    """Stop before spawn when the atomic parallel-safe budget is exhausted."""
     if not budget_try_consume():
-        log.error(
-            "BUDGET: invocation limit reached; stopping — 调整 "
-            "--max-rounds/limits 后可续跑（已保留现场）"
-        )
+        log.error(_BUDGET_MESSAGE)
         record_event("budget_cap", task.prompt, "invocation limit", workdir, session_name)
         clear_marker(key, workdir)
         raise SystemExit(3)
@@ -154,15 +151,11 @@ def _kill_group(proc: Optional[subprocess.Popen]) -> None:
         proc.wait(timeout=1)
     except (subprocess.TimeoutExpired, ChildProcessError):
         pass
-
-
 def _spawn_agent(cmd: list, workdir: str, env: dict) -> subprocess.Popen:
     """Spawn the agent in its own process group so the whole child tree
     can be killed on timeout or interrupt."""
     return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, cwd=workdir, env=env, start_new_session=True)
-
-
 def _agent_not_found(task: Task) -> TaskResult:
     """The agent binary is missing from PATH: a permanent, non-retryable
     failure (never saved as an artifact)."""
@@ -173,6 +166,20 @@ def _agent_not_found(task: Task) -> TaskResult:
     )
     return TaskResult(task=task, success=False, stderr=f"{config.AGENT_BIN} not found in PATH",
                       reason="agent binary not found")
+
+
+def _context_rejection(task: Task) -> Optional[TaskResult]:
+    try:
+        if not isinstance(task.env, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in task.env.items()):
+            raise ValueError("task env must map strings to strings")
+        inject_task_context(task)
+    except ValueError as exc:
+        reason = f"context injection rejected: {exc}"
+        log.error("REJECTED: %s", reason)
+        return TaskResult(task=task, success=False, returncode=-1,
+                          stderr=str(exc), reason=reason)
+    return None
 
 
 def _task_invocation(task: Task, session_flags: Optional[list],
@@ -191,7 +198,8 @@ def _task_invocation(task: Task, session_flags: Optional[list],
 
 
 def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = False, session_flags: Optional[list] = None, session_name: str = "") -> TaskResult:
-    """Execute one agent task with live-output policy and T7 session metering."""
+    if rejected := _context_rejection(task):
+        return rejected
     invocation = _task_invocation(task, session_flags, session_name)
     if isinstance(invocation, TaskResult):
         return invocation
@@ -205,7 +213,6 @@ def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = F
         _rate_gate(task, effective_name)
         proc = _spawn_agent(cmd, workdir, env)
         _register_proc(proc)
-        # Marker carries the PID so residue scans detect orphaned agents.
         write_marker(key, workdir, agent_pid=proc.pid)
         streamed = _stream_output_enabled()
         stdout_lines, stderr_lines, overflow = _stream_proc(proc, prefix, start,
@@ -234,7 +241,6 @@ def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = F
         return _finish_task_result(
             result, task, session_id, effective_name, workdir, usage_before)
     finally:
-        # On any abnormal exit kill the child group; normal completion is done.
         if proc is not None and not completed:
             _kill_group(proc)
         if proc is not None:
@@ -749,8 +755,7 @@ def _revalidation_passed(spec, path: Path, cmd: str, v) -> bool:
 
 
 def _result_from_proc(task: Task, proc: subprocess.Popen, stdout_lines: list, stderr_lines: list, elapsed: float) -> TaskResult:
-    """Assemble the TaskResult from a finished process: failure-signature
-    rejection (quota/rate-limit/offline/timeout text) overrides exit code 0."""
+    """Build a result; failure signatures override a nominal exit code 0."""
     stdout_text = "".join(stdout_lines)
     stderr_text = "".join(stderr_lines)
     reason = agent_failure_reason(proc.returncode, stdout_text + "\n" + stderr_text)
@@ -795,13 +800,7 @@ def _stream_output_enabled() -> bool:
 
 def _stream_proc(proc: subprocess.Popen, prefix: str, start: float,
                  timeout: int, emit: bool = False) -> tuple[list[str], list[str], list]:
-    """Drain stdout/stderr concurrently via daemon threads, then wait on a
-    hard deadline. Thread joins only drain pipes and must not extend the
-    window, so each join/wait gets the remaining budget (they return early
-    when the agent exits). Raises TimeoutExpired when the deadline hits.
-    Returns (stdout_lines, stderr_lines, overflow): overflow[0] is True
-    when stdout collection exceeded the T12e cap (the result must be
-    rejected; collection stops but the pipe is still drained)."""
+    """Drain both pipes to one deadline; report stdout-cap overflow."""
     stdout_lines, stderr_lines, overflow, _ = _drain_process(
         proc, prefix, start, timeout, config.OUTPUT_MAX_BYTES, emit)
     return stdout_lines, stderr_lines, overflow
@@ -850,6 +849,7 @@ def _run_with_gate(task: Task, validate_cmd: str, index: int, total: int,
                     session_name: str = "") -> TaskResult:
     """Run one task and push its result through the engineering gate;
     a gate rejection marks the task failed with the exit signature."""
+    worktree_before = capture_worktree_state(task.workdir())
     result = run_task(task, task_index=index, total=total, parallel=parallel, session_flags=session_flags,
                       session_name=session_name)
     if result.success:
@@ -857,25 +857,42 @@ def _run_with_gate(task: Task, validate_cmd: str, index: int, total: int,
         if not result.success:
             result.reason = (f"validation failed (exit={result.validation_exit})"
                              if result.validation_exit else "validation failed")
+    if not result.success:
+        evidence = preserve_failed_worktree(
+            task.workdir(), task.output or f"task-{index}", worktree_before)
+        if evidence:
+            result.reason = f"{result.reason}; worktree evidence: {evidence}".strip("; ")
     record_task(result)
+    return result
+
+
+def _run_retried(task: Task, validate_cmd: str, index: int, total: int,
+                 retries: int, retry_delay: float, backoff: float,
+                 session_flags=None, retry_flags=None, parallel: bool = False,
+                 session_name: str = "") -> TaskResult:
+    """Run once plus exactly ``retries`` bounded retry attempts."""
+    result = _run_with_gate(task, validate_cmd, index, total, session_flags,
+                            parallel, session_name)
+    for attempt in range(1, retries + 1):
+        if result.success:
+            break
+        wait = _retry_wait(result, attempt, retry_delay, backoff)
+        log.warning("RETRY %d/%d for task [%d/%d] in %.0fs (reason: %s)",
+                    attempt, retries, index, total, wait,
+                    result.reason or f"exit {result.returncode}")
+        time.sleep(wait)
+        retry_task = (_retry_task_with_feedback(task, result)
+                      if result.validation_stderr else task)
+        result = _run_with_gate(retry_task, validate_cmd, index, total,
+                                retry_flags, parallel, session_name)
     return result
 
 
 def run_serial(tasks: list[Task], retries: int = 0, retry_delay: float = 10.0, backoff: float = 2.0, min_interval: float = 0.0,
                session_mode: str = "new", session_id: str = "", session_name: str = "", validate_cmd: str = "") -> list[TaskResult]:
-    """Execute tasks one by one with real-time output streaming. Failed tasks
-    are retried with exponential backoff up to `retries` extra attempts, and
-    successful tasks are throttled by `min_interval` seconds so long-running
-    24x7 batches do not hammer the provider.
-
-    validate_cmd runs against each agent result before the output file is
-    committed (engineering gate); a non-zero exit marks the task failed and
-    leaves no artifact, so the retry/round machinery regenerates it.
-
-    With session_mode "shared", every task in this list continues the same
-    agent session (the first call starts it with the configured start flags,
-    later calls pass the continue flags); "per-stage" behaves the same here
-    and is differentiated by the caller via session_id."""
+    """Run serially with validation, retries, throttling, and stable sessions.
+    A rejected artifact is never committed; shared/per-stage retries continue
+    their current conversation."""
     results = []
     total = len(tasks)
     session_active = False
@@ -888,39 +905,31 @@ def run_serial(tasks: list[Task], retries: int = 0, retry_delay: float = 10.0, b
                 session_active = True
             else:
                 flags = _rotation_flags(session_id, session_name, task.workdir())
-        result = _run_with_gate(task, validate_cmd, i, total, flags, session_name=session_name)
-        attempt = 0
-        retry_task = task
-        while not result.success and attempt < retries:
-            attempt += 1
-            wait = _retry_wait(result, attempt, retry_delay, backoff)
-            log.warning("RETRY %d/%d for task [%d/%d] in %.0fs (reason: %s)",
-                        attempt, retries, i, total, wait, result.reason or f"exit {result.returncode}")
-            time.sleep(wait)
-            # T2: a validator rejection feeds its capped stderr back into the
-            # retry prompt so the agent can fix the gate problem directly.
-            if result.validation_stderr:
-                retry_task = _retry_task_with_feedback(task, result)
-            # retries stay inside the same session
-            retry_flags = _session_flags("continue", session_id, session_name) if session_mode != "new" else None
-            result = _run_with_gate(retry_task, validate_cmd, i, total, retry_flags, session_name=session_name)
+        retry_flags = (_session_flags("continue", session_id, session_name)
+                       if session_mode != "new" else None)
+        result = _run_retried(task, validate_cmd, i, total, retries,
+                              retry_delay, backoff, flags, retry_flags,
+                              session_name=session_name)
         results.append(result)
         if result.success and min_interval > 0:
             time.sleep(min_interval)
     return results
 
 
-def run_parallel(tasks: list[Task], workers: int = 0, validate_cmd: str = "") -> list[TaskResult]:
-    workers = workers or config.AGENT_DEFAULT_WORKERS
+def run_parallel(tasks: list[Task], workers: int = 0, validate_cmd: str = "",
+                 retries: int = 0, retry_delay: float = 10.0,
+                 backoff: float = 2.0) -> list[TaskResult]:
     """Concurrent execution with per-result validation gates (fail-closed).
     T8: budget cap pre-submit + atomic consume; cap trip exits 3 promptly."""
+    workers = workers or config.AGENT_DEFAULT_WORKERS
     total = len(tasks)
     log.info("PARALLEL x%d  (%d tasks)", workers, total)
     capped = False
 
     def _run_one(task: Task, index: int) -> Optional[TaskResult]:
         try:
-            return _run_with_gate(task, validate_cmd, index, total, parallel=True)
+            return _run_retried(task, validate_cmd, index, total, retries,
+                                retry_delay, backoff, parallel=True)
         except SystemExit as e:
             # T8: the budget cap raises SystemExit(3) inside a worker thread;
             # the executor captures it into the future instead of exiting, so
@@ -935,10 +944,7 @@ def run_parallel(tasks: list[Task], workers: int = 0, validate_cmd: str = "") ->
         for i, t in enumerate(tasks, 1):
             if not budget_allows():
                 capped = True
-                log.error(
-            "BUDGET: invocation limit reached; stopping — 调整 "
-            "--max-rounds/limits 后可续跑（已保留现场）"
-        )
+                log.error(_BUDGET_MESSAGE)
                 break
             # Pass task_index so parallel output lines are prefixed
             fut_map[pool.submit(_run_one, t, i)] = t
@@ -946,10 +952,7 @@ def run_parallel(tasks: list[Task], workers: int = 0, validate_cmd: str = "") ->
             result = fut.result()
             if result is None:
                 capped = True
-                log.error(
-            "BUDGET: invocation limit reached; stopping — 调整 "
-            "--max-rounds/limits 后可续跑（已保留现场）"
-        )
+                log.error(_BUDGET_MESSAGE)
             else:
                 results.append(result)
                 log.info("PROGRESS: %d/%d done", len(results), total)

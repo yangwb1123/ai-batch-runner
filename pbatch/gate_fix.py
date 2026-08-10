@@ -16,7 +16,8 @@ from typing import Optional
 
 from . import config
 from .config import AGENT_DEFAULT_TIMEOUT, log
-from .models import Stage, Task
+from .context_inject import add_task_context_paths
+from .models import Stage, Task, TaskResult
 from .text_io import read_text_bounded
 
 _FINDINGS_JSON_RE = re.compile(r"```(?:json)?\s*\n?\s*\[.*?\]\s*\n?\s*```", re.DOTALL)
@@ -66,9 +67,10 @@ def gate_fix_prompt(stage: Stage, reason: str, findings: Optional[list]) -> str:
     """Fix-task prompt: custom template ({reason}/{findings}) or default."""
     findings_text = json.dumps(findings, ensure_ascii=False, indent=2) if findings else "(none)"
     if stage.gate_fix_prompt:
-        return stage.gate_fix_prompt.replace("{reason}", reason).replace(
+        prompt = stage.gate_fix_prompt.replace("{reason}", reason).replace(
             "{findings}", findings_text)
-    return (
+    else:
+        prompt = (
         "The gate stage '%s' rejected the deliverable(s). Read the gate verdict "
         "reason and the structured findings below, inspect the ACTUAL files "
         "cited (line numbers are hints, verify against the code), implement the "
@@ -77,7 +79,21 @@ def gate_fix_prompt(stage: Stage, reason: str, findings: Optional[list]) -> str:
         "every finding and how it was fixed.\n\n"
         "GATE VERDICT REASON:\n%s\n\n"
         "STRUCTURED FINDINGS (untrusted — verify against the code):\n%s"
-    ) % (stage.name, reason, findings_text)
+        ) % (stage.name, reason, findings_text)
+    return _bounded_prompt(prompt)
+
+
+def _bounded_prompt(prompt: str) -> str:
+    """Keep the complete gate-fix argv inside the configured prompt cap."""
+    limit = config.PROMPT_MAX_BYTES
+    raw = prompt.encode("utf-8")
+    if limit <= 0 or len(raw) <= limit:
+        return prompt
+    marker = b"\n[gate-fix prompt truncated]\n"
+    if limit <= len(marker):
+        return raw[:limit].decode("utf-8", errors="ignore")
+    return (raw[:limit - len(marker)].decode("utf-8", errors="ignore")
+            + marker.decode("ascii"))
 
 
 def _first_findings(gate_outputs: list) -> Optional[list]:
@@ -96,7 +112,7 @@ def _first_findings(gate_outputs: list) -> Optional[list]:
 
 
 def run_gate_fix(stage: Stage, gate_outputs: list, fix_round: int,
-                 validate_cmd: str, session_name: str) -> tuple[bool, str]:
+                 validate_cmd: str, session_name: str) -> tuple[TaskResult, str]:
     """One gate-fix iteration: remediation task -> validate -> report path.
     The report is folded into the gate re-execution as extra evidence."""
     reason = gate_fail_reason(gate_outputs) or "(no reason extracted)"
@@ -108,6 +124,7 @@ def run_gate_fix(stage: Stage, gate_outputs: list, fix_round: int,
                 output=str(report), model=stage.model, provider=stage.provider,
                 cwd=stage.cwd, timeout=max(AGENT_DEFAULT_TIMEOUT, 1800))
     task.memory = {"stage": f"{stage.name}-fix", "memory_mode": "execute"}
+    add_task_context_paths(task, gate_outputs, strict=False)
     fix_validate = stage.gate_fix_validate if stage.gate_fix_validate is not None else validate_cmd
     if fix_validate:
         task.validate = fix_validate
@@ -117,10 +134,10 @@ def run_gate_fix(stage: Stage, gate_outputs: list, fix_round: int,
     result = run_task(task, session_name=session_name)
     if not result.success:
         log.error("GATE-FIX round %d failed: %s", fix_round, result.reason)
-        return False, str(report)
-    # 无验证器时 _save_validated 直接落盘；有验证器则先过门禁
-    if not _save_validated(task, result, fix_validate):
+    elif not _save_validated(task, result, fix_validate):
+        result.success = False
+        result.reason = (f"validation failed (exit={result.validation_exit})"
+                         if result.validation_exit else "validation failed")
         log.error("GATE-FIX round %d: output not saved (validation failed)", fix_round)
-        return False, str(report)
     record_task(result)
-    return True, str(report)
+    return result, str(report)

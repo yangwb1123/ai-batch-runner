@@ -73,6 +73,89 @@ def test_context_cli_json(capsys):
     assert "missing" in payload
 
 
+@pytest.mark.parametrize("payload", [
+    {"routes": "not-a-list"},
+    {"routes": [], "typo": True},
+    {"routes": [{"when": {}, "load": ["docs/x.md"]}]},
+    {"routes": [{"when": {"task_contains": ["x"]}, "load": []}]},
+    {"routes": [{"when": {"task_contains": ["x"], "typo": []},
+                 "load": ["docs/x.md"]}]},
+    {"routes": [{"when": {"task_contains": ["x"]},
+                 "load": ["../outside.md"]}]},
+    {"routes": [{"when": {"task_contains": ["x"]},
+                 "load": ["/tmp/outside.md"]}]},
+])
+def test_explicit_context_map_schema_fails_closed(tmp_path, payload):
+    context_map = tmp_path / "context.json"
+    context_map.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid context map"):
+        ctx.load_context_map(str(context_map))
+
+
+def test_missing_explicit_context_map_fails_closed(tmp_path):
+    with pytest.raises(ValueError, match="context map not found"):
+        ctx.load_context_map(str(tmp_path / "missing.yaml"))
+
+
+def test_context_cli_can_inject_bounded_document_content(
+        tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    document = tmp_path / "docs" / "payments.md"
+    document.parent.mkdir()
+    document.write_text("0123456789abcdefghijklmnopqrstuvwxyz", encoding="utf-8")
+    context_map = tmp_path / "context.json"
+    context_map.write_text(json.dumps({"routes": [{
+        "when": {"task_contains": ["payment"]},
+        "load": ["docs/payments.md"],
+    }]}), encoding="utf-8")
+
+    assert ctx.context_main([
+        "payment", "--map", str(context_map), "--content", "--max-bytes", "8",
+        "--json",
+    ]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["files"] == ["docs/payments.md"]
+    assert '<evidence source="payments">' in payload["content"]
+    assert "01234567" in payload["content"]
+    assert "evidence truncated" in payload["content"]
+    assert "abcdefghijklmnopqrstuvwxyz" not in payload["content"]
+
+
+def test_context_cli_resolves_default_map_from_project_root(
+        tmp_path, capsys):
+    context_dir = tmp_path / "docs" / "agent-context"
+    context_dir.mkdir(parents=True)
+    context_dir.joinpath("context-map.yaml").write_text(
+        "routes:\n"
+        "  - when: {task_contains: [payment]}\n"
+        "    load: [docs/contract.md]\n", encoding="utf-8")
+    (tmp_path / "docs" / "contract.md").write_text("contract", encoding="utf-8")
+    assert ctx.context_main([
+        "payment", "--root", str(tmp_path), "--content", "--json",
+    ]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert "contract" in payload["content"]
+
+
+def test_context_cli_rejects_negative_content_budget():
+    with pytest.raises(SystemExit) as exc:
+        ctx.context_main(["--content", "--max-bytes", "-1"])
+    assert exc.value.code == 2
+
+
+def test_context_rejects_symlink_document(tmp_path):
+    outside = tmp_path.parent / "outside-context.md"
+    outside.write_text("secret", encoding="utf-8")
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "linked.md").symlink_to(outside)
+    routes = [{"when": {"task_contains": ["x"]},
+               "load": ["docs/linked.md"]}]
+    with pytest.raises(ValueError, match="symlink"):
+        ctx.match_context("x", context_map=routes,
+                          project_root=str(tmp_path))
+
+
 def test_eval_suite_passes():
     """The committed evals/ suite is the rule-system regression contract."""
     sys.argv = ["pi-batch.py", "eval"]

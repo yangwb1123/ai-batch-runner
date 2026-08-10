@@ -159,14 +159,10 @@ class Task:
             fpath = Path(match.group(1))
             if not fpath.is_absolute():
                 fpath = Path(base_dir) / fpath
-            try:
-                if fpath.exists():
-                    return read_text_bounded(fpath, config.INPUT_MAX_BYTES,
-                                             "prompt reference")
-            except ValueError as exc:
-                log.warning("prompt reference rejected: %s", exc)
-            log.warning("referenced file not found: %s", fpath)
-            return match.group(0)
+            if not fpath.is_file():
+                raise ValueError(f"prompt reference not found: {fpath}")
+            return read_text_bounded(fpath, config.INPUT_MAX_BYTES,
+                                     "prompt reference")
 
         # Only path-like references with a known extension are resolved so
         # that event versions like vault.file.deleted@1.1 stay literal.

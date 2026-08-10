@@ -24,6 +24,7 @@ from typing import Optional
 
 from . import config
 from .config import AGENT_DEFAULT_WORKERS, _resolve_validators, log
+from .context_inject import add_task_context_paths, prepare_task_context
 from .evidence import combine_outputs
 from .models import Stage, Task, TaskResult
 from .relevance import (constrain_role_plan, format_suggestions,
@@ -222,6 +223,7 @@ def _run_meta_iteration(stage: Stage, combined: str, role_names: list, model_ove
              iteration, stage.max_iterations, stage.name, ", ".join(role_names) or "(none)")
     meta_task = _build_meta_prompt_task(stage, role_names, combined, model_override, timeout_override,
                                         original_prompt)
+    add_task_context_paths(meta_task, evidence_outputs, strict=False)
     meta_result = run_task(meta_task, session_name=session_name)
     record_task(meta_result)
     if not meta_result.success:
@@ -233,16 +235,18 @@ def _run_meta_iteration(stage: Stage, combined: str, role_names: list, model_ove
         return True, True, combined
     log.info("META orchestrator selected %d role(s)", len(roles))
 
-    role_tasks, _ = _build_role_tasks(stage, roles, combined, model_override, timeout_override)
-    failed = _run_role_batch(stage, role_tasks, validate_cmd, session_name, reuse,
-                             reuse_legacy, fingerprint_mode, all_results,
-                             role_outputs, evidence_outputs)
+    role_tasks, _ = _build_role_tasks(
+        stage, roles, combined, model_override, timeout_override,
+        evidence_outputs)
+    failed = _run_role_batch(stage, role_tasks, validate_cmd, session_name,
+                             reuse, reuse_legacy, fingerprint_mode,
+                             all_results, role_outputs, evidence_outputs)
     combined = combine_outputs(evidence_outputs)
-    # meta_role_retries: 失败/超时角色自动重试一次（G2 教训），仍失败才计数。
+    # Each configured retry is an additional real attempt (G2 lesson).
     if failed and stage.meta_role_retries > 0:
-        failed = _retry_failed_roles(stage, all_results, role_outputs, evidence_outputs,
-                                     validate_cmd, session_name, reuse, reuse_legacy,
-                                     fingerprint_mode)
+        failed = _retry_failed_roles(
+            stage, failed, role_outputs, evidence_outputs, validate_cmd,
+            session_name, stage.meta_role_retries)
         combined = combine_outputs(evidence_outputs)
     if failed and stage.meta_max_failed_roles <= 0:
         log.warning("META stage '%s': some role tasks failed in iteration %d", stage.name, iteration)
@@ -256,10 +260,10 @@ def _run_meta_iteration(stage: Stage, combined: str, role_names: list, model_ove
 
 def _run_role_batch(stage: Stage, role_tasks: list, validate_cmd: str, session_name: str,
                     reuse: bool, reuse_legacy: bool, fingerprint_mode: bool,
-                    all_results: list, role_outputs: list, evidence_outputs: list) -> bool:
-    """Execute one iteration's role tasks concurrently; returns True when
-    any role task failed (caller applies retries/allowance)."""
-    failed = False
+                    all_results: list, role_outputs: list,
+                    evidence_outputs: list) -> list:
+    """Execute one iteration and return only its failed results."""
+    failed = []
     with ThreadPoolExecutor(max_workers=max(1, stage.workers or AGENT_DEFAULT_WORKERS)) as pool:
         futures = [pool.submit(
             _run_role_task, item, validate_cmd, session_name, reuse,
@@ -267,7 +271,8 @@ def _run_role_batch(stage: Stage, role_tasks: list, validate_cmd: str, session_n
         for fut in as_completed(futures):
             _, result = fut.result()
             all_results.append(result)
-            failed = failed or not result.success
+            if not result.success:
+                failed.append(result)
             out_path = result.task.output_path()
             if result.success and out_path and out_path.exists():
                 role_outputs.append(str(out_path))
@@ -275,24 +280,25 @@ def _run_role_batch(stage: Stage, role_tasks: list, validate_cmd: str, session_n
     return failed
 
 
-def _retry_failed_roles(stage: Stage, all_results: list, role_outputs: list, evidence_outputs: list,
-                        validate_cmd: str, session_name: str, reuse: bool,
-                        reuse_legacy: bool, fingerprint_mode: bool) -> bool:
-    """Retry failed role tasks once (timeouts/transient failures absorb a
-    single retry). Returns True when failures remain after retrying."""
-    still_failed = False
-    for result in all_results:
-        if result.success:
-            continue
+def _retry_failed_roles(stage: Stage, failed_results: list, role_outputs: list,
+                        evidence_outputs: list, validate_cmd: str,
+                        session_name: str, retries: int) -> list:
+    """Retry this iteration's failures up to the configured attempt count."""
+    still_failed = []
+    for result in failed_results:
         task = result.task
-        log.info("META retry role '%s' after %s", task.output_path(), result.reason)
-        retry = run_task(task, parallel=True, session_name=session_name)
-        if retry.success:
-            retry.success = _save_validated(task, retry, validate_cmd)
-            if not retry.success:
-                retry.reason = "validation failed"
-        record_task(retry)
-        # 原位替换失败结果：成功则产物入 evidence，失败则保留计数
+        retry = result
+        for attempt in range(1, retries + 1):
+            log.info("META retry %d/%d role '%s' after %s", attempt,
+                     retries, task.output_path(), retry.reason)
+            retry = run_task(task, parallel=True, session_name=session_name)
+            if retry.success:
+                retry.success = _save_validated(task, retry, validate_cmd)
+                if not retry.success:
+                    retry.reason = "validation failed"
+            record_task(retry)
+            if retry.success:
+                break
         if retry.success:
             result.success = True
             result.returncode = 0
@@ -303,7 +309,9 @@ def _retry_failed_roles(stage: Stage, all_results: list, role_outputs: list, evi
                 role_outputs.append(str(out_path))
                 evidence_outputs.append(str(out_path))
         else:
-            still_failed = True
+            result.reason = retry.reason
+            result.returncode = retry.returncode
+            still_failed.append(result)
             log.warning("META retry for '%s' failed again: %s", task.output_path(), retry.reason)
     return still_failed
 
@@ -312,8 +320,16 @@ def _run_role_task(item, validate_cmd: str, session_name: str, reuse: bool,
                    reuse_legacy: bool, fingerprint_mode: bool):
     """Execute or freshness-reuse one role selected by the orchestrator."""
     role, task = item
+    try:
+        prepare_task_context(task)
+    except ValueError as exc:
+        result = TaskResult(task, False, returncode=-1,
+                            reason=f"context injection rejected: {exc}")
+        record_task(result)
+        return role, result
     output = str(task.output_path())
-    expected = (reuse_fp(task.prompt, output, validate_cmd, task.model, task.provider)
+    expected = (reuse_fp(task.prompt, output, validate_cmd, task.model,
+                         task.provider, task.workdir())
                 if fingerprint_mode else None)
     if reuse and reuse_decision(
             output, validate_cmd, task.workdir(), reuse_legacy, expected):
@@ -326,7 +342,8 @@ def _run_role_task(item, validate_cmd: str, session_name: str, reuse: bool,
         if not result.success:
             result.reason = "validation failed"
         elif fingerprint_mode:
-            write_sidecar(output, task.prompt, validate_cmd, task.model, task.provider)
+            write_sidecar(output, task.prompt, validate_cmd, task.model,
+                          task.provider, task.workdir())
     record_task(result)
     return role, result
 
@@ -374,7 +391,9 @@ def _build_meta_prompt_task(stage: Stage, role_names: list, combined: str, model
     return task
 
 
-def _build_role_tasks(stage: Stage, roles: list, combined: str, model_override: str, timeout_override: int) -> tuple[list, bool]:
+def _build_role_tasks(stage: Stage, roles: list, combined: str,
+                      model_override: str, timeout_override: int,
+                      evidence_outputs=()) -> tuple[list, bool]:
     """Turn the orchestrator plan into tasks: ad-hoc roles ({"role",
     "task"}) get their task description plus the current context; named
     roles load the role_dir template. Output names are sanitized (the
@@ -406,6 +425,7 @@ def _build_role_tasks(stage: Stage, roles: list, combined: str, model_override: 
         out_path = Path(stage.output_dir) / f"{safe_name}.md"
         task = Task(prompt=prompt, output=str(out_path), cwd=stage.cwd)
         task.memory = {"stage": stage.name, "role": role}
+        add_task_context_paths(task, evidence_outputs, strict=False)
         task.model = stage.model or task.model
         task.provider = stage.provider or task.provider
         if model_override:

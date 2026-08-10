@@ -21,7 +21,9 @@ from typing import Optional
 from . import config
 from .config import (AGENT_BIN, AGENT_DEFAULT_WORKERS, COMMIT_PREFIX_DEFAULT,
                      _resolve_validator_specs, log, yaml)
-from .models import Pipeline, Task
+from .context_inject import inject_task_context
+from .models import Pipeline, Stage, Task
+from .repo_gates import capture_stage_dirty_paths, commit_stage_outputs
 from .registry import mark_running, unregister
 from .reuse import (reuse_decision, reuse_fingerprint, sidecar_path, write_sidecar)
 from .lock import LOCK_EXIT_CODE, acquire_lock, release_lock, verify_held
@@ -32,12 +34,26 @@ from .pipeline import (_append_decision_log, _archive_outputs, load_pipeline,
 from .runner import (judge_verdict, kill_active_procs, print_summary, run_argv,
                      run_parallel, run_serial, run_validation)
 from .text_io import read_text_bounded
+from .task_loading import task_from_prompt
+
+
+_SUBCOMMAND_HELP = (
+    "memory", "classify", "rules", "assess", "learn", "context", "eval",
+    "check", "advance", "ps", "retro", "health", "ui-geometry",
+    "export-template", "campaign",
+)
+
+
+def _main_epilog() -> str:
+    commands = "\n".join(f"  {name}" for name in _SUBCOMMAND_HELP)
+    return f"{__doc__}\n\nSubcommands:\n{commands}\n\nUse: pi-batch <command> --help"
+
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="pi-batch -- batch/pipeline executor (use 'campaign --help' for project campaigns)",
+        description="pi-batch -- batch, pipeline, and AI-SDLC control plane",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
+        epilog=_main_epilog(),
     )
     _add_source_args(p)
     _add_runtime_args(p)
@@ -62,7 +78,7 @@ def _add_runtime_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--classify", action="store_true",
                    help="run the task type classifier BEFORE execution; confident "
                         "frontend/backend majorities route to their configured pipelines "
-                        "(mixed ties run as a plain batch; explicit --pipeline wins)")
+                        "(ties follow classifier.tie_policy; explicit --pipeline wins)")
     p.add_argument("--reuse", action="store_true",
                    help="reuse existing .out.md files (skip regeneration)")
     p.add_argument("--reuse-legacy", action="store_true",
@@ -156,7 +172,7 @@ def _add_batch_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--timeout", type=int, default=0,
                    help="default timeout override for all tasks (seconds)")
     p.add_argument("--retries", type=int, default=0,
-                   help="Retry failed tasks up to N extra attempts with exponential backoff (serial mode)")
+                   help="Retry failed tasks up to N extra attempts with exponential backoff")
     p.add_argument("--retry-delay", type=float, default=10.0,
                    help="Base retry wait in seconds (default: 10; rate-limit/network failures wait at least 30s)")
     p.add_argument("--retry-backoff", type=float, default=2.0,
@@ -204,6 +220,7 @@ def main() -> None:
     _wire_metering(args)
     _wire_limits(args)
     _auto_detect_pipeline(args)
+    _buffer_stdin(args)
     _maybe_classify_route(args)
     handler = _configure_run_log(args)
     _register_run(args)
@@ -413,10 +430,13 @@ def _run_rounds(args, pipeline: Optional[Pipeline], session_name: str, cli_valid
     # F9: stdin is consumed ONCE before the round loop; later rounds reuse
     # the loaded tasks (an exhausted stdin must not kill round 2+).
     stdin_tasks = None
-    if pipeline is None and not (args.from_dir or args.prompt or args.source):
+    buffered = getattr(args, "stdin_prompt", "")
+    if pipeline is None and buffered:
+        stdin_tasks = [_prompt_task(buffered)]
+    elif pipeline is None and not (args.from_dir or args.prompt or args.source):
         stdin = sys.stdin.read().strip()
         if stdin:
-            stdin_tasks = [Task(prompt=stdin)]
+            stdin_tasks = [_prompt_task(stdin)]
     round_no = 0
     circuit = Circuit(max_failures=args.circuit_max)
     stall = StallDetector(k=args.stall_rounds)
@@ -577,70 +597,18 @@ def _auto_detect_pipeline(args) -> None:
             args.source = ""
 
 
-def _resolve_pipeline(value: str, label: str, config_key: str) -> str:
-    """Locate a configured routing pipeline next to cwd, the entry script,
-    or the package; fail loud when absent so --classify never silently
-    degrades to a plain batch."""
-    candidates = []
-    if os.path.isabs(value):
-        candidates.append(Path(value))
-    else:
-        candidates.append(Path.cwd() / value)
-        script_dir = os.environ.get("PBATCH_SCRIPT_DIR", "")
-        if script_dir:
-            candidates.append(Path(script_dir) / value)
-        candidates.append(Path(config.resolve_asset_path(value)))
-    for candidate in candidates:
-        if candidate.exists():
-            return str(candidate)
-    log.error("%s pipeline not found: %s (set classifier.%s in pi-batch.yaml)",
-              label, value, config_key)
-    sys.exit(1)
-
-
-def _resolve_frontend_pipeline() -> str:
-    """Frontend routing pipeline (classifier.frontend_pipeline)."""
-    return _resolve_pipeline(config.CLASSIFIER_FRONTEND_PIPELINE,
-                             "Frontend", "frontend_pipeline")
-
-
 def _maybe_classify_route(args) -> None:
-    """--classify: run the deterministic task type classifier BEFORE
-    execution; a frontend-dominated batch routes to the UI generation
-    pipeline. An explicit --pipeline always wins; stdin is not consumed
-    here (F9 keeps stdin for the round loop)."""
-    if not args.classify or args.pipeline:
+    """Compatibility wrapper for execution-time deterministic routing."""
+    from .classify_route import maybe_classify_route
+    maybe_classify_route(args, _load_batch_tasks)
+
+
+def _buffer_stdin(args) -> None:
+    """Consume stdin once before classification, then reuse it for execution."""
+    args.stdin_prompt = ""
+    if args.pipeline or args.prompt or args.source or args.from_dir:
         return
-    if not (args.prompt or args.source or args.from_dir):
-        log.info("--classify: no inline/task-file source (stdin is not classified); running as-is")
-        return
-    try:
-        tasks = _load_batch_tasks(args, None)
-    except SystemExit:
-        return
-    if not tasks:
-        return
-    from .classifier import BACKEND, FRONTEND, classify_tasks, routing_target
-    dominant, per_task = classify_tasks(tasks)
-    for index, item in enumerate(per_task, 1):
-        detail = ""
-        if item.task_type == FRONTEND and (item.platform != "unknown" or item.profile != "unknown"):
-            detail = " [%s/%s]" % (item.platform, item.profile)
-        log.info("CLASSIFY task %d: %s%s (score %d, %s)",
-                 index, item.task_type, detail, item.score,
-                 "confident" if item.confident else "best-guess")
-    target = routing_target(per_task)
-    if target == FRONTEND:
-        pipeline = _resolve_frontend_pipeline()
-    elif target == BACKEND:
-        pipeline = _resolve_pipeline(config.CLASSIFIER_BACKEND_PIPELINE,
-                                     "Backend", "backend_pipeline")
-    else:
-        log.info("CLASSIFY: no confident routing majority (dominant=%s); "
-                 "running as a plain batch", dominant.task_type)
-        return
-    log.info("CLASSIFY: confident %s majority; routing to %s", target, pipeline)
-    args.pipeline = pipeline
+    args.stdin_prompt = sys.stdin.read().strip()
 
 
 def _setup_pipeline(args) -> Optional[Pipeline]:
@@ -699,16 +667,27 @@ def _load_batch_tasks(args, stdin_tasks) -> list:
             sys.exit(1)
         return tasks
     if args.prompt:
-        return [Task(prompt=args.prompt, output=args.output or "")]
+        return [_prompt_task(args.prompt, args.output or "")]
     if args.source:
         return load_tasks(args.source)
     if stdin_tasks is not None:
         return stdin_tasks
+    if getattr(args, "stdin_prompt", ""):
+        return [_prompt_task(args.stdin_prompt)]
     stdin = sys.stdin.read().strip()
     if stdin:
-        return [Task(prompt=stdin)]
+        return [_prompt_task(stdin)]
     log.error("Provide a prompt (-p), a task file, --from-dir, or --pipeline")
     sys.exit(1)
+
+
+def _prompt_task(prompt: str, output: str = "") -> Task:
+    """Resolve inline/stdin prompt references before any Agent starts."""
+    try:
+        return task_from_prompt(prompt, output=output)
+    except ValueError as exc:
+        log.error("Prompt rejected: %s", exc)
+        sys.exit(1)
 
 
 def _apply_task_overrides(args, tasks) -> None:
@@ -742,7 +721,8 @@ def _run_pipeline_round(args, pipeline: Pipeline, session_name: str, cli_validat
                                               decision_log=args.decision_log, archive_dir=args.archive_dir,
                                               reuse_legacy=args.reuse_legacy, fingerprint_mode=args.reuse_fingerprint,
                                               approval_file=args.approve_file,
-                                              original_prompt=args.prompt or "",
+                                              original_prompt=(args.prompt or getattr(
+                                                  args, "stdin_prompt", "")),
                                               retries=getattr(args, "retries", 0),
                                               retry_delay=getattr(args, "retry_delay", 10.0),
                                               backoff=getattr(args, "retry_backoff", 2.0))
@@ -781,6 +761,7 @@ def _run_batch_round(args, stdin_tasks, session_name: str, cli_validate: str, ma
         log.error("No tasks to execute: a YAML source must contain a 'tasks' list (pipelines use 'stages' and are auto-detected)")
         sys.exit(1)
 
+    git_baseline = _batch_git_baseline(args, tasks)
     tasks = _drop_isolated(tasks, circuit, round_no)
     tasks = _filter_reused(tasks, args.reuse and not args.force, cli_validate, args.reuse_legacy,
                            args.reuse_fingerprint)
@@ -796,21 +777,27 @@ def _run_batch_round(args, stdin_tasks, session_name: str, cli_validate: str, ma
     # GAP-4 (N2): repo-scoped validators never run per artifact (they would
     # race other writers); run them once at batch end. A failure fails the
     # round so the 7x24 loop retries (and the circuit can isolate it).
-    repo_keys = _run_batch_repo_validators(tasks, cli_validate)
+    repo_keys = (_run_batch_repo_validators(tasks, cli_validate)
+                 if not round_failed else set())
     if repo_keys:
         round_failed = True
     return _finish_batch_round(args, tasks, results, round_failed, repo_keys,
-                               circuit, cli_validate)
+                               circuit, cli_validate, git_baseline)
 
 
 def _finish_batch_round(args, tasks: list, results: list, round_failed: bool,
-                        repo_keys: set, circuit: Circuit, cli_validate: str) -> tuple[bool, set]:
+                        repo_keys: set, circuit: Circuit, cli_validate: str,
+                        git_baseline=None) -> tuple[bool, set]:
     """Tail of a single-batch round: decision log, fingerprint sidecars,
     failure keys, circuit feedback and the environment-signature stall
     check (T5: identical validator stderr across >=2 tasks halts the loop)."""
-    _finalize_batch_round(args, results, round_failed)
     if args.reuse_fingerprint:
         _write_sidecars(args, tasks, results, cli_validate)
+    was_failed = round_failed
+    round_failed = _finalize_batch_round(
+        args, results, round_failed, git_baseline)
+    if round_failed and not was_failed:
+        repo_keys.add("git-commit")
     failed_keys = {task_key(r.task) for r in results if not r.success} | repo_keys
     if circuit is not None:
         for r in results:
@@ -840,29 +827,27 @@ def _write_sidecars(args, tasks: list, results: list, cli_validate: str) -> None
     for t, r in zip(tasks, results):
         if r.success and t.output:
             eff = t.validate if t.validate is not None else cli_validate
-            write_sidecar(str(t.output_path()), t.prompt, eff, t.model, t.provider)
+            write_sidecar(str(t.output_path()), t.prompt, eff, t.model,
+                          t.provider, t.workdir())
 
 
-def _git_commit_single_batch(args, outputs: list) -> None:
-    """Best-effort git commit for a single-batch round; failures are logged
-    with the real exit codes (never silently reported as success)."""
-    if not outputs:
-        return
-    try:
-        if not run_argv(["git", "rev-parse", "--git-dir"], os.getcwd(), timeout=5).ok:
-            log.warning("Not a git repository, skipping git commit")
-            return
-        add = run_argv(["git", "add"] + outputs, os.getcwd(), timeout=10)
-        msg = "%s Single batch: %d tasks" % (args.commit_prefix, len(outputs))
-        commit = run_argv(["git", "commit", "-m", msg], os.getcwd(), timeout=10)
-        if not add.ok or not commit.ok:
-            detail = (add.stderr or "") + (commit.stderr or "")
-            log.warning("git commit failed (add=%d, commit=%d): %s",
-                        add.exit_code, commit.exit_code, detail.strip()[:500])
-        else:
-            log.info("GIT COMMIT: %s (files: %d)", msg, len(outputs))
-    except Exception as e:
-        log.warning("Git commit skipped: %s", e)
+def _batch_git_baseline(args, tasks: list):
+    if not (args.git_commit and not args.no_git_commit):
+        return None
+    snapshots = [capture_stage_dirty_paths(task.workdir()) for task in tasks]
+    if len({root for root, _ in snapshots}) != 1:
+        log.warning("git commit refused: batch tasks span multiple repositories")
+        return "", None
+    return snapshots[0]
+
+
+def _git_commit_single_batch(args, outputs: list, dirty_baseline=None) -> bool:
+    """Commit only this round's paths while preserving the user's index."""
+    root = dirty_baseline[0] if dirty_baseline and dirty_baseline[0] else os.getcwd()
+    message = "%s Single batch: %d tasks" % (args.commit_prefix, len(outputs))
+    stage = Stage(name="batch", cwd=root, git_commit=True,
+                  commit_message=message)
+    return commit_stage_outputs(stage, outputs, dirty_baseline)
 
 
 def _run_batch_repo_validators(tasks: list, cli_validate: str) -> set:
@@ -915,27 +900,22 @@ def _run_batch_repo_spec(spec, wd: str):
     return key
 
 
-def _finalize_batch_round(args, results: list, round_failed: bool) -> None:
+def _finalize_batch_round(args, results: list, round_failed: bool,
+                          git_baseline=None) -> bool:
     """Decision log, git commit, and archive for a finished single-batch
     round (archive only when the round fully succeeded)."""
-    # Structured decision record for single-batch runs (rolling
-    # re-analysis keeps a history of what each round decided and why,
-    # instead of overwriting the artifact silently)
+    if args.git_commit and not args.no_git_commit and not round_failed:
+        outputs = [str(r.task.output_path()) for r in results
+                   if r.success and r.task.output]
+        round_failed = not _git_commit_single_batch(
+            args, outputs, git_baseline)
     if args.decision_log and results:
         source_name = Path(args.source).stem if args.source else (args.from_dir or "batch")
         _append_decision_log(args.decision_log, source_name, results, not round_failed, None)
-
-    # Git commit for single-batch modes (per round)
-    if args.git_commit and not args.no_git_commit:
-        # Local fix (self-iteration round 2, P0-1): resolved paths only.
-        outputs = [str(r.task.output_path()) for r in results if r.success and r.task.output]
-        _git_commit_single_batch(args, outputs)
-
-    # Rolling re-analysis produces many artifacts; archive them once a
-    # round fully succeeded so the worktree stays clean.
     if not round_failed and args.archive_dir and results:
         outputs = [r.task.output for r in results if r.success and r.task.output]
         _archive_outputs(outputs, args.archive_dir, "batch")
+    return round_failed
 
 
 
@@ -950,6 +930,12 @@ def _filter_reused(tasks: list, reuse: bool, validate_cmd: str = "", reuse_legac
         return tasks
     kept = []
     for t in tasks:
+        try:
+            inject_task_context(t)
+        except ValueError as exc:
+            log.error("REUSE: context injection rejected: %s", exc)
+            kept.append(t)
+            continue
         if not t.output:
             kept.append(t)
             continue
@@ -984,6 +970,9 @@ def _execute_batch(tasks: list, args, session_name: str, cli_validate: str) -> t
                              session_mode=args.session_mode, session_id=session_name, session_name=session_name,
                              validate_cmd=cli_validate)
     else:
-        results = run_parallel(tasks, args.workers, validate_cmd=cli_validate)
+        results = run_parallel(
+            tasks, args.workers, validate_cmd=cli_validate,
+            retries=args.retries, retry_delay=args.retry_delay,
+            backoff=args.retry_backoff)
     print_summary(results)
     return results, any(not r.success for r in results)
