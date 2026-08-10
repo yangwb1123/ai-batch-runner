@@ -1,0 +1,145 @@
+# sverpweb-stable 前端 UI/UX 处理流水线：规范体检 → 分类修复 → 工程门禁 →
+# 对抗审查（UI/UX 角色）→ 裁决门。
+#
+# 覆盖两层：
+#   1) UI 规范层（确定性）：8pt 间距 token / token 颜色 / 无 inline style /
+#      几何家族（uicheck + uigeometry）——门禁机械拦截，违规明细回喂重试
+#   2) 前端工程层（确定性）：god-file / unsafe HTML / 复杂度 / 循环 await /
+#      console.log / any（uiquality --strict）
+#   3) UX 层（需推理）：交互模式（操作分级/反馈闭环/批量报告）、错误恢复、
+#      可访问性（对比度/焦点/语义）、页面一致性——由 meta 审查角色评估，
+#      gate 裁决；修复建议落入产物供后续实现。
+#
+# 运行（在 sverpweb-stable 仓库根）：
+#   PBATCH_SCRIPT_DIR="$PWD" python /home/dwp/ai-batch-runner/pi-batch.py \
+#     /home/dwp/ai-batch-runner/projects/sverp/ui-ux-pipeline.yaml \
+#     --retries 3 --log-file logs/ui-ux.log
+# 目标仓库的 pi-batch.yaml 必须注册 uieng，并把 project.frontend_root 指向
+# apps/web/src。PBATCH_SCRIPT_DIR 明确让目标配置优先于工具仓库默认配置。
+
+git_commit: false
+decision_log: docs/auto/DECISIONS.md
+
+stages:
+  # ── 1. 体检与计划：读违规报告 + UX 快速评审 → 分类修复计划 ──
+  - name: plan
+    from_prompt: |
+      You are the UI/UX planner for sverpweb-stable (Vue 3.5 + @iris-ui-kit/vue
+      ERP 前端，apps/web/src)。任务：前端 UI 规范与 UX 处理。
+
+      FIRST gather the deterministic violation inventory:
+        python /home/dwp/ai-batch-runner/scripts/check-ui-spec.py --dir apps/web/src --all --json
+        python /home/dwp/ai-batch-runner/scripts/check-ui-geometry.py --dir apps/web/src --all --json
+        python /home/dwp/ai-batch-runner/scripts/check-frontend-quality.py --dir apps/web/src --strict --json
+      Also read the spec assets:
+        /home/dwp/ai-batch-runner/ui-specs/ （8pt 间距 token、组件/布局/反例、
+        业务风格 profile ERP/CMS/OA、geometry.md）
+        /home/dwp/ai-batch-runner/ui-specs/engineering/（交互模式库：操作分级/
+        反馈闭环/批量报告、错误恢复与权限、缺陷模式库）
+
+      Produce a classified remediation plan:
+      A. 间距违规：每处 → 最近 token（4/8/12/16/20/24/32/40/48/64），不改布局意图
+      B. 颜色/样式违规：→ token 变量（--iris-*），禁止新增硬编码色
+      C. 几何违规：圆角/线宽家族合规
+      D. 工程违规：god-file 拆分方案（保持导出面）、unsafe HTML → 白名单渲染
+         或组件化、复杂度收敛、循环 await 消除、console.log 移除
+      E. UX 评审（只读评估，产出改进建议清单，标注 severity）：核心页面
+         （AppShell 布局、Dashboard、表格/表单/详情页）对照 ui-specs 交互
+         模式库——操作分级与反馈闭环、批量操作报告、空态/加载/错误态、
+         键盘可达与焦点管理、对比度、移动端适配
+      输出 markdown 计划：每类违规的文件:行、修复方式、UX 建议（供 review
+      阶段裁决，本轮不实现 UX 建议）。
+    output: .pi-batch/uiux/plan.md
+
+  # ── 2. 修复：A-D 类分三个小任务串行执行（避免单任务超时）──
+  - name: refactor
+    from_outputs: plan
+    mode: serial
+    # uiquality（strict）含 god-file/复杂度——结构性重构多轮渐进，
+    # 不作为本轮阻断门禁；机械硬错误（console.log/any/unsafe）用非
+    # strict 强制清零，god-file/复杂度由 review 裁决并记入 backlog。
+    validate: uicheck,uigeometry,uieng
+    tasks:
+      - prompt: |
+          You are the UI specification refactorer. Read {input_content}
+          (the plan) and implement the A-C items:
+          - replace spacing violations with the nearest approved spacing token
+          - replace hard-coded colors and inline styles with existing --iris-*
+            tokens or component classes
+          - bring radius and border-width values into the approved geometry
+            families
+          Preserve layout intent, behavior, public APIs, and business logic.
+          Do not redesign the UI and do not commit. Finish with a bounded
+          report of changed files, scanner counts, and any justified deferral.
+        timeout: 1800
+        output: .pi-batch/uiux/refactor-style.md
+        validate: uicheck,uigeometry
+
+      # 2b: 工程类（D）非拆分部分——循环 await/吞异常/console.log/any
+      - prompt: |
+          You are the frontend engineering refactorer. Read {input_content}
+          (the plan) — implement ONLY the D-class items that do NOT require
+          god-file splits:
+          - 循环 await（上传/保存循环）→ Promise.allSettled + 批量报告
+            "成功 n/失败 m+原因"（ui-specs/engineering 批量报告模式）
+          - 吞异常空 catch → 加注释声明有意降级或处理
+          - console.log 移除（生产代码 0 处，保持）
+          - 确认 TS any 假阳性（注释文本）不误报
+          - 低危 god-file（600-900 行）就地收敛复杂度（抽纯函数/常量），
+            不做文件拆分
+          Do NOT split god-files in this task. Do NOT commit. Gates
+          re-verify. Finish with a change report: files changed, violations
+          remaining (scanner counts), any deviations with reasons.
+        timeout: 1800
+        output: .pi-batch/uiux/refactor-quality.md
+        validate: uicheck,uigeometry,uieng
+
+  # ── 3. 对抗审查：UI/UX 角色现场复核（含 UX 建议裁决）──
+  - name: review
+    from_outputs: refactor
+    meta: true
+    meta_timeout: 2400
+    meta_role_retries: 1
+    meta_max_failed_roles: 1
+    role_dir: prompts
+    role_keywords: pbatch/role_keywords.yaml
+    output_dir: .pi-batch/uiux/reviews
+    max_iterations: 2
+    max_roles_per_iteration: 3
+    relevance_enabled: true
+    relevance_min_score: 2
+    mode: serial
+
+  # ── 4. 裁决门：规范合规 + UX 建议裁决（FAIL 自动修复）──
+  - name: gate
+    from_outputs:
+      - plan
+      - refactor
+      - review
+    aggregate: true
+    gate: true
+    gate_fix_rounds: 2
+    gate_fix_validate: uicheck,uigeometry,uieng
+    mode: serial
+    tasks:
+      - prompt: |
+          You are the UI/UX gatekeeper. Read {input_content} (plan,
+          refactor report, reviews). Verify:
+          - every A-C violation and every hard D violation in the scoped
+            engineering task fixed (the configured gates report 0)
+          - deferred god-file splits and strict complexity findings are
+            bounded, evidenced, and recorded as follow-up work rather than
+            misreported as complete
+          - behavior preserved (no redesign, no API/logic drift)
+          - UX findings adjudicated: accepted (actionable, listed) or
+            rejected with reasons — the refactor stage must NOT implement
+            UX redesigns this round
+          Output on the last line:
+          VERDICT: PASS - <why the UI/UX pass is complete>
+          or VERDICT: FAIL - <blocking issues>.
+          On FAIL, append a structured findings block:
+          ```json
+          [{"severity": "high", "file": "<path>", "line": <n>,
+            "problem": "...", "fix_hint": "..."}]
+          ```
+        output: .pi-batch/uiux/gate.md
