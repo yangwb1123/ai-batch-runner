@@ -54,7 +54,7 @@ required_when_risk / profiles`。`pi-batch rules --check` 校验 schema；
 | 完成证据 | completion_report 结构/result 枚举/not_executed 带原因/禁伪造通过 | completion |
 | 秘密扫描 | api key/token 等 | secretscan |
 | 注册表 | 规则 schema/引用文件存在 | rules --check |
-| 规则回归 | 25 个 eval 断言（classify/rules/assess 行为） | make eval / CI |
+| 规则回归 | 42 个 eval 断言（classify/rules/assess 行为） | make eval / CI |
 
 ## 5. 角色库（meta 编排动态挑选，34+）
 

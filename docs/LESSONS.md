@@ -40,8 +40,12 @@
 ## D. 对产品化的直接启发（下一步候选）
 
 1. `--wait-lock` 已内建 → `wait-for-run.sh` 可退役（保留为无锁工具的参考实现）
-2. "决策摘要 + 机械门禁"模式可推广为**通用结构化产物门禁**（任何任务可声明 JSON schema + 校验器）
+2. ~~"决策摘要 + 机械门禁"推广为通用结构化产物门禁~~ **已实现**：任务、
+   阶段或 CLI 可声明 `jsonschema=<path>`；纯标准库 checker 在原子落盘及
+   `--reuse` 复验前 fail closed，规范见 `product-specs/structured-artifact-validation.md`
 3. ~~运行可见性 gap~~ **已实现**：`pi-batch ps` + 全局注册表
-   （`~/.pi-batch/runs/<pid>.json`，心跳 60s，退出注销，死进程标记/清理）——
+   （优先 `~/.pi-batch/runs/<pid>.json`，只读 HOME 时回退到按用户隔离的
+   runtime/临时目录；心跳 60s，退出注销，死进程标记/清理）——
    谁在哪个仓库跑什么（mode/repo/session/status/age/argv），排队中显示 queued
-4. 环境依赖测试标注（B2）：建议为 test_advance 类测试加 `SKIP_IF_ENV_UNSTABLE` 机制或标记为 xfail-on-drift
+4. ~~环境依赖测试标注~~ **已实现且收敛**：`test_advance` 在外部目录不存在时
+   显式 skip，存在时只断言结构而不绑定漂移计数；不增加掩盖真实回归的全局 xfail

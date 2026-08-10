@@ -530,8 +530,9 @@ validator exit signature.
   `docs/spike-pi-session.md`); a missing/unparseable session degrades to
   `usage: null`, never a crash. `--webhook URL` POSTs the same events
   non-blockingly (5s timeout, failures logged only).
-- **Budgets** (T8): `--budget-max N` caps agent invocations per run;
-  `--daily-budget N` caps per UTC day (state file
+- **Invocation budgets** (T8): `--max-invocations N` (legacy alias:
+  `--budget-max`) caps agent invocations per run; `--daily-invocations N`
+  (legacy alias: `--daily-budget`) caps per UTC day (state file
   `.pi-batch/daily-budget.json`, `--daily-state` overrides). On cap the
   run stops with exit 3 and a budget_cap event — the cap wins over
   `--max-rounds 0`. Exit codes: 0 success, 1 max rounds, 3 budget cap,

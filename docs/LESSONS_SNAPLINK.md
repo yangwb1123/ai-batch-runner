@@ -48,15 +48,15 @@
 | G7 | 对比度门禁价值 | dark 3 个真实可读性 bug 由测试暴露（深色文字 2.17:1/浅底白字 1.18:1/muted 2.56:1） |
 | G8 | 动效有限时长原则 | 15 项动效全用一次性动画（90-600ms）——测试 settle 安全，无循环动画挂起 |
 
-## H. 未沉淀教训 → 应补充规范（下一步）
+## H. 教训沉淀状态
 
-| # | 教训 | 补充位置 |
+| # | 教训 | 已落点 |
 |---|---|---|
-| H1 | 动画曲线 overshoot 值域（F4） | design-intelligence/05 微交互节补充 |
-| H2 | 手势竞争清单（F5） | ui-specs/engineering/interaction-patterns.md 追加 |
-| H3 | 两级导航 IA（G4） | design-intelligence/03 信息优先级扩展"导航架构"节 |
-| H4 | 测试字体溢出（F9） | design-intelligence 组件规范补充 |
-| H5 | 批量编辑纪律（F1/F2/F3） | 已在本文档 F 节；可入 agent-guardrails |
+| H1 | 动画曲线 overshoot 值域（F4） | `ui-specs/design-intelligence/05-emotional-design.md`、`ui-specs/rules.yaml` |
+| H2 | 手势竞争清单（F5） | `ui-specs/engineering/interaction-patterns.md` |
+| H3 | 两级导航 IA（G4） | `ui-specs/design-intelligence/03-information-priority.md` |
+| H4 | 测试字体溢出（F9） | `ui-specs/component-spec.md` |
+| H5 | 批量编辑纪律（F1/F2/F3） | `backend-specs/agent-guardrails.md` 第 6 节 |
 
 ## I. 工具能力验证总结
 
