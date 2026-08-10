@@ -1,8 +1,9 @@
 # ai-batch-runner
 
-Serial / parallel / pipeline batch executor for **any CLI-based coding agent** — not tied to
+Serial / parallel / pipeline batch executor for **CLI-based coding agents** — not tied to
 one vendor. Point it at `pi`, [Claude Code](https://github.com/anthropics/claude-code), Codex CLI,
-Gemini CLI, OpenCode, or anything else that accepts:
+Gemini CLI, OpenCode, or configure `agent.argument_flags` for another argv contract. The
+built-in adapter accepts:
 
 ```
 <bin> -p PROMPT [--model M] [--provider P] [--thinking T] [--tools T] [--exclude-tools T]
@@ -15,7 +16,7 @@ exponential-backoff retries, and optional auto git-commit after each stage.
 > **Provenance**: this tree is a sync of `snaplink/ai-dev` (the living monorepo copy), carried
 > over as-is including its regression test suite. The engine now lives in the `pbatch/`
 > package with `pi-batch.py` as a thin entry shim (the reference's current layout; the
-> earlier 4-file split and the 1389-line monolith were both superseded). `tests/` (387 cases)
+> earlier 4-file split and the 1389-line monolith were both superseded). `tests/`
 > is the authoritative behavior spec.
 >
 > **Local adaptations** (everything else stays byte-identical): `pi-batch.yaml`
@@ -141,7 +142,21 @@ agent:
   default_model: ""
   default_timeout: 300
   default_workers: 4
+  argument_flags:          # per-agent overrides are also supported
+    prompt: "-p"           # use "" for a positional prompt
+    model: "--model"
 ```
+
+Before a non-dry run starts, the CLI checks that the selected executable is
+available. Project validators use `project.frontend_root`, `backend_root`, and
+`report_root`; relative values resolve against the task working directory.
+Regular wheel installs also carry the default pipelines, role prompts, rule
+registries, eval suites and checker scripts. Project-local assets take
+precedence; installed assets are the fallback, so `pi-batch rules`, `eval`,
+`check`, `campaign`, and classifier routing work outside this checkout.
+`pi-batch health` is also runnable from a wheel, but its default self-check
+honestly reports unhealthy when the wheel has no source tests (tests are not
+shipped); use `pi-batch health --dir /path/to/project` to assess a target project.
 
 Configuration sections are type-checked at startup. Malformed section/value
 types are reported and replaced with bounded built-in defaults, so a typo does
@@ -179,8 +194,9 @@ pi-batch rules "..." --summary | --llm-prompt p.txt | --llm-json '{...}'
 # Context routing + evolution + self-check
 pi-batch context "任务" --paths src/order/**   # project documents for a task
 pi-batch learn "订单并发创建重复记录"            # RCA -> rule draft (--from-memory TERM)
-pi-batch eval                                  # rule-system regression suite (25 cases)
+pi-batch eval                                  # rule-system regression suite (42 cases)
 pi-batch check                                 # one-command self-check
+pi-batch tasks.yaml --validate 'jsonschema=schemas/result.schema.json'
 
 # Frontend task: --classify routes it to the frontend implementation
 # pipeline (real code in the project; plan -> implement with
@@ -223,7 +239,8 @@ tasks:
 - **Task type classifier**: `--classify` + `pi-batch.py classify` subcommand run a
   deterministic bilingual keyword gate BEFORE execution (zero LLM cost); a
   frontend-dominated batch routes to the configured UI generation pipeline
-  (`classifier.frontend_pipeline`, default `examples/ui-generation-pipeline.yaml`).
+  (`classifier.frontend_pipeline`, default
+  `examples/frontend-implementation-pipeline.yaml`).
   Keywords are additive-extensible via `pbatch/task_keywords.yaml`; platform
   mention (tsx/dart/flutter/vue/react-native) boosts the frontend decision;
   explicit `--pipeline` always wins; missing pipeline file fails loudly.
@@ -323,7 +340,7 @@ tasks:
   non-idempotent writes), streaming with backpressure. `testing_reviewer`
   role audits risk coverage and verification honesty.
 - **Backend implementation pipeline + full classifier routing**: `--classify`
-  now routes frontend tasks to `examples/ui-generation-pipeline.yaml` AND
+  now routes frontend tasks to `examples/frontend-implementation-pipeline.yaml` AND
   backend tasks to `examples/backend-implementation-pipeline.yaml`
   (`classifier.backend_pipeline`) — plan stage runs `pi-batch assess` and
   mandates the Persistence Design report before any code, the implement
@@ -335,7 +352,7 @@ tasks:
   only the project documents a task needs (ADRs/contracts/security
   baselines from `docs/agent-context/context-map.yaml`, path glob + task
   keywords, missing files warned); `pi-batch eval` runs the evals/*.yaml
-  regression suite against the live classifier/matcher/assessor (23
+  regression suite against the live classifier/matcher/assessor (42
   cases encoding every regression we have actually hit — saas → L3,
   login → high risk, flutter+backend → frontend, restrained
   prescriptions) and is wired into make ci, so a keyword or registry
@@ -526,7 +543,7 @@ examples/                pipelines incl. repository-campaign.yaml and its full-S
 scripts/                 upstream one-command flows: rolling-analysis.sh, full-flow.sh,
                          full-auto.sh (module-by-module SDLC automation), paths adapted
 docs/                    usage guides incl. RUNNING_247.md (24x7 operation)
-tests/                   387 regression tests + 25 eval cases (pytest): engine, rules/assess, memory, logging, campaign, run-review, CLI E2E
+tests/                   1200+ regression tests: engine, rules/assess, memory, logging, campaign, run-review, CLI E2E
 git-auto-commit.sh       interactive standalone commit helper (separate from pipeline git_commit)
 ```
 
@@ -549,7 +566,7 @@ validators are shared with `pi-batch.py` via `pi-batch.yaml`.
 
 ```bash
 make ci                       # full gate set: gates + self-test + regression suite
-python -m pytest tests/ -q    # 387 tests: config resolution, failure detection,
+python -m pytest tests/ -q    # 1200+ tests: config resolution, failure detection,
                               # retries/rounds, sessions, validation gates, aggregate,
                               # meta stages (ad-hoc roles, concurrency), from_prompt,
                               # gate verdicts, decision logs, archiving, run-review chaining
@@ -567,11 +584,12 @@ dependencies:
   configured in `engineering.yaml`
 - The upstream-synced engine files (`pi-batch.py`, `ai/run-review.py`) are exempt
   via `ignore_patterns`; the gates bind on code authored here
-- `make self-test` verifies the harness itself (34 unittest cases); `make test`
-  runs the 387-case regression suite + `make eval` (25 rule-system cases); `make coverage` reports check coverage
+- `make self-test` verifies the harness itself (50 unittest cases); `make test`
+  runs the 1200+ case regression suite + `make eval` (42 rule-system cases); `make coverage` reports check coverage
 - Git hooks in `.githooks/` (enable: `git config core.hooksPath .githooks`):
   pre-commit gates staged files, pre-push runs the full harness
-- CI: `.github/workflows/ci.yml` runs G1-G4 + self-test + regression + coverage
+- CI: `.github/workflows/ci.yml` runs G1-G4 + self-test + regression + eval +
+  quality + org + coverage
 
 See `docs/CHECKS_REGISTRY.md` for the full registry.
 
@@ -597,6 +615,7 @@ Agent 生成前端 UI 时遵循"先构图、后写码"：
 - **`ui-specs/business-ui-contract.md`**：角色×任务×数据×交互×视觉五层映射、
   状态矩阵（加载/空/部分/陈旧/并发/无权限/恢复）、错误四阶、数据可信度
 - **`pi-batch ui-geometry <file|--dir>`**：机械门禁子命令——裸数字小偏移、
-  随机圆角、随机线宽 fail closed（`uigeometry` 验证器 + eval 回归 40 例）
+  随机圆角、随机线宽 fail closed（`uigeometry` 验证器；确定性回归见
+  `tests/test_ui_geometry.py`）
 - 流水线挂载：frontend-implementation / ui-generation 的 implement/生成阶段
   自动带 uigeometry 门禁（ui-refactor 走 uicheck 项目级扫描）

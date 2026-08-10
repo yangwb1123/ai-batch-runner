@@ -42,6 +42,63 @@ def test_auto_checks_reference_real_commands():
     assert report["valid"] is True, report["problems"]
 
 
+def test_default_assets_follow_tool_root_from_neutral_dir(tmp_path, monkeypatch):
+    """安装态不依赖调用者 cwd，规范、命令和模板均从 TOOL_ROOT 发现。"""
+    tool_root = Path(org.config.TOOL_ROOT).resolve()
+    neutral = tmp_path / "neutral"
+    neutral.mkdir()
+    monkeypatch.chdir(neutral)
+    nodes = org.load_nodes()
+    assert len(nodes) == 17
+    commands = org._known_commands()
+    assert "scripts/check-ui-spec.py" in commands
+    assert "pbatch/cli.py" in commands
+    assert org._check_exists("prompts/critic.md", commands) is True
+    report = org.org_check()
+    assert report["valid"] is True, (tool_root, report["problems"])
+
+
+def test_explicit_org_dir_remains_project_local(tmp_path, monkeypatch):
+    """显式目录按项目路径读取，不被缺失的安装资产根覆盖。"""
+    project = tmp_path / "project"
+    organization = project / "agent-engineering"
+    organization.mkdir(parents=True)
+    (project / "prompts").mkdir()
+    (project / "prompts" / "local.md").write_text("# local\n", encoding="utf-8")
+    (project / "scripts").mkdir()
+    (project / "scripts" / "local.py").write_text("pass\n", encoding="utf-8")
+    (organization / "local.yaml").write_text(
+        "id: local\nname: Local\nrole: local\nstage: 0\nparent: ''\n"
+        "responsibilities: []\ninputs: []\noutputs: []\ncheck_rules: []\n"
+        "forbidden: []\nbest_practices: []\nfailure_cases: []\n"
+        "auto_checks: [scripts/local.py]\nreview_checklist: []\n"
+        "role_template: prompts/local.md\n", encoding="utf-8")
+    monkeypatch.setattr(org.config, "TOOL_ROOT", str(tmp_path / "missing"))
+    neutral = tmp_path / "neutral"
+    neutral.mkdir()
+    monkeypatch.chdir(neutral)
+    assert [node["id"] for node in org.load_nodes(organization)] == ["local"]
+    assert org.org_check(org_dir=organization)["valid"] is True
+
+
+def test_missing_default_assets_fail_closed(tmp_path, monkeypatch, capsys):
+    """缺失安装资产不能让 check、flow 或 run 以空集合假通过。"""
+    monkeypatch.setattr(org.config, "TOOL_ROOT", str(tmp_path / "missing"))
+    report = org.org_check()
+    assert report["valid"] is False and report["node_count"] == 0
+    assert any("assets missing or empty" in item for item in report["problems"])
+    with pytest.raises(SystemExit) as exc:
+        org.org_main(["check", "--json"])
+    assert exc.value.code == 1
+    assert json.loads(capsys.readouterr().out)["valid"] is False
+    flow = org.run_flow("把按钮对齐", level="L0")
+    assert flow["flow_passed"] is False
+    assert flow["nodes"] and all(not node["gate_passed"] for node in flow["nodes"])
+    with pytest.raises(SystemExit) as exc:
+        org.org_main(["flow"])
+    assert exc.value.code == 1
+
+
 def test_org_check_detects_missing_element(tmp_path, monkeypatch):
     (tmp_path / "node.yaml").write_text("id: x\nname: 测试\n",
                                         encoding="utf-8")

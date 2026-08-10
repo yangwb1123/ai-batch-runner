@@ -23,9 +23,13 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from . import config
+
 CAPABILITY_DOMAINS = ("reasoning", "planning", "execution", "verification",
                       "governance", "device", "ops")
 MODULE_DEP_BUDGET = 15  # 模块级导入依赖上限（质量预算）
+PACKAGE_DIR = Path(__file__).resolve().parent
+TESTS_DIR = Path(config.TOOL_ROOT) / "tests"
 
 # 能力 id → (domain, risk, input 摘要, output 摘要)。
 # 与 _SUBCOMMANDS 同步维护；未登记的自动按 domain=ops/risk=low 兜底。
@@ -73,10 +77,9 @@ def _tests_for(capability_id: str) -> list:
     """启发式关联测试：能力 id 单词出现在测试文件名中。"""
     tokens = set(re.split(r"[_-]", capability_id)) - {"py", "ui"}
     matches = []
-    tests_dir = Path("tests")
-    if not tests_dir.exists():
+    if not TESTS_DIR.is_dir():
         return matches
-    for path in sorted(tests_dir.glob("test_*.py")):
+    for path in sorted(TESTS_DIR.glob("test_*.py")):
         name = path.stem.lower()
         if any(token and token in name for token in tokens):
             matches.append(path.name)
@@ -85,7 +88,7 @@ def _tests_for(capability_id: str) -> list:
 
 def _module_dependencies(module: str) -> list:
     """owner 模块的模块级导入依赖（graph extract 同源逻辑）。"""
-    path = Path("pbatch") / f"{module}.py"
+    path = PACKAGE_DIR / f"{module}.py"
     if not path.exists():
         return []
     deps = []
@@ -171,7 +174,7 @@ def registry_check(registry: Optional[list] = None) -> dict:
     for capability in (registry if registry is not None else build_registry()):
         stats["total"] += 1
         module = capability["owner"]["module"]
-        if not (Path("pbatch") / f"{module}.py").exists():
+        if not (PACKAGE_DIR / f"{module}.py").exists():
             problems.append(f"{capability['id']}: owner 模块 {module} 不存在")
         if capability["tests"]:
             stats["with_tests"] += 1

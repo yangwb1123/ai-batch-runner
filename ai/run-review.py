@@ -57,6 +57,7 @@ os.environ.setdefault("PBATCH_SCRIPT_DIR", str(_ROOT))
 
 from pbatch import config as batch_config
 from pbatch.runner import (_kill_group, _read_stream,
+                           expand_command_placeholders,
                            revalidate_existing as _revalidate_existing,
                            run_validation as _bounded_validation)
 from pbatch.text_io import read_text_bounded
@@ -242,9 +243,10 @@ def _load_session_flags() -> dict:
 SESSION_FLAGS = _load_session_flags()
 
 
-def session_flags(key: str, session_id: str, session_name: str) -> list:
-    flags = SESSION_FLAGS.get(key) or _DEFAULT_SESSION_FLAGS[key]
-    return [f.replace("{session}", session_id).replace("{name}", session_name) for f in flags]
+def session_flags(key: str, session_id: str, session_name: str,
+                  agent_bin: str = "") -> list:
+    return batch_config.agent_session_flags(
+        key, session_id, session_name, agent_bin or AGENT_BIN)
 
 
 # Named engineering gates declared in pi-batch.yaml (validators key),
@@ -482,12 +484,9 @@ def _refuse_symlink_output(stage: str, out_file) -> bool:
 
 def _review_agent_command(args, prompt: str, session_flags: Optional[list]) -> list[str]:
     """Build the configured review-agent invocation."""
-    cmd = [args.agent_bin or AGENT_BIN, "-p", prompt]
-    if args.model:
-        cmd.extend(["--model", args.model])
-    if session_flags:
-        cmd.extend(session_flags)
-    return cmd
+    return batch_config.build_agent_argv(
+        args.agent_bin or AGENT_BIN, prompt, model=args.model,
+        session_flags=session_flags)
 
 
 def _stage_output_file(args, stage: str) -> Path:
@@ -655,7 +654,7 @@ def _run_validators(stage: str, out_file, output: str, commands: list, cwd: str)
     tmp_file = Path(tmp_name)
     tmp_file.write_text(output, encoding="utf-8")
     for raw in commands:
-        cmd = raw.replace("{output}", shlex.quote(str(tmp_file))).replace("{cwd}", shlex.quote(cwd))
+        cmd = expand_command_placeholders(raw, cwd, str(tmp_file))
         result = _bounded_validation(cmd, cwd, timeout=600)
         if result.ok:
             continue
@@ -714,6 +713,10 @@ def main() -> None:
     args = parser.parse_args()
     if args.timeout < 0:
         parser.error("--timeout must be non-negative (0 uses the default)")
+    if not args.dry_run:
+        errors = batch_config.agent_preflight_errors(args.agent_bin or AGENT_BIN)
+        if errors:
+            parser.error("agent preflight failed: " + "; ".join(errors))
 
     ctx = _build_context(args)
     prompts_dir = Path(__file__).parent / "prompts"
@@ -777,10 +780,12 @@ def _run_stage_loop(args, stages_to_run: list, prompts_dir, ctx: dict, out_dir, 
         flags = None
         if args.session_mode != "new":
             if not session_active:
-                flags = session_flags("start", session_name, session_name)
+                flags = session_flags("start", session_name, session_name,
+                                      args.agent_bin or AGENT_BIN)
                 session_active = True
             else:
-                flags = session_flags("continue", session_name, session_name)
+                flags = session_flags("continue", session_name, session_name,
+                                      args.agent_bin or AGENT_BIN)
 
         rc = run_stage(stage, prompt, args, flags)
         if rc != 0:

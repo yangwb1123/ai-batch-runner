@@ -13,7 +13,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0",      # regression suite in tests/ (222 cases)
+    "pytest>=8.0",      # regression suite in tests/
     "pytest-cov>=5.0",  # make coverage
 ]
 
@@ -21,6 +21,9 @@ dev = [
 # `pi-batch ...` anywhere; each project keeps its own pi-batch.yaml.
 [project.scripts]
 pi-batch = "pbatch.cli:main"
+
+[tool.setuptools]
+include-package-data = true
 
 [tool.setuptools.packages.find]
 include = ["pbatch*"]
@@ -33,6 +36,25 @@ include = ["pbatch*"]
 # import name `pbatch`, not the distribution name.
 [tool.setuptools.package-data]
 pbatch = ["README.md", "role_keywords.yaml", "task_keywords.yaml"]
+
+[tool.setuptools.data-files]
+"share/ai-batch-runner" = ["pi-batch.py", "pi-batch.yaml", "quality.py"]
+"share/ai-batch-runner/scripts" = ["scripts/*.py", "scripts/*.sh"]
+"share/ai-batch-runner/evals" = ["evals/*.yaml"]
+"share/ai-batch-runner/examples" = ["examples/*.yaml", "examples/*.md"]
+"share/ai-batch-runner/examples/sdlc-inputs" = ["examples/sdlc-inputs/*.md"]
+"share/ai-batch-runner/examples/schemas" = ["examples/schemas/*.json"]
+"share/ai-batch-runner/agent-engineering" = ["agent-engineering/*.yaml"]
+"share/ai-batch-runner/pipelines" = ["pipelines/*.yaml"]
+"share/ai-batch-runner/prompts" = ["prompts/*.md"]
+"share/ai-batch-runner/product-specs" = ["product-specs/*.md", "product-specs/*.yaml"]
+"share/ai-batch-runner/ui-specs" = ["ui-specs/*.md", "ui-specs/*.yaml", "ui-specs/*.json"]
+"share/ai-batch-runner/ui-specs/business-profiles" = ["ui-specs/business-profiles/*.md"]
+"share/ai-batch-runner/ui-specs/engineering" = ["ui-specs/engineering/*.md"]
+"share/ai-batch-runner/ui-specs/design-intelligence" = ["ui-specs/design-intelligence/*.md", "ui-specs/design-intelligence/*.yaml"]
+"share/ai-batch-runner/backend-specs" = ["backend-specs/*.md", "backend-specs/*.yaml"]
+"share/ai-batch-runner/backend-specs/design-intelligence" = ["backend-specs/design-intelligence/*.md"]
+"share/ai-batch-runner/docs" = ["docs/ENGINEERING_PHILOSOPHY.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "checks"]

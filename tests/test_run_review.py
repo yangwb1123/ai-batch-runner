@@ -63,6 +63,18 @@ def test_chain_variables_fills_schema_placeholder():
     assert chained["PRODUCT_DISCOVERY_OUTPUT"] == "--- Stage 00 output ---\nDISCOVERY TEXT"
 
 
+def test_review_agent_command_uses_configured_adapter(monkeypatch):
+    mod = load_runner()
+    monkeypatch.setattr(mod.batch_config, "_AGENT_CFG", {
+        "argument_flags": {"prompt": "", "model": "-m"},
+    })
+    monkeypatch.setattr(mod.batch_config, "_AGENTS_CFG", {})
+    args = _Args(agent_bin="codex", model="gpt")
+    assert mod._review_agent_command(args, "review", ["resume", "sid"]) == [
+        "codex", "review", "-m", "gpt", "resume", "sid",
+    ]
+
+
 def test_chain_variables_respects_explicit_value():
     mod = load_runner()
     prior = {"00": "DISCOVERY TEXT"}

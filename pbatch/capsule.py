@@ -27,7 +27,8 @@ from .fabric import FABRIC_VERSION
 from .world import _module_versions, capture_world_snapshot
 
 RULE_REGISTRIES = ("ui-specs/rules.yaml", "backend-specs/rules.yaml",
-                   "pbatch/task_keywords.yaml", "pbatch/role_keywords.yaml")
+                   "product-specs/rules.yaml", "pbatch/task_keywords.yaml",
+                   "pbatch/role_keywords.yaml")
 
 
 def _file_digest(path: Path) -> str:
@@ -38,14 +39,19 @@ def _file_digest(path: Path) -> str:
     return hashlib.sha256(data).hexdigest()[:12]
 
 
+def _rule_digests(cwd: str) -> dict[str, str]:
+    """Hash project overrides first, then installed rule assets."""
+    return {
+        rel: _file_digest(Path(config.resolve_asset_path(rel, cwd)))
+        for rel in RULE_REGISTRIES
+    }
+
+
 def capture_context_capsule(prompt: str, cwd: str = "",
                             rule_digests: Optional[dict] = None) -> dict:
     """当前上下文胶囊：所有参与决策的版本可见且可比较。"""
-    root = Path(cwd or ".")
     world = capture_world_snapshot(cwd)
-    rules = rule_digests or {
-        rel: _file_digest(root / rel) for rel in RULE_REGISTRIES
-    }
+    rules = _rule_digests(cwd) if rule_digests is None else rule_digests
     return {
         "capsule_id": "cap-" + uuid.uuid4().hex[:12],
         "prompt_hash": hashlib.sha256(
@@ -72,8 +78,7 @@ def _run_eval() -> tuple:
     import subprocess
     try:
         result = subprocess.run(
-            [sys.executable, str(Path(__file__).resolve().parent.parent
-                                 / "pi-batch.py"), "eval"],
+            [sys.executable, "-m", "pbatch", "eval"],
             capture_output=True, text=True, timeout=300)
         return (result.returncode == 0,
                 (result.stdout + result.stderr).strip()[-300:])

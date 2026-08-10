@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from . import config, org_workflow
 from .config import yaml
 
 ORG_DIR = Path("agent-engineering")
@@ -29,9 +30,46 @@ REQUIRED_KEYS = ("id", "name", "role", "stage", "parent",
                  "auto_checks", "review_checklist", "role_template")
 
 
+def _resolved_org_dir(org_dir: Optional[Path] = None) -> Path:
+    """Resolve the default directory from the installed/source asset root."""
+    if org_dir is not None:
+        return Path(org_dir).expanduser()
+    configured = Path(ORG_DIR).expanduser()
+    if configured.is_absolute():
+        return configured
+    return Path(config.TOOL_ROOT) / configured
+
+
+def _resource_roots(org_dir: Optional[Path] = None) -> list[Path]:
+    """Project-local then distributed roots used by organization assets."""
+    organization = _resolved_org_dir(org_dir)
+    package_parent = Path(__file__).resolve().parent.parent
+    roots = [Path.cwd(), organization.parent, Path(config.TOOL_ROOT),
+             package_parent]
+    unique = []
+    for root in roots:
+        resolved = root.expanduser().resolve()
+        if resolved not in unique:
+            unique.append(resolved)
+    return unique
+
+
+def _existing_resource(value: str, org_dir: Optional[Path] = None) -> Optional[Path]:
+    """Find a project-local or installed asset referenced by a node."""
+    path = Path(value).expanduser()
+    candidates = [path] if path.is_absolute() else [
+        root / path for root in _resource_roots(org_dir)
+    ]
+    return next((candidate for candidate in candidates if candidate.exists()), None)
+
+
+def _missing_assets_problem(org_dir: Optional[Path] = None) -> str:
+    return f"organization assets missing or empty: {_resolved_org_dir(org_dir)}"
+
+
 def load_nodes(org_dir: Optional[Path] = None) -> list:
     """读全部节点规范（无效文件 fail closed）。"""
-    org_dir = org_dir or ORG_DIR
+    org_dir = _resolved_org_dir(org_dir)
     nodes = []
     if not org_dir.exists():
         return nodes
@@ -45,18 +83,21 @@ def load_nodes(org_dir: Optional[Path] = None) -> list:
     return nodes
 
 
-def _known_commands() -> set:
+def _known_commands(org_dir: Optional[Path] = None) -> set:
     """已知命令集合：pi-batch 子命令 + scripts/*.py + 常见工具。"""
     from .cli import _SUBCOMMANDS
     commands = set(_SUBCOMMANDS)
-    for path in Path("scripts").glob("*.py"):
-        commands.add(str(path))
+    for root in _resource_roots(org_dir):
+        for directory in ("scripts", "pbatch"):
+            for path in (root / directory).glob("*.py"):
+                commands.add(f"{directory}/{path.name}")
     commands.update({"pi-batch", "pytest", "python", "bash", "go", "make",
                      "git"})
     return commands
 
 
-def _check_exists(check: str, commands: set) -> bool:
+def _check_exists(check: str, commands: set,
+                  org_dir: Optional[Path] = None) -> bool:
     """auto_check 校验：pi-batch 子命令 / 脚本 / 文件目录引用。"""
     parts = str(check).split()
     if not parts:
@@ -66,13 +107,12 @@ def _check_exists(check: str, commands: set) -> bool:
         return len(parts) > 1 and parts[1] in commands
     if first in commands:
         return True
-    return Path(first).exists()
+    return _existing_resource(first, org_dir) is not None
 
 
-def org_check(nodes: Optional[list] = None,
-             org_dir: Optional[Path] = None) -> dict:
-    """规范完整性：9 要素 / 顺序 / id 唯一 / 命令存在。"""
-    nodes = nodes if nodes is not None else load_nodes(org_dir)
+def _node_schema_problems(nodes: list,
+                          org_dir: Optional[Path]) -> tuple[list, dict]:
+    """Validate node identity, required fields and role-template assets."""
     problems = []
     by_id = {}
     for node in nodes:
@@ -84,16 +124,37 @@ def org_check(nodes: Optional[list] = None,
             if key not in node:
                 problems.append(f"{node_id}: 缺少要素 '{key}'")
         template = node.get("role_template", "")
-        if template and not Path(template).exists():
+        if template and _existing_resource(template, org_dir) is None:
             problems.append(f"{node_id}: role_template 不存在: {template}")
-    for node in nodes:  # parent 校验须在全部 id 就绪后
+    return problems, by_id
+
+
+def _node_reference_problems(nodes: list, by_id: dict, commands: set,
+                             org_dir: Optional[Path]) -> list:
+    """Validate parent links and executable auto-check references."""
+    problems = []
+    for node in nodes:
+        node_id = node.get("id", "")
         parent = node.get("parent", "")
         if parent and parent not in by_id:
-            problems.append(f"{node.get('id')}: parent '{parent}' 不存在")
-        commands = _known_commands()
+            problems.append(f"{node_id}: parent '{parent}' 不存在")
         for check in node.get("auto_checks", []):
-            if not _check_exists(str(check), commands):
+            if not _check_exists(str(check), commands, org_dir):
                 problems.append(f"{node_id}: auto_check 命令不存在: {check}")
+    return problems
+
+
+def org_check(nodes: Optional[list] = None,
+             org_dir: Optional[Path] = None) -> dict:
+    """规范完整性：9 要素 / 顺序 / id 唯一 / 命令存在。"""
+    nodes = nodes if nodes is not None else load_nodes(org_dir)
+    problems = []
+    if not nodes:
+        problems.append(_missing_assets_problem(org_dir))
+    commands = _known_commands(org_dir)
+    schema_problems, by_id = _node_schema_problems(nodes, org_dir)
+    problems.extend(schema_problems)
+    problems.extend(_node_reference_problems(nodes, by_id, commands, org_dir))
     stages = sorted(node.get("stage", -1) for node in nodes)
     expected = list(range(len(nodes))) if nodes else []
     if stages != expected:
@@ -143,6 +204,8 @@ def run_gate(node_id: str, task: str = "", code_dir: str = "",
     """执行节点 auto_checks 作为流程门禁：占位符注入 → 有界子进程 →
     汇总（缺参命令标记 skipped，不伪装通过）。"""
     nodes = load_nodes()
+    if not nodes:
+        return {"error": _missing_assets_problem()}
     node = next((n for n in nodes if n.get("id") == node_id), None)
     if node is None:
         return {"error": f"unknown node {node_id!r}"}
@@ -173,8 +236,12 @@ def _execute_check(check, params: dict) -> dict:
         return {"check": check, "status": "failed",
                 "reason": f"未替换占位符 {', '.join(leftover)}（配置错误）"}
     # scripts/*.py 无执行位（仓库惯例用解释器调用）——自动加 python 前缀。
-    if cmd.startswith("scripts/") and not cmd.startswith(("python", "bash")):
-        cmd = f"{sys.executable} {cmd}"
+    if cmd.startswith("scripts/"):
+        token, separator, remainder = cmd.partition(" ")
+        script = _existing_resource(token)
+        if script is not None:
+            token = shlex.quote(str(script))
+        cmd = f"{shlex.quote(sys.executable)} {token}{separator}{remainder}"
     if cmd == "pi-batch" or cmd.startswith("pi-batch "):
         cmd = f"{shlex.quote(sys.executable)} -m pbatch{cmd[len('pi-batch'):]}"
     try:
@@ -297,61 +364,21 @@ def _build_parser():
     return parser
 
 
-# 工作等级 → 节点集合（增量流程：L0/L1 轻量，L2/L3 全评审）。
-LEVEL_NODES = {
-    "L0": ["requirement", "developer", "testing"],
-    "L1": ["requirement", "developer", "testing", "code_review"],
-    "L2": ["requirement", "domain", "architecture", "data", "developer",
-           "code_review", "security", "testing"],
-    "L3": ["requirement", "product", "domain", "architecture", "data",
-           "api", "developer", "code_review", "security", "testing",
-           "performance", "release"],
-}
+# Compatibility exports for callers that imported workflow constants here.
+LEVEL_NODES = org_workflow.LEVEL_NODES
 
 
 def run_flow(task: str, code_dir: str = "", level: str = "",
              file_path: str = "", artifact_dir: str = "",
              log_path: str = "") -> dict:
     """流程串联执行：impact 分流 → 按工作等级顺序跑节点 gate。"""
-    from .impact import change_impact
-    impact = change_impact(task, code_dir)
-    if not level:
-        level = impact["work_level"]
-    nodes = LEVEL_NODES.get(level, LEVEL_NODES["L1"])
-    results = []
-    for node_id in nodes:
-        gate = run_gate(node_id, task, code_dir, file_path, log_path)
-        if "error" in gate:
-            continue
-        results.append({"node": node_id, "passed": gate["passed"],
-                        "failed": gate["failed"], "skipped": gate["skipped"],
-                        "attention": gate["attention"],
-                        "gate_passed": gate["gate_passed"]})
-        if artifact_dir:
-            _write_artifact(artifact_dir, node_id, gate)
-    return {
-        "task": impact["task"], "impact_level": impact["work_level"],
-        "change_cost": impact["change_cost"],
-        "run_level": level, "required_agents": impact["required_agents"],
-        "artifact_dir": artifact_dir or "",
-        "nodes": results,
-        "flow_passed": all(r["gate_passed"] for r in results),
-    }
+    return org_workflow.run_flow(
+        task, code_dir, level, file_path, artifact_dir, log_path, run_gate)
 
 
 def _write_artifact(artifact_dir: str, node_id: str, gate: dict) -> None:
     """节点输出工件落盘（下游节点输入；只写证据摘录，不写全量）。"""
-    target = Path(artifact_dir)
-    target.mkdir(parents=True, exist_ok=True)
-    lines = [f"# node: {node_id}", f"passed: {gate['passed']}",
-             f"failed: {gate['failed']} | skipped: {gate['skipped']} | "
-             f"attention: {gate['attention']}", ""]
-    for result in gate["results"]:
-        lines.append(f"[{result['status']}] {result['check']}")
-        if result.get("evidence"):
-            lines.append(f"    {result['evidence'][:150]}")
-    (target / f"{node_id}.txt").write_text("\n".join(lines) + "\n",
-                                           encoding="utf-8")
+    org_workflow.write_artifact(artifact_dir, node_id, gate)
 
 
 FLOWS_DIR = Path(".pi-batch") / "flows"
@@ -359,57 +386,17 @@ FLOWS_DIR = Path(".pi-batch") / "flows"
 
 def save_flow(report: dict) -> str:
     """流程工件落盘（可审计、可续查）：.pi-batch/flows/<ts>-<slug>.json。"""
-    import time as _time
-    import re as _re
-    slug = _re.sub(r"[^a-z0-9]+", "-", (report.get("task") or "flow")
-                   .lower())[:40].strip("-") or "flow"
-    path = FLOWS_DIR / f"{_time.strftime('%Y%m%d-%H%M%S')}-{slug}.json"
-    FLOWS_DIR.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(report, ensure_ascii=False, indent=2),
-                    encoding="utf-8")
-    return str(path)
+    return org_workflow.save_flow(report, FLOWS_DIR)
 
 
 def list_flows() -> list:
     """历史流程工件（新→旧，有界读取）。"""
-    records = []
-    if not FLOWS_DIR.exists():
-        return records
-    for path in sorted(FLOWS_DIR.glob("*.json"), reverse=True):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if isinstance(data, dict):
-            data["file"] = path.name
-            records.append(data)
-    return records
+    return org_workflow.list_flows(FLOWS_DIR)
 
 
 def lesson_for(node: dict) -> str:
     """失败案例 → learn draft 沉淀（案例从文档变成可行动知识）。"""
-    cases = node.get("failure_cases", [])
-    if not cases:
-        return f"节点 {node.get('id')} 无失败案例记录"
-    lines = [f"# {node.get('name')} — 失败案例与规则沉淀", ""]
-    for index, case in enumerate(cases, 1):
-        lines.append(f"## 案例 {index}: {case}")
-        lines.append("")
-        lines.append("### 沉淀为规则草案（learn 流程）")
-        lines.append("```bash")
-        lines.append("pi-batch learn draft "
-                     f"'{case}' --category backend --severity warning "
-                     f"--rule-id ORG-"
-                     f"{node.get('id', '').upper()[:16]}-{index:02d}")
-        lines.append("```")
-        lines.append("")
-        lines.append("### 复盘（retro/reflection）")
-        lines.append("```bash")
-        lines.append(f"pi-batch retro --failures-only logs/ --actions")
-        lines.append("pi-batch reflect --task " + f"'{case}'")
-        lines.append("```")
-        lines.append("")
-    return "\n".join(lines)
+    return org_workflow.lesson_for(node)
 
 
 def _cmd_check(args) -> None:
@@ -418,8 +405,10 @@ def _cmd_check(args) -> None:
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
+        stages = report["stages"]
+        span = f"{stages[0]}-{stages[-1]}" if stages else "-"
         print(f"agent-org: {report['node_count']} 个节点 | "
-              f"stages {report['stages'][0]}-{report['stages'][-1]}")
+              f"stages {span}")
         for problem in report["problems"]:
             print(f"  ⚠ {problem}")
         print("valid" if report["valid"] else "INVALID")
@@ -452,6 +441,9 @@ def _cmd_runs(args) -> None:
 def _cmd_flow() -> None:
     """全流程节点图（0-16 顺序）。"""
     nodes = load_nodes()
+    if not nodes:
+        print(_missing_assets_problem(), file=sys.stderr)
+        raise SystemExit(1)
     for node in sorted(nodes, key=lambda n: n.get("stage", 0)):
         arrow = " → " if node.get("stage", 0) < 16 else ""
         print(f"{node.get('stage', '?'):>2} {node.get('name', '?'):<24}"

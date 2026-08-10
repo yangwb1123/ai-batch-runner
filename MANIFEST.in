@@ -1,0 +1,11 @@
+include pi-batch.py pi-batch.yaml quality.py
+recursive-include scripts *.py *.sh
+recursive-include evals *.yaml
+recursive-include examples *.yaml *.md *.json
+recursive-include agent-engineering *.yaml
+recursive-include pipelines *.yaml
+recursive-include prompts *.md
+recursive-include product-specs *.md *.yaml
+recursive-include ui-specs *.md *.yaml *.json
+recursive-include backend-specs *.md *.yaml
+include docs/ENGINEERING_PHILOSOPHY.md
