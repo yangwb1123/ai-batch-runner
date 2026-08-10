@@ -78,10 +78,20 @@ def test_health_command_reports_self():
         [_sys.executable, "-m", "pbatch", "health", "--json"],
         cwd=root, capture_output=True, text=True, timeout=300,
     )
-    assert result.returncode in (0, 1)
     start = result.stdout.index("{")
     payload = _json.loads(result.stdout[start:])
+    assert result.returncode == (0 if payload["healthy"] else 1)
     assert payload["tests"] > 0
     assert "designintelligence" in payload["checkers"]
     assert "knowledge" in payload["checkers"]
     assert payload["specs"]["ui_specs"] > 0
+
+
+def test_cli_dispatcher_propagates_health_failure(monkeypatch):
+    from pbatch import cli, health
+
+    monkeypatch.setattr(sys, "argv", ["pi-batch", "health"])
+    monkeypatch.setattr(health, "health_main", lambda _argv: 1)
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 1

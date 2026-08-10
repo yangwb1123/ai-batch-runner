@@ -623,6 +623,22 @@ def test_round_commit_commits_and_skips_clean(tmp_path, monkeypatch):
     assert before2 == after2
 
 
+def test_round_loop_commits_the_final_and_single_round(monkeypatch):
+    """The final round is still a round; --round-commit must include it."""
+    from types import SimpleNamespace
+    from pbatch import campaign as C
+
+    context = SimpleNamespace(args=SimpleNamespace(
+        dry_run=False, rounds=1, round_commit=True, round_delay=0))
+    commits = []
+    monkeypatch.setattr(C, "run_campaign", lambda _context: 0)
+    monkeypatch.setattr(C, "_round_commit",
+                        lambda _context, round_no: commits.append(round_no))
+
+    assert C.run_campaign_loop(context) == 0
+    assert commits == [1]
+
+
 def test_default_six_stage_pipeline_runs_meta_gates_validator_and_archive(monkeypatch, tmp_path):
     template = yaml.safe_load(
         (ROOT / "examples" / "repository-campaign-pipeline.yaml").read_text(encoding="utf-8"))

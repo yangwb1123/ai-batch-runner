@@ -414,10 +414,10 @@ def run_campaign_loop(context: CampaignContext) -> int:
         rc = run_campaign(context)
         if rc and code == 0:
             code = rc
-        if rounds > 0 and round_no >= rounds:
-            break
         if context.args.round_commit:
             _round_commit(context, round_no)
+        if rounds > 0 and round_no >= rounds:
+            break
         if context.args.round_delay > 0:
             log.info("ROUND DELAY: sleeping %.0fs before round %d",
                      context.args.round_delay, round_no + 1)

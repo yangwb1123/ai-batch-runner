@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import json
 import sys
+from types import SimpleNamespace
 
-from pbatch.advance import (classify_violation, format_plan, record_round,
+import pytest
+
+from pbatch.advance import (CheckerError, _run_checker, advance_main,
+                            classify_violation, format_plan, record_round,
                             scan_project)
 
 
@@ -18,7 +22,13 @@ def test_classify_violation_dimensions():
     assert classify_violation("nesting depth 20 > 8") == "fe_complexity"
     assert classify_violation("test file without assertions") == "be_errors"
     assert classify_violation("dangerous DDL") == "be_errors"
-    assert classify_violation("single-implementation interface") == "fe_complexity"
+    assert classify_violation("single-implementation interface") == "be_architecture"
+    assert classify_violation(
+        "single-implementation interface",
+        "check-frontend-quality.py") == "fe_complexity"
+    assert classify_violation(
+        "single-implementation interface",
+        "check-backend-quality.py") == "be_architecture"
 
 
 def test_scan_project_on_self(tmp_path, monkeypatch):
@@ -30,7 +40,8 @@ def test_scan_project_on_self(tmp_path, monkeypatch):
     assert scan["target"] == "."
     dims = scan["dimensions"]
     for dim_id in ("ui_spacing", "ui_color", "ui_style", "fe_errors", "fe_n1",
-                   "be_errors", "be_architecture"):
+                   "be_errors", "be_architecture", "knowledge",
+                   "design_intelligence", "backend_experience"):
         assert dim_id in dims
         assert "count" in dims[dim_id]
         assert "priority" in dims[dim_id]
@@ -75,8 +86,71 @@ def test_format_plan_empty_and_batches():
 
 def test_advance_cli_json(capsys):
     sys.argv = ["pi-batch.py", "advance", "--dir", ".", "--json"]
-    from pbatch.advance import advance_main
-    advance_main(sys.argv[2:])
+    assert advance_main(sys.argv[2:]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert "target" in payload and "batches" in payload
     assert "total" in payload
+
+
+def test_scan_runs_every_registered_checker_and_preserves_source(monkeypatch):
+    calls = []
+
+    def fake_run(script, _target):
+        name = __import__("pathlib").Path(script).name
+        calls.append(name)
+        detail = {
+            "check-ui-spec.py": "spacing: 10px",
+            "check-frontend-quality.py": "single-implementation interface",
+            "check-backend-quality.py": "single-implementation interface",
+            "check-knowledge-freshness.py": "unknown knowledge finding",
+            "check-design-intelligence.py": "unknown design finding",
+            "check-backend-experience.py": "unknown lifecycle finding",
+        }[name]
+        return {"files_scanned": 1,
+                "violations": [{"file": "x", "detail": detail}]}
+
+    monkeypatch.setattr("pbatch.advance._run_checker", fake_run)
+    scan = scan_project(".")
+    assert len(calls) == 6
+    assert scan["dimensions"]["ui_spacing"]["count"] == 1
+    assert scan["dimensions"]["fe_complexity"]["count"] == 1
+    assert scan["dimensions"]["be_architecture"]["count"] == 1
+    assert scan["dimensions"]["knowledge"]["count"] == 1
+    assert scan["dimensions"]["design_intelligence"]["count"] == 1
+    assert scan["dimensions"]["backend_experience"]["count"] == 1
+
+
+def test_run_checker_fails_closed_on_execution_or_bad_json(tmp_path, monkeypatch):
+    checker = tmp_path / "checker.py"
+    checker.write_text("# test", encoding="utf-8")
+    monkeypatch.setattr(
+        "pbatch.advance.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=2, stdout="", stderr="usage error"))
+    with pytest.raises(CheckerError, match="exited 2"):
+        _run_checker(str(checker), ".")
+
+    monkeypatch.setattr(
+        "pbatch.advance.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0, stdout="not-json", stderr=""))
+    with pytest.raises(CheckerError, match="invalid JSON"):
+        _run_checker(str(checker), ".")
+
+
+def test_recorded_rounds_rescan_and_stop_when_clean(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("pbatch.advance.STATE_DIR", tmp_path)
+    scans = [
+        {"target": ".", "files_scanned": 1,
+         "dimensions": {"x": {"count": 1, "priority": 0, "label": "x",
+                               "fix": "x", "files": [], "samples": []}}},
+        {"target": ".", "files_scanned": 1,
+         "dimensions": {"x": {"count": 0, "priority": 0, "label": "x",
+                               "fix": "x", "files": [], "samples": []}}},
+    ]
+    monkeypatch.setattr("pbatch.advance.scan_project", lambda _target: scans.pop(0))
+    assert advance_main(["--max-rounds", "5", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["rounds_run"] == 2
+    assert payload["total"] == 0
+    assert len((tmp_path / "state.jsonl").read_text().splitlines()) == 2

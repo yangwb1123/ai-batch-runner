@@ -190,7 +190,6 @@ def _apply_verbosity(verbosity: int) -> None:
 def main() -> None:
     if _dispatch_subcommand():
         return
-    # 子命令已处理：subcommand 自身通过 sys.exit 返回退出码
     parser = build_parser()
     args = parser.parse_args()
     _validate_runtime_values(parser, args)
@@ -247,8 +246,8 @@ def _record_fatal_exit(exc: BaseException, args) -> None:
             encoding="utf-8",
         )
         log.error("Exit reason written to %s", state)
-    except Exception:
-        pass
+    except (OSError, ValueError) as state_error:
+        log.warning("Could not persist fatal exit reason: %s", state_error)
 
 
 def _register_run(args) -> None:
@@ -345,7 +344,9 @@ def _dispatch_subcommand() -> bool:
     module_name, _, func_name = target.partition(":")
     module = __import__(f"pbatch.{module_name}", fromlist=[func_name])
     subcommand = getattr(module, func_name)
-    subcommand(sys.argv[2:])
+    exit_code = subcommand(sys.argv[2:])
+    if type(exit_code) is int and exit_code != 0:
+        raise SystemExit(exit_code)
     return True
 
 

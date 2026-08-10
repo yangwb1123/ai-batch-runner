@@ -51,25 +51,36 @@ def _checker_violations(name: str, root: Path) -> int:
     # check-backend-quality 无 --skip（内置 DEFAULT_EXCLUDES）；其余接受逗号参数。
     if name != "check-backend-quality":
         cmd += ["--skip", SKIP]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return -1
     if result.returncode not in (0, 1):
         return -1
     try:
         start = result.stdout.index("{")
         # stdout 可能带尾行（如 "BACKEND-QUALITY: OK"）——只解析首个 JSON 对象。
         decoded, _ = json.JSONDecoder().raw_decode(result.stdout[start:])
-        return decoded.get("total", -1)
+        total = decoded.get("total", -1)
+        return total if isinstance(total, int) and total >= 0 else -1
     except (ValueError, json.JSONDecodeError):
         return -1
 
 
 def _quality_violations(root: Path) -> int:
-    result = subprocess.run(
-        [sys.executable, str(ASSET_ROOT / "quality.py"), str(root)],
-        capture_output=True, text=True, timeout=120,
-    )
+    script = ASSET_ROOT / "quality.py"
+    if not script.is_file():
+        return -1
+    try:
+        result = subprocess.run(
+            [sys.executable, str(script), str(root)],
+            capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return -1
     match = re.search(r"(\d+) violation", result.stdout)
-    return int(match.group(1)) if match else 0
+    if match:
+        return int(match.group(1))
+    return 0 if result.returncode == 0 and "quality: OK" in result.stdout else -1
 
 
 def _spec_counts(root: Path) -> dict:
@@ -122,7 +133,8 @@ def _render(report: dict) -> str:
     lines.append(f"## {status}")
     lines.append("")
     lines.append(f"- 测试: {report['tests']}")
-    lines.append(f"- 技术债(quality): {report['quality_violations']}")
+    quality = report["quality_violations"]
+    lines.append(f"- 技术债(quality): {'未知' if quality < 0 else quality}")
     for name, count in report["checkers"].items():
         label = "未知" if count < 0 else f"{count} 违规"
         lines.append(f"- 门禁 {name}: {label}")
