@@ -18,7 +18,8 @@ from .fabric_sched import devices_from_status, pick_device
 def _fetch_status(client: RpcClient) -> tuple:
     from .fabric_rpc import rpc_post
     return rpc_post(client.base_url, client.secret, "GET", "/status",
-                    {"device_id": client.device_id}, timeout=5.0)
+                    {"device_id": client.device_id}, timeout=5.0,
+                    ssl_context=client.ssl_context)
 
 
 def _read_checkpoint(path: str) -> str:
@@ -34,13 +35,18 @@ def _read_checkpoint(path: str) -> str:
         raise SystemExit(2)
 
 
-def _submit(client: RpcClient, args, blob: str) -> dict:
+def _submit(client: RpcClient, args, blob: str, target_device: str = "") -> dict:
     return client.submit_task(args.cmd, cwd=args.cwd, timeout=args.timeout,
                               effect_class=args.effect_class,
                               mobility=args.mobility,
                               checkpoint_blob=blob,
                               checkpoint_remote=args.checkpoint_load,
-                              estimated_cost=args.estimated_cost)
+                              estimated_cost=args.estimated_cost,
+                              network_budget_bytes=getattr(
+                                  args, "network_budget_bytes", 0),
+                              data_class=getattr(
+                                  args, "data_class", "public"),
+                              target_device=target_device)
 
 
 def pick_in_cluster(args, client: RpcClient, members: list) -> str:
@@ -53,7 +59,9 @@ def pick_in_cluster(args, client: RpcClient, members: list) -> str:
                if d.get("name") in members
                and (not args.region or d.get("region") == args.region)]
     cordoned = {d["name"] for d in devices if d.get("cordoned")}
-    placement = TaskPlacement(max_effect_class=args.effect_class)
+    placement = TaskPlacement(
+        max_effect_class=args.effect_class,
+        required_data_class=getattr(args, "data_class", "public"))
     chosen = pick_device(placement, devices, cordoned=cordoned,
                          model=args.model or None)
     if chosen is None:
@@ -71,17 +79,18 @@ def schedule_gang(args, client: RpcClient) -> None:
         print("gang 需要 --devices a,b（至少两台设备）", file=sys.stderr)
         raise SystemExit(2)
     blob = _read_checkpoint(args.checkpoint_save)
-    accepted = []
-    for device in devices:
-        submitted = _submit(client, args, blob)
-        task = submitted.get("task")
-        if task is None:
-            for task_id in accepted:  # 原子性：失败即整体回滚
-                client.task_cancel(task_id)
-            print(f"gang 提交失败（{submitted.get('error', '?')}）："
-                  f"已取消 {len(accepted)} 个已接受任务", file=sys.stderr)
-            raise SystemExit(2)
-        accepted.append(task["task_id"])
+    submitted = client.submit_gang(
+        devices, args.cmd, cwd=args.cwd, timeout=args.timeout,
+        effect_class=args.effect_class, mobility=args.mobility,
+        checkpoint_blob=blob, checkpoint_remote=args.checkpoint_load,
+        estimated_cost=args.estimated_cost,
+        network_budget_bytes=getattr(args, "network_budget_bytes", 0),
+        data_class=getattr(args, "data_class", "public"))
+    if not submitted.get("ok"):
+        print(f"gang 提交失败（{submitted.get('error', '?')}）："
+              "控制面已回滚本批任务", file=sys.stderr)
+        raise SystemExit(2)
+    accepted = [task["task_id"] for task in submitted.get("tasks", [])]
     report = {"gang": accepted, "devices": devices}
     if args.json:
         print(json.dumps(report, indent=2))
@@ -102,8 +111,8 @@ def schedule_speculative(args, client: RpcClient) -> None:
         raise SystemExit(2)
     blob = _read_checkpoint(args.checkpoint_save)
     task_ids = []
-    for _device in devices:
-        submitted = _submit(client, args, blob)
+    for device in devices:
+        submitted = _submit(client, args, blob, device)
         task = submitted.get("task")
         if task is None:
             print(f"submit failed: {submitted.get('error', '?')}",

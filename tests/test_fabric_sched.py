@@ -101,3 +101,18 @@ def test_devices_from_status_shape():
     assert devices[0]["dynamic_state"]["status"] == "online"
     assert devices[0]["static_capabilities"]["cpu_cores"] == 4
     assert devices[0]["cordoned"] is False
+
+
+def test_pick_device_excludes_non_schedulable_lifecycle():
+    device = _local_device()
+    device["lifecycle_state"] = "stale"
+    assert pick_device(TaskPlacement(), [device]) is None
+
+
+def test_devices_from_status_preserves_lifecycle_state():
+    devices = devices_from_status([{
+        "device_id": "rn-stale", "name": "stale-node", "online": True,
+        "lifecycle_state": "stale", "static_capabilities": {},
+    }])
+    assert devices[0]["lifecycle_state"] == "stale"
+    assert devices[0]["dynamic_state"]["status"] == "stale"

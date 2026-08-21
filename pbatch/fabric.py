@@ -36,8 +36,9 @@ from pathlib import Path
 from typing import Optional, Protocol
 
 from .config import log
+from .version import VERSION
 
-FABRIC_VERSION = "0.1.0"
+FABRIC_VERSION = VERSION
 FABRIC_PROTOCOL = "0.1"
 
 EFFECT_CLASSES = ("pure", "read_only", "sandboxed", "reversible",
@@ -97,6 +98,8 @@ class ExecutionEvidence:
     output_digest: str
     runner_version: str
     elapsed: float
+    input_bytes: int = 0
+    network_bytes: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -109,10 +112,16 @@ class ExecutionEvidence:
             "output_overflow": self.output_overflow,
             "stdout": self.stdout,
             "stderr": self.stderr,
+            "code_digest": self.code_digest,
+            "input_digest": self.input_digest,
             "output_digest": self.output_digest,
             "environment_digest": self.environment_digest,
             "runner_version": self.runner_version,
+            "stdout_bytes": len(self.stdout.encode("utf-8", errors="replace")),
+            "stderr_bytes": len(self.stderr.encode("utf-8", errors="replace")),
             "elapsed_seconds": round(self.elapsed, 3),
+            "input_bytes": max(0, int(self.input_bytes or 0)),
+            "network_bytes": max(0, int(self.network_bytes or 0)),
         }
 
 
@@ -231,10 +240,14 @@ def local_probe(depth: str = "basic") -> dict:
         "runtimes": runtimes,
         "dynamic_state": dynamic,
         "trust": {"level": 3, "zone": "trusted-local",
-                  "max_effect_class": "irreversible"},
+                  "max_effect_class": "irreversible",
+                  "allowed_data_classes": ["public", "internal",
+                                            "confidential", "secret"]},
+        "capabilities": ["task.v1", "grant.v1", "checkpoint.v1"],
         "protocol_version": FABRIC_PROTOCOL,
         "capability_fingerprint": hashlib.sha256(
             fingerprint_raw.encode("utf-8")).hexdigest()[:16],
+        "environment_digest": _environment_digest(),
         "capability_valid_until": time.strftime(
             "%Y-%m-%dT%H:%M:%S",
             time.localtime(time.time() + CAPABILITY_TTL_HOURS * 3600)),
@@ -362,7 +375,8 @@ def _execute_local(spec: ExecutionSpec) -> ExecutionEvidence:
             code_digest=spec.code_digest,
             environment_digest=_environment_digest(),
             input_digest="", output_digest=_digest(stderr),
-            runner_version=FABRIC_VERSION, elapsed=0.0)
+            runner_version=FABRIC_VERSION, elapsed=0.0,
+            input_bytes=sum(item.size for item in spec.inputs))
     exit_code = -1 if timed_out else proc.returncode
     failed = timed_out or overflow or exit_code != 0
     if timed_out and not stderr:
@@ -379,7 +393,8 @@ def _execute_local(spec: ExecutionSpec) -> ExecutionEvidence:
             json.dumps([a.sha256 for a in spec.inputs], sort_keys=True)),
         output_digest=_digest(stdout + stderr),
         runner_version=FABRIC_VERSION,
-        elapsed=time.monotonic() - start)
+        elapsed=time.monotonic() - start,
+        input_bytes=sum(item.size for item in spec.inputs))
 
 
 def current_target() -> ExecutionTarget:

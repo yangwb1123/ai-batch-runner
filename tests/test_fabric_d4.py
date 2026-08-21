@@ -66,6 +66,27 @@ def _wait_task(control_plane, task_id, statuses, timeout=10.0):
                          f"{control_plane['httpd'].control.tasks.get(task_id)}")
 
 
+def test_serve_cli_passes_and_validates_device_quotas(monkeypatch):
+    """serve 的 device quota 必须传入控制面，坏值启动前拒绝。"""
+    captured = {}
+
+    def fake_serve(args):
+        captured["quotas"] = args.device_quotas
+
+    monkeypatch.setattr(fabric_server_cli, "_serve_blocking", fake_serve)
+    with pytest.raises(SystemExit) as exit_info:
+        fabric_server_cli.serve_main([
+            "--device-quota", "node-a=2,rn-b=1",
+            "--tenant-quota", "team-a=3",
+        ])
+    assert exit_info.value.code == 0
+    assert captured["quotas"] == {"node-a": 2, "rn-b": 1}
+
+    with pytest.raises(SystemExit) as exit_info:
+        fabric_server_cli.serve_main(["--device-quota", "node-a=-1"])
+    assert exit_info.value.code == 2
+
+
 
 def _register(control_plane, key, name):
     """注册设备（auto-approve 直接通过），返回 client。"""
@@ -122,6 +143,52 @@ def test_task_failure_reported(control_plane):
     finally:
         stop.set()
         thread.join(timeout=5)
+
+
+def test_task_start_promotes_with_current_fencing_lease(control_plane):
+    state = control_plane["state_dir"]
+    key = fabric_runner.load_or_create_key(str(state), "node-start")
+    client = _register(control_plane, key, "node-start")
+    task = client.submit_task([sys.executable, "-c", "print('start')"])["task"]
+    polled = client.poll_tasks()["tasks"][0]
+    lease = polled["lease"]
+    started = client.task_start(task["task_id"], lease)
+    assert started["ok"] is True
+    assert control_plane["httpd"].control.tasks[task["task_id"]][
+        "status"] == "running"
+    assert control_plane["httpd"].control.tasks[task["task_id"]][
+        "attempts"][-1]["status"] == "running"
+    assert client.task_cancel(task["task_id"])["ok"] is False
+
+
+def test_rejected_checkpoint_leaves_no_admission_side_effects(control_plane):
+    state = control_plane["state_dir"]
+    key = fabric_runner.load_or_create_key(str(state), "node-checkpoint-reject")
+    client = _register(control_plane, key, "node-checkpoint-reject")
+    result = client.submit_task(
+        ["echo", "too-large"], checkpoint_blob="x" * (256 * 1024 + 1))
+    assert result["task"] is None
+    assert "checkpoint" in result["error"]
+    control = control_plane["httpd"].control
+    assert control.tasks == {}
+    assert control.leases == {}
+    assert control.checkpoints == {}
+    assert control.lifecycle.current(key["device_id"]) == "ready"
+
+
+def test_checkpoint_remote_path_is_relative_and_requires_mobility(control_plane):
+    key = fabric_runner.load_or_create_key(
+        str(control_plane["state_dir"]), "node-checkpoint-path")
+    client = _register(control_plane, key, "node-checkpoint-path")
+    traversal = client.submit_task(
+        ["echo", "bad-path"], mobility="checkpointable",
+        checkpoint_remote="../outside.json")
+    assert traversal["task"] is None
+    assert "checkpoint path" in traversal["error"]
+    wrong_mobility = client.submit_task(
+        ["echo", "bad-mobility"], checkpoint_remote="state.json")
+    assert wrong_mobility["task"] is None
+    assert "checkpointable" in wrong_mobility["error"]
 
 
 def test_cordon_blocks_submit(control_plane):
@@ -406,6 +473,25 @@ def test_version_and_init_cli(capsys, tmp_path, monkeypatch):
     out = capsys.readouterr().out
     assert "用户目录已就绪" in out
     assert (tmp_path / "home" / ".config" / "settings.yaml").exists()
+
+
+def test_init_cli_json_reports_all_created_paths(capsys, tmp_path, monkeypatch):
+    """init --json 输出单个有效 JSON 文档，包含目录与 settings。"""
+    from pbatch import product_cli
+    monkeypatch.setenv("PBATCH_HOME", str(tmp_path / "home"))
+
+    with pytest.raises(SystemExit) as exc:
+        product_cli.init_main(["--json"])
+
+    assert exc.value.code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report == {
+        "config": str(tmp_path / "home" / ".config"),
+        "cache": str(tmp_path / "home" / ".cache"),
+        "data": str(tmp_path / "home" / ".local" / "share"),
+        "settings": str(tmp_path / "home" / ".config" / "settings.yaml"),
+    }
+    assert (tmp_path / "home" / ".config" / "settings.yaml").is_file()
 
 
 def test_completion_script_lists_commands():

@@ -267,6 +267,37 @@ def test_gang_all_accept(tmp_path, monkeypatch):
                       if "gang-ok" in " ".join(t.get("argv", []))]
         assert len(gang_tasks) == 2  # 两台设备都收到
         assert all(t["status"] == "queued" for t in gang_tasks)
+        assert {t["device_id"] for t in gang_tasks} == {
+            keys["node-ga"]["device_id"], keys["node-gb"]["device_id"]}
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+
+def test_authorized_scheduler_can_target_registered_device(tmp_path):
+    httpd, port = fabric_server.start_server(
+        0, str(tmp_path / "state"), auto_approve=True)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        clients = {}
+        for name in ("node-actor", "node-target", "node-outsider"):
+            key = fabric_runner.load_or_create_key(str(tmp_path / "state"), name)
+            clients[name] = RpcClient(
+                f"http://127.0.0.1:{port}", key["secret"], key["device_id"])
+            assert clients[name].register(name, fabric.local_probe())["approved"]
+        task = clients["node-actor"].submit_task(
+            ["echo", "target"], target_device="node-target")["task"]
+        assert task["device_id"] == clients["node-target"].device_id
+        assert task["owner_device_id"] == clients["node-actor"].device_id
+        assert clients["node-target"].poll_tasks()["tasks"][0]["task_id"] == task[
+            "task_id"]
+        outsider = clients["node-outsider"]
+        assert outsider.task_status(task["task_id"])["task"] is None
+        assert outsider.task_cancel(task["task_id"])["ok"] is False
+        assert outsider.task_migrate(task["task_id"],
+                                     clients["node-target"].device_id)["ok"] is False
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -305,6 +336,67 @@ def test_device_quota_limits_concurrent(tmp_path):
             "task_id": task_id})
         third = client.submit_task(["echo", "three"], mobility="stateless")
         assert third["task"] is not None
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+
+def test_cancel_releases_tenant_and_device_quota(tmp_path):
+    httpd, port = fabric_server.start_server(
+        0, str(tmp_path / "state"), auto_approve=True,
+        tenant_quotas={"team-cancel": 1}, device_quotas={"node-cancel": 1})
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        control = {"state_dir": tmp_path / "state", "port": port}
+        client, _ = _client(control, "node-cancel", tenant="team-cancel")
+        first = client.submit_task(["echo", "cancel"])["task"]
+        assert client.task_cancel(first["task_id"])["ok"] is True
+        second = client.submit_task(["echo", "after-cancel"])
+        assert second["task"] is not None
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+
+def test_migration_transfers_device_quota(tmp_path):
+    httpd, port = fabric_server.start_server(
+        0, str(tmp_path / "state"), auto_approve=True,
+        device_quotas={"node-move-a": 1, "node-move-b": 1})
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        control = {"state_dir": tmp_path / "state", "port": port}
+        client_a, key_a = _client(control, "node-move-a")
+        client_b, key_b = _client(control, "node-move-b")
+        task = client_a.submit_task(["echo", "move"])["task"]
+        moved = client_a.task_migrate(task["task_id"], key_b["device_id"])
+        assert moved["ok"] is True
+        assert client_b.submit_task(["echo", "busy"])["task"] is None
+        assert client_a.submit_task(["echo", "free-a"])["task"] is not None
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+
+def test_gang_preflight_is_atomic_when_one_target_is_blocked(tmp_path):
+    httpd, port = fabric_server.start_server(
+        0, str(tmp_path / "state"), auto_approve=True)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        control = {"state_dir": tmp_path / "state", "port": port}
+        client_a, _ = _client(control, "node-gang-a")
+        client_b, _ = _client(control, "node-gang-b")
+        assert client_b.cordon()["ok"] is True
+        result = client_a.submit_gang(
+            ["node-gang-a", "node-gang-b"], ["echo", "gang"])
+        assert result["ok"] is False
+        assert result["tasks"] == []
+        assert httpd.control.tasks == {}
     finally:
         httpd.shutdown()
         httpd.server_close()

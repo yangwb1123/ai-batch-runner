@@ -16,6 +16,8 @@ class DeviceFabricConfig(NamedTuple):
     benchmark: bool
     auto_install: bool
     approval_required: bool
+    mtls_required: bool
+    short_lived_credentials: bool
     static: tuple[dict, ...]
     clusters: dict[str, list[str]]
 
@@ -28,6 +30,8 @@ def load_device_fabric(section: dict) -> DeviceFabricConfig:
     static = static if isinstance(static, list) else []
     clusters = section.get("clusters")
     clusters = clusters if isinstance(clusters, dict) else {}
+    security = section.get("security")
+    security = security if isinstance(security, dict) else {}
     return DeviceFabricConfig(
         enabled=_bool_setting(section, "enabled", False),
         mode=_mode_setting(section),
@@ -36,6 +40,9 @@ def load_device_fabric(section: dict) -> DeviceFabricConfig:
         auto_install=_bool_setting(section, "auto_install", False),
         approval_required=_bool_setting(
             section, "approval_required_for_new_device", True),
+        mtls_required=_bool_setting(security, "mtls_required", False),
+        short_lived_credentials=_bool_setting(
+            security, "short_lived_credentials", True),
         static=tuple(entry for entry in static if isinstance(entry, dict)),
         clusters={str(name): [str(item) for item in members]
                   for name, members in clusters.items()

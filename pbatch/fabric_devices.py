@@ -19,6 +19,7 @@ import json
 import os
 import re
 import time
+from fnmatch import fnmatchcase
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -45,8 +46,38 @@ REMOTE_PROBE_CMD = (
 # SSH 选项与受控执行原语在 pbatch/fabric_ssh.py / fabric_exec.py。
 
 # 远程探测状态缓存（追加式 JSONL，崩溃安全；有界行缓冲）。
-DEVICE_STATE_DIR = Path(".pi-batch") / "devices"
-DEVICE_STATE_FILE = DEVICE_STATE_DIR / "state.jsonl"
+def device_state_dir(cwd: str = "") -> Path:
+    """设备状态目录（data_dir 感知）。"""
+    from .config import data_dir
+    return data_dir(cwd) / "devices"
+
+
+DEVICE_STATE_DIR = Path(".pi-batch") / "devices"  # 兼容旧引用（新代码用 device_state_dir）
+_LEGACY_DEVICE_STATE_DIR = DEVICE_STATE_DIR
+
+
+def _effective_device_state_dir(cwd: str = "") -> Path:
+    """Use data_dir by default, but preserve legacy override hooks."""
+    legacy = Path(DEVICE_STATE_DIR)
+    if legacy != _LEGACY_DEVICE_STATE_DIR:
+        return legacy
+    return device_state_dir(cwd)
+
+
+def _state_file(cwd: str = "") -> Path:
+    return _effective_device_state_dir(cwd) / "state.jsonl"
+
+
+DEVICE_STATE_FILE = DEVICE_STATE_DIR / "state.jsonl"  # 兼容旧引用
+_LEGACY_DEVICE_STATE_FILE = DEVICE_STATE_FILE
+
+
+def _effective_device_state_file(cwd: str = "") -> Path:
+    """Resolve probe cache path with legacy constant override support."""
+    current = Path(DEVICE_STATE_FILE)
+    if current != _LEGACY_DEVICE_STATE_FILE:
+        return current
+    return _state_file(cwd)
 STATE_LINE_MAX_BYTES = 256 * 1024
 STATE_FILE_MAX_BYTES = 4 * 1024 * 1024
 
@@ -117,7 +148,8 @@ def device_inventory(static: Optional[list] = None,
             "runtimes": {},
             "dynamic_state": {"status": "unknown", "last_seen_at": ""},
             "trust": {"level": 0, "zone": "untrusted-external",
-                      "max_effect_class": "read_only"},
+                      "max_effect_class": "read_only",
+                      "allowed_data_classes": ["public"]},
             "protocol_version": "",
             "capability_fingerprint": "",
             "capability_valid_until": "",
@@ -147,7 +179,7 @@ def device_inventory(static: Optional[list] = None,
 def _merge_registered_runners(nodes: list, seen: set) -> None:
     """Runner 注册表（runners.jsonl）中的设备也进清单（status=registered，
     能力待探测）。设备织网 D3 与 D1 探测清单的集成视图。"""
-    path = DEVICE_STATE_DIR / "runners.jsonl"
+    path = _effective_device_state_dir() / "runners.jsonl"
     if not path.exists():
         return
     try:
@@ -179,7 +211,8 @@ def _merge_registered_runners(nodes: list, seen: set) -> None:
                 "runtimes": {},
                 "dynamic_state": {"status": "registered", "last_seen_at": ""},
                 "trust": {"level": 0, "zone": "untrusted-external",
-                          "max_effect_class": "read_only"},
+                          "max_effect_class": "read_only",
+                          "allowed_data_classes": ["public"]},
                 "protocol_version": "",
                 "capability_fingerprint": "",
                 "capability_valid_until": "",
@@ -331,7 +364,8 @@ def remote_probe(target: dict, timeout: float = 20.0) -> dict:
             "last_seen_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         },
         "trust": {"level": 0, "zone": "untrusted-external",
-                  "max_effect_class": "read_only"},
+                  "max_effect_class": "read_only",
+                  "allowed_data_classes": ["public"]},
         "protocol_version": FABRIC_PROTOCOL,
         "capability_fingerprint": fingerprint,
         "capability_valid_until": valid_until,
@@ -345,23 +379,24 @@ def remote_probe(target: dict, timeout: float = 20.0) -> dict:
 
 def save_probe_state(report: dict) -> str:
     """追加式记录一次远程探测结果（只追加不覆盖，崩溃安全）。"""
-    DEVICE_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    path = _effective_device_state_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "device_id": report["device_id"],
         "name": report.get("name", ""),
         "probed_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "report": report,
     }
-    with DEVICE_STATE_FILE.open("a", encoding="utf-8") as handle:
+    with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-    return str(DEVICE_STATE_FILE)
+    return str(path)
 
 
 def load_probe_states() -> dict:
     """读回每个设备最近一次探测记录；有限行缓冲，超长行跳过。"""
     states = {}
     try:
-        handle = DEVICE_STATE_FILE.open("r", encoding="utf-8")
+        handle = _effective_device_state_file().open("r", encoding="utf-8")
     except OSError:
         return states
     with handle:
@@ -407,6 +442,7 @@ class TaskPlacement:
     min_cpu_cores: int = 0
     required_capabilities: list = field(default_factory=list)
     max_effect_class: str = "read_only"
+    required_data_class: str = ""
     target_required: str = ""
 
 
@@ -442,6 +478,11 @@ def _capability_reasons(placement: TaskPlacement, caps: dict, runtimes: dict,
             < EFFECT_ORDER.get(placement.max_effect_class, 5)):
         reasons.append(f"副作用等级 {placement.max_effect_class} "
                        f"超出设备允许 {device_effect}")
+    allowed_data = trust.get("allowed_data_classes", []) or []
+    if (placement.required_data_class and allowed_data
+            and not any(fnmatchcase(placement.required_data_class, pattern)
+                        for pattern in allowed_data)):
+        reasons.append(f"数据级别 {placement.required_data_class} 不在设备允许范围")
     return reasons
 
 

@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from pbatch import diversity, learn, metrics, profile
+from pbatch.memory_policy import memory_scope
 from pbatch.fabric_sched import TaskNode
 from pbatch.waves import (priority_score, rank_nodes, structural_complexity)
 
@@ -116,7 +117,8 @@ def test_metrics_bounded_scan(tmp_path, monkeypatch):
     """超长行/超大索引被有界跳过（不 OOM）。"""
     index = tmp_path / "index.jsonl"
     index.write_text("x" * (metrics.INDEX_LINE_MAX + 10) + "\n"
-                     + json.dumps({"observed_verdict": "PASS"}) + "\n",
+                     + json.dumps({"observed_verdict": "PASS",
+                                   "scope": memory_scope()}) + "\n",
                      encoding="utf-8")
     monkeypatch.setattr(metrics, "MEMORY_INDEX", index)
     stats = metrics._scan_memory_index()

@@ -19,12 +19,12 @@ import hashlib
 import json
 import os
 import signal
+import ssl
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import threading
 import time
 import uuid
-from pathlib import Path
 from typing import Optional
 
 from . import config
@@ -32,10 +32,29 @@ from .config import log
 from .fabric import ExecutionSpec, LocalExecutionTarget, local_probe
 from .fabric_devices import DEVICE_STATE_DIR
 from .fabric_exec import _ACTIVE_SSH_PROCS, _ACTIVE_SSH_LOCK
-from .fabric_rpc import RpcClient
+from .fabric_rpc import RpcClient, tls_context_for_url
+from .capabilities import authorize_grant
+from .fabric_outbox import EvidenceOutbox, EvidenceOutboxError
 
 KEY_DIR = "keys"
 REGISTER_BACKOFF_MAX = 30.0
+
+
+def _safe_checkpoint_path(cwd: str, remote: str) -> Optional[Path]:
+    """Resolve a checkpoint only if it remains below the task cwd."""
+    raw = str(remote or "")
+    path = Path(raw)
+    windows = PureWindowsPath(raw)
+    if (not raw or path.is_absolute() or windows.is_absolute()
+            or windows.drive or ".." in path.parts or ".." in windows.parts):
+        return None
+    root = Path(cwd or ".").resolve()
+    target = (root / path).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        return None
+    return target
 
 
 def _default_key_dir() -> Path:
@@ -97,26 +116,86 @@ def _register_with_meta(client: RpcClient, name: str,
 _META: dict = {}
 
 
-def runner_once(base_url: str, name: str, state_dir: str = "") -> dict:
+def runner_once(base_url: str, name: str, state_dir: str = "",
+                ssl_context=None) -> dict:
     """单轮：注册 +（通过后）心跳 + 对账。返回摘要（供 --once 与测试）。"""
     key = load_or_create_key(state_dir, name)
-    client = RpcClient(base_url, key["secret"], key["device_id"])
+    client = RpcClient(base_url, key["secret"], key["device_id"], ssl_context)
     registered = _register_with_meta(client, name, state_dir)
     if not registered.get("approved"):
         return {"approved": False, "device_id": key["device_id"],
                 "message": registered.get("message", "pending")}
+    outbox = EvidenceOutbox(state_dir or config.data_dir())
+    flushed = flush_evidence(client, outbox)
     beat = client.heartbeat(local_probe()["dynamic_state"], running_attempts())
     reconciled = client.reconcile(running_attempts())
     return {"approved": True, "device_id": key["device_id"],
             "heartbeat_ok": beat.get("ok", False),
-            "reconcile_epoch": reconciled.get("epoch", 0)}
+            "reconcile_epoch": reconciled.get("epoch", 0),
+            "evidence_flushed": flushed["delivered"],
+            "evidence_pending": flushed["pending"]}
 
 
-def execute_task(client: RpcClient, task: dict) -> dict:
+def _submit_evidence(client: RpcClient, task: dict, evidence: dict,
+                     outbox: Optional[EvidenceOutbox] = None) -> dict:
+    """Submit evidence, buffering only transport failures for later replay."""
+    lease = task.get("lease") or {}
+    task_id = str(task.get("task_id", ""))
+    attempt_id = str(evidence.get("attempt_id") or task_id
+                     or lease.get("lease_id", ""))
+    result = client.evidence(
+        task_id, lease.get("lease_id", ""), lease.get("fencing_token"),
+        evidence, task_id=task_id)
+    if (not result.get("accepted") and result.get("transport_error")
+            and outbox is not None):
+        try:
+            outbox.enqueue({
+                "device_id": client.device_id, "task_id": task_id,
+                "attempt_id": attempt_id,
+                "lease_id": str(lease.get("lease_id", "")),
+                "fencing_token": lease.get("fencing_token"),
+                "evidence": evidence,
+            })
+        except EvidenceOutboxError as exc:
+            log.error("任务 %s 证据无法进入本地 outbox：%s", task_id, exc)
+        else:
+            result["buffered"] = True
+    return result
+
+
+def flush_evidence(client: RpcClient, outbox: EvidenceOutbox) -> dict:
+    """重连后按租约重放 outbox；服务端裁决 stale/rejected 即确认移除。"""
+    delivered = 0
+    rejected = 0
+    for record in outbox.pending():
+        result = client.evidence(
+            record["task_id"], record["lease_id"],
+            record.get("fencing_token"), record["evidence"],
+            task_id=record["task_id"])
+        if result.get("accepted"):
+            outbox.acknowledge(outbox._key(record), "delivered")
+            delivered += 1
+        elif not result.get("transport_error"):
+            outbox.acknowledge(outbox._key(record), "rejected",
+                               str(result.get("reason", result.get("error", ""))))
+            rejected += 1
+        else:
+            break
+    return {"delivered": delivered, "rejected": rejected,
+            "pending": len(outbox)}
+
+
+def execute_task(client: RpcClient, task: dict,
+                 outbox: Optional[EvidenceOutbox] = None) -> dict:
     """执行一个已认领任务（本地有界执行）并提交证据（带 fencing token）。
     证据被拒（陈旧 token）说明任务已被迁移/重新认领——at-least-once 语义
     下放弃本次结果，不重试。检查点（checkpointable 迁移语义）：执行前下载
     上次状态，执行后回传——断点续传跨设备可用（AADM-D §17/Phase 5）。"""
+    allowed, reasons = _authorize_task_grant(client, task)
+    if not allowed:
+        return _report_grant_denial(client, task, reasons, outbox)
+    if not _start_task(client, task):
+        return {"accepted": False, "reason": "task start rejected"}
     _restore_checkpoint(client, task)
     spec = ExecutionSpec(
         argv=task.get("argv", []), cwd=task.get("cwd", "") or ".",
@@ -125,15 +204,55 @@ def execute_task(client: RpcClient, task: dict) -> dict:
         mobility=str(task.get("mobility", "stateless")),
         label=f"task:{task.get('task_id', '')}")
     evidence = LocalExecutionTarget().execute(spec)
-    lease = task.get("lease") or {}
-    result = client.evidence(
-        task.get("task_id", ""), lease.get("lease_id", ""),
-        lease.get("fencing_token"), evidence.to_dict(),
-        task_id=task.get("task_id", ""))
+    result = _submit_evidence(client, task, evidence.to_dict(), outbox)
     if not result.get("accepted"):
         log.warning("任务 %s 证据被拒：%s", task.get("task_id", "?"),
                     result.get("reason", "?"))
     _save_checkpoint(client, task, spec.cwd)
+    return result
+
+
+def _start_task(client: RpcClient, task: dict) -> bool:
+    """Fence cancellation/migration before a claimed task starts executing."""
+    if task.get("status") != "leased":
+        return True
+    starter = getattr(client, "task_start", None)
+    if starter is None:
+        return True
+    result = starter(str(task.get("task_id", "")), task.get("lease") or {})
+    if not result.get("ok"):
+        log.warning("任务 %s 未能进入 running：%s",
+                    task.get("task_id", "?"), result.get("error", "?"))
+        return False
+    return True
+
+
+def _authorize_task_grant(client: RpcClient, task: dict) -> tuple:
+    """Runner 执行前验票：票据必须绑定本设备与本任务。"""
+    lease = task.get("lease") or {}
+    grant = lease.get("grant")
+    environment = str((grant or {}).get("environment", ""))
+    return authorize_grant(
+        {"id": "device.execute", "domain": "ops", "risk": "low"},
+        grant, 1, client.device_id, client.device_id, "execute",
+        str(task.get("cwd", "")) or "*", environment,
+        str(task.get("effect_class", "read_only")),
+        device_zone=environment,
+        data_class=str(task.get("data_class", "public")),
+        device_id=client.device_id,
+        task_node_id=str(task.get("task_id", "")))
+
+
+def _report_grant_denial(client: RpcClient, task: dict,
+                         reasons: list,
+                         outbox: Optional[EvidenceOutbox] = None) -> dict:
+    """授权失败也提交可审计失败证据，不执行命令。"""
+    result = _submit_evidence(
+        client, task,
+        {"result": "failed", "error": "capability grant denied",
+         "reasons": reasons}, outbox)
+    log.warning("任务 %s grant 拒绝，未执行：%s",
+                task.get("task_id", "?"), "; ".join(reasons))
     return result
 
 
@@ -142,7 +261,10 @@ def _restore_checkpoint(client: RpcClient, task: dict) -> None:
     remote = task.get("checkpoint_remote") or ""
     if not remote:
         return
-    result = client.checkpoint_download(task.get("task_id", ""))
+    lease = task.get("lease") or {}
+    result = client.checkpoint_download(
+        task.get("task_id", ""), lease.get("lease_id", ""),
+        lease.get("fencing_token"))
     if not result.get("has_checkpoint"):
         return
     import base64
@@ -152,12 +274,15 @@ def _restore_checkpoint(client: RpcClient, task: dict) -> None:
     if expected and hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16] != expected:
         log.warning("检查点校验失败（digest 不符），拒绝恢复——防损坏/篡改")
         return
-    path = Path(task.get("cwd", "") or ".") / remote
+    path = _safe_checkpoint_path(task.get("cwd", ""), remote)
+    if path is None:
+        log.warning("检查点路径越界，拒绝恢复：%s", remote)
+        return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(base64.b64decode(blob))
         log.info("检查点恢复 %s（%d 字节）", path, result.get("size", 0))
-    except (OSError, ValueError) as exc:
+    except (OSError, ssl.SSLError, ValueError) as exc:
         log.warning("检查点恢复失败：%s", exc)
 
 
@@ -167,13 +292,19 @@ def _save_checkpoint(client: RpcClient, task: dict, cwd: str) -> None:
     if not remote or task.get("mobility") != "checkpointable":
         return
     import base64
-    path = Path(cwd) / remote
+    path = _safe_checkpoint_path(cwd, remote)
+    if path is None:
+        log.warning("检查点路径越界，拒绝回传：%s", remote)
+        return
     try:
         data = path.read_bytes()
     except OSError:
         return
     blob = base64.b64encode(data).decode("ascii")
-    result = client.checkpoint_upload(task.get("task_id", ""), blob)
+    lease = task.get("lease") or {}
+    result = client.checkpoint_upload(
+        task.get("task_id", ""), blob, lease.get("lease_id", ""),
+        lease.get("fencing_token"))
     if result.get("ok"):
         log.info("检查点回传 %s（%d 字节，digest %s）",
                  path, len(data), result.get("digest", ""))
@@ -184,14 +315,12 @@ def _save_checkpoint(client: RpcClient, task: dict, cwd: str) -> None:
 def run_runner_loop(base_url: str, name: str, state_dir: str = "",
                     heartbeat_interval: float = 10.0,
                     stop_event: Optional[threading.Event] = None,
-                    drill_skip_heartbeats: int = 0) -> None:
-    """常驻循环：注册 → 心跳 → 拉取任务并执行 → 对账；断线退避重连。
-
-    drill_skip_heartbeats > 0：注册后跳过 N 轮心跳（失联演练，AADM-D
-    §41.1）——控制平面会因此把该设备标为 stale 并重排队其任务，验证
-    断线对账路径真实可用。"""
+                    drill_skip_heartbeats: int = 0,
+                    ssl_context=None) -> None:
+    """常驻注册、心跳、outbox 重放、任务执行与对账循环；支持失联演练。"""
     key = load_or_create_key(state_dir, name)
-    client = RpcClient(base_url, key["secret"], key["device_id"])
+    client = RpcClient(base_url, key["secret"], key["device_id"], ssl_context)
+    outbox = EvidenceOutbox(state_dir or config.data_dir())
     backoff = 2.0
     approved = False
     drill_remaining = max(0, int(drill_skip_heartbeats))
@@ -215,13 +344,14 @@ def run_runner_loop(base_url: str, name: str, state_dir: str = "",
                             name, drill_remaining + 1)
                 _sleep(heartbeat_interval, stop_event)
                 continue
+            flush_evidence(client, outbox)
             beat = client.heartbeat(local_probe()["dynamic_state"],
                                     running_attempts())
             if not beat.get("ok"):
                 log.warning("心跳未确认：%s", beat.get("error", "?"))
             polled = client.poll_tasks()
             for task in polled.get("tasks", []):
-                execute_task(client, task)
+                execute_task(client, task, outbox)
             client.reconcile(running_attempts())
         except Exception as exc:  # 断线：退避重连（含控制平面重启场景）
             log.warning("控制平面不可达（%s），%gs 后重连", exc, backoff)
@@ -257,15 +387,23 @@ def runner_main(argv: Optional[list] = None) -> int:
     parser.add_argument("--region", default="", help="区域标签（跨区域资源池）")
     parser.add_argument("--attestation", default="",
                         help="注册证明（如度量启动哈希；记录用）")
+    parser.add_argument("--ca-file", default="", help="控制平面 CA 文件")
+    parser.add_argument("--cert-file", default="", help="mTLS 客户端证书")
+    parser.add_argument("--key-file", default="", help="mTLS 客户端私钥")
     args = parser.parse_args(argv)
     if not args.control or not args.name:
         parser.error("--control 与 --name 必填")
     base_url = args.control if args.control.startswith("http") \
         else f"http://{args.control}"
+    try:
+        ssl_context = tls_context_for_url(
+            base_url, args.ca_file, args.cert_file, args.key_file)
+    except (OSError, ValueError) as exc:
+        parser.error(f"TLS configuration invalid: {exc}")
     _META.update({"tenant": args.tenant, "region": args.region,
                   "attestation": args.attestation})
     if args.once:
-        summary = runner_once(base_url, args.name, args.state_dir)
+        summary = runner_once(base_url, args.name, args.state_dir, ssl_context)
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         raise SystemExit(0 if summary.get("approved") else 2)
     stop_event = threading.Event()
@@ -278,6 +416,7 @@ def runner_main(argv: Optional[list] = None) -> int:
     run_runner_loop(base_url, args.name, args.state_dir,
                     heartbeat_interval=args.heartbeat,
                     stop_event=stop_event,
-                    drill_skip_heartbeats=args.drill_skip_heartbeats)
+                    drill_skip_heartbeats=args.drill_skip_heartbeats,
+                    ssl_context=ssl_context)
     log.info("runner %s 已停止", args.name)
     raise SystemExit(0)

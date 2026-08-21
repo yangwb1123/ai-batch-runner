@@ -77,12 +77,10 @@ def _transfer_file(target: dict, local_path: str, remote_path: str,
     ok = (proc is not None and proc.returncode == 0
           and not timed_out and not overflow)
     detail = (stdout + stderr).strip()[-300:] or ("ok" if ok else "transfer failed")
-    bytes_sent = 0
-    if not download:
-        try:
-            bytes_sent = os.path.getsize(local_path)
-        except OSError:
-            bytes_sent = 0
+    try:
+        bytes_sent = os.path.getsize(local_path)
+    except OSError:
+        bytes_sent = 0
     return {"ok": ok, "detail": detail, "bytes": bytes_sent}
 
 
@@ -173,7 +171,9 @@ def _execute_remote(target: dict, spec: ExecutionSpec) -> ExecutionEvidence:
             json.dumps([a.sha256 for a in spec.inputs], sort_keys=True)),
         output_digest=_digest(stdout + stderr),
         runner_version=FABRIC_VERSION,
-        elapsed=time.monotonic() - start)
+        elapsed=time.monotonic() - start,
+        input_bytes=sum(item.size for item in spec.inputs),
+        network_bytes=sum(item.size for item in spec.inputs))
 
 
 class SshExecutionTarget:

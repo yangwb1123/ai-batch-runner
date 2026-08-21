@@ -8,8 +8,10 @@
 安全说明（AADM-D §20/§21）：
 - /register 是 TOFU（trust-on-first-use）：设备自生成 secret 并首次
   声称身份；此后所有请求必须携带正确签名（fail closed）
-- 通道加密（TLS/mTLS）不在 D3a 范围：默认绑定 127.0.0.1，部署到局域网
-  时需在反向代理层终止 TLS，或等待 D3b 证书体系
+- 默认仍绑定 127.0.0.1；`serve --cert-file --key-file --ca-file
+  --require-client-cert` 可启用服务端 TLS/mTLS，证书指纹会绑定到 device_id
+- HTTPS 客户端必须提供可验证 CA；mTLS 客户端还必须提供证书/私钥，缺参或
+  指纹不匹配均 fail closed
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import ssl
 import time
 import uuid
 from typing import Optional
@@ -27,6 +30,28 @@ from urllib import request as urlrequest
 SIGN_TIMESTAMP_WINDOW = 300
 NONCE_CACHE_MAX = 10000
 BODY_MAX_BYTES = 1024 * 1024
+
+
+def build_tls_context(ca_file: str = "", cert_file: str = "",
+                      key_file: str = "") -> ssl.SSLContext:
+    """构造客户端 TLS context；证书链参数不完整时直接拒绝。"""
+    if bool(cert_file) != bool(key_file):
+        raise ValueError("client cert and key must be provided together")
+    context = ssl.create_default_context(cafile=ca_file or None)
+    if cert_file:
+        context.load_cert_chain(certfile=cert_file, keyfile=key_file)
+    return context
+
+
+def tls_context_for_url(url: str, ca_file: str = "", cert_file: str = "",
+                        key_file: str = "") -> Optional[ssl.SSLContext]:
+    """HTTP 保持旧行为；HTTPS 或显式 TLS 参数走证书校验。"""
+    https = str(url).lower().startswith("https://")
+    if not https and (ca_file or cert_file or key_file):
+        raise ValueError("TLS client files require an https control URL")
+    if not https:
+        return None
+    return build_tls_context(ca_file, cert_file, key_file)
 
 
 def _sign(secret: str, method: str, path: str, body: bytes,
@@ -84,7 +109,8 @@ def verify_request(secret: str, method: str, path: str, request: dict,
 
 
 def rpc_post(url: str, secret: str, method: str, path: str,
-             payload: dict, timeout: float = 5.0) -> tuple:
+             payload: dict, timeout: float = 5.0,
+             ssl_context: Optional[ssl.SSLContext] = None) -> tuple:
     """发一次签名请求。返回 (status_code, response_dict)；网络错误返回
     (0, {"error": ...})，不抛异常（故障显式）。"""
     request = build_request(secret, method, path, payload)
@@ -93,7 +119,11 @@ def rpc_post(url: str, secret: str, method: str, path: str,
                              headers={"Content-Type": "application/json"},
                              method=method)
     try:
-        with urlrequest.urlopen(req, timeout=timeout) as resp:
+        opener = urlrequest.urlopen
+        kwargs = {"timeout": timeout}
+        if ssl_context is not None:
+            kwargs["context"] = ssl_context
+        with opener(req, **kwargs) as resp:
             body = resp.read(BODY_MAX_BYTES + 1)
             if len(body) > BODY_MAX_BYTES:
                 return (0, {"error": "response too large"})
@@ -111,14 +141,17 @@ def rpc_post(url: str, secret: str, method: str, path: str,
 class RpcClient:
     """设备 Runner 侧客户端：注册 / 心跳 / 租约 / 证据 / 对账。"""
 
-    def __init__(self, base_url: str, secret: str, device_id: str):
+    def __init__(self, base_url: str, secret: str, device_id: str,
+                 ssl_context: Optional[ssl.SSLContext] = None):
         self.base_url = base_url.rstrip("/")
         self.secret = secret
         self.device_id = device_id
+        self.ssl_context = ssl_context
 
     def _post(self, path: str, payload: dict, timeout: float = 5.0) -> tuple:
         return rpc_post(self.base_url, self.secret, "POST", path,
-                        payload, timeout=timeout)
+                        payload, timeout=timeout,
+                        ssl_context=self.ssl_context)
 
     def register(self, name: str, probe: Optional[dict] = None,
                  tenant: str = "", region: str = "",
@@ -154,13 +187,30 @@ class RpcClient:
             "lease_id": lease_id, "fencing_token": fencing_token,
             "evidence": evidence, "task_id": task_id,
         })
-        return data if code == 200 else {"accepted": False, "error": data}
+        return data if code == 200 else {
+            "accepted": False, "error": data,
+            "transport_error": code == 0,
+        }
 
     def reconcile(self, running_attempts: list) -> dict:
         code, data = self._post("/reconcile", {
             "device_id": self.device_id, "running_attempts": running_attempts,
         })
         return data if code == 200 else {"error": data}
+
+    def usage(self, task_id: str = "") -> dict:
+        """查询本设备资源账本；task_id 非空时限定到单个任务。"""
+        code, data = self._post("/usage", {
+            "device_id": self.device_id, "task_id": task_id,
+        })
+        return data if code == 200 else {"usage": None, "error": data}
+
+    def lifecycle(self, limit: int = 50) -> dict:
+        """查询本设备生命周期状态与最近转移事件。"""
+        code, data = self._post("/lifecycle", {
+            "device_id": self.device_id, "limit": limit,
+        })
+        return data if code == 200 else {"lifecycle": None, "error": data}
 
     # -- D4: 任务调度与设备管理 --------------------------------------------
 
@@ -170,16 +220,40 @@ class RpcClient:
                     ttl_seconds: int = 300,
                     checkpoint_blob: str = "",
                     checkpoint_remote: str = "",
-                    estimated_cost: float = 0.0) -> dict:
+                    estimated_cost: float = 0.0,
+                    data_class: str = "public",
+                    target_device: str = "",
+                    network_budget_bytes: int = 0) -> dict:
         code, data = self._post("/task/submit", {
             "device_id": self.device_id, "argv": argv, "cwd": cwd,
             "timeout": timeout, "effect_class": effect_class,
+            "data_class": data_class,
             "mobility": mobility, "ttl_seconds": ttl_seconds,
             "checkpoint_blob": checkpoint_blob,
             "checkpoint_remote": checkpoint_remote,
             "estimated_cost": estimated_cost,
+            "network_budget_bytes": network_budget_bytes,
+            "target_device": target_device,
         })
         return data if code == 200 else {"task": None, "error": data}
+
+    def submit_gang(self, targets: list, argv: list, cwd: str = "",
+                    timeout: float = 60.0, effect_class: str = "read_only",
+                    mobility: str = "stateless", checkpoint_blob: str = "",
+                    checkpoint_remote: str = "", estimated_cost: float = 0.0,
+                    data_class: str = "public",
+                    network_budget_bytes: int = 0) -> dict:
+        code, data = self._post("/task/gang-submit", {
+            "device_id": self.device_id, "target_devices": targets,
+            "argv": argv, "cwd": cwd, "timeout": timeout,
+            "effect_class": effect_class, "data_class": data_class,
+            "mobility": mobility, "checkpoint_blob": checkpoint_blob,
+            "checkpoint_remote": checkpoint_remote,
+            "estimated_cost": estimated_cost,
+            "network_budget_bytes": network_budget_bytes,
+        })
+        return data if code == 200 else {"ok": False, "error": data,
+                                         "tasks": []}
 
     def desired_reconcile(self, services: list) -> dict:
         """Desired-State Controller：提交期望状态，服务端观察并纠偏。"""
@@ -195,23 +269,43 @@ class RpcClient:
         })
         return data if code == 200 else {"ok": False, "error": data}
 
-    def checkpoint_download(self, task_id: str) -> dict:
+    def rotate_certificate(self, fingerprint: str) -> dict:
+        """Update the server-side certificate binding after authenticated rotation."""
+        code, data = self._post("/rotate-certificate", {
+            "device_id": self.device_id,
+            "new_certificate_fingerprint": fingerprint,
+        })
+        return data if code == 200 else {"ok": False, "error": data}
+
+    def checkpoint_download(self, task_id: str, lease_id: str = "",
+                            fencing_token=None) -> dict:
         code, data = self._post("/checkpoint/download", {
             "device_id": self.device_id, "task_id": task_id,
+            "lease_id": lease_id, "fencing_token": fencing_token,
         })
         return data if code == 200 else {"has_checkpoint": False,
                                          "error": data}
 
-    def checkpoint_upload(self, task_id: str, blob_b64: str) -> dict:
+    def checkpoint_upload(self, task_id: str, blob_b64: str,
+                          lease_id: str = "", fencing_token=None) -> dict:
         code, data = self._post("/checkpoint/upload", {
             "device_id": self.device_id, "task_id": task_id,
-            "blob_b64": blob_b64,
+            "blob_b64": blob_b64, "lease_id": lease_id,
+            "fencing_token": fencing_token,
         })
         return data if code == 200 else {"ok": False, "error": data}
 
     def poll_tasks(self) -> dict:
         code, data = self._post("/task/poll", {"device_id": self.device_id})
         return data if code == 200 else {"tasks": [], "error": data}
+
+    def task_start(self, task_id: str, lease: dict) -> dict:
+        code, data = self._post("/task/start", {
+            "device_id": self.device_id, "task_id": task_id,
+            "lease_id": lease.get("lease_id", ""),
+            "fencing_token": lease.get("fencing_token"),
+        })
+        return data if code == 200 else {"ok": False, "error": data}
 
     def task_status(self, task_id: str) -> dict:
         code, data = self._post("/task/status", {

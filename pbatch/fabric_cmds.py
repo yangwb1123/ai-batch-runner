@@ -44,7 +44,8 @@ def _render_remote_run(evidence) -> str:
     return "\n".join(lines)
 
 
-def _transfer_pairs(target, pairs: list, download: bool = False) -> list:
+def _transfer_pairs(target, pairs: list, download: bool = False,
+                    metrics: Optional[list] = None) -> list:
     """--upload/--download 的 LOCAL:REMOTE（或反向）解析与执行。
     上传返回 ArtifactRef 列表供证据 input_digest；任何失败 exit 2。"""
     kind = "download" if download else "upload"
@@ -66,6 +67,8 @@ def _transfer_pairs(target, pairs: list, download: bool = False) -> list:
         if not transfer["ok"]:
             print(f"{kind} failed: {transfer['detail']}", file=sys.stderr)
             raise SystemExit(2)
+        if metrics is not None:
+            metrics.append(int(transfer.get("bytes", 0) or 0))
         if not download:
             refs.append(artifact_ref(local))
     return refs
@@ -95,12 +98,17 @@ def _cmd_run(args) -> None:
     if gate:
         print(gate, file=sys.stderr)
         raise SystemExit(2)
-    inputs = _transfer_pairs(target.target, args.upload)
+    upload_metrics = []
+    inputs = _transfer_pairs(target.target, args.upload, metrics=upload_metrics)
     spec = ExecutionSpec(argv=args.cmd, cwd=args.cwd,
                          timeout=args.timeout, label=f"ssh-run:{args.name}",
                          effect_class=args.effect_class, inputs=inputs)
     evidence = target.execute(spec)
-    _transfer_pairs(target.target, args.download, download=True)
+    download_metrics = []
+    _transfer_pairs(target.target, args.download, download=True,
+                    metrics=download_metrics)
+    evidence.input_bytes = sum(upload_metrics)
+    evidence.network_bytes = sum(upload_metrics) + sum(download_metrics)
     if args.json:
         print(json.dumps(evidence.to_dict(), indent=2))
     else:
@@ -129,7 +137,12 @@ def _cmd_schedule_speculative(args, client, blob: str) -> None:
                                        mobility=args.mobility,
                                        checkpoint_blob=blob,
                                        checkpoint_remote=args.checkpoint_load,
-                                       estimated_cost=args.estimated_cost)
+                                       estimated_cost=args.estimated_cost,
+                                       network_budget_bytes=getattr(
+                                           args, "network_budget_bytes", 0),
+                                       data_class=getattr(
+                                       args, "data_class", "public"),
+                                       target_device=device)
         task = submitted.get("task")
         if task is None:
             print(f"submit to {device} failed: "
@@ -172,7 +185,11 @@ def _control_client(args, acting: str = "") -> RpcClient:
     key = load_or_create_key(args.state_dir, name)
     base = args.control if args.control.startswith("http") \
         else f"http://{args.control}"
-    return RpcClient(base, key["secret"], key["device_id"])
+    from .fabric_rpc import tls_context_for_url
+    context = tls_context_for_url(
+        base, getattr(args, "ca_file", ""), getattr(args, "cert_file", ""),
+        getattr(args, "key_file", ""))
+    return RpcClient(base, key["secret"], key["device_id"], context)
 
 
 def _task_summary(task: dict) -> str:
@@ -207,7 +224,8 @@ def _auto_pick_device(args, client) -> str:
         required_os=args.os, required_architecture=args.arch,
         min_memory_bytes=args.min_memory_mb * 1024 * 1024,
         min_cpu_cores=args.min_cpu,
-        max_effect_class=args.effect_class)
+        max_effect_class=args.effect_class,
+        required_data_class=getattr(args, "data_class", "public"))
     device = pick_device(placement, devices, cordoned=cordoned,
                          model=args.model or None)
     if device is None:
@@ -251,7 +269,11 @@ def _cmd_schedule(args) -> None:
                                    mobility=args.mobility,
                                    checkpoint_blob=blob,
                                    checkpoint_remote=args.checkpoint_load,
-                                   estimated_cost=args.estimated_cost)
+                                   estimated_cost=args.estimated_cost,
+                                   network_budget_bytes=getattr(args, "network_budget_bytes", 0),
+                                   data_class=getattr(
+                                       args, "data_class", "public"),
+                                   target_device=device)
     task = submitted.get("task")
     if task is None:
         print(f"submit failed: {submitted.get('error', '?')}", file=sys.stderr)
@@ -268,7 +290,8 @@ def _fetch_status(client: RpcClient) -> tuple:
     """GET /status（只读视图，不走签名）。"""
     from .fabric_rpc import rpc_post
     return rpc_post(client.base_url, client.secret, "GET", "/status",
-                    {"device_id": client.device_id}, timeout=5.0)
+                    {"device_id": client.device_id}, timeout=5.0,
+                    ssl_context=client.ssl_context)
 
 
 def _cmd_task(args) -> None:
@@ -319,6 +342,17 @@ def _cmd_revoke(args) -> None:
           f"标 lost）— {result.get('message', '')}")
 
 
+def _cmd_rotate_certificate(args) -> None:
+    client = _control_client(args)
+    result = client.rotate_certificate(args.fingerprint)
+    if not result.get("ok"):
+        print(f"certificate rotation failed: {result.get('error', '?')}",
+              file=sys.stderr)
+        raise SystemExit(2)
+    print(f"certificate binding rotated: {args.device} → "
+          f"{result.get('certificate_fingerprint', '')}")
+
+
 def _cmd_halt(args) -> None:
     """Kill Switch：取消全部排队任务 + cordon 所有设备（一键冻结）。"""
     client = _control_client(args)
@@ -339,6 +373,24 @@ def _cmd_cordon(args) -> None:
         raise SystemExit(2)
     print(f"device {args.device}: cordoned={result.get('cordoned')} "
           f"drain={result.get('drain')}")
+    raise SystemExit(0)
+
+
+def _cmd_lifecycle(args) -> None:
+    """查询设备生命周期状态与转移审计。"""
+    client = _control_client(args)
+    result = client.lifecycle(args.limit)
+    if result.get("lifecycle") is None:
+        print(f"lifecycle failed: {result.get('error', '?')}", file=sys.stderr)
+        raise SystemExit(2)
+    if args.json:
+        print(json.dumps(result["lifecycle"], ensure_ascii=False, indent=2))
+    else:
+        view = result["lifecycle"]
+        print(f"device {view['device_id']}: {view['state']}")
+        for event in view.get("events", []):
+            print(f"  #{event['sequence']} {event['from']} -> {event['to']} "
+                  f"({event.get('reason', '')})")
     raise SystemExit(0)
 
 
@@ -370,6 +422,12 @@ def _add_common_device_args(parser) -> None:
                         help="控制平面地址（默认 http://127.0.0.1:8765）")
     parser.add_argument("--state-dir", default="",
                         help="设备密钥目录（默认 .pi-batch/devices）")
+    parser.add_argument("--ca-file", default="",
+                        help="HTTPS/mTLS 客户端信任 CA 文件")
+    parser.add_argument("--cert-file", default="",
+                        help="mTLS 客户端证书文件")
+    parser.add_argument("--key-file", default="",
+                        help="mTLS 客户端私钥文件")
     parser.add_argument("--json", action="store_true")
 
 
@@ -387,6 +445,10 @@ def _add_schedule_parser(sub) -> None:
     p.add_argument("--timeout", type=float, default=60.0)
     p.add_argument("--effect-class", default="read_only",
                    choices=("pure", "read_only", "sandboxed"))
+    p.add_argument("--data-class", default="public",
+                   choices=("public", "internal", "confidential", "secret",
+                            "regulated"),
+                   help="任务所需数据级别（服务端按设备策略拒绝越权）")
     p.add_argument("--mobility", default="stateless",
                    choices=("stateless", "restartable", "checkpointable",
                             "pinned"))
@@ -396,6 +458,8 @@ def _add_schedule_parser(sub) -> None:
                    help="Runner 执行前恢复到的相对路径（checkpointable 任务）")
     p.add_argument("--estimated-cost", type=float, default=0.0,
                    help="任务预估成本（设备预算预留用）")
+    p.add_argument("--network-budget-bytes", type=int, default=0,
+                   help="任务网络字节硬上限（0=不限，超限任务失败）")
     p.add_argument("--speculative", action="store_true",
                    help="投机执行：同一任务派多设备，先完成者胜")
     p.add_argument("--devices", default="",
@@ -432,6 +496,14 @@ def _add_revoke_parser(sub) -> None:
     _add_common_device_args(p)
 
 
+def _add_rotate_certificate_parser(sub) -> None:
+    p = sub.add_parser("rotate-certificate", help="轮换设备证书指纹绑定")
+    p.add_argument("--device", required=True)
+    p.add_argument("--fingerprint", required=True,
+                   help="新证书 SHA-256 指纹（证书由外部 CA 签发）")
+    _add_common_device_args(p)
+
+
 def _add_halt_parser(sub) -> None:
     p = sub.add_parser("halt", help="Kill Switch：冻结全部新任务并 cordon 所有设备")
     p.add_argument("--device", required=True, help="以哪台设备身份触发")
@@ -448,6 +520,13 @@ def _add_cordon_parser(sub, drain: bool) -> None:
     _add_common_device_args(p)
 
 
+def _add_lifecycle_parser(sub) -> None:
+    p = sub.add_parser("lifecycle", help="查询设备生命周期状态与转移审计")
+    p.add_argument("--device", required=True)
+    p.add_argument("--limit", type=int, default=50)
+    _add_common_device_args(p)
+
+
 DISPATCH = {
     "run": _cmd_run,
     "schedule": _cmd_schedule,
@@ -455,6 +534,8 @@ DISPATCH = {
     "migrate": _cmd_migrate,
     "cordon": _cmd_cordon,
     "drain": _cmd_cordon,
+    "lifecycle": _cmd_lifecycle,
     "halt": _cmd_halt,
     "revoke": _cmd_revoke,
+    "rotate-certificate": _cmd_rotate_certificate,
 }

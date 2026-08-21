@@ -16,6 +16,15 @@ from typing import Optional
 from .fabric_devices import TaskPlacement, evaluate_placement
 
 
+# 这些状态表示设备不可接受新任务。``reserved``/``busy`` 仍可作为候选，
+# 由 busy 负载排序和控制平面租约共同约束；operator 的 cordon/drain 仍由
+# 兼容字段和 ``cordoned`` 参数处理。
+NON_SCHEDULABLE_LIFECYCLE = frozenset({
+    "unregistered", "enrolled", "probing", "offline", "stale",
+    "maintenance", "quarantined", "retired",
+})
+
+
 @dataclass
 class TaskNode:
     """任务图节点（AADM-D §7 TaskNode 的调度子集）。"""
@@ -95,6 +104,12 @@ def pick_device(placement: TaskPlacement, devices: list,
     prefer: 数据局部性优先的设备（模型/数据集已缓存，AADM-D §14）。"""
     blocked = set(cordoned or ())
     blocked |= set(avoid or ())
+    blocked |= {
+        str(device.get("name", device.get("device_id", "")))
+        for device in devices
+        if str(device.get("lifecycle_state", "")).lower()
+        in NON_SCHEDULABLE_LIFECYCLE
+    }
     preferred = set(prefer or ())
     loads = busy or {}
     candidates = []
@@ -118,7 +133,15 @@ def devices_from_status(view: list) -> list:
     devices = []
     for item in view:
         caps = item.get("static_capabilities", {}) or {}
+        lifecycle = str(item.get("lifecycle_state", "")).lower()
         state = {"status": "online" if item.get("online") else "offline"}
+        if lifecycle:
+            state["status"] = lifecycle
+        trust = item.get("trust", {}) or {}
+        if not trust:
+            trust = {"level": 0, "zone": "untrusted-external",
+                     "max_effect_class": "read_only",
+                     "allowed_data_classes": ["public"]}
         devices.append({
             "device_id": item.get("device_id", ""),
             "name": item.get("name", ""),
@@ -126,7 +149,8 @@ def devices_from_status(view: list) -> list:
             "runtimes": item.get("runtimes", {}) or {},
             "labels": {},
             "dynamic_state": state,
-            "trust": {"max_effect_class": "sandboxed"},
+            "lifecycle_state": lifecycle,
+            "trust": trust,
             "capability_valid_until": item.get("capability_valid_until", ""),
             "cordoned": item.get("cordoned", False),
         })

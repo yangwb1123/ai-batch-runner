@@ -17,8 +17,9 @@ from .fabric import local_probe
 from .fabric_desired import desired_main as _desired_main
 from .fabric_cmds import (DISPATCH, _add_cordon_parser, _add_halt_parser,
                           _add_migrate_parser, _add_revoke_parser,
+                          _add_rotate_certificate_parser,
                           _add_run_parser, _add_schedule_parser,
-                          _add_task_parser)
+                          _add_task_parser, _add_lifecycle_parser)
 from .fabric_devices import (EFFECT_CLASSES, TaskPlacement,
                              device_inventory, evaluate_placement,
                              parse_ssh_config, remote_probe, resolve_device,
@@ -291,8 +292,10 @@ def _build_devices_parser() -> argparse.ArgumentParser:
     _add_migrate_parser(sub)
     _add_cordon_parser(sub, drain=False)
     _add_cordon_parser(sub, drain=True)
+    _add_lifecycle_parser(sub)
     _add_halt_parser(sub)
     _add_revoke_parser(sub)
+    _add_rotate_certificate_parser(sub)
     return parser
 
 

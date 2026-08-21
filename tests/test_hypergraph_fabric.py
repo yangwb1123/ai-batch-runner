@@ -316,6 +316,23 @@ def test_transfer_file_bytes_measured(monkeypatch):
     local.unlink()
 
 
+def test_download_transfer_bytes_measured(monkeypatch, tmp_path):
+    """下载也纳入网络计量，而不是只统计上传。"""
+    local = tmp_path / "download.txt"
+    local.write_text("download", encoding="utf-8")
+
+    def fake_spawn(spec, env, on_spawn=None):
+        fake_proc = type("P", (), {"returncode": 0})()
+        return (fake_proc, "", "", False, False)
+
+    monkeypatch.setattr(fabric_exec, "_spawn_bounded", fake_spawn)
+    result = fabric_exec._transfer_file(
+        {"name": "n", "host_name": "n"}, str(local), "/remote/f",
+        download=True)
+    assert result["ok"] is True
+    assert result["bytes"] == 8
+
+
 def test_graph_ops_seven_operations():
     """AADM-R §8：动态图七操作映射完整。"""
     from pbatch.hypergraph import GRAPH_OPS
