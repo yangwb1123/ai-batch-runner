@@ -9,4 +9,5 @@ docs/reviews/
 docs/ui/
 docs/backend/
 dist/
+build/
 __pycache__/

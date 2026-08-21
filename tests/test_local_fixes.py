@@ -806,8 +806,9 @@ class TestMeteringBudget:
         assert [item["attempt"] for item in task_records] == [1, 2]
         assert len({item["task_id"] for item in task_records}) == 1
 
-    def test_budget_max_stops_before_spawning(self, tmp_path):
-        """--budget-max 2 with 3 tasks: exactly 2 spawns, exit 3."""
+    @pytest.mark.parametrize("budget_flag", ["--budget-max", "--max-invocations"])
+    def test_budget_max_stops_before_spawning(self, tmp_path, budget_flag):
+        """Both budget spellings cap before the third agent spawn."""
         counter = tmp_path / "counter"
         agent = tmp_path / "counting.sh"
         agent.write_text(f"#!/bin/sh\necho x >> {counter}\necho ok\n", encoding="utf-8")
@@ -819,7 +820,7 @@ class TestMeteringBudget:
         result = subprocess.run(
             [sys.executable, str(PI_BATCH), "--from-dir", str(inputs),
              "--agent-bin", str(agent), "--mode", "serial",
-             "--budget-max", "2", "--events-file", str(tmp_path / "e.jsonl")],
+             budget_flag, "2", "--events-file", str(tmp_path / "e.jsonl")],
             capture_output=True, text=True, timeout=120)
         assert result.returncode == 3, result.stderr
         assert counter.read_text(encoding="utf-8").count("x") == 2

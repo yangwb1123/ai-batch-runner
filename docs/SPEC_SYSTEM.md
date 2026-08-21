@@ -55,7 +55,7 @@ required_when_risk / profiles`。`pi-batch rules --check` 校验 schema；
 | 实战规律（第四域） | 产品基线存在性（L1）/能力声明带契约出处（L2）/证据纪律（L7）/明确不做碰撞（L6）/变更预算（L9） | baseline/authority/evidence/nongoal/changebudget |
 | 秘密扫描 | api key/token 等 | secretscan |
 | 注册表 | 规则 schema/引用文件存在 | rules --check |
-| 规则回归 | 25 个 eval 断言（classify/rules/assess 行为） | make eval / CI |
+| 规则回归 | 42 个 eval 断言（classify/rules/assess 行为） | make eval / CI |
 
 ## 5. 角色库（meta 编排动态挑选，34+）
 

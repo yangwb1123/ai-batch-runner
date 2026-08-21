@@ -47,9 +47,11 @@ def _add_metering_args(p) -> None:
                    help="correlation id for this run's JSONL events (default: generated per process)")
     p.add_argument("--webhook", default="",
                    help="T7: POST each metering event to URL (non-blocking, 5s timeout, failures logged only)")
-    p.add_argument("--budget-max", type=int, default=0,
+    p.add_argument("--budget-max", "--max-invocations", dest="budget_max",
+                   type=int, default=0,
                    help="T8: cap agent invocations per run (0 = unlimited); on cap stop with exit 3")
-    p.add_argument("--daily-budget", type=int, default=0,
+    p.add_argument("--daily-budget", "--daily-invocations", dest="daily_budget",
+                   type=int, default=0,
                    help="T8: cap agent invocations per UTC day (0 = unlimited); state in --daily-state file")
     p.add_argument("--daily-state", default="",
                    help="T8: daily budget counter state file (default: .pi-batch/daily-budget.json)")

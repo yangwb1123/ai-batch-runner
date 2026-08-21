@@ -16,7 +16,8 @@
 # 或显式：
 #   pi-batch examples/backend-implementation-pipeline.yaml --retries 3 --max-rounds 0
 
-git_commit: true
+# Generated code is not committed unless the operator passes --git-commit.
+git_commit: false
 decision_log: docs/DECISIONS.md
 archive_dir: docs/archive
 

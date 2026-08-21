@@ -42,6 +42,20 @@ def test_tools_check_detects_broken_registration():
     assert broken and "导入失败" in broken[0]
 
 
+def test_tools_dispatch_smoke_uses_module_entrypoint(monkeypatch):
+    calls = []
+
+    class Result:
+        returncode = 0
+
+    monkeypatch.setattr(
+        tools.subprocess, "run",
+        lambda command, **_kwargs: calls.append(command) or Result(),
+    )
+    assert tools._check_dispatch({"health": {"target": "health:health_main"}}) == []
+    assert calls == [[tools.sys.executable, "-m", "pbatch", "health", "--help"]]
+
+
 def test_tools_cli_json(capsys):
     with pytest.raises(SystemExit) as exc:
         tools.tools_main(["--json"])

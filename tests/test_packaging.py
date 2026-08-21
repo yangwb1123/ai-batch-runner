@@ -1,4 +1,4 @@
-"""Packaging regression suite: pbatch data files must ship in wheel and sdist.
+"""Packaging regression suite: runtime assets must ship in wheel and sdist.
 
 Campaign direction: package-pbatch-data-files-role-keywords-yaml (task-1).
 Evidence chain: docs/auto/runs/package-pbatch-data-files-role-keywords-yaml-tas-8807d80f/
@@ -12,12 +12,15 @@ silently lost `pbatch/role_keywords.yaml` (meta role registry, 34 roles),
 `Path(__file__).with_name(...)`; on a broken install relevance degrades to `{}`
 (fail-open) and the classifier silently merges only built-in defaults.
 
-Fix (design M1): one `[tool.setuptools.package-data]` block keyed to the import
-name `pbatch` with an explicit file list (design gate condition: no globs, so a
-new data file fails closed until consciously declared).
+The distribution has two complementary asset boundaries:
+- `[tool.setuptools.package-data]` explicitly lists files loaded beside Python
+  modules. A new loader resource fails closed until consciously declared.
+- `[tool.setuptools.data-files]` installs repository-level validators, specs,
+  prompts, examples and configuration below `share/ai-batch-runner`.
+  `MANIFEST.in` carries those sources through an sdist-to-wheel build.
 
 Regression discipline (from the design gate's binding conditions and reviews):
-- Builds always run from a minimal tmp_path copy via a subprocess with
+- Builds always run from a declared-input tmp_path copy via a subprocess with
   `cwd=copy` — never from the live tree. `setuptools.build_meta.build_sdist`
   builds from the *current working directory* (the `sdist_directory` argument
   is only the output dir), so building in-process from the repo root silently
@@ -31,11 +34,15 @@ Regression discipline (from the design gate's binding conditions and reviews):
   sdist script are manual acceptance steps; the sdist assertions here are the
   automated proxy.
 
-The full runtime asset surface is now declared as explicit setuptools
+The full runtime asset surface is now declared as setuptools
 ``data-files``: `{tool_root}` validators, rule registries, default pipelines,
 role prompts, evals and governance specs are available after a wheel install.
 The suite remains the compensating control: a newly referenced or required
 asset must be added deliberately, or the build-based tests fail closed.
+The fixture copies exactly the package tree plus every declared data-file
+source. This keeps builds isolated without manufacturing the old false green
+where sdist creation tolerated absent shared assets and wheel creation failed
+later while copying them.
 """
 
 from __future__ import annotations
@@ -65,13 +72,15 @@ EXPECTED_RUNTIME_ASSETS = (
     "examples/sdlc-inputs/oidc-logout-frontchannel.md",
     "prompts/architect.md", "agent-engineering/requirement.yaml",
 )
-_RUNTIME_DIRS = (
-    "scripts", "ui-specs", "backend-specs", "product-specs",
-    "evolution-specs", "examples", "evals", "prompts", "pipelines",
-    "agent-engineering",
-)
 
 _WITH_NAME_RE = re.compile(r'with_name\(\s*"([^"]+\.(?:yaml|md))"\s*\)')
+_DATA_FILES_SECTION_RE = re.compile(
+    r"\[tool\.setuptools\.data-files\](.*?)(?=\n\[|\Z)", re.S,
+)
+_DATA_FILES_ENTRY_RE = re.compile(
+    r'^"([^"]+)"\s*=\s*\[(.*?)\]\s*$', re.M | re.S,
+)
+_TOML_STRING_RE = re.compile(r'"([^"]+)"')
 _BUILD_SDIST_SCRIPT = (
     "from setuptools import build_meta; import sys; "
     "print(build_meta.build_sdist(sys.argv[1]))"
@@ -118,23 +127,51 @@ def _loader_data_refs() -> set[str]:
     return refs
 
 
+def _declared_data_file_patterns() -> dict[str, tuple[str, ...]]:
+    """Read the simple string-list data-files table without Python 3.11."""
+    text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    section = _DATA_FILES_SECTION_RE.search(text)
+    assert section, "missing [tool.setuptools.data-files] table"
+    entries = {
+        destination: tuple(_TOML_STRING_RE.findall(values))
+        for destination, values in _DATA_FILES_ENTRY_RE.findall(section.group(1))
+    }
+    assert entries, "[tool.setuptools.data-files] has no entries"
+    assert all(entries.values()), "data-files destinations require source patterns"
+    return entries
+
+
+def _declared_data_file_sources() -> list[tuple[str, Path]]:
+    """Expand every declared source glob and reject empty declarations."""
+    result = []
+    for destination, patterns in _declared_data_file_patterns().items():
+        for pattern in patterns:
+            matches = sorted(path for path in REPO_ROOT.glob(pattern)
+                             if path.is_file())
+            assert matches, f"data-files pattern matches nothing: {pattern}"
+            result.extend((destination, path) for path in matches)
+    return result
+
+
+def _copy_declared_data_files(copy: Path) -> None:
+    """Copy data-file sources while preserving their repository paths."""
+    for _, source in _declared_data_file_sources():
+        target = copy / source.relative_to(REPO_ROOT)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+
+
 def _minimal_repo_copy(tmp_path: Path) -> Path:
-    """Copy only what setuptools needs; exclude everything tree-state-ish."""
+    """Copy declared build inputs; exclude unrelated live-tree state."""
     copy = tmp_path / "proj"
     copy.mkdir()
-    for name in ("pyproject.toml", "README.md", "LICENSE"):
+    for name in ("pyproject.toml", "README.md", "LICENSE", "MANIFEST.in"):
         shutil.copy(REPO_ROOT / name, copy / name)
     shutil.copytree(
         PBATCH, copy / "pbatch",
         ignore=shutil.ignore_patterns("__pycache__"),
     )
-    for relative in _RUNTIME_DIRS:
-        shutil.copytree(
-            REPO_ROOT / relative, copy / relative,
-            ignore=shutil.ignore_patterns("__pycache__"),
-        )
-    shutil.copy(REPO_ROOT / "pi-batch.yaml", copy / "pi-batch.yaml")
-    shutil.copy(REPO_ROOT / "quality.py", copy / "quality.py")
+    _copy_declared_data_files(copy)
     return copy
 
 
@@ -183,6 +220,26 @@ def test_sdist_ships_declared_data_files(sdist_file: Path) -> None:
         assert f"{prefix}pbatch/{name}" in names, (
             f"{name} missing from sdist: {sorted(names)}"
         )
+
+
+def test_sdist_ships_declared_shared_assets(sdist_file: Path) -> None:
+    """Every wheel data-file source must first survive the sdist boundary."""
+    names = set(_tar_names(sdist_file))
+    prefix = _sdist_prefix(sdist_file)
+    for _, source in _declared_data_file_sources():
+        relative = source.relative_to(REPO_ROOT).as_posix()
+        assert f"{prefix}{relative}" in names, (
+            f"declared shared asset missing from sdist: {relative}"
+        )
+
+
+def test_org_assets_are_declared_for_both_artifacts() -> None:
+    """Installed org must carry its node registry through sdist and wheel."""
+    patterns = _declared_data_file_patterns()
+    destination = "share/ai-batch-runner/agent-engineering"
+    assert patterns.get(destination) == ("agent-engineering/*.yaml",)
+    manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    assert "recursive-include agent-engineering *.yaml" in manifest.splitlines()
 
 
 def test_loader_referenced_data_files_ship(sdist_file: Path) -> None:
@@ -334,6 +391,12 @@ def test_wheel_ships_data_files(tmp_path: Path) -> None:
         for relative in EXPECTED_RUNTIME_ASSETS:
             assert f"{runtime_prefix}share/ai-batch-runner/{relative}" in names, (
                 f"runtime asset missing from wheel: {relative}"
+            )
+        for destination, source in _declared_data_file_sources():
+            suffix = f".data/data/{destination}/{source.name}"
+            assert any(name.endswith(suffix) for name in names), (
+                f"declared shared asset missing from wheel: "
+                f"{destination}/{source.name}"
             )
 
     # Content-only checks are insufficient: verify the installed distribution

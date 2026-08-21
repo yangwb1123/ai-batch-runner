@@ -2,7 +2,7 @@ name: Engineering Gates
 
 # Modeled on snaplink's .github/workflows/engineering.yml, adapted to a
 # Python project: zero-dependency gates + harness self-test + regression
-# suite + coverage.
+# suite + organization contracts + coverage.
 
 on:
   pull_request:
@@ -71,6 +71,12 @@ jobs:
 
       - name: Rule-system eval suite (evals/)
         run: make eval
+
+      - name: Organization quality budget
+        run: make quality
+
+      - name: Organization specifications
+        run: make org
 
       - name: Coverage
         run: make coverage

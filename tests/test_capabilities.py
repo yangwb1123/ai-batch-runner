@@ -38,6 +38,14 @@ def test_registry_check_valid():
     assert report["stats"]["deps_over_budget"] == 0
 
 
+def test_registry_check_is_independent_of_process_cwd(tmp_path, monkeypatch):
+    """Installed commands validate their package owners outside a checkout."""
+    monkeypatch.chdir(tmp_path)
+    report = capabilities.registry_check()
+    assert report["valid"] is True
+    assert report["stats"]["total"] >= 39
+
+
 def test_registry_check_detects_missing_owner(tmp_path, monkeypatch):
     registry = [{"id": "ghost", "domain": "ops",
                  "owner": {"module": "no_such_module", "target": "x:y"},

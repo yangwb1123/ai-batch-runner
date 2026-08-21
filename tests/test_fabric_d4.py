@@ -468,6 +468,11 @@ def test_version_and_init_cli(capsys, tmp_path, monkeypatch):
     report = json.loads(capsys.readouterr().out)
     assert report["product"] == "pi-batch"
     assert report["version"]
+    with _pytest.raises(SystemExit) as exc:
+        product_cli.init_main(["--json"])
+    assert exc.value.code == 0
+    init_report = json.loads(capsys.readouterr().out)
+    assert init_report["settings"].endswith(".config/settings.yaml")
     with _pytest.raises(SystemExit):
         product_cli.init_main([])
     out = capsys.readouterr().out

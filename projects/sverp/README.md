@@ -16,6 +16,7 @@ sverpweb-stable 里 iris-ui 的 dist。详见 [WORKFLOW.md](WORKFLOW.md)。
 | `sverpweb-campaign-pipeline.yaml` | sverpweb 侧实现流水线模板（source-first 门禁） |
 | `iris-campaign-pipeline.yaml` | iris-ui 侧实现流水线模板（无 dist 门禁） |
 | `iris-fix-publish-pipeline.yaml` | 单问题修复流水线（诊断→源码修复→审查→裁决） |
+| `ui-ux-pipeline.yaml` | sverp UI 规范修复、工程门禁与对抗审查模板 |
 
 配套脚本在 `../../scripts/sverp/`（check-iris-vue / check-sverpweb /
 check-no-dist-edit / iris-publish / run-campaign）。
@@ -45,6 +46,12 @@ bash scripts/sverp/iris-publish.sh
 bash scripts/sverp/check-iris-vue.sh ~/workspace/job/iris-ui
 bash scripts/sverp/check-sverpweb.sh ~/workspace/job/sverpweb-stable
 bash scripts/sverp/check-no-dist-edit.sh ~/workspace/job/iris-ui
+
+# 6) sverp UI/UX 修复流水线（目标配置必须定义 uieng/frontend_root）
+cd ~/workspace/job/sverpweb-stable
+PBATCH_SCRIPT_DIR="$PWD" python /home/dwp/ai-batch-runner/pi-batch.py \
+  /home/dwp/ai-batch-runner/projects/sverp/ui-ux-pipeline.yaml \
+  --retries 3 --log-file logs/ui-ux.log
 ```
 
 ## 实战反馈沉淀（2025-08，已落地到 ai-batch-runner）

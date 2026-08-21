@@ -14,7 +14,6 @@ import argparse
 import json
 import subprocess
 import sys
-from pathlib import Path
 from typing import Optional
 
 # 子命令 → 一行描述（与 pbatch/cli.py _SUBCOMMANDS 同步维护）。
@@ -133,8 +132,7 @@ def _check_dispatch(report: dict) -> list:
         # 子进程 --help 冒烟（部分命令无 --help 输出也算通过）
         try:
             result = subprocess.run(
-                [sys.executable, str(Path(__file__).resolve().parent.parent
-                                     / "pi-batch.py"), name, "--help"],
+                [sys.executable, "-m", "pbatch", name, "--help"],
                 capture_output=True, text=True, timeout=20)
             if result.returncode not in (0, 2):  # argparse help 退出码 0
                 broken.append(f"{name}: --help 退出码 {result.returncode}")

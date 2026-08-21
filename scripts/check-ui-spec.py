@@ -94,6 +94,22 @@ DEFAULT_EXCLUDES = {
 }
 
 
+def _match_with_number_check(pattern, match, label, check_number, token_label,
+                             allow_large, number_transform) -> str:
+    """Validate one matched token's numeric value against the allowed set."""
+    value = match.group(1) if match.lastindex else None
+    numbers = re.findall(r"\d+", value or "")
+    if not numbers:
+        return ""
+    number = int(numbers[0])
+    checked = number_transform(number, match) if number_transform else number
+    if checked in check_number or (allow_large and checked > 128):
+        return ""
+    return (f"{label}: {match.group(0).strip()} "
+            f"(value {number} not in {token_label} "
+            f"{sorted(check_number)})")
+
+
 def _find_matches(text: str, patterns: list, label: str, check_number=None,
                   token_label: str = "spacing tokens", allow_large: bool = True,
                   number_transform=None) -> list:
@@ -101,18 +117,12 @@ def _find_matches(text: str, patterns: list, label: str, check_number=None,
     found = []
     for pattern in patterns:
         for match in pattern.finditer(text):
-            value = match.group(1) if match.lastindex else None
             if check_number is not None:
-                numbers = re.findall(r"\d+", value or "")
-                if not numbers:
-                    continue
-                number = int(numbers[0])
-                checked = number_transform(number, match) if number_transform else number
-                if checked in check_number or (allow_large and checked > 128):
-                    continue
-                found.append(f"{label}: {match.group(0).strip()} "
-                             f"(value {number} not in {token_label} "
-                             f"{sorted(check_number)})")
+                violation = _match_with_number_check(
+                    pattern, match, label, check_number, token_label,
+                    allow_large, number_transform)
+                if violation:
+                    found.append(violation)
             else:
                 found.append(f"{label}: {match.group(0).strip()}")
     return sorted(set(found))

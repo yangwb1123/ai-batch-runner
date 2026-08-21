@@ -8,8 +8,11 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import yaml
+
 from pbatch import cli, config, from_dir, gate_fix, meta, pipeline, reuse, runner
 from pbatch.models import Pipeline, Stage, Task, TaskResult
+from pbatch.pipeline_schema import validate_pipeline
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -793,3 +796,10 @@ def test_from_prompt_file_reference_resolves_against_stage_cwd(
         cwd=str(tmp_path)), {})
 
     assert ok and observed == ["cwd requirement"]
+
+
+def test_sverp_ui_ux_pipeline_remains_schema_valid():
+    root = Path(__file__).resolve().parents[1]
+    path = root / "projects" / "sverp" / "ui-ux-pipeline.yaml"
+    spec = yaml.safe_load(path.read_text(encoding="utf-8"))
+    assert validate_pipeline(spec) == []

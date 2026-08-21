@@ -59,7 +59,10 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("artifact")
     ap.add_argument("--min-lines", type=int, default=DEFAULT_MIN_LINES)
-    ap.add_argument("--markers", default="", help="marker overrides separated by ',' or ';' (default: phase-1 roadmap markers). Use ';' when wired through pi-batch validate_cmd (runner splits commands on commas)")
+    ap.add_argument(
+        "--markers", default="",
+        help=("marker overrides separated by ',' or ';' (default: phase-1 roadmap "
+              "markers). Use ';' through pi-batch validate_cmd (commas split commands)"))
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
     path = Path(args.artifact)

@@ -170,6 +170,14 @@ def test_manifest_defers_history_for_direct_chat_and_exposes_it_for_resume(memor
     assert " | find " not in resumed
 
 
+def test_manifest_uses_module_launcher_without_source_shim(
+        memory_root, tmp_path, monkeypatch):
+    monkeypatch.setenv("PBATCH_SCRIPT_DIR", str(tmp_path))
+    manifest = memory.memory_manifest("继续任务", str(memory_root))
+    assert " -m pbatch memory recent" in manifest
+    assert str(tmp_path / "pi-batch.py") not in manifest
+
+
 def test_manifest_is_bounded(memory_root, monkeypatch):
     for index in range(5):
         memory.append_event({"type": "task", "session_id": str(index),

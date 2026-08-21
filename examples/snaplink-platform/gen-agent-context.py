@@ -65,7 +65,8 @@ def build_contract(name: str, pmap: dict) -> str:
     if isinstance(integrations, str):
         integrations = {}  # empty flow dict {} parsed as a scalar
     for port, adapters in integrations.items():
-        lines.append(f"- `{port}`: {', '.join(adapters) if isinstance(adapters, list) else adapters}")
+        rendered = ", ".join(adapters) if isinstance(adapters, list) else adapters
+        lines.append(f"- `{port}`: {rendered}")
     if not integrations:
         lines.append("- 无（本仓库是被集成方）")
     lines.append("")

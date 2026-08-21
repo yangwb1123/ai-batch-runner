@@ -44,13 +44,12 @@ coverage: ## Coverage report for tests/ + checks/. Requires pytest-cov.
 	python -m pytest --cov=checks --cov=cli --cov-report=term-missing tests/ checks/
 
 # -- aggregate ---------------------------------------------------------
-ci: check self-test test quality org ## Full CI gate set: gates + self-test + regression + org scanner + engineering-org specs.
+ci: check self-test test eval quality org ## Full CI: gates + tests + eval + org scanner + engineering-org specs.
 
 org: ## Engineering-org spec integrity (17 node specs + capability registry + graph).
 	python pi-batch.py org check
 	python pi-batch.py capabilities check
 	python pi-batch.py graph extract --input pbatch
 
-
 .PHONY: help check check-filesize check-complexity check-root check-style \
-        self-test quality harness test coverage ci
+        self-test quality harness test eval coverage org ci

@@ -12,6 +12,15 @@ agent:
   default_model: ""     # empty = the agent's own default
   default_timeout: 1500  # seconds, per task (aligned with pi httpIdleTimeoutMs)
   default_workers: 4    # parallel mode default worker count
+  # Agent argv adapter. A string is one argv token; []/"" disables an
+  # optional capability. prompt: "" makes the prompt positional.
+  argument_flags:
+    prompt: "-p"
+    model: "--model"
+    provider: "--provider"
+    thinking: "--thinking"
+    tools: "--tools"
+    exclude_tools: "--exclude-tools"
   # Session reuse flags used by --session-mode shared/per-stage.
   # {session} is the session id, {name} the display name. Other agent CLIs
   # can point these at their own continue-session flags; omit the key to
@@ -30,12 +39,20 @@ agent:
   # gemini have different session-flag syntax and failure signatures.
   # agents:
   #   claude:
+  #     argument_flags: {prompt: "-p"}
   #     session_flags:
   #       start: ["--continue", "--session-id", "{session}"]
   #       continue: ["--session-id", "{session}"]
   #     error_patterns:
   #       - "anthropic.*rate limit"
   #       - "context window exceeded"
+
+# Target-project layout. Relative paths resolve against each task cwd and
+# are exposed to validators as {frontend_root}/{backend_root}/{report_root}.
+project:
+  frontend_root: src
+  backend_root: src
+  report_root: docs
 
 # F line: provider rate limiting. A process-wide token bucket serializes
 # agent invocations across parallel workers and meta role fan-out;
@@ -137,8 +154,8 @@ validators:
   # Reference path had an  prefix (snaplink repo layout); this repo
   # keeps quality.py at the root, so the path is adapted accordingly.
   pyquality: "python {cwd}/quality.py {cwd}"
-  designintelligence: "python {tool_root}/scripts/check-design-intelligence.py --dir {cwd} --json --skip .dart_tool,test,build,ephemeral"
-  backendexperience: "python {tool_root}/scripts/check-backend-experience.py --dir {cwd} --json --skip .dart_tool,test,build,ephemeral,vendor"
+  designintelligence: "python {tool_root}/scripts/check-design-intelligence.py --dir {frontend_root} --json --skip .dart_tool,test,build,ephemeral"
+  backendexperience: "python {tool_root}/scripts/check-backend-experience.py --dir {backend_root} --json --skip .dart_tool,test,build,ephemeral,vendor"
   knowledge: "python {tool_root}/scripts/check-knowledge-freshness.py --dir {cwd} --json --skip .git,.dart_tool,test,build,vendor --skip-modules pbatch,checks,scripts,tools"
   # T12f: reject artifacts containing likely secrets (registry hook, not a
   # built-in scanner). Adapt the patterns to the project's secret formats.
@@ -162,7 +179,8 @@ validators:
     # This gate is for Rust repositories; non-Rust campaign targets record a
     # visible not-applicable skip instead of failing on a missing manifest.
     requires_any: [Cargo.toml]
-  # 目标仓库无 scripts/check-completion-report.py 时使用 wheel 随带的工具资产。
+  # 目标仓库无 scripts/check-completion-report.py 时，通过可移植的
+  # {tool_root} 占位符引用本工具集，避免绑定安装机器的绝对路径。
   completion_go:
     cmd: "python {tool_root}/scripts/check-completion-report.py {output}"
 
@@ -177,18 +195,19 @@ validators:
   # Project-wide frontend UI spec gate (gofmt -l style): scans the whole
   # frontend source tree for spec violations, not just one artifact. The
   # scan root comes from the top-level ui_scan_dir key (below); default
-  # {cwd}/src. No frontend files found -> pass with an explicit stderr
-  # warning (never a silent vacuous green). Violations (stderr) feed the
-  # retry prompt, driving the refactor loop.
-  uicheck: "python {tool_root}/scripts/check-ui-spec.py --dir {ui_scan_dir} --all --json -o {cwd}/docs/ui/refactor/report.json"
+  # {cwd}/src. Checker scripts come from this portable tool distribution and
+  # reports use project.report_root. No frontend files found -> pass with an
+  # explicit stderr warning (never a silent vacuous green). Violations feed
+  # the retry prompt, driving the refactor loop.
+  uicheck: "python {tool_root}/scripts/check-ui-spec.py --dir {ui_scan_dir} --all --json -o {report_root}/ui/refactor/report.json"
   # UI 几何门禁：裸数字小偏移/随机圆角/随机线条宽度（ui-specs/geometry.md）
-  uigeometry: "python {tool_root}/scripts/check-ui-geometry.py --dir {ui_scan_dir} --all --json -o {cwd}/docs/ui/refactor/geometry.json"
+  uigeometry: "python {tool_root}/scripts/check-ui-geometry.py --dir {ui_scan_dir} --all --json -o {report_root}/ui/refactor/geometry.json"
   # Project-wide frontend ENGINEERING gate (gofmt -l style): machine-checkable
   # half of the engineering spec — console.log/any/unsafe html are always
   # errors; god-file/complexity budgets fail with --strict. Judgment calls
   # (races, debounce policy, state placement) go to the engineering review
   # roles and ui-specs/engineering/defect-patterns.md.
-  uiquality: "python {tool_root}/scripts/check-frontend-quality.py --dir {ui_scan_dir} --strict --json -o {cwd}/docs/ui/refactor/quality.json"
+  uiquality: "python {tool_root}/scripts/check-frontend-quality.py --dir {ui_scan_dir} --strict --json -o {report_root}/ui/refactor/quality.json"
   # Project-wide BACKEND engineering gate (gofmt -l style): over-engineering
   # signals (single-implementation interfaces, Base classes, fuzzy names),
   # god-service signals, scattered status assignment, domain->infra imports
@@ -198,7 +217,7 @@ validators:
   # levels) with 0 files scanned -> exit 1; no manifest -> exit 0 with an
   # explicit 'no backend manifest detected; gate skipped' signal. Report is
   # written to docs/backend/ (not the ui/refactor dir).
-  backendquality: "python {tool_root}/scripts/check-backend-quality.py --dir {cwd} --strict --json -o {cwd}/docs/backend/backend-quality.json"
+  backendquality: "python {tool_root}/scripts/check-backend-quality.py --dir {cwd} --strict --json -o {report_root}/backend/backend-quality.json"
   # Definition-of-Done gate: the artifact must carry an honest completion
   # report (commands executed vs not_executed, no fabricated passes).
   completion: "python {tool_root}/scripts/check-completion-report.py {output}"
@@ -253,6 +272,10 @@ classifier:
   min_score: 2
   # Route when this share of a batch's tasks classify as frontend UI.
   frontend_ratio: 0.5
+  # Backend uses an independent threshold. Frontend is the compatibility
+  # default for equal confident majorities; plain/backend are explicit options.
+  backend_ratio: 0.5
+  tie_policy: frontend
 
 commit:
   prefix: "[pi-batch]"

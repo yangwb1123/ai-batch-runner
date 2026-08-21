@@ -36,8 +36,9 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `pbatch/learn.py` | 自演进闭环（Evolution Engineering）：`learn` 子命令把事故/RCA 沉淀为统一 Rule Schema 草案（docs/rules/drafts/），人工批准后并入域注册表 |
 | `pbatch/ratelimit.py` | F 线 provider 令牌桶限速（`limits.per_second/burst/providers` 或 `--rate-limit/--rate-burst`）：并行 worker 与 meta 角色并发在 spawn 前排队；Campaign 隔离流水线通过共享文件锁跨进程共用 bucket；重试等待带 jitter（速率/网络类 30–60s 分散、普通 ±50%）防惊群重试 |
 | `pbatch/context.py` / `docs/agent-context/` | 上下文路由（Context Engineering）：按文件路径 glob + 任务关键词加载项目文档（ADR/契约/安全基线），`context` 子命令，缺失文档显式警告 |
-| `pbatch/eval.py` / `evals/` | 规则系统回归套件（Evaluation Engineering）：`eval` 子命令跑 23 个断言用例（classify/rules/assess/product/workflow），改关键词或注册表后验证行为不退化（make ci 内自动执行） |
+| `pbatch/eval.py` / `evals/` | 规则系统回归套件（Evaluation Engineering）：`eval` 子命令当前跑 42 个断言用例（classify/rules/assess/product/workflow），改关键词或注册表后验证行为不退化（make ci 内自动执行） |
 | `scripts/check-completion-report.py` | Definition-of-Done 门禁（`completion` 验证器）：产物必须携带诚实完成报告——result 枚举/not_executed 必带原因/禁止伪造通过表述 |
+| `pbatch/json_schema.py` / `pbatch/json_schema_cli.py` / `scripts/check-json-schema.py` | 通用结构化产物门禁：任务/阶段声明 `jsonschema=<path>`，纯标准库 JSON Schema 子集校验，未知关键字/外部 `$ref`/非纯 JSON fail closed；CLI 位于核心包内，保持三件套复制可用 |
 | `backend-specs/` | 后端规范资产（按 classify 的 backend 域自动选用）：architecture、design-patterns、domain-modeling、evolution、oop-and-di、ddd、algorithms-data-structures、complexity-and-scale、**persistence-modeling**（四种模型分离/主键/金额/索引/唯一约束/审计历史/迁移，编码前强制关卡）、**production-readiness**（生产就绪门禁 11 项）、**agent-guardrails**（防幻觉/变更控制/DRY 边界）、**architecture-constitution**（最高层架构宪法：变化管理/可逆决策/耦合八型/爆炸半径/重试预算/一致性显式/15 问）、**testing**（五层测试/复现优先/属性模糊测试）、**system-engineering**（消息/缓存/后台任务/限流/分布式锁）、**network-engineering**（超时分层/重试矩阵/背压）+ `rules.yaml` 后端注册表 |
 | `scripts/check-backend-quality.py` | 后端工程门禁（纯 stdlib）：过度设计信号（单实现接口/Base 类/模糊命名）、上帝服务、状态直接赋值、domain→infra 反向依赖（`backendquality` 验证器） |
 | `ui-specs/` | AI UI 生成规范资产：8pt 间距 token、组件/布局/反例规范、业务风格 profile（ERP/CMS/OA…） |
@@ -64,10 +65,10 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `ai/run-review.py` | 十阶段评审 runner（`--all`/`--resume`/共享会话/验证门禁） |
 | `ai/prompts/00-09` | 评审阶段模板（产品发现→CTO 决策） |
 | `ai/prompts-shared/` | 评审共享片段（工程原则、输出格式、检查清单、角色定义） |
-| `prompts/` | 31 个角色模板（architect、security_engineer、qa_lead、backend_engineer、product_thinker…）+ 30 个关键词注册，meta 编排动态挑选 |
+| `prompts/` | 40 个角色模板（architect、security_engineer、qa_lead、backend_engineer、product_thinker…）+ 34 个关键词注册，meta 编排动态挑选 |
 | `pipelines/` | SDLC 角色图与代码实现流水线（设计图） |
 | `examples/` | 可用案例：提案、SDLC、meta 分析、完整闭环与 repository campaign |
-| `tests/` | 387 个回归测试（`make ci`，含 25 个 eval 规则回归用例） |
+| `tests/` | 1200+ 个回归测试（`make ci`，另含 42 个 eval 规则回归用例） |
 | `docs/SPEC_SYSTEM.md` | 规范体系总览：资产分层/注册表/决策链/门禁/角色/沉淀闭环/克制原则 |
 | `docs/` | 机制文档（`RUNNING_247.md`、`AUTOMATION_WORKFLOW_SUMMARY.md` 等） |
 | `pi-batch.yaml` | 声明式配置：agent 二进制、会话标志、31 个验证器（含 `pyquality`、`refusalcheck`、`baseline`、`authority`、`evidence`、`nongoal`、`changebudget`） |
@@ -138,7 +139,7 @@ agent 回复**不是正确输出时一律不落盘**：
 声明式验证器注册表（像 `engineering.yaml` 之于 `cli.py`）：
 
 ```yaml
-# pi-batch.yaml（6 个已注册）
+# pi-batch.yaml（当前共 24 个；以下为核心示例）
 validators:
   quick: "python cli.py check"
   gofmt: 'test -z "$(gofmt -l {output})"'
@@ -148,7 +149,10 @@ validators:
   pyquality: "python {cwd}/quality.py {cwd}"
 ```
 
-- `--validate quick,gofmt`：命名引用，AND 语义（全部通过才落盘）
+- `--validate quick,gofmt`：命名引用，AND 语义（全部通过才落盘）；文件级
+  validator 最多 4 路并行执行并按声明顺序裁决，仓库级 validator 延后到阶段末
+- `validate: jsonschema=schemas/result.schema.json`：结构化产物按声明 schema
+  机械校验；同样参与重试反馈、零残留拒绝和 `--reuse` 复验
 - **每阶段可选**：任务 `validate` > 阶段 `validate_cmd` > CLI > 无；
   空字符串显式禁用（分析类任务跳过，代码生成类保留）
 - 机制：输出写临时文件（`{output}` 占位符）→ 验证命令 → 通过则原子
@@ -420,6 +424,9 @@ python pi-batch.py ...    # 仓库根目录零安装回退
 # 一句话 → 动态角色分析（任意项目，无需输入文件）
 python pi-batch.py examples/meta-review-pipeline.yaml
 
+# 结构化产物：纯 JSON 在落盘前通过声明式 schema 门禁
+python pi-batch.py examples/structured-output-pipeline.yaml -p "分析重试风险"
+
 # 任务类型判断：执行前判定是否前端任务（前端→自动路由 UI 生成流水线）
 python pi-batch.py classify "用 Flutter 实现 ERP 排程列表页"
 python pi-batch.py classify tasks.yaml --json
@@ -674,7 +681,7 @@ pi-batch health                                              # Health Score (0-1
 ## 4. 测试与门禁
 
 ```bash
-make ci                     # 387 个回归测试 + 25 eval 用例 + 34 harness 自测
+make ci                     # 1200+ 个回归测试 + 42 eval 用例 + 50 harness 自测
 python -m pytest checks/    # 仓库工程门禁自测（147+ 个）
 python quality.py --strict .   # 组织质量门禁（当前全绿）
 ```

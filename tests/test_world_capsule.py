@@ -10,6 +10,8 @@ profile: 人工门禁分级 + 提问价值。
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 
 import pytest
 
@@ -205,6 +207,43 @@ def test_capsule_diff():
     diffs = capsule.capsule_diff(base, changed)
     assert any("rule_set_version" in d for d in diffs)
     assert capsule.capsule_diff(base, dict(base)) == []
+
+
+def test_capsule_rule_digests_use_installed_assets_and_project_overrides(
+        tmp_path):
+    captured = capsule.capture_context_capsule("x", cwd=str(tmp_path))
+    assert set(captured["rule_digests"]) == set(capsule.RULE_REGISTRIES)
+    assert all(value != "missing"
+               for value in captured["rule_digests"].values())
+
+    override = tmp_path / "ui-specs" / "rules.yaml"
+    override.parent.mkdir()
+    override.write_text("rules: []\n", encoding="utf-8")
+    updated = capsule.capture_context_capsule("x", cwd=str(tmp_path))
+    assert updated["rule_digests"]["ui-specs/rules.yaml"] == (
+        capsule._file_digest(override))
+    assert updated["rule_digests"]["backend-specs/rules.yaml"] == (
+        captured["rule_digests"]["backend-specs/rules.yaml"])
+
+
+def test_capsule_honors_explicit_empty_rule_digest_mapping(tmp_path):
+    captured = capsule.capture_context_capsule(
+        "x", cwd=str(tmp_path), rule_digests={})
+    assert captured["rule_digests"] == {}
+
+
+def test_capsule_eval_uses_installed_module_entrypoint(monkeypatch):
+    calls = []
+
+    class Result:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    monkeypatch.setattr(subprocess, "run",
+                        lambda command, **_kwargs: calls.append(command) or Result())
+    assert capsule._run_eval() == (True, "ok")
+    assert calls == [[sys.executable, "-m", "pbatch", "eval"]]
 
 
 def test_capsule_cli(tmp_path, capsys):

@@ -73,13 +73,13 @@ def _reject_constant(value: str):
 def validate(instance, schema) -> list[str]:
     """Return deterministic validation errors; malformed schemas raise."""
     try:
-        _audit_schema(schema, "$schema", set())
+        _audit_schema(schema, "$schema", set(), schema)
         return _validate(instance, schema, schema, "$", set())
     except RecursionError as exc:
         raise SchemaError("schema or artifact nesting exceeds the safe recursion limit") from exc
 
 
-def _audit_schema(schema, path: str, seen: set[int]) -> None:
+def _audit_schema(schema, path: str, seen: set[int], root) -> None:
     if isinstance(schema, bool):
         return
     if not isinstance(schema, dict):
@@ -91,8 +91,10 @@ def _audit_schema(schema, path: str, seen: set[int]) -> None:
     if unknown:
         raise SchemaError(f"{path} has unsupported keyword(s): {', '.join(unknown)}")
     _audit_values(schema, path)
+    if "$ref" in schema:
+        _audit_schema(_resolve_ref(root, schema["$ref"]), f"{path}.$ref", seen, root)
     for name, child in _subschemas(schema, path):
-        _audit_schema(child, name, seen)
+        _audit_schema(child, name, seen, root)
 
 
 def _audit_values(schema: dict, path: str) -> None:
@@ -126,8 +128,11 @@ def _audit_required(schema: dict, path: str) -> None:
 
 
 def _audit_format_and_ref(schema: dict, path: str) -> None:
-    if "format" in schema and schema["format"] not in FORMATS:
-        raise SchemaError(f"{path}.format is unsupported: {schema['format']!r}")
+    declared_format = schema.get("format")
+    if "format" in schema and (
+        not isinstance(declared_format, str) or declared_format not in FORMATS
+    ):
+        raise SchemaError(f"{path}.format is unsupported: {declared_format!r}")
     ref = schema.get("$ref")
     if "$ref" in schema and (not isinstance(ref, str) or not ref.startswith("#")):
         raise SchemaError(f"{path}.$ref must be a local JSON pointer")

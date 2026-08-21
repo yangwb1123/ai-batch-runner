@@ -688,6 +688,8 @@ def test_max_rounds_loop_reruns_failures(tmp_path):
         (["--retry-backoff", "nan"], "--retry-backoff"),
         (["--round-delay", "inf"], "--round-delay"),
         (["--budget-max", "-1"], "--budget-max"),
+        (["--max-invocations", "-1"], "--budget-max"),
+        (["--daily-invocations", "-1"], "--daily-budget"),
     ]
     for flags, expected in bad_values:
         rejected = subprocess.run(
