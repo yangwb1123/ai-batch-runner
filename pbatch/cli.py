@@ -36,7 +36,8 @@ from .version import VERSION
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="pi-batch -- batch/pipeline executor (use 'campaign --help' for project campaigns)",
+        prog="pi-batch",
+        description="pi-batch -- interactive AI workbench and governed batch/pipeline executor",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=_parser_epilog(),
     )
@@ -50,7 +51,8 @@ def build_parser() -> argparse.ArgumentParser:
 def _parser_epilog() -> str:
     """Keep the compatibility parser's help in sync with dispatchable commands."""
     commands = ", ".join(_SUBCOMMANDS)
-    return f"{__doc__ or ''}\n\nSubcommands:\n  {commands}"
+    return (f"{__doc__ or ''}\n\nRun without arguments in a terminal to open the TUI."
+            f"\n\nSubcommands:\n  {commands}")
 
 
 def _add_source_args(p: argparse.ArgumentParser) -> None:
@@ -200,6 +202,8 @@ def _apply_verbosity(verbosity: int) -> None:
 
 
 def main() -> None:
+    if _dispatch_default_tui():
+        return
     if _dispatch_subcommand():
         return
     # 子命令已处理：subcommand 自身通过 sys.exit 返回退出码
@@ -332,6 +336,7 @@ def _run_configured(args, lock_path) -> None:
 
 
 _SUBCOMMANDS: dict[str, str] = {
+    "tui": "tui:tui_main",
     "config": "config_cli:config_main",
     "memory": "memory:main",
     "classify": "classifier:classify_main",
@@ -393,6 +398,23 @@ _SUBCOMMANDS: dict[str, str] = {
     "evolution": "evolution:evolution_main",
     "isolate": "isolate:isolate_main",
 }
+
+
+def _dispatch_default_tui() -> bool:
+    """Open the interactive UI only for an argument-free real terminal.
+
+    Keep this check ahead of every other CLI action: piped stdin remains the
+    legacy batch input channel, while TUI startup must not preflight an agent,
+    create logs, register a run, or acquire the project lock.
+    """
+    if (len(sys.argv) != 1 or not sys.stdin.isatty()
+            or not sys.stdout.isatty()):
+        return False
+    from .tui import tui_main
+    exit_code = tui_main([])
+    if type(exit_code) is int and exit_code != 0:
+        raise SystemExit(exit_code)
+    return True
 
 
 def _dispatch_subcommand() -> bool:

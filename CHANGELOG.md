@@ -3,6 +3,24 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [0.3.0] - 2026-08-20（交互式 TUI）
+
+### 新增
+
+- 无参数、真实终端下默认启动的 Textual 工作台；显式入口为 `pi-batch tui`。
+- 对话式 Markdown 界面、流式 stdout/stderr、状态侧栏、命令面板、稳定会话，
+  以及 `/help`、`/status`、`/new`、`/clear`、`/model`、`/provider`、
+  `/agent`、`/memory`、`/doctor`、`/quit`。
+- `Ctrl+P/N/L/C/Q` 键盘工作流；运行中防重复提交，取消会终止 agent 进程组。
+- TUI turn 复用既有 prompt/session/memory/timeout/失败签名机制，并遵守项目
+  单实例锁；缺少 agent 时首屏仍可打开并展示诊断。
+
+### 兼容性
+
+- stdin/stdout 任一被重定向时不进入 TUI；pipe prompt、`-p`、pipeline、所有
+  子命令和 JSON 输出保持原有无头契约。
+- wheel 将 `textual>=8.2,<9` 声明为核心依赖，并包含 TUI/backend 模块。
+
 ## [0.2.0] - 2026-08-08（产品化里程碑）
 
 ### 新增（产品 CLI 规整）

@@ -1,7 +1,7 @@
 # ai-batch-runner
 
-Serial / parallel / pipeline batch executor for **any CLI-based coding agent** — not tied to
-one vendor.
+An interactive terminal workbench and governed batch/pipeline runtime for **any CLI-based
+coding agent** — local-first and not tied to one vendor.
 
 ---
 
@@ -9,6 +9,7 @@ one vendor.
 
 ```bash
 pip install -e .          # 或 pipx install . / uv tool install .
+pi-batch                  # 默认产品入口：交互式 TUI（真实终端）
 pi-batch doctor           # 环境诊断：安装/目录/配置/agent/密钥/锁
 pi-batch init             # 创建用户级工作目录骨架
 pi-batch version          # 版本 + 环境
@@ -213,6 +214,8 @@ python pi-batch.py tasks.yaml --agent-bin codex  --mode serial
 ```bash
 # Install as a global CLI command (like pi/codex), then use it anywhere:
 pip install -e .            # or: pipx install . / uv tool install .
+pi-batch                    # interactive TUI on a real terminal
+pi-batch tui                # explicit TUI entry
 pi-batch -p "analyze this project" -o output.md
 python -m pbatch ...        # same entry, no install needed
 python pi-batch.py ...      # zero-install fallback from the repo root
@@ -257,6 +260,29 @@ pi-batch tasks.yaml --max-rounds 0 --round-delay 60
 # Repository campaign: inspect the plan, then analyze and implement Top N directions
 pi-batch campaign --dry-run
 pi-batch campaign --max-directions 2 --reuse --retry-failed
+```
+
+### Interactive terminal UI
+
+Running `pi-batch` without arguments opens the Textual workbench when both
+stdin and stdout are interactive terminals. Use **Ctrl+P** for the command
+palette, **Ctrl+N** for a new task, **Ctrl+L** to clear the transcript,
+**Ctrl+C** to cancel the active run, and **Ctrl+Q** to quit.
+
+Slash commands are available from the prompt: `/help`, `/status`, `/new`,
+`/clear`, `/model`, `/provider`, `/agent`, `/memory`, `/doctor`, and `/quit`.
+`/help` shows the current syntax and state-dependent behavior.
+The full startup, trust-boundary, and release contract is documented in
+[`docs/TUI_PRODUCT.md`](docs/TUI_PRODUCT.md).
+
+The automatic TUI never activates when either stdin or stdout is redirected,
+so existing scripts and CI remain headless-compatible. Piped prompts and all
+explicit batch/subcommands keep their original behavior:
+
+```bash
+printf 'analyze this repository\n' | pi-batch
+pi-batch -p "analyze this repository" --stream-output none
+pi-batch tui --help
 ```
 
 Example `tasks.yaml`:

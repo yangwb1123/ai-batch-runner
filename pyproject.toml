@@ -4,11 +4,25 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-batch-runner"
-version = "0.2.0"
-description = "Serial / parallel / pipeline batch executor for any CLI-based coding agent (pi, claude, codex, gemini, opencode, ...)"
+version = "0.3.0"
+description = "Interactive TUI and governed batch/pipeline runtime for CLI coding agents"
+readme = "README.md"
+license = {file = "LICENSE"}
 requires-python = ">=3.9"
+keywords = ["ai", "cli", "tui", "coding-agent", "sdlc", "automation"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Software Development :: Build Tools",
+]
 dependencies = [
     "PyYAML>=6.0",  # required by --pipeline / tasks.yaml modes (also used by checks/)
+    "textual>=8.2,<9",  # interactive terminal UI (pi-batch / pi-batch tui)
 ]
 
 [project.optional-dependencies]
@@ -22,6 +36,12 @@ dev = [
 # `pi-batch ...` anywhere; each project keeps its own pi-batch.yaml.
 [project.scripts]
 pi-batch = "pbatch.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/yangwb1123/ai-batch-runner"
+Repository = "https://github.com/yangwb1123/ai-batch-runner.git"
+Issues = "https://github.com/yangwb1123/ai-batch-runner/issues"
+Changelog = "https://github.com/yangwb1123/ai-batch-runner/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 include = ["pbatch*"]

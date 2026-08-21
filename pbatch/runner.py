@@ -208,10 +208,20 @@ def _finish_result(result: TaskResult, task: Task, session_id: str,
                               usage_before, trace_task_id, attempt)
 
 
-def run_task(task: Task, task_index: int = 0, total: int = 0,
-             parallel: bool = False, session_flags: Optional[list] = None,
-             session_name: str = "", attempt: int = 1,
-             trace_task_id: str = "") -> TaskResult:
+def _stream_task(proc, prefix: str, start: float, timeout: int, emit: bool,
+                 stdout_target=None, stderr_target=None):
+    """Forward opt-in display targets without changing legacy mock calls."""
+    targets = {}
+    if stdout_target is not None:
+        targets["stdout_target"] = stdout_target
+    if stderr_target is not None:
+        targets["stderr_target"] = stderr_target
+    return _stream_proc(proc, prefix, start, timeout, emit, **targets)
+
+
+def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = False,
+             session_flags: Optional[list] = None, session_name: str = "", attempt: int = 1,
+             trace_task_id: str = "", stdout_target=None, stderr_target=None) -> TaskResult:
     trace_task_id = trace_task_id or make_task_id(metering.RUN_ID, task.prompt, task.output, task.workdir(), task_index)
     stage_id = str(task.memory.get("stage", ""))
     if rejected := _context_rejection(task):
@@ -232,8 +242,9 @@ def run_task(task: Task, task_index: int = 0, total: int = 0,
         _register_proc(proc)
         write_marker(key, workdir, agent_pid=proc.pid)
         streamed = _stream_output_enabled()
-        stdout_lines, stderr_lines, overflow = _stream_proc(proc, prefix, start,
-                                                            task.timeout, streamed)
+        stdout_lines, stderr_lines, overflow = _stream_task(
+            proc, prefix, start, task.timeout, streamed,
+            stdout_target, stderr_target)
         completed = True
         if overflow[0]:
             result = _overflow_result(task, proc, stdout_lines, stderr_lines, start)
@@ -723,23 +734,28 @@ def _stream_output_enabled() -> bool:
     return mode == "full" or (mode == "auto" and sys.stdout.isatty())
 
 def _stream_proc(proc: subprocess.Popen, prefix: str, start: float,
-                 timeout: int, emit: bool = False) -> tuple[list[str], list[str], list]:
+                 timeout: int, emit: bool = False, stdout_target=None,
+                 stderr_target=None) -> tuple[list[str], list[str], list]:
     """Drain both pipes to one deadline; report stdout-cap overflow."""
     stdout_lines, stderr_lines, overflow, _ = _drain_process(
-        proc, prefix, start, timeout, config.OUTPUT_MAX_BYTES, emit)
+        proc, prefix, start, timeout, config.OUTPUT_MAX_BYTES, emit,
+        stdout_target, stderr_target)
     return stdout_lines, stderr_lines, overflow
 
 def _drain_process(proc: subprocess.Popen, prefix: str, start: float,
-                   timeout: float, cap: int, emit: bool = False) -> tuple:
+                   timeout: float, cap: int, emit: bool = False,
+                   stdout_target=None, stderr_target=None) -> tuple:
     """Drain both pipes with one absolute deadline and bounded collectors."""
     from threading import Thread
     stdout_lines: list[str] = []
     stderr_lines: list[str] = []
     stdout_overflow: list = [False]
     stderr_overflow: list = [False]
-    args = (cap, stdout_overflow, emit, sys.stdout)
+    stdout_sink = sys.stdout if stdout_target is None else stdout_target
+    stderr_sink = sys.stderr if stderr_target is None else stderr_target
+    args = (cap, stdout_overflow, emit, stdout_sink)
     tout = Thread(target=_read_stream, args=(proc.stdout, prefix, stdout_lines, *args), daemon=True)
-    err_args = (cap, stderr_overflow, emit, sys.stderr)
+    err_args = (cap, stderr_overflow, emit, stderr_sink)
     terr = Thread(target=_read_stream, args=(proc.stderr, prefix, stderr_lines, *err_args), daemon=True)
     tout.start()
     terr.start()

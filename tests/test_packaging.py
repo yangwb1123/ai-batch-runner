@@ -304,6 +304,22 @@ def test_wheel_ships_data_files(tmp_path: Path) -> None:
     wheel_name = result.stdout.strip().splitlines()[-1]
     with zipfile.ZipFile(out / wheel_name) as wheel:
         names = set(wheel.namelist())
+        for module in ("pbatch/tui.py", "pbatch/tui_backend.py"):
+            assert module in names, f"TUI module missing from wheel: {module}"
+        metadata_members = [
+            name for name in names if name.endswith(".dist-info/METADATA")
+        ]
+        assert len(metadata_members) == 1, metadata_members
+        metadata = wheel.read(metadata_members[0]).decode("utf-8")
+        textual_requirements = [
+            line.partition(":")[2].strip()
+            for line in metadata.splitlines()
+            if line.lower().startswith("requires-dist: textual")
+        ]
+        assert len(textual_requirements) == 1, textual_requirements
+        textual_requirement = textual_requirements[0].replace(" ", "").lower()
+        assert ">=8.2" in textual_requirement
+        assert "<9" in textual_requirement
         for name in EXPECTED_DATA_FILES:
             assert f"pbatch/{name}" in names, (
                 f"{name} missing from wheel {wheel_name}"

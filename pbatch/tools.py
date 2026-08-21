@@ -19,6 +19,7 @@ from typing import Optional
 
 # 子命令 → 一行描述（与 pbatch/cli.py _SUBCOMMANDS 同步维护）。
 DESCRIPTIONS = {
+    "tui": "交互式终端工作台（任务输入/流式输出/运行控制）",
     "config": "配置来源/版本/最终解析值检查（explain/check）",
     "memory": "渐进式 message memory（ingest/recent/find/read）",
     "classify": "任务类型判定（frontend/backend 路由）",

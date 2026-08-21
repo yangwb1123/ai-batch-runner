@@ -38,6 +38,7 @@ DATA_CLASS_LEVEL = {name: index for index, name in enumerate(DATA_CLASSES)}
 # 能力 id → (domain, risk, input 摘要, output 摘要)。
 # 与 _SUBCOMMANDS 同步维护；未登记的自动按 domain=ops/risk=low 兜底。
 MANUAL = {
+    "tui": ("execution", "medium", "交互任务/项目上下文", "agent 回复/工作区变更/会话"),
     "graph": ("reasoning", "low", "graph.json|源代码目录", "结构违规/依赖环/统计"),
     "profile": ("reasoning", "low", "需求文本", "12 维画像/模式/包络"),
     "pareto": ("reasoning", "low", "候选+目标", "前沿/Utility/MUC"),

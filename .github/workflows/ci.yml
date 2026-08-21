@@ -11,6 +11,32 @@ on:
     branches: [main]
 
 jobs:
+  cli-compatibility:
+    name: CLI/TUI Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install product and test dependencies
+        run: pip install -e ".[dev]"
+
+      - name: CLI and headless TUI compatibility
+        run: >-
+          python -m pytest
+          tests/test_entrypoints.py
+          tests/test_tui.py
+          tests/test_tui_backend.py
+          tests/test_tui_entrypoints.py
+
   gates:
     name: Engineering Gates
     runs-on: ubuntu-latest
