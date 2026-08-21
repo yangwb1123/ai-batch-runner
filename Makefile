@@ -10,8 +10,8 @@ help: ## Show this help.
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
 # -- gates (zero dependencies) ----------------------------------------
-check: ## Run all engineering gates: filesize, complexity, root policy, style.
-	python cli.py check
+check: ## Run the registered project engineering gates (fail closed).
+	python pi-batch.py check --skip-eval
 
 check-filesize: ## File size budget (500 lines by default).
 	python cli.py check-filesize
@@ -34,7 +34,7 @@ quality: ## Upstream-synced org scanner (quality.py): func lines, complexity, du
 harness: check self-test ## pre-push gate (snaplink naming).
 
 # -- test / coverage (need dev extras) --------------------------------
-test: ## Regression suite (tests/, 387 cases + 25 eval cases). Requires: pip install -e ".[dev]".
+test: ## Regression suite (tests/). Requires: pip install -e ".[dev]".
 	python -m pytest tests/
 
 eval: ## Rule-system regression suite (evals/, pi-batch eval).

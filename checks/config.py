@@ -33,7 +33,12 @@ def _load_yaml() -> dict:
     path = _resolve_config_path()
     if not yaml or not path.exists():
         return {}
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception as exc:
+        # PyYAML raises yaml.YAMLError, while the zero-dependency fallback
+        # can raise OSError/ValueError. Keep one actionable contract for both.
+        raise ValueError(f"{path}: invalid engineering.yaml: {exc}") from exc
     return data if isinstance(data, dict) else {}
 
 
@@ -88,28 +93,31 @@ def _load_project(cfg: Config, raw: dict) -> None:
 
 def _load_filesize(cfg: Config, raw: dict) -> None:
     fs = _section(raw, "filesize")
-    cfg.filesize.max_lines = int(fs.get("max_lines", cfg.filesize.max_lines))
+    cfg.filesize.max_lines = _integer(fs, "max_lines", cfg.filesize.max_lines, "filesize")
     cfg.filesize.ignore_patterns = list(fs.get("ignore_patterns") or [])
     cfg.filesize.exemptions = list(fs.get("exemptions") or [])
 
 
 def _load_complexity(cfg: Config, raw: dict) -> None:
     cx = _section(raw, "complexity")
-    cfg.complexity.max_cyclomatic = int(cx.get("max_cyclomatic", cfg.complexity.max_cyclomatic))
-    cfg.complexity.max_cognitive = int(cx.get("max_cognitive", cfg.complexity.max_cognitive))
+    cfg.complexity.max_cyclomatic = _integer(
+        cx, "max_cyclomatic", cfg.complexity.max_cyclomatic, "complexity")
+    cfg.complexity.max_cognitive = _integer(
+        cx, "max_cognitive", cfg.complexity.max_cognitive, "complexity")
     cfg.complexity.ignore_patterns = list(cx.get("ignore_patterns") or [])
 
 
 def _load_root_policy(cfg: Config, raw: dict) -> None:
     rp = _section(raw, "root_policy")
-    cfg.root_policy.max_files = int(rp.get("max_files", cfg.root_policy.max_files))
+    cfg.root_policy.max_files = _integer(rp, "max_files", cfg.root_policy.max_files, "root_policy")
     cfg.root_policy.allowed_files = list(rp.get("allowed_files") or [])
     cfg.root_policy.banned_patterns = list(rp.get("banned_patterns") or [])
 
 
 def _load_style(cfg: Config, raw: dict) -> None:
     st = _section(raw, "style")
-    cfg.style.max_line_length = int(st.get("max_line_length", cfg.style.max_line_length))
+    cfg.style.max_line_length = _integer(
+        st, "max_line_length", cfg.style.max_line_length, "style")
     cfg.style.ignore_patterns = list(st.get("ignore_patterns") or [])
 
 
@@ -123,6 +131,15 @@ def get_config() -> Config:
     _load_root_policy(cfg, raw)
     _load_style(cfg, raw)
     return cfg
+
+
+def _integer(section: dict, key: str, default: int, label: str) -> int:
+    value = section.get(key, default)
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(
+            f"{label}.{key} must be an integer (got {value!r})") from exc
 
 
 def repo_root() -> Path:

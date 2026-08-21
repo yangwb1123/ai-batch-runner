@@ -51,6 +51,23 @@ class TestCognitive(unittest.TestCase):
         src = "if a:\n    pass\nif b:\n    pass"
         self.assertEqual(cx.cognitive(_fn(src)), 2)
 
+    def test_nested_function_is_scored_as_its_own_scope(self):
+        source = """\
+def outer():
+    def inner():
+        if a:
+            if b:
+                if c:
+                    pass
+    return inner
+"""
+        tree = ast.parse(source)
+        outer, inner = tree.body[0], tree.body[0].body[0]
+        self.assertEqual(cx.cyclomatic(outer), 1)
+        self.assertEqual(cx.cognitive(outer), 0)
+        self.assertEqual(cx.cyclomatic(inner), 4)
+        self.assertEqual(cx.cognitive(inner), 6)
+
 
 class TestCheckFile(unittest.TestCase):
     def setUp(self):

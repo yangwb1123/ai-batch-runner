@@ -27,6 +27,7 @@ _NESTING_NODES = (
 )
 _BRANCH_NODES = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.ExceptHandler,
                  ast.With, ast.AsyncWith, ast.IfExp)
+_NESTED_SCOPE_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
 
 
 def _bool_extra(node: ast.BoolOp) -> int:
@@ -45,7 +46,7 @@ def _cyclomatic_extra(n: ast.AST) -> int:
 def cyclomatic(node: ast.AST) -> int:
     """Cyclomatic complexity of a function/body node."""
     total = 1
-    for n in ast.walk(node):
+    for n in _scope_nodes(node):
         if isinstance(n, _BRANCH_NODES):
             total += _cyclomatic_extra(n)
         elif isinstance(n, (ast.Match, ast.BoolOp)):
@@ -56,6 +57,8 @@ def cyclomatic(node: ast.AST) -> int:
 def cognitive(node: ast.AST) -> int:
     """Approximate cognitive complexity of a function/body node."""
     def visit(n: ast.AST, depth: int) -> int:
+        if n is not node and isinstance(n, _NESTED_SCOPE_NODES):
+            return 0
         if isinstance(n, ast.BoolOp):
             return _bool_extra(n) + sum(visit(c, depth) for c in ast.iter_child_nodes(n))
         if isinstance(n, ast.Match):
@@ -68,6 +71,17 @@ def cognitive(node: ast.AST) -> int:
             child_depth = depth + 1
         return inc + sum(visit(c, child_depth) for c in ast.iter_child_nodes(n))
     return visit(node, 0)
+
+
+def _scope_nodes(node: ast.AST):
+    """Walk one function scope without counting nested definitions twice."""
+    pending = [node]
+    while pending:
+        current = pending.pop()
+        if current is not node and isinstance(current, _NESTED_SCOPE_NODES):
+            continue
+        yield current
+        pending.extend(ast.iter_child_nodes(current))
 
 
 def _functions(tree: ast.AST) -> list:

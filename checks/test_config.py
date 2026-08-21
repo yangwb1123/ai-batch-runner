@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import checks.config as config
 from checks.config import scan_files
 
 
@@ -86,6 +87,41 @@ class TestScanFiles(unittest.TestCase):
     def test_nonexistent_root_returns_empty(self):
         """F-5: nonexistent root yields an empty list (same as rglob)."""
         self.assertEqual(scan_files(Path(tempfile.mkdtemp()) / "nope"), [])
+
+
+class TestEngineeringConfigDiagnostics(unittest.TestCase):
+    def test_bad_numeric_value_names_gate_and_key(self):
+        tmp = Path(tempfile.mkdtemp()) / "engineering.yaml"
+        tmp.write_text("filesize:\n  max_lines: '500 lines'\n", encoding="utf-8")
+        original = config._resolve_config_path
+        try:
+            config._resolve_config_path = lambda: tmp
+            with self.assertRaisesRegex(ValueError, r"filesize\.max_lines"):
+                config.get_config()
+        finally:
+            config._resolve_config_path = original
+
+    def test_valid_numeric_string_keeps_compatibility(self):
+        tmp = Path(tempfile.mkdtemp()) / "engineering.yaml"
+        tmp.write_text("complexity:\n  max_cognitive: '17'\n", encoding="utf-8")
+        original = config._resolve_config_path
+        try:
+            config._resolve_config_path = lambda: tmp
+            self.assertEqual(config.get_config().complexity.max_cognitive, 17)
+        finally:
+            config._resolve_config_path = original
+
+    def test_malformed_yaml_names_configuration_path(self):
+        tmp = Path(tempfile.mkdtemp()) / "engineering.yaml"
+        tmp.write_text("filesize: [unterminated\n", encoding="utf-8")
+        original = config._resolve_config_path
+        try:
+            config._resolve_config_path = lambda: tmp
+            with self.assertRaisesRegex(ValueError,
+                                        r"engineering\.yaml: invalid"):
+                config.get_config()
+        finally:
+            config._resolve_config_path = original
 
 
 if __name__ == "__main__":
