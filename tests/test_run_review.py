@@ -8,6 +8,8 @@ The runner is loaded through importlib because its filename contains dashes.
 """
 
 import importlib.util
+import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -80,6 +82,80 @@ def test_chain_variables_skips_missing_sources():
     assert chained == {}
 
 
+def test_chain_variables_bounds_total_chained_bytes(monkeypatch, tmp_path):
+    """Large history is head-bounded while every source stays identifiable."""
+    mod = load_runner()
+    monkeypatch.setattr(mod.batch_config, "EVIDENCE_MAX_BYTES", 4096)
+    monkeypatch.setattr(mod.batch_config, "PROMPT_MAX_BYTES", 122880)
+    prior = {f"{index:02d}": f"stage-{index}:" + "x" * 40000
+             for index in range(9)}
+    variables = {"ALL_PRIOR_FINDINGS_SUMMARY": "(paste prior findings)"}
+    defaults = dict(variables)
+    value = mod.chain_variables(
+        prior, "09", variables, defaults,
+        paths={stage: tmp_path / f"stage-{stage}.out.md" for stage in prior},
+    )["ALL_PRIOR_FINDINGS_SUMMARY"]
+
+    source_parts = re.findall(
+        r"--- Stage [0-9]{2} output ---\n(.*?)(?=\n\[stage [0-9]{2} output truncated:"
+        r"|\n\n--- Stage [0-9]{2} output ---|\n\n<chained-sources|$)",
+        value, re.DOTALL,
+    )
+    assert sum(len(part.encode("utf-8")) for part in source_parts) <= 4096
+    assert value.count("--- Stage ") == 9
+    assert "truncated" in value
+    assert "full output:" in value
+    assert "stage-0:" + "x" * 100 in value
+
+
+def test_chained_omission_marker_when_budget_below_source_count(monkeypatch):
+    mod = load_runner()
+    monkeypatch.setattr(mod.batch_config, "EVIDENCE_MAX_BYTES", 3)
+    monkeypatch.setattr(mod.batch_config, "PROMPT_MAX_BYTES", 122880)
+    prior = {f"{index:02d}": "x" * 40 for index in range(9)}
+    variables = {"ALL_PRIOR_FINDINGS_SUMMARY": "(paste prior findings)"}
+    value = mod.chain_variables(prior, "09", variables, dict(variables))[
+        "ALL_PRIOR_FINDINGS_SUMMARY"]
+    assert value.count("--- Stage ") == 3
+    assert '<chained-sources-omitted count="6" />' in value
+
+
+def test_all_bounds_chained_outputs_before_prompt_gate(tmp_path):
+    """A realistic ten-stage run keeps decision prompts below argv limits."""
+    agent = tmp_path / "large-review-agent.sh"
+    agent.write_text(
+        "#!/bin/sh\n"
+        "stage=$(printf '%s' \"$2\" | sed -n 's/^# Stage \\([0-9][0-9]\\):.*/\\1/p' | head -n 1)\n"
+        "printf '%s' \"$2\" > \"$PROMPT_DIR/prompt-stage-${stage}.txt\"\n"
+        f"{sys.executable} -c 'import sys; sys.stdout.write(\"x\" * 30000)'\n",
+        encoding="utf-8",
+    )
+    agent.chmod(0o755)
+    ctx = tmp_path / "ctx.yaml"
+    ctx.write_text("project: Test\nsubsystem: Large chain\n", encoding="utf-8")
+    out_dir = tmp_path / "reviews"
+    env = os.environ.copy()
+    env["PROMPT_DIR"] = str(out_dir)
+    result = subprocess.run(
+        [sys.executable, str(RUN_REVIEW), "--all", "--context", str(ctx),
+         "--agent-bin", str(agent), "--output-dir", str(out_dir),
+         "--repo", str(tmp_path)],
+        capture_output=True, text=True, timeout=120, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    for stage in ("06", "07", "09"):
+        prompt = (out_dir / f"prompt-stage-{stage}.txt").read_bytes()
+        assert len(prompt) <= mod_prompt_limit()
+        assert b"truncated" in prompt
+        assert (out_dir / f"stage-{stage}.out.md").exists()
+
+
+def mod_prompt_limit():
+    """Read the same configured limit used by the subprocess runner."""
+    mod = load_runner()
+    return mod.batch_config.PROMPT_MAX_BYTES
+
+
 def test_context_to_vars_neutral_defaults():
     """Omitted storage/team/sprint fields must not fabricate project facts."""
     mod = load_runner()
@@ -124,6 +200,19 @@ def test_run_stage_rejects_provider_error_output(tmp_path):
     rc = mod.run_stage("00", "PROMPT BODY", args)
     assert rc == 1
     assert not (tmp_path / "stage-00.out.md").exists()
+
+
+def test_review_runner_uses_shared_agent_error_policy(monkeypatch):
+    """Review runs honor the same per-agent signatures as pbatch tasks."""
+    import re
+
+    mod = load_runner()
+    monkeypatch.setattr(
+        mod.batch_config, "agent_error_patterns",
+        lambda name="": (re.compile(r"provider_down"),),
+    )
+    assert mod.agent_failure_reason(0, "provider_down", "custom-agent")
+    assert not mod.agent_failure_reason(0, "rate_limit_error", "custom-agent")
 
 
 def test_run_stage_rejects_quota_output(tmp_path):

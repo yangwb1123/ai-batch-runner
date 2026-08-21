@@ -1,0 +1,170 @@
+# Evolution Patterns Registry — 实战规律注册表（第四域）
+#
+# 归纳出处：snaplink-console（契约驱动高风险控制台）与 iris-ui（四框架
+# 平台库）两个真实项目用本工具跑出来的实战规律（见各条 samples）。
+# 每条规律 = 信号 → 动作 → 门禁；由 pbatch/evolution.py 按项目形态
+# （classify_project_shape）与任务场景路由，invariant 硬执行、
+# contract/policy 默认强制（正式豁免流程可豁免）、suggestion 只注入不拦截。
+#
+# 字段（rule_registry_helpers.py 校验）：
+#   level:            invariant（宪法层，不可跳过）/ contract / policy /
+#                     heuristic / suggestion（建议，只注入）
+#   scope:            适用项目形态（contract-driven / platform /
+#                     product-facing / any）；不匹配不加载
+#   counter_signals:  反例信号（探索期/原型/无契约…命中 → 自动降级为
+#                     suggestion 或跳过）——防止规律限制创新
+#   samples:          归纳出处（哪个实战项目验证过）
+#   confidence:       置信度 0-1（归纳强度，低置信度 → 默认只建议）
+
+scale:
+  demo: [小工具, 脚本, 内部, 临时, 原型, 探索, demo, 原型, utility, internal, prototype, spike]
+  production: [产品, 商业化, 开源, 上线, 对外, 发布, saas, 组件库, 平台, product,
+               commercial, open source, release, platform]
+
+signals:
+  contract_driven: [契约, 后端, openapi, 目录, 能力, 权限, 审计, 租户,
+                    contract, backend, openapi, capability, audit, tenant]
+  platform_product: [组件库, 多框架, 插件, 分发, 发布, 包, platform, sdk,
+                     plugin, package, release]
+  product_facing: [产品, 门户, 管理台, 控制台, 用户中心, 后台, 官网,
+                   product, portal, console, admin, dashboard, customer]
+  exploration: [探索, 原型, 调研, spike, explore, prototype, research, 创意, 想法]
+  prototype: [演示, 独立, 无后端, demo, standalone, no_backend, 静态, static]
+  quick: [一次, 临时, 快速, 一次性, quick, one_off, temporary]
+
+signal_weights:
+  contract_driven: 2.0
+  platform_product: 1.5
+  product_facing: 1.0
+  exploration: 2.0
+
+use_case_types: {}
+
+risk:
+  high: [支付, 审批, 资金, 撤销, 删除, 安全, 审计, 权限, 密钥, 秘密,
+         payment, approve, revoke, delete, security, audit, secret]
+
+rules:
+  baseline-first:
+    description: >-
+      产品基线先行（L1）：先立机器可核验的基线（产品架构/覆盖矩阵/契约
+      清单/roadmap），之后每个决策引用基线；缺基线时方向建议强制标
+      [PROPOSED]。snaplink-console 的 PRODUCT_ARCHITECTURE +
+      backend-contracts.json（漏编号测试即失败）证明了基线对后续所有
+      决策的锚定作用。
+    files: [evolution-specs/constitution-template.md]
+    min_tier: demo
+    level: suggestion
+    scope: any
+    counter_signals: [exploration]
+    samples: [snaplink-console, iris-ui]
+    confidence: 0.9
+  authority-layering:
+    description: >-
+      权威源分层（L2）：服务端/核心契约权威，前端/适配层绝不发明接口；
+      能力声明必须带契约出处。snaplink-console 拒绝"发明 BFF 接口"方向
+      （state.jsonl: no invented BFF）、iris-ui manifest 从各框架源码
+      原生提取（ADR-009 禁止抄兄弟适配器）都是本规律的实战证明。
+    files: [evolution-specs/anti-patterns.md]
+    min_tier: demo
+    level: contract
+    scope: contract_driven
+    counter_signals: [exploration, prototype]
+    samples: [snaplink-console, iris-ui]
+    confidence: 0.95
+  machine-gates:
+    description: >-
+      机器门禁 > 自觉（L3）：每个可机械化的声明都有确定性门禁兜底、
+      fail closed。iris-ui 9 个结构守卫（contract-coverage/source-hygiene
+      均负向测试过）证明门禁是防退化的唯一可靠手段。
+    files: [evolution-specs/anti-patterns.md]
+    min_tier: demo
+    level: invariant
+    scope: any
+    samples: [iris-ui]
+    confidence: 1.0
+  verify-by-doing:
+    description: >-
+      验证比分析产出高（L4）：真实跑一次（外部安装/行为契约/截图）比静态
+      审查抓到更多缺陷。iris-ui check-pack-install 首次运行即暴露 2 个
+      发布缺陷；行为契约 harness 3 次抓到真实 bug。方向建议默认挂验证
+      实验，而非纯静态分析。
+    files: [evolution-specs/verify-by-doing.md]
+    min_tier: standard
+    level: suggestion
+    scope: platform_product
+    counter_signals: [exploration, quick]
+    samples: [iris-ui]
+    confidence: 0.9
+  adversarial-gate:
+    description: >-
+      对抗+裁决门收敛（L5）：风险任务必经多角色对抗审查与 VERDICT 裁决，
+      被拒→结构化发现→修复→重审是正常迭代步。snaplink B6 的 95 个 run
+      中 GATE_REJECTED 后经 gate-fix 收敛即证明。
+    files: [evolution-specs/restraint.md]
+    min_tier: standard
+    level: contract
+    scope: any
+    risk: [high]
+    required_when_risk: true
+    samples: [snaplink-console]
+    confidence: 0.85
+  non-goal-restraint:
+    description: >-
+      克制与显式不做（L6）：项目"明确不做"清单是硬边界，方向撞线 fail
+      closed 拒绝；维护者未选择的方向不自动开工。iris-ui ROADMAP 明确
+      不做（QRCode/发布/v3 架构）与 TODO"已实现不要再报为缺口"证明
+      克制清单防重复劳动与范围蔓延。
+    files: [evolution-specs/restraint.md]
+    min_tier: demo
+    level: invariant
+    scope: any
+    samples: [iris-ui]
+    confidence: 1.0
+  evidence-discipline:
+    description: >-
+      证据纪律（L7）：[PROPOSED] 不冒充 [VERIFIED]；未验证数字不进状态
+      声明；claims without repository evidence must be identified as
+      proposed。snaplink 全程 [PROPOSED]/[RESOLVED] 标注、iris-ui
+      "未验证的数字不进入状态声明"都是本规律的直接执行。
+    files: [evolution-specs/anti-patterns.md]
+    min_tier: demo
+    level: invariant
+    scope: any
+    samples: [snaplink-console, iris-ui]
+    confidence: 1.0
+  pipeline-shape-by-risk:
+    description: >-
+      风险分级决定路线（L8）：管线形状由风险等级×产品化级别×变更预算
+      选择——白名单管线（UI 打磨）/ 对抗管线（高风险）/ 授权门管线
+      （发布）。snaplink login-header 白名单 vs B6 对抗 vs iris-ui
+      release 授权门三案例即证明。
+    files: [evolution-specs/constitution-template.md]
+    min_tier: standard
+    level: suggestion
+    scope: any
+    samples: [snaplink-console, iris-ui]
+    confidence: 0.8
+  change-budget:
+    description: >-
+      变更预算与可回滚（L9）：迭代 ≤5 文件/≤300 行（可配置）、文件白名单、
+      无 drive-by 重构、可回滚。iris-ui AUTONOMOUS ≤5 files/≤300 lines
+      （change-budget 机器报告）与 snaplink 登录头 9 文件白名单即证明。
+    files: [evolution-specs/restraint.md]
+    min_tier: standard
+    level: policy
+    scope: any
+    suppress_on: [demo]
+    samples: [iris-ui, snaplink-console]
+    confidence: 0.85
+  decision-memory:
+    description: >-
+      决策记忆（L10）：决策日志追加式且含被否定方案与理由（ADR 格式）。
+      iris-ui 9 条 ADR 每条带"决策/原因/影响/替代方案（含被拒理由）"
+      即证明；决策缓存查询（adr find）防重复决策。
+    files: [evolution-specs/constitution-template.md]
+    min_tier: demo
+    level: contract
+    scope: any
+    samples: [iris-ui]
+    confidence: 0.9

@@ -78,3 +78,8 @@ def radius_family(path: str = "") -> set[int]:
 def spacing_tokens(path: str = "") -> set[int]:
     """间距 token 集（tokens.json spacing.*，如 {0, 4, 8, 12, ..., 64}）。"""
     return _int_set(load_tokens(path), "spacing")
+
+
+def typography_tokens(path: str = "") -> set[int]:
+    """字体字号 token 集（tokens.json typography.* 的 px 部分）。"""
+    return _int_set(load_tokens(path), "typography")

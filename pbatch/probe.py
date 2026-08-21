@@ -86,6 +86,7 @@ def probe_report(text: str, code_dir: str = "") -> dict:
         "estimated_agents": len(actors),
         "estimated_paths": max(1, len(directions)),
         "estimates": _estimate(level, multiplier),
+        "probe_value": _probe_value_block(profile, unknowns, code_dir),
         "confidence": {"L0": 0.85, "L1": 0.7, "L2": 0.55, "L3": 0.45}[level],
     }
 
@@ -104,6 +105,20 @@ def _budget_check(report: dict, budget_tokens: int, budget_minutes: int) -> dict
     return {"status": "infeasible_under_budget",
             "minimum_required": minimum, "current_limit": limits,
             "violations": violations, "cannot_remove": CANNOT_REMOVE}
+
+
+def _probe_value_block(profile: dict, unknowns: list, code_dir: str) -> dict:
+    """Build the bounded ProbeValue inputs and decision."""
+    inputs = {
+        "impact_of_unknown": max(profile["profile"].get("uncertainty", 0),
+                                  min(1.0, len(unknowns) / 3)),
+        "expected_uncertainty_reduction": min(1.0, 0.25 + 0.15 * len(unknowns)),
+        "probe_risk": round(profile["profile"].get("risk", 0) * 0.20, 3),
+        "probe_effort": 0.10 if code_dir else 0.05,
+    }
+    from .formulas import probe_value
+    score = probe_value(**inputs)
+    return {"score": score, "inputs": inputs, "worth_probing": score > 0}
 
 
 def probe_main(argv: Optional[list] = None) -> int:

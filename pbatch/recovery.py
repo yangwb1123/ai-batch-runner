@@ -17,7 +17,23 @@ import time
 from pathlib import Path
 from typing import Optional
 
-BUDGET_FILE = Path(".pi-batch") / "error_budget.jsonl"
+def budget_file(cwd: str = "") -> Path:
+    """错误预算文件（data_dir 感知）。"""
+    from .config import data_dir
+    return data_dir(cwd) / "error_budget.jsonl"
+
+
+_LEGACY_BUDGET_FILE = Path(".pi-batch") / "error_budget.jsonl"
+BUDGET_FILE = _LEGACY_BUDGET_FILE  # 兼容旧引用
+
+
+def _effective_budget_file(cwd: str = "") -> Path:
+    """Resolve the data_dir-backed budget ledger with legacy override support."""
+    from .config import data_dir
+    current = Path(BUDGET_FILE)
+    if current != _LEGACY_BUDGET_FILE:
+        return current
+    return data_dir(cwd) / "error_budget.jsonl"
 
 
 def recovery_decision(rollback_cost: float, forward_fix_cost: float,
@@ -41,7 +57,9 @@ def recovery_decision(rollback_cost: float, forward_fix_cost: float,
 
 
 def consume_budget(reason: str, cost: float = 1.0,
-                   path: Path = BUDGET_FILE) -> dict:
+                   path: Optional[Path] = None) -> dict:
+    if path is None:
+        path = _effective_budget_file()
     """记录一次治理预算消耗（追加式账本）。"""
     record = {"reason": " ".join(reason.split())[:200], "cost": float(cost),
               "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
@@ -51,8 +69,9 @@ def consume_budget(reason: str, cost: float = 1.0,
     return record
 
 
-def budget_status(allowance: float, path: Path = BUDGET_FILE) -> dict:
+def budget_status(allowance: float, path: Optional[Path] = None) -> dict:
     """错误预算状态：consumed / remaining / exhausted（有界读取）。"""
+    path = Path(path) if path is not None else _effective_budget_file()
     consumed = 0.0
     records = []
     if path.exists():

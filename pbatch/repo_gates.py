@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from .config import _resolve_validator_specs, log
+from .config import (_resolve_validator_specs, log, validator_applies)
 from .cmd_expand import expand_cmd
 from .runner import _json_status, judge_verdict, run_argv, run_validation
 
@@ -149,7 +149,7 @@ def commit_stage_outputs(stage, outputs: list, dirty_baseline=None) -> bool:
     message = stage.commit_message or (
         "[pi-batch] Stage: %s - %d tasks completed" % (stage.name, len(outputs)))
     commit = run_argv(
-        ["git", "commit", "--only", "-m", message, "--", *paths], wd, timeout=10)
+        ["git", "commit", "--only", "-m", message, "--", *paths], wd, timeout=900)
     if not commit.ok:
         return _report_commit_failure(
             commit, paths, untracked, wd, dirty_baseline is not None)
@@ -169,6 +169,7 @@ def run_stage_repo_validators(stage, results: list, outputs: list,
                       for task in stage.tasks if isinstance(task, dict))
     configured.extend(r.task.validate for r in results if r.task.validate)
     specs = _collect_repo_specs(configured)
+    specs = _applicable_repo_specs(specs, stage.cwd or os.getcwd(), stage.name)
     if not specs:
         return True, ""
     wd = stage.cwd or os.getcwd()
@@ -188,10 +189,23 @@ def _collect_repo_specs(raw_specs: list) -> list:
     seen = set()
     for raw in raw_specs:
         for spec in _resolve_validator_specs(raw or ""):
-            if spec.scope == "repo" and spec.cmd not in seen:
-                seen.add(spec.cmd)
+            key = (spec.cmd, spec.requires_any)
+            if spec.scope == "repo" and key not in seen:
+                seen.add(key)
                 specs.append(spec)
     return specs
+
+
+def _applicable_repo_specs(specs: list, wd: str, label: str) -> list:
+    """Keep applicable repo gates and log explicit not-applicable skips."""
+    applicable = []
+    for spec in specs:
+        if validator_applies(spec, wd):
+            applicable.append(spec)
+            continue
+        log.info("REPO VALIDATE SKIP (stage '%s'): %s not applicable; "
+                 "requires_any=%s", label, spec.cmd, ", ".join(spec.requires_any))
+    return applicable
 
 
 def _run_stage_repo_spec(spec, cmd: str, wd: str, stage_name: str) -> tuple[bool, str]:

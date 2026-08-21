@@ -136,6 +136,17 @@ def test_spacing_tokens_match_tokens_json():
     assert tokens_set == doc_set, "spacing.md §4 与 tokens.json 漂移"
 
 
+def test_typography_tokens_match_tokens_json():
+    """Typography gate derives exactly the px portion of tokens.json."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "ui_spec_typography", ROOT / "scripts" / "check-ui-spec.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.TYPOGRAPHY_TOKENS == ui_tokens.typography_tokens()
+    assert module.TYPOGRAPHY_TOKENS == {12, 14, 16, 20, 24, 32}
+
+
 def test_report_output_flag():
     """B1：-o 写 JSON 报告（与 --json 同格式）；clean 与 violation 都写。"""
     with tempfile.TemporaryDirectory() as td:

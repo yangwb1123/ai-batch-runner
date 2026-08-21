@@ -78,6 +78,109 @@ def test_world_cli_bind_drift(tmp_path, capsys):
     assert data["drift"]["verdict"] == "proceed"
 
 
+def test_world_store_monotonic_versions_and_plan_binding(tmp_path):
+    store = world.WorldStore(cwd=str(tmp_path))
+    first = store.record_snapshot({"version": "content-v1",
+                                   "repository_head": "head-a",
+                                   "dirty_files": 0,
+                                   "as_of": "first"})
+    assert first["world_version"] == 1
+    same = store.record_snapshot({"version": "content-v1",
+                                  "repository_head": "head-a",
+                                  "dirty_files": 0,
+                                  "as_of": "later"})
+    assert same["world_version"] == 1  # content-idempotent, time excluded
+    second = store.record_snapshot({"version": "content-v2",
+                                    "repository_head": "head-b",
+                                    "dirty_files": 1,
+                                    "as_of": "second"})
+    binding = store.bind_plan("checkout-plan")
+
+    restored = world.WorldStore(cwd=str(tmp_path))
+    state = restored.load()
+    assert second["world_version"] == 2
+    assert state["event_sequence"] == 3  # two observations + one binding
+    assert state["world_sequence"] == 2
+    assert state["plans"]["checkout-plan"]["world_version"] == 2
+    assert binding["plan_bound_world_version"] == 2
+
+
+def test_world_store_recovers_wal_after_snapshot_write_failure(tmp_path,
+                                                               monkeypatch):
+    store = world.WorldStore(cwd=str(tmp_path))
+    store.record_snapshot({"version": "v1", "repository_head": "a",
+                           "dirty_files": 0, "as_of": "one"})
+    original_atomic = world._atomic_json
+
+    def fail_snapshot(*args, **kwargs):
+        raise world.WorldStoreError("simulated snapshot failure")
+
+    monkeypatch.setattr(world, "_atomic_json", fail_snapshot)
+    with pytest.raises(world.WorldStoreError):
+        store.record_snapshot({"version": "v2", "repository_head": "b",
+                               "dirty_files": 1, "as_of": "two"})
+    monkeypatch.setattr(world, "_atomic_json", original_atomic)
+
+    recovered = world.WorldStore(cwd=str(tmp_path)).current()
+    assert recovered["version"] == "v2"
+    assert recovered["world_version"] == 2
+
+
+def test_world_store_ignores_crash_truncated_wal_tail(tmp_path):
+    store = world.WorldStore(cwd=str(tmp_path))
+    store.record_snapshot({"version": "v1", "repository_head": "a",
+                           "dirty_files": 0, "as_of": "one"})
+    with store.wal_path.open("a", encoding="utf-8") as handle:
+        handle.write('{"schema_version": 1, "event_sequence": 2')
+    assert world.WorldStore(cwd=str(tmp_path)).current()["version"] == "v1"
+
+
+def test_world_store_rejects_wal_sequence_gap(tmp_path):
+    store = world.WorldStore(cwd=str(tmp_path))
+    store.wal_path.parent.mkdir(parents=True, exist_ok=True)
+    store.wal_path.write_text(json.dumps({
+        "schema_version": world.WORLD_SCHEMA_VERSION,
+        "event_sequence": 2,
+        "world_sequence": 1,
+        "kind": "world_snapshot",
+        "snapshot": {"version": "v1"},
+    }) + "\n", encoding="utf-8")
+    with pytest.raises(world.WorldStoreError, match="gap or disorder"):
+        store.load()
+
+
+def test_world_reconcile_uses_external_data_dir(tmp_path, monkeypatch):
+    external = tmp_path / "runtime-state"
+    monkeypatch.setenv("PBATCH_DATA_DIR", str(external))
+    result = world.WorldStore(cwd=str(tmp_path)).reconcile()
+    assert result["changed"] is True
+    assert result["snapshot"]["world_version"] == 1
+    assert (external / "world" / "world.wal.jsonl").is_file()
+    assert (external / "world" / "world.snapshot.json").is_file()
+
+
+def test_world_reconcile_is_idempotent_across_observation_time(tmp_path,
+                                                               monkeypatch):
+    """只有观测时间跨秒变化不应生成新世界版本或 WAL 事件。"""
+    clock = {"now": "2026-08-20T14:00:00"}
+    monkeypatch.setattr(world.time, "strftime",
+                        lambda *_args, **_kwargs: clock["now"])
+    store = world.WorldStore(cwd=str(tmp_path))
+
+    first = store.reconcile()
+    clock["now"] = "2026-08-20T14:00:01"
+    observed_later = world.capture_world_snapshot(str(tmp_path))
+    second = store.reconcile()
+
+    assert observed_later["as_of"] != first["snapshot"]["as_of"]
+    assert observed_later["version"] == first["snapshot"]["version"]
+    assert second["changed"] is False
+    assert second["snapshot"]["world_version"] == 1
+    state = store.load()
+    assert state["world_sequence"] == 1
+    assert state["event_sequence"] == 1
+
+
 # ---------------------------------------------------------------------------
 # capsule：DecisionCapsule
 # ---------------------------------------------------------------------------

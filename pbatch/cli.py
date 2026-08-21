@@ -32,6 +32,7 @@ from .pipeline import (_append_decision_log, _archive_outputs, load_pipeline,
 from .runner import (judge_verdict, kill_active_procs, print_summary, run_argv,
                      run_parallel, run_serial, run_validation)
 from .text_io import read_text_bounded
+from .version import VERSION
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -39,6 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=_parser_epilog(),
     )
+    p.add_argument("--version", action="version", version=f"pi-batch {VERSION}")
     _add_source_args(p)
     _add_runtime_args(p)
     _add_batch_args(p)
@@ -116,6 +118,10 @@ def _add_logging_args(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "-v", "--verbose", action="count", default=0,
         help="渐进式输出：默认常用（INFO）；-v 详细（DEBUG）")
+    p.add_argument("--data-dir", default="",
+                   help="运行时数据目录（记忆/被拒产物/worktrees/预算；"
+                        "默认项目内 .pi-batch/，可移到项目外如 ~/data/pbatch/"
+                        "<project>；env PBATCH_DATA_DIR 同效）")
     p.add_argument("--log-file", default="",
                    help="Append run log to FILE for 24x7 supervision (rotated)")
     p.add_argument("--log-max-bytes", type=int, default=config.LOG_MAX_BYTES,
@@ -201,6 +207,8 @@ def main() -> None:
     args = parser.parse_args()
     _validate_runtime_values(parser, args)
     _apply_verbosity(args.verbose)
+    if args.data_dir:
+        config.set_data_dir_override(args.data_dir)
     _wire_agent(args)
     _preflight_agent(parser, args)
     if args.session_max_bytes != config.SESSION_MAX_BYTES:
@@ -324,6 +332,7 @@ def _run_configured(args, lock_path) -> None:
 
 
 _SUBCOMMANDS: dict[str, str] = {
+    "config": "config_cli:config_main",
     "memory": "memory:main",
     "classify": "classifier:classify_main",
     "rules": "rule_cli:rules_main",
@@ -348,8 +357,10 @@ _SUBCOMMANDS: dict[str, str] = {
     "metrics": "metrics:metrics_main",
     "diversity": "diversity:diversity_main",
     "atomize": "atomize:atomize_main",
+    "transaction": "transaction:transaction_main",
     "causal": "causality:causality_main",
     "temporal": "temporal:temporal_main",
+    "formulas": "formulas:formulas_main",
     "pareto": "pareto:pareto_main",
     "recovery": "recovery:recovery_main",
     "budget": "recovery:budget_main",
@@ -379,6 +390,8 @@ _SUBCOMMANDS: dict[str, str] = {
     "approve": "fabric_server_cli:approve_main",
     "runners": "fabric_server_cli:runners_main",
     "runner": "fabric_runner:runner_main",
+    "evolution": "evolution:evolution_main",
+    "isolate": "isolate:isolate_main",
 }
 
 

@@ -105,9 +105,10 @@ def test_health_main_json_shape(capsys, monkeypatch):
     monkeypatch.setattr(health, "_count_tests", lambda: 1)
     assert health.health_main(["--json"]) == 0
     report = json.loads(capsys.readouterr().out)
-    assert sorted(report) == ["checkers", "governance", "healthy",
+    assert sorted(report) == ["assets", "checkers", "governance", "healthy",
                               "quality_violations", "score", "specs",
                               "tests"]
     assert isinstance(report["checkers"]["backendquality"], int)
+    assert report["assets"]["healthy"] is True
     assert report["healthy"] is True
     assert report["quality_violations"] == 0

@@ -168,14 +168,27 @@ def _client(control_plane, name):
 
 def test_checkpoint_upload_download_roundtrip(control_plane):
     client = _client(control_plane, "node-cp")
+    task = client.submit_task(["echo", "checkpoint"],
+                              mobility="checkpointable")["task"]
+    lease = task["lease"]
     blob = base64.b64encode(b"progress=42").decode("ascii")
-    uploaded = client.checkpoint_upload("t-1", blob)
+    uploaded = client.checkpoint_upload(task["task_id"], blob,
+                                        lease["lease_id"],
+                                        lease["fencing_token"])
     assert uploaded["ok"] is True
     assert uploaded["digest"]
-    downloaded = client.checkpoint_download("t-1")
+    downloaded = client.checkpoint_download(task["task_id"],
+                                            lease["lease_id"],
+                                            lease["fencing_token"])
     assert downloaded["has_checkpoint"] is True
     assert base64.b64decode(downloaded["blob_b64"]) == b"progress=42"
     assert client.checkpoint_download("t-none")["has_checkpoint"] is False
+    outsider = _client(control_plane, "node-cp-outsider")
+    denied = outsider.checkpoint_download(task["task_id"],
+                                          lease["lease_id"],
+                                          lease["fencing_token"])
+    assert denied["has_checkpoint"] is False
+    assert "lease" in denied["error"]
 
 
 def test_checkpoint_submit_with_task(control_plane):

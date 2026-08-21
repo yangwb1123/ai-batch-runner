@@ -31,14 +31,11 @@ Regression discipline (from the design gate's binding conditions and reviews):
   sdist script are manual acceptance steps; the sdist assertions here are the
   automated proxy.
 
-Deferred surface (documented, owners recorded — design gate condition 5):
-pip installs still resolve out-of-package assets by design, deferred to
-follow-up campaign directions: `{tool_root}` validators + `rule_matcher`
-ui-specs/backend-specs registries + `examples/` default pipelines (owner:
-direction #2, CI packaging gate / support-matrix decision U1), version
-identity/tagging (direction #3), health probe for data-file presence (M3).
-This suite is the compensating control: any loader data file referenced via
-`with_name(...)` must ship, or the build-based tests fail closed.
+The full runtime asset surface is now declared as explicit setuptools
+``data-files``: `{tool_root}` validators, rule registries, default pipelines,
+role prompts, evals and governance specs are available after a wheel install.
+The suite remains the compensating control: a newly referenced or required
+asset must be added deliberately, or the build-based tests fail closed.
 """
 
 from __future__ import annotations
@@ -52,12 +49,27 @@ import zipfile
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PBATCH = REPO_ROOT / "pbatch"
 
 # The three data files that must ship inside the pbatch package.
 EXPECTED_DATA_FILES = ("role_keywords.yaml", "task_keywords.yaml", "README.md")
+EXPECTED_RUNTIME_ASSETS = (
+    "pi-batch.yaml", "quality.py", "scripts/check-ui-spec.py",
+    "scripts/check-frontend-quality.py", "scripts/check-evidence.py",
+    "scripts/check-completion-report.py", "ui-specs/rules.yaml",
+    "backend-specs/rules.yaml", "product-specs/rules.yaml",
+    "evolution-specs/rules.yaml", "examples/frontend-implementation-pipeline.yaml",
+    "examples/sdlc-inputs/oidc-logout-frontchannel.md",
+    "prompts/architect.md", "agent-engineering/requirement.yaml",
+)
+_RUNTIME_DIRS = (
+    "scripts", "ui-specs", "backend-specs", "product-specs",
+    "evolution-specs", "examples", "evals", "prompts", "pipelines",
+    "agent-engineering",
+)
 
 _WITH_NAME_RE = re.compile(r'with_name\(\s*"([^"]+\.(?:yaml|md))"\s*\)')
 _BUILD_SDIST_SCRIPT = (
@@ -68,6 +80,34 @@ _BUILD_WHEEL_SCRIPT = (
     "from setuptools import build_meta; import sys; "
     "print(build_meta.build_wheel(sys.argv[1]))"
 )
+_INSTALLED_RUNTIME_PROBE = r"""
+from pathlib import Path
+import subprocess
+
+from pbatch import assets, config, health
+from pbatch.cmd_expand import expand_cmd
+
+asset_root = Path(assets.TOOL_ROOT)
+assert asset_root.as_posix().endswith("share/ai-batch-runner"), asset_root
+assert health._asset_status()["healthy"]
+config_text = (asset_root / "pi-batch.yaml").read_text(encoding="utf-8")
+assert "/home/u1" not in config_text
+assert (asset_root / "examples/sdlc-inputs/oidc-logout-frontchannel.md").is_file()
+assert not (Path.cwd() / "scripts").exists()
+
+artifacts = {
+    "evidence": Path("evidence.md"),
+    "uispacing": Path("clean.tsx"),
+    "completion_go": Path("completion.md"),
+}
+for name, artifact in artifacts.items():
+    entry = config.VALIDATORS[name]
+    command = entry if isinstance(entry, str) else entry["cmd"]
+    command = expand_cmd(command, artifact.resolve(), str(Path.cwd().resolve()))
+    assert str(asset_root / "scripts") in command, (name, command)
+    result = subprocess.run(command, shell=True, capture_output=True, text=True)
+    assert result.returncode == 0, (name, command, result.stdout, result.stderr)
+"""
 
 
 def _loader_data_refs() -> set[str]:
@@ -88,6 +128,13 @@ def _minimal_repo_copy(tmp_path: Path) -> Path:
         PBATCH, copy / "pbatch",
         ignore=shutil.ignore_patterns("__pycache__"),
     )
+    for relative in _RUNTIME_DIRS:
+        shutil.copytree(
+            REPO_ROOT / relative, copy / relative,
+            ignore=shutil.ignore_patterns("__pycache__"),
+        )
+    shutil.copy(REPO_ROOT / "pi-batch.yaml", copy / "pi-batch.yaml")
+    shutil.copy(REPO_ROOT / "quality.py", copy / "quality.py")
     return copy
 
 
@@ -173,6 +220,29 @@ def test_sdist_isolated_from_live_tree_state(sdist_file: Path) -> None:
     )
 
 
+def test_sdist_ships_runtime_assets(sdist_file: Path) -> None:
+    """The install-outside-checkout contract includes tool-root assets."""
+    names = set(_tar_names(sdist_file))
+    prefix = _sdist_prefix(sdist_file)
+    for relative in EXPECTED_RUNTIME_ASSETS:
+        assert f"{prefix}{relative}" in names, (
+            f"runtime asset missing from sdist: {relative}"
+        )
+
+
+def test_distributed_validator_commands_are_tool_rooted() -> None:
+    """Bundled checker entrypoints must not depend on the target checkout."""
+    config_path = REPO_ROOT / "pi-batch.yaml"
+    config_text = config_path.read_text(encoding="utf-8")
+    assert "/home/u1" not in config_text
+    registry = yaml.safe_load(config_text)["validators"]
+    for name, entry in registry.items():
+        command = entry if isinstance(entry, str) else entry.get("cmd", "")
+        if "scripts/" in command:
+            assert "{tool_root}/scripts/" in command, (name, command)
+            assert "{cwd}/scripts/" not in command, (name, command)
+
+
 def test_wrong_package_data_key_fails_closed(tmp_path: Path) -> None:
     """QA-F2: underscore egg-info name (ai_batch_runner) is a plausible typo.
 
@@ -221,13 +291,8 @@ def test_package_data_declaration_covers_loader_refs() -> None:
 
 
 def test_wheel_ships_data_files(tmp_path: Path) -> None:
-    """AC-1 (wheel half): in-process build, skipped when `wheel` is absent.
-
-    The `wheel` package is not installed in this dev environment; `make ci`
-    runs the sdist proxy instead (same manifest machinery). Adding `wheel` to
-    the dev extras is the CI-visibility follow-up (campaign direction #2).
-    """
-    pytest.importorskip("wheel")
+    """Build, inspect and install a wheel in an isolated target directory."""
+    import wheel  # noqa: F401  # dev extra makes this gate non-skippable
     copy = _minimal_repo_copy(tmp_path)
     out = copy / "dist"
     out.mkdir()
@@ -243,3 +308,47 @@ def test_wheel_ships_data_files(tmp_path: Path) -> None:
             assert f"pbatch/{name}" in names, (
                 f"{name} missing from wheel {wheel_name}"
             )
+        runtime_prefixes = [
+            name.split(".data/data/", 1)[0] + ".data/data/"
+            for name in names
+            if ".data/data/share/ai-batch-runner/" in name
+        ]
+        assert runtime_prefixes, "wheel has no installed runtime data-files"
+        runtime_prefix = runtime_prefixes[0]
+        for relative in EXPECTED_RUNTIME_ASSETS:
+            assert f"{runtime_prefix}share/ai-batch-runner/{relative}" in names, (
+                f"runtime asset missing from wheel: {relative}"
+            )
+
+    # Content-only checks are insufficient: verify the installed distribution
+    # can discover and execute its validators without PBATCH_TOOL_ROOT, a
+    # source checkout, or project-local copies of scripts/.
+    target = tmp_path / "installed"
+    installed = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--no-deps",
+         "--no-compile", "--target", str(target), str(out / wheel_name)],
+        capture_output=True, text=True,
+    )
+    assert installed.returncode == 0, installed.stderr
+    external = tmp_path / "external-project"
+    external.mkdir()
+    (external / "evidence.md").write_text(
+        "Status remains [PROPOSED] until verification.\n", encoding="utf-8")
+    (external / "clean.tsx").write_text(
+        "SizedBox(height: 24)\nstyle={classes.x}\n", encoding="utf-8")
+    (external / "completion.md").write_text(
+        "```yaml\ncompletion_report:\n  summary: packaged validator smoke\n"
+        "  changed_files: [pi-batch.yaml]\n  commands_executed:\n"
+        "    - command: packaging-smoke\n      result: passed\n"
+        "  residual_risks: []\n  assumptions: []\n```\n",
+        encoding="utf-8",
+    )
+    probe_env = {**__import__("os").environ, "PYTHONPATH": str(target)}
+    probe_env.pop("PBATCH_TOOL_ROOT", None)
+    probe_env.pop("PBATCH_SCRIPT_DIR", None)
+    probe = subprocess.run(
+        [sys.executable, "-c", _INSTALLED_RUNTIME_PROBE],
+        cwd=external, env=probe_env,
+        capture_output=True, text=True,
+    )
+    assert probe.returncode == 0, probe.stderr + probe.stdout

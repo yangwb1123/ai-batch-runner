@@ -64,6 +64,10 @@ _ASSERTION_KEYS = frozenset({
     "tier", "risk", "page_types", "has_rule", "lacks_rule",
     "prescription_has_rule", "prescription_lacks_rule",
     "product_level", "workflow_level", "scale",
+    # 第四域（evolution-specs/rules.yaml，pbatch/evolution.py）：
+    "evolution_shape", "evolution_rule_level",
+    "evolution_has_rule", "evolution_lacks_rule",
+    "evolution_route",
 })
 _CASE_KEYS = frozenset({"id", "name", "input", "assert", "expect"})
 _EXPECT_ALIASES = {"includes": "has_rule", "excludes": "lacks_rule"}
@@ -207,6 +211,20 @@ def _assert_value(key: str, input_text: str) -> object:
     if key == "scale":
         from .assessor import scale_signal
         return scale_signal(input_text)
+    if key in ("evolution_shape", "evolution_rule_level",
+               "evolution_has_rule", "evolution_lacks_rule",
+               "evolution_route"):
+        from .evolution import applicable_rules, route_pipeline
+        if key == "evolution_route":
+            return route_pipeline(input_text)["route"]
+        manifest = applicable_rules(input_text)
+        if key == "evolution_shape":
+            return manifest["shape"]
+        if key == "evolution_rule_level":
+            # {rule_id: level} 映射（含降级后的级别）
+            return {item["id"]: item["level"]
+                    for item in manifest["rules"]}
+        return {item["id"] for item in manifest["rules"]}
     raise ValueError(f"unknown eval assertion key: {key}")
 
 
@@ -255,18 +273,34 @@ def run_suite(suite: dict, only_id: str = "") -> list:
     return results
 
 
+def _evolution_level_failure(key: str, expected_list: list, actual: dict) -> str:
+    """evolution_rule_level：expected = [[rule_id, level], ...]，断言
+    该规律生效级别（含降级），level 可为 '<absent>'。"""
+    actual_map = actual if isinstance(actual, dict) else {}
+    for rule_id, level in expected_list:
+        got = actual_map.get(rule_id, "<absent>")
+        if got != level:
+            return (f"evolution_rule_level: {rule_id} expected level "
+                    f"{level!r}, got {got!r}")
+    return ""
+
+
 def _assertion_failure(key: str, expected, input_text: str) -> str:
     try:
         actual = _assert_value(key, input_text)
     except ValueError as exc:
         return f"{key}: {exc}"
     expected_list = expected if isinstance(expected, list) else [expected]
-    if key in ("has_rule", "prescription_has_rule"):
+    if key in ("has_rule", "prescription_has_rule",
+               "evolution_has_rule"):
         missing = [item for item in expected_list if item not in actual]
         return f"{key} missing {missing} (got {sorted(actual)})" if missing else ""
-    if key in ("lacks_rule", "prescription_lacks_rule"):
+    if key in ("lacks_rule", "prescription_lacks_rule",
+               "evolution_lacks_rule"):
         present = [item for item in expected_list if item in actual]
         return f"{key} present {present} (got {sorted(actual)})" if present else ""
+    if key == "evolution_rule_level":
+        return _evolution_level_failure(key, expected_list, actual)
     if isinstance(actual, (list, set, tuple)):
         missing = [item for item in expected_list if item not in actual]
         return f"{key} missing {missing} (got {sorted(actual)})" if missing else ""

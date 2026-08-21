@@ -34,6 +34,7 @@ from .reuse import reuse_decision, write_sidecar
 from .runner import _save_validated, run_task
 from .memory import record_task
 from .text_io import read_text_bounded
+from .triage import is_retryable
 
 
 _DEFAULT_META_PROMPT = """Analyze the deliverables below and decide which expert review roles are still needed to harden them.
@@ -289,6 +290,10 @@ def _retry_failed_roles(stage: Stage, failed_results: list, role_outputs: list,
         task = result.task
         retry = result
         for attempt in range(1, retries + 1):
+            if not is_retryable(retry.reason):
+                log.warning("META retry skipped for '%s': permanent failure (%s)",
+                            task.output_path(), retry.reason or "no reason")
+                break
             log.info("META retry %d/%d role '%s' after %s", attempt,
                      retries, task.output_path(), retry.reason)
             retry = run_task(task, parallel=True, session_name=session_name)

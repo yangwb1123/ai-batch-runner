@@ -11,6 +11,7 @@ from pbatch.pipeline_status import PipelineStatus
 import argparse
 import logging
 import logging.handlers
+import os
 import signal
 import sys
 import time
@@ -36,6 +37,26 @@ from .registry import mark_running, unregister
 from .runner import kill_active_procs, run_argv
 from .text_io import read_text_bounded
 
+def _record_evolution_trajectory(context: "CampaignContext", outcomes: list) -> None:
+    """批次完成事件 → docs/evolution/state.jsonl（演化轨迹数据源）。
+
+    每个方向一次追加事件 {event: campaign_done, module, direction,
+    status}——后续 `evolution report`/轨迹分析按此重建项目演化路径
+    （跨批次的"为什么走这些路线"证据链）。追加式、单条有界。
+    """
+    from .evolution import _append_state
+    for outcome in outcomes:
+        try:
+            _append_state(context.root, {
+                "event": "campaign_done",
+                "module": getattr(outcome, "module", "") or "",
+                "direction": str(getattr(outcome, "direction", "") or "")[:120],
+                "status": str(getattr(outcome, "status", "")),
+            })
+        except OSError:
+            log.warning("evolution trajectory: cannot append state event")
+
+
 def run_campaign(context: CampaignContext) -> int:
     from .campaign import CampaignContext  # noqa: F401（类型仅注解，运行时无害）
     _start_heartbeat()
@@ -56,6 +77,7 @@ def run_campaign(context: CampaignContext) -> int:
     _preflight_validators(context)
     outcomes = _implement(context, selected)
     failures += sum(1 for outcome in outcomes if outcome.status != PipelineStatus.PASSED)
+    _record_evolution_trajectory(context, outcomes)
     _report_working_tree_residue(context)
     write_summary(context.store, context.settings.path(context.root, context.settings.summary_file),
                   context.settings.name)
@@ -184,6 +206,10 @@ def _agent_args(args: argparse.Namespace) -> list[str]:
                         ("--timeout", args.timeout)):
         if value:
             values.extend([flag, str(value)])
+    for flag, value in (("--rate-limit", getattr(args, "rate_limit", 0)),
+                        ("--rate-burst", getattr(args, "rate_burst", 0))):
+        if value and value > 0:
+            values.extend([flag, str(value)])
     return values
 
 def _event(context: CampaignContext, module: str, direction_id: str, direction: str,
@@ -225,7 +251,7 @@ def _print_plan(context: CampaignContext, modules: list[str]) -> None:
     print("Dry-run made no files or state changes.")
 
 def _wire_runtime(args: argparse.Namespace) -> None:
-    from . import metering
+    from . import metering, ratelimit
     config.AGENT_BIN = args.agent_bin
     config.MEMORY_MODE = args.memory_mode
     config.STREAM_OUTPUT = args.stream_output
@@ -233,7 +259,14 @@ def _wire_runtime(args: argparse.Namespace) -> None:
     metering.WEBHOOK_URL = args.webhook
     metering.BUDGET_MAX = args.budget_max
     metering.DAILY_BUDGET = args.daily_budget
-    metering._DAILY_STATE = args.daily_state or str(Path(".pi-batch") / "daily-budget.json")
+    metering._DAILY_STATE = args.daily_state or str(
+        config.data_dir() / "daily-budget.json")
+    shared_rate_file = str(config.data_dir() / "rate-limit.json")
+    os.environ.setdefault("PBATCH_RATE_LIMIT_FILE", shared_rate_file)
+    per_second = getattr(args, "rate_limit", 0) or config.RATE_LIMIT_PER_SECOND
+    burst = getattr(args, "rate_burst", 0) or config.RATE_LIMIT_BURST
+    ratelimit.configure(per_second, burst, config.RATE_LIMIT_PROVIDERS,
+                        os.environ["PBATCH_RATE_LIMIT_FILE"])
 
 def main(argv: list[str] | None = None) -> None:
     # 惰性导入 CLI 层（campaign.py 在底部 re-export main——避免模块级循环）
@@ -386,7 +419,7 @@ def _campaign_sigterm(signum, frame) -> None:
 
 def _snapshot_excludes(root: Path, settings: CampaignSettings,
                        args: argparse.Namespace) -> tuple[str, ...]:
-    values = [settings.output_dir, settings.worktree_root]
+    values = [settings.output_dir, str(settings.effective_worktree_root(root))]
     if args.log_file:
         log_path = Path(args.log_file)
         values.append(str(log_path if log_path.parent == Path(".") else log_path.parent))

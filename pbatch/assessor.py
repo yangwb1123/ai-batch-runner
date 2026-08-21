@@ -462,6 +462,8 @@ def assess_main(argv: list) -> None:
     from .profile import assumption_records, task_profile
     assessment["task_profile"] = task_profile(text, registry)
     assessment["assumptions"] = assumption_records(text)
+    from .evolution import attach_constitution, format_constitution_block
+    attach_constitution(assessment)
     if args.json:
         print(json.dumps(assessment, ensure_ascii=False, indent=2))
         return
@@ -470,3 +472,7 @@ def assess_main(argv: list) -> None:
         return
     print(format_assessment(assessment))
     print_profile_block(assessment)
+    constitution = format_constitution_block(assessment)
+    if constitution:
+        print()
+        print(constitution)

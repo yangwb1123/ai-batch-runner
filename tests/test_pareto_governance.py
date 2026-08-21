@@ -228,7 +228,7 @@ def test_checkpoint_digest_mismatch_refuses_restore(tmp_path, control_plane,
                               mobility="checkpointable",
                               checkpoint_remote="state.json")["task"]
 
-    def fake_download(task_id):
+    def fake_download(task_id, *args, **kwargs):
         return {"has_checkpoint": True,
                 "blob_b64": base64.b64encode(b"state").decode(),
                 "digest": "deadbeef" * 4,  # 错误 digest
@@ -251,8 +251,9 @@ def test_checkpoint_digest_match_restores(tmp_path, control_plane, monkeypatch):
     import hashlib
     digest = hashlib.sha256(blob.encode()).hexdigest()[:16]
     monkeypatch.setattr(client, "checkpoint_download",
-                        lambda tid: {"has_checkpoint": True, "blob_b64": blob,
-                                     "digest": digest, "size": 10})
+                        lambda tid, *args, **kwargs: {
+                            "has_checkpoint": True, "blob_b64": blob,
+                            "digest": digest, "size": 10})
     fabric_runner._restore_checkpoint(client, task)
     assert (workdir / "state.json").read_text() == "good-state"
 
@@ -334,6 +335,8 @@ def test_probe_report_deterministic():
     """ProbeReport：确定性输出 + 区间估计 + 置信度（AADM-R §5）。"""
     from pbatch import probe
     report = probe.probe_report("写一个订单创建接口，含支付审批，生产，go")
+    assert "probe_value" in report
+    assert set(report["probe_value"]) == {"score", "inputs", "worth_probing"}
     assert report["recommended_mode"] in ("L0", "L1", "L2", "L3")
     assert report["recommended_graph"] in ("chain", "dag", "and-or-dag")
     estimates = report["estimates"]

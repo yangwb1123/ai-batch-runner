@@ -56,7 +56,9 @@ sys.path.insert(0, str(_ROOT))
 os.environ.setdefault("PBATCH_SCRIPT_DIR", str(_ROOT))
 
 from pbatch import config as batch_config
+from pbatch.evidence import _fair_allowances
 from pbatch.runner import (_kill_group, _read_stream,
+                           agent_failure_reason as _batch_agent_failure_reason,
                            revalidate_existing as _revalidate_existing,
                            run_validation as _bounded_validation)
 from pbatch.text_io import read_text_bounded
@@ -370,23 +372,88 @@ CHAIN_SOURCES = {
 }
 
 
-def chain_variables(prior_outputs: dict, stage: str, variables: dict, schema_defaults: dict) -> dict:
+def _derive_chain_budget() -> int:
+    """Keep chained evidence below half of the configured prompt budget."""
+    evidence = max(0, batch_config.EVIDENCE_MAX_BYTES)
+    prompt = batch_config.PROMPT_MAX_BYTES
+    return evidence if prompt <= 0 else min(evidence, prompt // 2)
+
+
+# Exposed for operators/tests as the config-time default.  The function below
+# recalculates it so tests and embedded callers can safely override config.
+CHAIN_BUDGET = _derive_chain_budget()
+
+
+def _chain_truncation_marker(stage: str, shown: int, total: int,
+                             path: str = "") -> str:
+    suffix = f"; full output: {path}" if path else ""
+    return (f"[stage {stage} output truncated: showing {shown} of {total} "
+            f"bytes{suffix}]")
+
+
+def _chain_source_path(paths: Optional[dict], stage: str) -> str:
+    value = (paths or {}).get(stage)
+    if not value:
+        return ""
+    try:
+        return str(Path(value).resolve())
+    except (OSError, RuntimeError):
+        return str(value)
+
+
+def _render_chained_sources(source_ids: list[str], prior_outputs: dict,
+                            budget: int, paths: Optional[dict]) -> str:
+    """Render one variable with fair, byte-based head allowances."""
+    sources = [(source, str(prior_outputs[source]).encode("utf-8"))
+               for source in source_ids if prior_outputs.get(source)]
+    if not sources:
+        return ""
+    allowances = _fair_allowances([len(raw) for _, raw in sources], budget)
+    parts, omitted = [], 0
+    for (source, raw), allowance in zip(sources, allowances):
+        if allowance <= 0:
+            omitted += 1
+            continue
+        shown_raw = raw[:allowance]
+        shown = shown_raw.decode("utf-8", errors="ignore")
+        shown_bytes = len(shown.encode("utf-8"))
+        part = f"--- Stage {source} output ---\n{shown}"
+        if shown_bytes < len(raw):
+            part += "\n" + _chain_truncation_marker(
+                source, shown_bytes, len(raw), _chain_source_path(paths, source))
+        parts.append(part)
+    if omitted:
+        parts.append(f'<chained-sources-omitted count="{omitted}" />')
+    return "\n\n".join(parts)
+
+
+def chain_variables(prior_outputs: dict, stage: str, variables: dict,
+                    schema_defaults: dict, *, budget: Optional[int] = None,
+                    paths: Optional[dict] = None) -> dict:
     """Inject completed stage outputs into the current stage's paste-style
     variables. A variable is treated as explicitly provided (and left
     untouched) only when it differs from the schema placeholder default or
-    the context-provided value; schema placeholders are chainable slots."""
-    chained = {}
+    the context-provided value; schema placeholders are chainable slots. The
+    selected source bytes are fairly allocated and head-truncated before the
+    existing stage markers are assembled."""
+    candidates = []
     for var, sources in CHAIN_SOURCES.get(stage, {}).items():
         current = variables.get(var)
         if current and current != schema_defaults.get(var):
             continue
-        parts = []
-        for src in sources:
-            text = prior_outputs.get(src)
-            if text:
-                parts.append(f"--- Stage {src} output ---\n{text}")
-        if parts:
-            chained[var] = "\n\n".join(parts)
+        available = [src for src in sources if prior_outputs.get(src)]
+        if available:
+            candidates.append((var, available))
+    if not candidates:
+        return {}
+    total = _derive_chain_budget() if budget is None else max(0, budget)
+    base, extra = divmod(total, len(candidates))
+    chained = {}
+    for index, (var, sources) in enumerate(candidates):
+        value = _render_chained_sources(
+            sources, prior_outputs, base + (index < extra), paths)
+        if value:
+            chained[var] = value
     return chained
 
 
@@ -396,71 +463,10 @@ def stage_out_dir(args) -> Path:
     return Path(__file__).parent / "reviews" / args.context_name
 
 
-# Provider/CLI failure signatures. Only signatures that never appear in
-# legitimate review prose are matched across the whole output; generic words
-# like "error" or "timeout" are intentionally absent so that review findings
-# about timeouts or unauthorized responses are not misclassified. The network
-# group covers offline/DNS/TLS/proxy failures, which agent CLIs report with
-# these exact phrases when the machine loses connectivity.
-_AGENT_ERROR_PATTERNS = (
-    # provider error codes (quota, rate limit, billing, auth)
-    re.compile(r"rate_?limit_?error", re.IGNORECASE),
-    re.compile(r"insufficient_?quota", re.IGNORECASE),
-    re.compile(r"quota_?exceeded", re.IGNORECASE),
-    re.compile(r"credit_?balance_?too_?low", re.IGNORECASE),
-    re.compile(r"insufficient\s+(?:balance|funds)", re.IGNORECASE),
-    re.compile(r"billing_?error", re.IGNORECASE),
-    re.compile(r"payment_?required", re.IGNORECASE),
-    re.compile(r"invalid_?api_?key", re.IGNORECASE),
-    re.compile(r"authentication_?error", re.IGNORECASE),
-    re.compile(r"context_?length_?exceeded", re.IGNORECASE),
-    re.compile(r"overloaded_?error", re.IGNORECASE),
-    re.compile(r"429 too many requests", re.IGNORECASE),
-    # network connectivity failures (offline, DNS, TLS, proxy)
-    re.compile(r"network is unreachable", re.IGNORECASE),
-    re.compile(r"no route to host", re.IGNORECASE),
-    re.compile(r"temporary failure in name resolution", re.IGNORECASE),
-    re.compile(r"name or service not known", re.IGNORECASE),
-    re.compile(r"dns resolution failed", re.IGNORECASE),
-    re.compile(r"getaddrinfo", re.IGNORECASE),
-    re.compile(r"max retries exceeded", re.IGNORECASE),
-    re.compile(r"certificate verify failed", re.IGNORECASE),
-    re.compile(r"connectionerror", re.IGNORECASE),
-    re.compile(r"sslerror", re.IGNORECASE),
-    re.compile(r"proxyerror", re.IGNORECASE),
-    re.compile(r"econnrefused", re.IGNORECASE),
-    re.compile(r"econnreset", re.IGNORECASE),
-    re.compile(r"etimedout", re.IGNORECASE),
-    re.compile(r"curl: \(\d+\)", re.IGNORECASE),
-    re.compile(r"connection timed out", re.IGNORECASE),
-    re.compile(r"connect timed out", re.IGNORECASE),
-    re.compile(r"operation timed out", re.IGNORECASE),
-    re.compile(r"connection refused", re.IGNORECASE),
-    re.compile(r"connection reset", re.IGNORECASE),
-    re.compile(r"connection closed", re.IGNORECASE),
-    re.compile(r"broken pipe", re.IGNORECASE),
-    re.compile(r"failed to connect", re.IGNORECASE),
-    re.compile(r"unable to connect", re.IGNORECASE),
-    re.compile(r"could not connect", re.IGNORECASE),
-    # CLI-level failure banners
-    re.compile(r"^\[?error\]?:", re.IGNORECASE | re.MULTILINE),
-    re.compile(r"^fatal:", re.IGNORECASE | re.MULTILINE),
-)
-
-
-def agent_failure_reason(returncode: int, output: str) -> str:
-    """Return a short reason when the agent result must be discarded, or ''
-    when the output is a usable result. Non-zero exit, empty output, and
-    provider/CLI failure signatures (quota, rate limit, auth, billing) all
-    reject the result so error replies are never saved as review files."""
-    if returncode != 0:
-        return f"agent exited {returncode}"
-    if not output or not output.strip():
-        return "agent produced no output"
-    for pattern in _AGENT_ERROR_PATTERNS:
-        if pattern.search(output):
-            return f"agent reported provider failure ({pattern.pattern})"
-    return ""
+def agent_failure_reason(returncode: int, output: str, bin_name: str = "") -> str:
+    """Compatibility wrapper around the batch runner's single failure gate."""
+    return _batch_agent_failure_reason(
+        returncode, output, bin_name or getattr(batch_config, "AGENT_BIN", ""))
 
 
 def _print_stage_banner(stage: str, out_file) -> None:
@@ -530,7 +536,7 @@ def _invoke_review_agent(stage: str, args, out_file: Path, cmd: list,
               file=sys.stderr, flush=True)
         return None
     text = "".join(output)
-    reason = agent_failure_reason(rc, text)
+    reason = agent_failure_reason(rc, text, agent_bin)
     if reason:
         print(f"\nStage {stage} REJECTED: {reason}; output NOT saved to {out_file}",
               file=sys.stderr, flush=True)
@@ -813,7 +819,10 @@ def _stage_prompt(args, stage: str, prompts_dir, ctx: dict, prior_outputs: dict)
     defaults = STAGE_VARS.get(stage, {})
     variables = {k: ctx.get(k.lower(), v) for k, v in defaults.items()}
     variables.update(context_to_vars(ctx, stage))
-    variables.update(chain_variables(prior_outputs, stage, variables, defaults))
+    paths = {source: stage_out_dir(args) / f"stage-{source}.out.md"
+             for source in prior_outputs}
+    variables.update(chain_variables(prior_outputs, stage, variables, defaults,
+                                     paths=paths))
     try:
         return fill_template(template_file, variables), False
     except ValueError as exc:

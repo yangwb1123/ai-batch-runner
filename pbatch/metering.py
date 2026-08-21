@@ -20,6 +20,7 @@ import json
 import os
 import tempfile
 import threading
+import uuid
 import urllib.request
 from datetime import datetime, timezone
 from glob import escape as glob_escape
@@ -27,11 +28,13 @@ from pathlib import Path
 from typing import Optional
 
 from .config import SESSION_LINE_MAX_BYTES, log
+from .execution_ids import new_run_id
 from .session import SESSIONS_DIR, workdir_key
 
 # module-level config, set by cli.main() from CLI flags
 EVENTS_FILE: str = ""
 WEBHOOK_URL: str = ""
+RUN_ID: str = new_run_id()
 INVOCATIONS: int = 0
 BUDGET_MAX: int = 0          # 0 = unlimited
 DAILY_BUDGET: int = 0        # 0 = unlimited
@@ -41,6 +44,7 @@ BUDGET_EXIT_CODE = 3
 # serializes check-then-act on the run/daily counters across worker threads
 _BUDGET_LOCK = threading.Lock()
 _USAGE_LOCK = threading.Lock()
+_EVENTS_LOCK = threading.Lock()
 # path -> (device, inode, byte offset, cumulative numeric usage)
 _USAGE_CACHE: dict[str, tuple[int, int, int, dict]] = {}
 
@@ -132,14 +136,28 @@ def _fold_usage_line(raw: bytes, total: dict) -> None:
 
 
 def record_event(event: str, task: str = "", detail: str = "", cwd: str = "",
-                 session_name: str = "", usage_before: Optional[dict] = None) -> None:
-    """Append one JSONL event (best-effort, never raises)."""
+                 session_name: str = "", usage_before: Optional[dict] = None,
+                 *, run_id: str = "", task_id: str = "", stage_id: str = "",
+                 attempt: int = 0, phase: str = "") -> None:
+    """Append one versioned JSONL event (best-effort, never raises).
+
+    The original positional arguments remain compatible.  Trace fields are
+    additive so existing consumers can continue reading ``event``, ``task``
+    and ``detail`` while newer consumers can correlate retries and stages.
+    """
     if not EVENTS_FILE:
         return
     current = _session_usage(cwd, session_name) if event in ("task_finish", "task_fail") else None
     payload = {
+        "schema_version": 1,
+        "event_id": "evt-" + uuid.uuid4().hex[:16],
         "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "event": event,
+        "run_id": (run_id or RUN_ID)[:80],
+        "task_id": str(task_id)[:80],
+        "stage_id": str(stage_id)[:120],
+        "attempt": max(0, int(attempt)),
+        "phase": (phase or _event_phase(event))[:40],
         "task": task[:120],
         "detail": detail[:500],
         "usage": _usage_delta(current, usage_before),
@@ -148,13 +166,25 @@ def record_event(event: str, task: str = "", detail: str = "", cwd: str = "",
     try:
         p = Path(EVENTS_FILE)
         p.parent.mkdir(parents=True, exist_ok=True)
-        with open(p, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
+        with _EVENTS_LOCK:
+            with open(p, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
     except OSError as e:
         log.warning("events write failed: %s", e)
         return
     if WEBHOOK_URL:
         _post_webhook(line)
+
+
+def _event_phase(event: str) -> str:
+    """Map legacy event names to a coarse execution phase."""
+    if event in ("task_finish", "task_fail", "budget_cap"):
+        return "execution"
+    if event in ("task_validation_pass", "task_validation_fail", "repo_gate_fail"):
+        return "validation"
+    if event.startswith("gate_"):
+        return "governance"
+    return "operation"
 
 
 def _usage_delta(current: Optional[dict], before: Optional[dict]) -> Optional[dict]:

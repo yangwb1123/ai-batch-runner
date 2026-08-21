@@ -37,6 +37,9 @@ DOMAIN_REGISTRIES = {
     "backend": ["backend-specs/rules.yaml"],
     "frontend_ui": ["ui-specs/rules.yaml"],
     "product": ["product-specs/rules.yaml"],
+    # 第四域：实战规律（归纳自 snaplink-console / iris-ui），由
+    # pbatch/evolution.py 独立路由（不进 UI/后端任务的自动 manifest）。
+    "evolution": ["evolution-specs/rules.yaml"],
     "generic": [],
 }
 DEFAULT_DOMAIN = "generic"
@@ -133,7 +136,7 @@ def load_registry(path: str = "", domain: str = "") -> dict:
     sections extend the built-in defaults; a missing backend registry
     degrades to an empty rule set (fail closed, never the frontend rules)."""
     merged = {section: dict(value) for section, value in _DEFAULT_REGISTRY.items()}
-    if domain in ("backend", "generic", "product"):
+    if domain in ("backend", "generic", "product", "evolution"):
         merged = {"scale": {}, "signals": {}, "signal_weights": {},
                   "page_types": {}, "use_case_types": {},
                   "risk": {}, "rules": {}}
@@ -144,11 +147,16 @@ def load_registry(path: str = "", domain: str = "") -> dict:
     candidates = [Path(path)] if path else _default_registry_paths(domain or DEFAULT_DOMAIN)
     if path and not candidates[0].is_file():
         raise ValueError(f"custom registry not found: {path}")
+    loaded = 0
     for candidate in candidates:
         data = _read_registry_candidate(candidate, path)
         if data is None:
             continue
         _merge_registry_sections(merged, data, bool(path))
+        loaded += 1
+    if not path and domain in DOMAIN_REGISTRIES and DOMAIN_REGISTRIES[domain] and not loaded:
+        expected = ", ".join(DOMAIN_REGISTRIES[domain])
+        raise ValueError(f"{domain} rule registry missing or invalid: {expected}")
     return merged
 
 

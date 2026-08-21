@@ -15,6 +15,7 @@ dependencies = [
 dev = [
     "pytest>=8.0",      # regression suite in tests/ (222 cases)
     "pytest-cov>=5.0",  # make coverage
+    "wheel>=0.42",      # packaging regression gate must not silently skip
 ]
 
 # Install as a first-class CLI like pi/codex: `pip install .` then run
@@ -33,6 +34,148 @@ include = ["pbatch*"]
 # import name `pbatch`, not the distribution name.
 [tool.setuptools.package-data]
 pbatch = ["README.md", "role_keywords.yaml", "task_keywords.yaml"]
+
+# Runtime assets required by an installation outside the source checkout.
+# Keep this list explicit: a new validator/spec/pipeline must deliberately
+# enter the distribution contract and the packaging regression suite.
+[tool.setuptools.data-files]
+"share/ai-batch-runner" = ["pi-batch.yaml", "quality.py"]
+"share/ai-batch-runner/scripts" = [
+    "scripts/check-authority.py", "scripts/check-backend-experience.py",
+    "scripts/check-backend-quality.py", "scripts/check-baseline.py",
+    "scripts/check-changebudget.py", "scripts/check-completion-report.py",
+    "scripts/check-design-intelligence.py", "scripts/check-evidence.py",
+    "scripts/check-frontend-quality.py", "scripts/check-json-schema.py",
+    "scripts/check-knowledge-freshness.py", "scripts/check-no-refusal.py",
+    "scripts/check-nongoal.py", "scripts/check-ui-geometry.py",
+    "scripts/check-ui-spec.py", "scripts/judge.py",
+    "scripts/run-retro.py", "scripts/ui_tokens.py",
+]
+"share/ai-batch-runner/ui-specs" = [
+    "ui-specs/anti-patterns.md", "ui-specs/business-ui-contract.md",
+    "ui-specs/component-spec.md", "ui-specs/geometry.md",
+    "ui-specs/layout-patterns.md", "ui-specs/rules.yaml",
+    "ui-specs/spacing.md", "ui-specs/tokens.json",
+]
+"share/ai-batch-runner/ui-specs/business-profiles" = [
+    "ui-specs/business-profiles/cms.md",
+    "ui-specs/business-profiles/dashboard.md",
+    "ui-specs/business-profiles/erp.md",
+    "ui-specs/business-profiles/immersive.md",
+    "ui-specs/business-profiles/marketing.md",
+    "ui-specs/business-profiles/mobile.md",
+    "ui-specs/business-profiles/oa.md",
+]
+"share/ai-batch-runner/ui-specs/engineering" = [
+    "ui-specs/engineering/architecture-budgets.md",
+    "ui-specs/engineering/async-data.md",
+    "ui-specs/engineering/defect-patterns.md",
+    "ui-specs/engineering/error-recovery.md",
+    "ui-specs/engineering/form-table-state.md",
+    "ui-specs/engineering/interaction-patterns.md",
+]
+"share/ai-batch-runner/ui-specs/design-intelligence" = [
+    "ui-specs/design-intelligence/01-product-thinking.md",
+    "ui-specs/design-intelligence/02-color-intelligence.md",
+    "ui-specs/design-intelligence/03-information-priority.md",
+    "ui-specs/design-intelligence/04-cognitive-load.md",
+    "ui-specs/design-intelligence/05-emotional-design.md",
+    "ui-specs/design-intelligence/06-data-expression.md",
+    "ui-specs/design-intelligence/rules.yaml",
+]
+"share/ai-batch-runner/backend-specs" = [
+    "backend-specs/agent-guardrails.md",
+    "backend-specs/algorithms-data-structures.md",
+    "backend-specs/architecture-constitution.md",
+    "backend-specs/architecture.md",
+    "backend-specs/complexity-and-scale.md", "backend-specs/ddd.md",
+    "backend-specs/design-patterns.md", "backend-specs/domain-modeling.md",
+    "backend-specs/evolution.md", "backend-specs/network-engineering.md",
+    "backend-specs/oop-and-di.md", "backend-specs/persistence-modeling.md",
+    "backend-specs/production-readiness.md", "backend-specs/rules.yaml",
+    "backend-specs/system-engineering.md", "backend-specs/testing.md",
+]
+"share/ai-batch-runner/backend-specs/design-intelligence" = [
+    "backend-specs/design-intelligence/01-experience-driven-api.md",
+    "backend-specs/design-intelligence/02-domain-lifecycle.md",
+    "backend-specs/design-intelligence/03-ui-driven-data-model.md",
+    "backend-specs/design-intelligence/04-experience-architecture.md",
+    "backend-specs/design-intelligence/05-operation-intelligence.md",
+    "backend-specs/design-intelligence/06-product-pipeline.md",
+    "backend-specs/design-intelligence/07-maintenance-intelligence.md",
+    "backend-specs/design-intelligence/08-distribution-intelligence.md",
+]
+"share/ai-batch-runner/product-specs" = [
+    "product-specs/commercial-readiness.md",
+    "product-specs/completion-evidence.md",
+    "product-specs/open-source-readiness.md",
+    "product-specs/product-thinking.md", "product-specs/rules.yaml",
+]
+"share/ai-batch-runner/evolution-specs" = [
+    "evolution-specs/anti-patterns.md",
+    "evolution-specs/constitution-template.md", "evolution-specs/restraint.md",
+    "evolution-specs/rules.yaml", "evolution-specs/verify-by-doing.md",
+]
+"share/ai-batch-runner/examples" = [
+    "examples/README.md", "examples/SDLC_CASE.md",
+    "examples/backend-engineering-review.yaml",
+    "examples/backend-implementation-pipeline.yaml",
+    "examples/evolution-verify-pipeline.yaml",
+    "examples/frontend-engineering-review.yaml",
+    "examples/frontend-implementation-pipeline.yaml",
+    "examples/full-sdlc-implement.yaml", "examples/meta-review-pipeline.yaml",
+    "examples/quickstart-full-sdlc.yaml",
+    "examples/quickstart-snaplink-analysis.yaml",
+    "examples/repository-campaign-pipeline.yaml",
+    "examples/repository-campaign.yaml", "examples/sdlc-mini-pipeline.yaml",
+    "examples/snaplink-proposals.yaml", "examples/ui-generation-pipeline.yaml",
+    "examples/ui-refactor-pipeline.yaml", "examples/visual-review-pipeline.yaml",
+]
+"share/ai-batch-runner/examples/sdlc-inputs" = [
+    "examples/sdlc-inputs/oidc-logout-frontchannel.md",
+]
+"share/ai-batch-runner/evals" = [
+    "evals/assess.yaml", "evals/classifier.yaml", "evals/evolution.yaml",
+    "evals/rules.yaml",
+]
+"share/ai-batch-runner/prompts" = [
+    "prompts/README.md", "prompts/algorithm_reviewer.md",
+    "prompts/api_designer.md", "prompts/architect.md",
+    "prompts/architecture_constitution_reviewer.md",
+    "prompts/async_reviewer.md", "prompts/backend_engineer.md",
+    "prompts/business_analyst.md", "prompts/capability_architect.md",
+    "prompts/code-implementer.md", "prompts/code_architecture_reviewer.md",
+    "prompts/compliance_officer.md", "prompts/composition_reviewer.md",
+    "prompts/critic.md", "prompts/cto.md", "prompts/database_architect.md",
+    "prompts/design_pattern_reviewer.md", "prompts/devops_engineer.md",
+    "prompts/distributed_engineer.md", "prompts/domain_expert.md",
+    "prompts/evolution.md", "prompts/frontend_engineer.md",
+    "prompts/operation.md", "prompts/orchestrator.md",
+    "prompts/performance_engineer.md", "prompts/planning.md",
+    "prompts/pm.md", "prompts/principal_reviewer.md",
+    "prompts/product_thinker.md", "prompts/protocol_expert.md",
+    "prompts/qa_lead.md", "prompts/requirement_interpreter.md",
+    "prompts/security_engineer.md", "prompts/sre_engineer.md",
+    "prompts/staff_engineer.md", "prompts/tech_lead.md",
+    "prompts/testing_reviewer.md", "prompts/ui_designer.md",
+    "prompts/ui_reviewer.md", "prompts/ux_designer.md",
+    "prompts/visual_reviewer.md",
+]
+"share/ai-batch-runner/pipelines" = [
+    "pipelines/pipeline-code-impl.yaml", "pipelines/pipeline-full-sdlc.yaml",
+    "pipelines/pipeline.example.yaml",
+]
+"share/ai-batch-runner/agent-engineering" = [
+    "agent-engineering/api.yaml", "agent-engineering/architecture.yaml",
+    "agent-engineering/code_review.yaml", "agent-engineering/data.yaml",
+    "agent-engineering/developer.yaml", "agent-engineering/domain.yaml",
+    "agent-engineering/evolution.yaml", "agent-engineering/operation.yaml",
+    "agent-engineering/orchestrator.yaml",
+    "agent-engineering/performance.yaml", "agent-engineering/planning.yaml",
+    "agent-engineering/product.yaml", "agent-engineering/release.yaml",
+    "agent-engineering/requirement.yaml", "agent-engineering/security.yaml",
+    "agent-engineering/testing.yaml", "agent-engineering/ux_designer.yaml",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "checks"]

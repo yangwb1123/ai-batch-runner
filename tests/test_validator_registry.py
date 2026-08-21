@@ -19,7 +19,7 @@ SHELL_ONLY = {"gofmt", "secretscan"}
 
 def test_registry_has_expected_validators():
     for name in ("quick", "config", "root", "pyquality", "secretscan",
-                 "uispacing", "uicolor", "uistyle", "uicheck", "uiquality",
+                 "uispacing", "uicolor", "uistyle", "uifont", "uicheck", "uiquality",
                  "backendquality", "completion"):
         assert name in VALIDATORS, name
 
@@ -89,7 +89,7 @@ def test_python_validators_run_dry(tmp_path):
         "```yaml\ncompletion_report:\n  summary: x\n  changed_files: [a]\n"
         "  commands_executed:\n    - command: lint\n      result: passed\n"
         "  residual_risks: []\n  assumptions: []\n```\n", encoding="utf-8")
-    for name in ("uispacing", "uicolor", "uistyle"):
+    for name in ("uispacing", "uicolor", "uistyle", "uifont"):
         command = VALIDATORS[name].replace("{output}", str(clean)) \
                                   .replace("{cwd}", str(Path.cwd()))
         result = subprocess.run(["bash", "-c", command], capture_output=True,

@@ -757,6 +757,55 @@ class TestMeteringBudget:
         for l in lines:
             assert json.loads(l)["ts"]  # well-formed JSONL
 
+    def test_events_have_trace_identity_and_explicit_run_id(self, tmp_path):
+        events = tmp_path / "events.jsonl"
+        agent = tmp_path / "agent.sh"
+        agent.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+        agent.chmod(0o755)
+        result = subprocess.run(
+            [sys.executable, str(PI_BATCH), "-p", "question",
+             "--agent-bin", str(agent), "--memory-mode", "off",
+             "--events-file", str(events), "--run-id", "run-test-001",
+             "--no-lock"],
+            cwd=tmp_path, capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0, result.stderr
+        records = [json.loads(line) for line in events.read_text(
+            encoding="utf-8").splitlines()]
+        assert records
+        task_event = next(item for item in records if item["event"] == "task_finish")
+        assert task_event["schema_version"] == 1
+        assert task_event["event_id"].startswith("evt-")
+        assert task_event["run_id"] == "run-test-001"
+        assert task_event["task_id"].startswith("task-")
+        assert task_event["attempt"] == 1
+        assert task_event["phase"] == "execution"
+
+    def test_retry_events_share_task_id_and_increment_attempt(self, tmp_path):
+        events = tmp_path / "events.jsonl"
+        counter = tmp_path / "counter"
+        agent = tmp_path / "retry.sh"
+        agent.write_text(
+            "#!/bin/sh\n"
+            f"n=0; test -f '{counter}' && n=$(cat '{counter}')\n"
+            f"n=$((n + 1)); echo $n > '{counter}'\n"
+            "if [ \"$n\" -eq 1 ]; then echo first-failure; exit 1; fi\n"
+            "echo recovered\n",
+            encoding="utf-8")
+        agent.chmod(0o755)
+        result = subprocess.run(
+            [sys.executable, str(PI_BATCH), "-p", "question",
+             "--agent-bin", str(agent), "--memory-mode", "off",
+             "--events-file", str(events), "--retries", "1",
+             "--retry-delay", "0", "--retry-backoff", "1", "--no-lock"],
+            cwd=tmp_path, capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0, result.stderr
+        records = [json.loads(line) for line in events.read_text(
+            encoding="utf-8").splitlines()]
+        task_records = [item for item in records
+                        if item["event"] in ("task_fail", "task_finish")]
+        assert [item["attempt"] for item in task_records] == [1, 2]
+        assert len({item["task_id"] for item in task_records}) == 1
+
     def test_budget_max_stops_before_spawning(self, tmp_path):
         """--budget-max 2 with 3 tasks: exactly 2 spawns, exit 3."""
         counter = tmp_path / "counter"
@@ -1295,6 +1344,13 @@ class TestPerAgentErrorPatterns:
                             {"error_patterns": ["global-mark"]})
         assert mod.runner.agent_failure_reason(0, "global-mark hit")
 
+    def test_invalid_override_falls_back_to_builtin_patterns(self, monkeypatch):
+        mod = load_batch()
+        monkeypatch.setattr(mod.config, "AGENT_BIN", "broken")
+        monkeypatch.setattr(mod.config, "_AGENTS_CFG",
+                            {"broken": {"error_patterns": ["["]}})
+        assert mod.runner.agent_failure_reason(0, "insufficient_quota")
+
 
 class TestJudgeValidator:
     """H line (GAP-2): judge validators must emit VERDICT: PASS|FAIL - reason;
@@ -1622,6 +1678,23 @@ class TestRateLimiter:
         start = time.monotonic()
         assert ratelimit.acquire("p", timeout=0.1) is False  # no refill yet
         assert time.monotonic() - start < 0.5
+        ratelimit.configure(0, 1, {})
+
+    def test_shared_file_coordinates_independent_runner_processes(self, tmp_path):
+        """Isolated Campaign children must consume one shared burst."""
+        from pbatch import ratelimit
+        state = tmp_path / "rate-limit.json"
+        script = (
+            "from pbatch import ratelimit; "
+            "ratelimit.configure(1, 1, {}, r'" + str(state) + "'); "
+            "print(ratelimit.acquire('provider', timeout=0.05))"
+        )
+        first = subprocess.run([sys.executable, "-c", script],
+                               capture_output=True, text=True, timeout=5)
+        second = subprocess.run([sys.executable, "-c", script],
+                                capture_output=True, text=True, timeout=5)
+        assert first.stdout.strip() == "True", first.stderr
+        assert second.stdout.strip() == "False", second.stderr
         ratelimit.configure(0, 1, {})
 
 

@@ -1,0 +1,69 @@
+# 实战规律验证管线：实现 + L4 真实运行验证 + 对抗审查 + 裁决门。
+#
+# 归纳自 iris-ui 实战（check-pack-install 首次运行即暴露 2 个发布缺陷、
+# 行为契约 harness 三次抓到真实 bug）：静态审查只能验证"代码看起来对"，
+# verify_experiment 阶段强制真实运行验证（外部安装/契约重放/截图/浏览器），
+# 失败 = 阶段失败 → 重试反馈。
+#
+# 第四域（evolution-specs/rules.yaml）用法：
+#   1) pi-batch evolution init --dir .        # 生成项目宪法
+#   2) pi-batch evolution apply "<任务>"       # 形态分类 + 规律适用清单
+#   3) pi-batch evolution route "<任务>"       # 管线形状推荐（L8）
+#   4) 本管线：implement 后跑 verify_experiment 真实验证 + 对抗 + 裁决
+#
+# 运行（项目根）：
+#   pi-batch examples/evolution-verify-pipeline.yaml --retries 3 --max-rounds 0
+
+git_commit: false
+decision_log: docs/evolution/DECISIONS.md
+archive_dir: docs/evolution/archive
+
+stages:
+  # ── 1. 实现（带完成证据报告门禁）──
+  - name: implement
+    from_prompt: |
+      Implement the change described by the task, then write a completion
+      report (completion_report block: commands_executed with real results,
+      not_executed with reasons — no fabricated passes).
+    output: docs/evolution/implement.md
+    validate: completion,evidence
+  # ── 2. L4 真实运行验证：外部安装 / 契约重放 / 截图 / 浏览器 ──
+  #      失败 = 阶段失败 → retries 喂回 stderr 修复（gate-fix 语义）
+  - name: verify
+    from_outputs: implement
+    aggregate: true
+    tasks:
+      - prompt: |
+          Report the exact verification commands to run and their expected
+          outcomes for the change in {input_content}. List only
+          real-world-shaped checks (external install / contract replay /
+          screenshot / browser), not static analysis.
+        output: docs/evolution/verify-plan.md
+    verify_experiment:
+      # 项目实况替换：真实 npm pack+install、真实契约测试、真实截图门禁…
+      - "python {cwd}/scripts/check-completion-report.py docs/evolution/implement.md"
+      # 例（发布型项目）：
+      # - "npm pack --dry-run && node scripts/check-pack-install.mjs"
+  # ── 3. 对抗审查（meta 动态角色，如验证不足会挑 testing_reviewer）──
+  - name: adversarial_review
+    from_outputs: verify
+    aggregate: true
+    meta: true
+    role_dir: prompts
+    output_dir: docs/evolution/reviews
+    max_iterations: 2
+    max_roles_per_iteration: 3
+    meta_max_failed_roles: 1
+  # ── 4. 裁决门（VERDICT: PASS 才放行；FAIL 自动修复循环）──
+  - name: gate
+    from_outputs: adversarial_review
+    aggregate: true
+    gate: true
+    gate_fix_rounds: 2
+    tasks:
+      - prompt: |
+          Gatekeeper: verify the change against its completion report and
+          the verify-experiment evidence. Output VERDICT: PASS - <reasons>
+          or VERDICT: FAIL - <reasons> (bare PASS or no verdict fails
+          closed).
+        output: docs/evolution/gate.md

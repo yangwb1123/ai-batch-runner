@@ -24,9 +24,11 @@ from .triage import (STALL_EXIT_CODE, Circuit, StallDetector, env_signature,
                      kill_orphan, marker_info, pid_alive, residue_markers, task_key)
 from .pipeline import (_append_decision_log, _archive_outputs, load_pipeline,
                        load_tasks, load_tasks_from_dir, run_pipeline)
+from .parallel_plan import OutputCollisionError
 from .runner import (_json_status, judge_verdict, kill_active_procs,
                      print_summary, run_parallel, run_serial, run_validation)
 from .cmd_expand import expand_cmd
+from .execution_ids import new_run_id
 from .text_io import read_text_bounded
 from .task_loading import task_from_prompt
 from .cli_residue import _warn_residue_markers  # noqa: E402
@@ -41,6 +43,8 @@ def _add_metering_args(p) -> None:
     """T7/T8: metering events, webhook, and invocation budgets."""
     p.add_argument("--events-file", default="",
                    help="T7: append JSONL metering events (task_finish/task_fail/gate_reject/budget_cap/stall_stop)")
+    p.add_argument("--run-id", default="",
+                   help="correlation id for this run's JSONL events (default: generated per process)")
     p.add_argument("--webhook", default="",
                    help="T7: POST each metering event to URL (non-blocking, 5s timeout, failures logged only)")
     p.add_argument("--budget-max", type=int, default=0,
@@ -52,17 +56,19 @@ def _add_metering_args(p) -> None:
     p.add_argument("--rate-limit", type=float, default=0.0,
                    help="F line: max agent invocations per second across all workers "
                         "(0 = unlimited, default); per-provider overrides via limits.providers")
-    p.add_argument("--rate-burst", type=float, default=1.0,
-                   help="F line: token bucket burst capacity (default: 1)")
+    p.add_argument("--rate-burst", type=float, default=0.0,
+                   help="F line: token bucket burst capacity (0 = config/default)")
 
 def _wire_metering(args) -> None:
     """T7/T8: metering + budget wiring (module-level, read by run_task)."""
     from . import metering
     metering.EVENTS_FILE = args.events_file
     metering.WEBHOOK_URL = args.webhook
+    metering.RUN_ID = getattr(args, "run_id", "") or new_run_id()
     metering.BUDGET_MAX = args.budget_max
     metering.DAILY_BUDGET = args.daily_budget
-    metering._DAILY_STATE = args.daily_state or str(Path(".pi-batch") / "daily-budget.json")
+    metering._DAILY_STATE = args.daily_state or str(
+        config.data_dir() / "daily-budget.json")
 
 def _wire_limits(args) -> None:
     """F line: provider token-bucket wiring (module-level, read by run_task
@@ -70,7 +76,8 @@ def _wire_limits(args) -> None:
     from . import ratelimit
     per_second = args.rate_limit if args.rate_limit and args.rate_limit > 0 else config.RATE_LIMIT_PER_SECOND
     burst = args.rate_burst if args.rate_burst and args.rate_burst > 0 else config.RATE_LIMIT_BURST
-    ratelimit.configure(per_second, burst, config.RATE_LIMIT_PROVIDERS)
+    ratelimit.configure(per_second, burst, config.RATE_LIMIT_PROVIDERS,
+                        os.environ.get("PBATCH_RATE_LIMIT_FILE", ""))
 
 def _auto_detect_pipeline(args) -> None:
     """A YAML source with a top-level 'stages' key is a pipeline definition,
@@ -104,6 +111,7 @@ def _resolve_pipeline(value: str, label: str, config_key: str) -> str:
         script_dir = os.environ.get("PBATCH_SCRIPT_DIR", "")
         if script_dir:
             candidates.append(Path(script_dir) / value)
+        candidates.append(Path(config.TOOL_ROOT) / value)
         candidates.append(Path(__file__).resolve().parent.parent / value)
     for candidate in candidates:
         if candidate.exists():
@@ -370,12 +378,23 @@ def _run_batch_repo_validators(tasks: list, cli_validate: str) -> set:
     seen = set()
     for raw in [cli_validate] + [t.validate for t in tasks if t.validate]:
         for spec in _resolve_validator_specs(raw or ""):
-            if spec.scope == "repo" and spec.cmd not in seen:
-                seen.add(spec.cmd)
+            key = (spec.cmd, spec.requires_any)
+            if spec.scope == "repo" and key not in seen:
+                seen.add(key)
                 specs.append(spec)
     if not specs:
         return set()
     wd = os.getcwd()
+    applicable = []
+    for spec in specs:
+        if config.validator_applies(spec, wd):
+            applicable.append(spec)
+        else:
+            log.info("REPO VALIDATE SKIP (batch): %s not applicable; "
+                     "requires_any=%s", spec.cmd, ", ".join(spec.requires_any))
+    specs = applicable
+    if not specs:
+        return set()
     failed: set = set()
     for spec in specs:
         key = _run_batch_repo_spec(spec, wd)
@@ -493,6 +512,10 @@ def _execute_batch(tasks: list, args, session_name: str, cli_validate: str) -> t
         }
         if hasattr(args, "min_interval"):
             parallel_options["min_interval"] = args.min_interval
-        results = parallel(tasks, args.workers, **parallel_options)
+        try:
+            results = parallel(tasks, args.workers, **parallel_options)
+        except OutputCollisionError as exc:
+            log.error("PARALLEL REJECTED before agent spawn:\n%s", exc)
+            raise SystemExit(2) from exc
     _entrypoint_override("print_summary", print_summary)(results)
     return results, any(not r.success for r in results)  # noqa: E501 行数预算内

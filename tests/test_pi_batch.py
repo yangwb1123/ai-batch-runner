@@ -1126,6 +1126,15 @@ def test_run_validation_timeout_kills_group():
     assert v.exit_code == -1
 
 
+def test_run_validation_timeout_keeps_partial_output():
+    """Timeout cleanup preserves bounded diagnostics emitted before the kill."""
+    mod = load_batch()
+    v = mod.run_validation("printf partial; sleep 30", os.getcwd(), timeout=0.2)
+    assert v.ok is False
+    assert v.timed_out is True
+    assert "partial" in v.stdout
+
+
 def test_revalidate_existing_passes_and_trivial_no_validators(tmp_path):
     """An existing non-empty artifact passes revalidation; no validators
     (empty or None gate) make it trivially reusable."""

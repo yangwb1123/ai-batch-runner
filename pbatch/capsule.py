@@ -24,7 +24,7 @@ from typing import Optional
 
 from . import config
 from .fabric import FABRIC_VERSION
-from .world import _module_versions, capture_world_snapshot
+from .world import WorldStore, _module_versions
 
 RULE_REGISTRIES = ("ui-specs/rules.yaml", "backend-specs/rules.yaml",
                    "pbatch/task_keywords.yaml", "pbatch/role_keywords.yaml")
@@ -42,7 +42,9 @@ def capture_context_capsule(prompt: str, cwd: str = "",
                             rule_digests: Optional[dict] = None) -> dict:
     """当前上下文胶囊：所有参与决策的版本可见且可比较。"""
     root = Path(cwd or ".")
-    world = capture_world_snapshot(cwd)
+    # A capsule must bind to the durable monotonic world version, not only to
+    # an ephemeral content hash that cannot prove which observation won a race.
+    world = WorldStore(cwd).reconcile(cwd)["snapshot"]
     rules = rule_digests or {
         rel: _file_digest(root / rel) for rel in RULE_REGISTRIES
     }

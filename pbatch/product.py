@@ -88,6 +88,12 @@ _SCENARIOS = {
         ["搜索", "检索", "search", "lookup"],
         ["精确/前缀/全文/模糊", "排序/相关性", "权限过滤", "索引重建"],
     ),
+    "计费/订阅": (
+        ["订阅", "计费", "定价", "账单", "套餐", "配额", "额度", "quota",
+         "billing", "subscription", "pricing"],
+        ["定价模型（订阅/按量/混合）", "计量单位与用量上报",
+         "配额/额度策略与超限处理", "免费层 vs 付费层", "发票与支付渠道"],
+    ),
 }
 
 # Product spec files by level, derived from the product registry

@@ -57,6 +57,8 @@ class Stage:
     commands_parallel: bool = False  # if True, run commands concurrently
     command_timeout: int = COMMAND_TIMEOUT
     command_output_max_bytes: int = COMMAND_OUTPUT_MAX_BYTES
+    verify_experiment: list = field(default_factory=list)  # L4: 真实运行验证
+                                                          # （失败 = 阶段失败）
     cwd: str = ""
     git_commit: bool = False
     commit_message: str = ""
@@ -86,6 +88,7 @@ class Stage:
             "tasks": self.tasks,
             "commands": self.commands,
             "commands_parallel": self.commands_parallel,
+            "verify_experiment": self.verify_experiment,
             "command_timeout": self.command_timeout,
             "command_output_max_bytes": self.command_output_max_bytes,
             "cwd": self.cwd,
@@ -193,3 +196,9 @@ class TaskResult:
     streamed_output: bool = False
     session_name: str = ""
     raw_session: str = ""
+    # Execution trace fields.  They are additive and remain empty for
+    # synthetic/reused results that did not invoke the runner.
+    run_id: str = ""
+    task_id: str = ""
+    stage_id: str = ""
+    attempt: int = 0

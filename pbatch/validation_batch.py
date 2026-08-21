@@ -2,6 +2,8 @@
 
 from concurrent.futures import ThreadPoolExecutor
 
+from .config import validator_applies
+
 
 MAX_VALIDATOR_WORKERS = 4
 
@@ -25,6 +27,12 @@ def _file_commands(specs, workdir, output, expand_command, logger, label):
         if spec.scope == "repo":
             logger.info(
                 "%s: %s deferred (repo scope -> stage end)", label, spec.cmd,
+            )
+            continue
+        if not validator_applies(spec, workdir):
+            logger.info(
+                "%s: %s skipped (not applicable; requires_any=%s)",
+                label, spec.cmd, ", ".join(spec.requires_any),
             )
             continue
         command = expand_command(spec.cmd, workdir, str(output))

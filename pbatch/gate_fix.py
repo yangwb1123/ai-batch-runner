@@ -10,38 +10,19 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from pathlib import Path
 from typing import Optional
 
 from . import config
 from .config import AGENT_DEFAULT_TIMEOUT, log
 from .context_inject import add_task_context_paths
+from .gate_contract import extract_findings
 from .models import Stage, Task, TaskResult
 from .text_io import read_text_bounded
 
-_FINDINGS_JSON_RE = re.compile(r"```(?:json)?\s*\n?\s*\[.*?\]\s*\n?\s*```", re.DOTALL)
-_FINDING_FIELDS = ("severity", "file", "line", "problem", "fix_hint")
-
-
 def extract_gate_findings(text: str) -> Optional[list]:
-    """Extract a structured findings array from a rejected gate artifact
-    (```json fence). None when absent — fall back to plain-text reason."""
-    m = _FINDINGS_JSON_RE.search(text)
-    if not m:
-        return None
-    try:
-        data = json.loads(m.group(0).strip().strip("`").lstrip("json").strip())
-    except ValueError:
-        return None
-    if not isinstance(data, list) or not data:
-        return None
-    safe: list[dict] = []
-    for item in data[:50]:  # untrusted: bounded fields only
-        if isinstance(item, dict):
-            safe.append({k: str(item[k])[:2000] for k in _FINDING_FIELDS
-                         if k in item and item[k] is not None})
-    return safe or None
+    """Extract findings from new Gate objects or legacy JSON arrays."""
+    return extract_findings(text)
 
 
 def gate_fail_reason(output_paths: list) -> str:

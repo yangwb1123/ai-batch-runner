@@ -209,7 +209,8 @@ def _run_agent_batch(args, batch: dict, round_no: int) -> dict:
     if errors:
         return _agent_failure("; ".join(errors))
     target = Path(args.dir).expanduser().resolve()
-    output = target / ".pi-batch" / "advance" / f"round-{round_no}-{batch['id']}.md"
+    output = (config.data_dir(str(target)) / "advance"
+              / f"round-{round_no}-{batch['id']}.md")
     task = Task(prompt=_repair_prompt(batch, round_no), output=str(output), cwd=str(target),
                 model=args.model, provider=args.provider,
                 memory={"stage": "advance", "role": "repair", "batch": batch["id"]})
@@ -267,6 +268,13 @@ def _run_validators(value: str, target: Path) -> dict:
                 "status": "SKIPPED", "results": []}
     outcomes = []
     for spec in config._resolve_validator_specs(value):
+        if not config.validator_applies(spec, str(target)):
+            outcomes.append({"command": spec.cmd[:1000], "exit": 0,
+                             "success": True, "status": "SKIPPED",
+                             "reason": "not applicable: requires_any="
+                                      + ", ".join(spec.requires_any),
+                             "stdout": "", "stderr": ""})
+            continue
         command = expand_command_placeholders(spec.cmd, str(target), str(target))
         result = run_validation(command, str(target))
         failure = _validator_failure(spec, result)
@@ -277,8 +285,11 @@ def _run_validators(value: str, target: Path) -> dict:
         if failure:
             return {"requested": True, "success": False, "status": "FAILED",
                     "results": outcomes, "reason": failure}
+    executed = [outcome for outcome in outcomes
+                if outcome.get("status") != "SKIPPED"]
     return {"requested": True, "success": True,
-            "status": "PASSED", "results": outcomes}
+            "status": "PASSED" if executed else "SKIPPED",
+            "results": outcomes}
 
 
 def _execution_entry(round_no: int, target: str, before: dict, after: dict | None,
@@ -338,8 +349,19 @@ def _progress_status(before: dict, after: dict, seen: set[str]) -> str:
     return ""
 
 
+def _constitution_denylist(target: str) -> list:
+    """项目宪法 change_budget.denylist（advance 修复任务不触碰被禁路径）。"""
+    from .evolution import load_constitution
+    constitution = load_constitution(Path(target).resolve())
+    budget = constitution.get("change_budget") or {}
+    denylist = budget.get("denylist") or []
+    return [str(item) for item in denylist if str(item).strip()] if isinstance(
+        denylist, list) else []
+
+
 def _execute_rounds(args, state_file: Path, first_round: int) -> dict:
     before = scan_project(args.dir)
+    denylist = _constitution_denylist(args.dir)
     rounds_run, seen, execution = 0, set(), {}
     if _total_findings(before) == 0:
         return {"scan": before, "rounds_run": 0, "code": 0, "execution": {}}
@@ -350,7 +372,7 @@ def _execute_rounds(args, state_file: Path, first_round: int) -> dict:
             return {"scan": before, "rounds_run": rounds_run, "code": 1,
                     "execution": {"status": "SCAN_CYCLE", "success": False}}
         seen.add(signature)
-        batch = build_batches(before)[0]
+        batch = build_batches(before, denylist)[0]
         after, execution, rescan_error = _execute_one_round(args, batch, round_no)
         if rescan_error:
             _record_execution(state_file, round_no, args, before, None, batch, execution)
@@ -427,7 +449,8 @@ def _json_outcome(args, state_file: Path, outcome: dict) -> None:
                       "files_scanned": scan["files_scanned"],
                       "rounds_run": rounds_run,
                       "total": _total_findings(scan),
-                      "batches": build_batches(scan), "execute": args.execute,
+                      "batches": build_batches(scan, _constitution_denylist(args.dir)),
+                      "execute": args.execute,
                       "state_file": str(state_file) if rounds_run else "",
                       "execution": outcome["execution"]},
                      ensure_ascii=False, indent=2))
@@ -446,7 +469,7 @@ def advance_main(argv: list) -> int:
                              ensure_ascii=False))
         return 2
     scan, rounds_run = outcome["scan"], outcome["rounds_run"]
-    batches = build_batches(scan)
+    batches = build_batches(scan, _constitution_denylist(args.dir))
     if rounds_run:
         log.info("advance: recorded %d round(s) in %s", rounds_run, state_file)
     if args.json:

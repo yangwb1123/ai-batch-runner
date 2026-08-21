@@ -191,6 +191,10 @@ def _assemble_report(text: str, mode: int, load_value: float,
             "mode": mode, "load": load_value, "profile": profile}),
         "goal_model": goal_model(text),
         "counterfactuals": counterfactuals(text),
+        # Assumptions are part of the profile contract, not an optional
+        # presentation detail.  The CLI keeps --assumptions for compatibility
+        # and for callers that want to make the intent explicit.
+        "assumptions": assumption_records(text),
         "runtime_policy": runtime_policy_view(),
         "nfr_nodes": nfr_requirements({
             "mode": mode, "profile": profile}),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -29,6 +30,7 @@ def memory_root(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "MEMORY_MANIFEST_MAX_BYTES", 4096)
     monkeypatch.setattr(config, "MEMORY_READ_MAX_BYTES", 65536)
     monkeypatch.setattr(config, "MEMORY_INDEX_LINE_MAX_BYTES", 262144)
+    monkeypatch.setattr(config, "MEMORY_INDEX_MAX_BYTES", 16 * 1024 * 1024)
     return tmp_path
 
 
@@ -59,6 +61,51 @@ def test_append_recent_find_and_secret_redaction(memory_root, monkeypatch):
     monkeypatch.setattr(memory, "events", lambda *_args, **_kwargs: pytest.fail(
         "find must stream instead of materializing events()"))
     assert memory.find("MFA implementation", str(memory_root), 1)[0]["status"] == "PASSED"
+
+
+def test_memory_scope_isolates_tenant_and_sensitivity(memory_root, monkeypatch):
+    monkeypatch.setenv("PBATCH_MEMORY_TENANT", "team-a")
+    monkeypatch.setenv("PBATCH_MEMORY_SENSITIVITY", "confidential")
+    memory.append_event({"type": "task", "session_id": "a"},
+                        str(memory_root))
+    assert memory.recent(str(memory_root), 1)[0]["session_id"] == "a"
+    assert memory.recent(str(memory_root), 1)[0]["scope"]["sensitivity"] == \
+        "confidential"
+
+    monkeypatch.setenv("PBATCH_MEMORY_TENANT", "team-b")
+    assert memory.recent(str(memory_root), 1) == []
+    memory.append_event({"type": "task", "session_id": "b"},
+                        str(memory_root))
+    assert memory.recent(str(memory_root), 1)[0]["session_id"] == "b"
+
+    with pytest.raises(ValueError, match="scope does not match"):
+        memory.append_event({"type": "task", "scope": {
+            "tenant": "team-a", "project_id": "wrong", "sensitivity": "secret"
+        }}, str(memory_root))
+
+
+def test_memory_scope_rejects_unverified_worktree_common_dir(tmp_path, monkeypatch):
+    """A claimed common dir without Git's exact admin backlink stays isolated."""
+    from pbatch import memory_policy
+
+    root = tmp_path / "candidate"
+    root.mkdir()
+    (root / ".git").write_text("gitdir: forged\n", encoding="utf-8")
+    common = tmp_path / "foreign" / ".git"
+    admin = common / "worktrees" / "forged"
+    admin.mkdir(parents=True)
+    (admin / "gitdir").write_text(
+        str(tmp_path / "different" / ".git") + "\n", encoding="utf-8")
+
+    def forged_git(*_args, **_kwargs):
+        return subprocess.CompletedProcess(
+            [], 0, stdout=f"{root}\n{admin}\n{common}\n", stderr="")
+
+    memory_policy._linked_project_identity.cache_clear()
+    monkeypatch.setattr(memory_policy.subprocess, "run", forged_git)
+    scope = memory_policy.memory_scope(str(root))
+    expected = hashlib.sha256(str(root.resolve()).encode("utf-8")).hexdigest()[:24]
+    assert scope["project_id"] == expected
 
 
 def test_memory_redacts_nested_and_legacy_secret_shapes(memory_root):
@@ -132,6 +179,26 @@ def test_manifest_is_bounded(memory_root, monkeypatch):
     assert len(manifest.encode("utf-8")) <= 300
     assert "manifest truncated" in manifest
     assert manifest.endswith("</pbatch-memory>")
+
+
+def test_memory_index_compacts_oldest_records_at_file_cap(memory_root, monkeypatch):
+    monkeypatch.setattr(config, "MEMORY_INDEX_MAX_BYTES", 360)
+    for index in range(8):
+        memory.append_event({"type": "task", "session_id": f"s-{index}",
+                             "prompt_excerpt": "payload"}, str(memory_root))
+
+    path = memory.index_path(str(memory_root))
+    assert path.stat().st_size <= 360
+    assert memory.recent(str(memory_root), 1)[0]["session_id"] == "s-7"
+    assert "s-0" not in path.read_text(encoding="utf-8")
+
+
+def test_memory_index_rejects_event_larger_than_file_cap(memory_root, monkeypatch):
+    monkeypatch.setattr(config, "MEMORY_INDEX_MAX_BYTES", 32)
+    with pytest.raises(ValueError, match="memory index event exceeds file cap 32 bytes"):
+        memory.append_event({"type": "task", "session_id": "too-large"},
+                            str(memory_root))
+    assert not memory.index_path(str(memory_root)).exists()
 
 
 def test_read_session_is_capped_and_rejects_index_path_escape(memory_root, monkeypatch):

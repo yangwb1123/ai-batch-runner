@@ -9,12 +9,12 @@ from pathlib import Path
 from . import config
 from .campaign_state import _git_output
 from .cmd_expand import expand_cmd
-from .config import log
+from .config import log, validator_applies
 from .runner import run_validation
 
 
 def _preflight_collect_specs(pipeline) -> list:
-    """Return unique repo-scoped, deterministic validator commands."""
+    """Return unique repo-scoped, deterministic validator specs."""
     from .config import _resolve_validator_specs
 
     specs = []
@@ -28,11 +28,22 @@ def _preflight_collect_specs(pipeline) -> list:
             seen.add(name)
             for spec in _resolve_validator_specs(name):
                 if spec and spec.scope == "repo" and not spec.judge:
-                    specs.append((name, spec.cmd))
+                    specs.append((name, spec))
     return specs
 
 
-def _preflight_run_one(name: str, cmd: str, root: Path) -> bool:
+def _preflight_run_one(name: str, spec, root: Path) -> bool:
+    """Run one applicable baseline gate; old raw-command callers remain valid."""
+    if isinstance(spec, str):
+        cmd = spec
+        applicable = True
+    else:
+        cmd = spec.cmd
+        applicable = validator_applies(spec, str(root))
+    if not applicable:
+        log.info("PREFLIGHT: %s skipped (not applicable; requires_any=%s)",
+                 name, ", ".join(spec.requires_any))
+        return True
     rendered = expand_cmd(cmd, "", str(root))
     result = run_validation(
         rendered, str(root), timeout=config.COMMAND_TIMEOUT,
@@ -70,8 +81,8 @@ def _preflight_validators(context) -> int:
     log.info("PREFLIGHT: %d repo-scoped validator(s) against the target repo",
              len(specs))
     failures = sum(
-        0 if _preflight_run_one(name, cmd, context.root) else 1
-        for name, cmd in specs)
+        0 if _preflight_run_one(name, spec, context.root) else 1
+        for name, spec in specs)
     if failures:
         _report_preflight_failures(context, failures)
     return failures

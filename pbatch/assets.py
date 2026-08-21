@@ -12,13 +12,22 @@ from typing import Optional
 def _distribution_asset_root() -> Optional[Path]:
     """Locate wheel ``data-files`` without assuming a system/user prefix."""
     try:
-        files = distribution("ai-batch-runner").files or ()
+        dist = distribution("ai-batch-runner")
+        files = dist.files or ()
     except PackageNotFoundError:
         return None
     suffix = "share/ai-batch-runner/pi-batch.yaml"
     for item in files:
         if str(item).replace("\\", "/").endswith(suffix):
-            return Path(item.locate()).resolve().parent
+            candidates = [Path(item.locate()).resolve().parent]
+            # ``pip --target`` keeps data-files below the target directory
+            # while RECORD retains the wheel's prefix-relative path.  The
+            # package location is the reliable anchor in that layout.
+            package_root = Path(__file__).resolve().parent.parent
+            candidates.append(package_root / "share" / "ai-batch-runner")
+            for candidate in candidates:
+                if (candidate / "pi-batch.yaml").is_file():
+                    return candidate
     return None
 
 

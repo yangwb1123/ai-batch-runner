@@ -24,6 +24,7 @@ filesize:
     - "pbatch/runner.py"    # upstream-synced + local fixes (535 lines, within 1000 budget)
     - "pbatch/cli.py"       # upstream-synced + local fixes (514 lines, within 1000 budget)
     - "pbatch/config.py"    # upstream-synced + local fixes (511 lines, within 1000 budget)
+    - "pbatch/evolution.py" # 第四域规律引擎（658 lines, within quality.py 1000 budget；内聚单域，不硬拆）
     - "pi-batch.py"       # upstream-synced entry shim
     - "ai/run-review.py"  # upstream-synced runner
     - "tests/"            # regression suite files

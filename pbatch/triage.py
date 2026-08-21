@@ -27,13 +27,34 @@ from typing import Optional
 
 from .config import log
 
-STATE_DIR = Path(".pi-batch") / "state"
+def state_dir(cwd: str = "") -> Path:
+    """状态标记目录（data_dir 感知：PBATCH_DATA_DIR 可移出项目）。"""
+    from .config import data_dir
+    return data_dir(cwd) / "state"
+
+
+_LEGACY_STATE_DIR = Path(".pi-batch") / "state"
+STATE_DIR = _LEGACY_STATE_DIR  # 兼容旧引用（新代码用 state_dir()）
+
+
+def _effective_state_dir(cwd: str = "") -> Path:
+    """Resolve marker state under data_dir, retaining explicit legacy overrides."""
+    current = Path(STATE_DIR)
+    if current != _LEGACY_STATE_DIR:
+        return current
+    return state_dir(cwd)
 CIRCUIT_MAX = 5
 STALL_ROUNDS = 6
 STALL_EXIT_CODE = 4
 
 _ENV_SIGNATURE_RE = re.compile(r"validator feedback|VALIDATION FAILED", re.IGNORECASE)
 _TRANSIENT_RE = re.compile(r"rate|429|quota|network|connect|unreachable|timeout|billing|overloaded", re.IGNORECASE)
+_PERMANENT_RE = re.compile(
+    r"agent binary not found|not found in PATH|agent adapter error|"
+    r"context injection rejected|prompt reference not found|"
+    r"output path is a symlink",
+    re.IGNORECASE,
+)
 
 
 def task_key(task) -> str:
@@ -43,7 +64,7 @@ def task_key(task) -> str:
 
 
 def marker_path(key: str, cwd: str = "") -> Path:
-    return Path(cwd or os.getcwd()) / STATE_DIR / f"{key}.start"
+    return _effective_state_dir(cwd) / f"{key}.start"
 
 
 def write_marker(key: str, cwd: str = "", agent_pid: Optional[int] = None) -> None:
@@ -70,7 +91,7 @@ def clear_marker(key: str, cwd: str = "") -> None:
 
 def residue_markers(cwd: str = "") -> list:
     """Markers left by a previous (killed) run; empty when clean."""
-    d = Path(cwd or os.getcwd()) / STATE_DIR
+    d = _effective_state_dir(cwd)
     if not d.is_dir():
         return []
     return sorted(d.glob("*.start"))
@@ -103,6 +124,23 @@ def marker_info(path: Path) -> dict:
     return info
 
 
+def write_cmd_failure_diagnostics(cmd: str, exit_code: int, stderr: str,
+                                  cmd_cwd: str) -> None:
+    """命令失败 → 有界诊断摘录 .pi-batch/rejected/（L4 反馈闭环：
+    人工/重试可诊断验证实验到底拒绝了什么）。"""
+    try:
+        from .config import data_dir
+        rej = data_dir(cmd_cwd) / "rejected"
+        rej.mkdir(parents=True, exist_ok=True)
+        name = "verify-cmd-%s-%04d.txt" % (time.strftime("%Y%m%d-%H%M%S"),
+                                            abs(hash(cmd)) % 10000)
+        body = "$ %s\nexit=%s\n%s" % (cmd, exit_code, (stderr or "")[:65536])
+        (rej / name).write_text(body, encoding="utf-8", errors="replace")
+        log.info("CMD failure diagnostics: %s", rej / name)
+    except OSError:
+        pass
+
+
 def pid_alive(pid: int) -> bool:
     """True when the pid is a live process in this host's pid namespace."""
     if pid <= 0:
@@ -133,13 +171,23 @@ def classify_reason(reason: str) -> str:
     or environment (surfaced by a gate, not the agent)."""
     if not reason:
         return "transient"
-    if "not found in PATH" in reason or "agent binary not found" in reason:
+    if _PERMANENT_RE.search(reason):
         return "permanent"
     if "validation failed" in reason or _ENV_SIGNATURE_RE.search(reason):
         return "environment"
     if _TRANSIENT_RE.search(reason):
         return "transient"
     return "transient"
+
+
+def is_retryable(reason: str) -> bool:
+    """Return whether another agent attempt can plausibly change the result.
+
+    Validator failures remain retryable because the previous feedback is
+    appended to the next prompt.  Only deterministic runner/configuration
+    failures are stopped before spending another invocation.
+    """
+    return classify_reason(reason) != "permanent"
 
 
 class Circuit:

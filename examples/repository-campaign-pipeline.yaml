@@ -60,7 +60,13 @@ stages:
       - adversarial_review
       - design_gate
     aggregate: true
-    validate: pyquality
+    # Rust-repo mechanical backstop (must exist in the effective
+    # pi-batch.yaml validators registry — ai-batch-runner's): cargocheck is
+    # repo-scope, run once at stage end. The implement agent additionally
+    # runs the documented gates itself (AGENTS S4.3). pyquality is NOT used:
+    # it always fails on this repo (2172 pre-existing violations in
+    # scripts/smoke_*.py).
+    validate: cargocheck
     tasks:
       - prompt: |
           Read the repository's AGENTS.md and the approved evidence below.

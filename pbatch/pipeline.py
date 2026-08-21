@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shlex
 import sys
 import time
@@ -14,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import config
+from . import metering
 from .config import AGENT_DEFAULT_TIMEOUT, AGENT_DEFAULT_WORKERS, log, yaml
 from .context_inject import prepare_task_context
 from .models import Pipeline, Stage, Task, TaskResult
@@ -24,6 +24,7 @@ from .pipeline_decisions import (append_decision_log as _append_decision_log,
 from .pipeline_schema import validate_pipeline
 from .pipeline_resources import normalize_bundled_resources as _normalize_bundled_resources
 from .evidence import combine_outputs, source_manifest
+from .gate_contract import evaluate_gate_artifacts, gate_verdict as _gate_verdict
 from .meta import run_meta_stage
 from .repo_gates import (capture_stage_dirty_paths,
                          commit_stage_outputs as _git_commit_stage,
@@ -111,6 +112,7 @@ def _parse_stage_def(s: dict, global_git_commit: bool) -> Stage:
         command_timeout=s.get("command_timeout", config.COMMAND_TIMEOUT),
         command_output_max_bytes=s.get(
             "command_output_max_bytes", config.COMMAND_OUTPUT_MAX_BYTES),
+        verify_experiment=s.get("verify_experiment", []),
         cwd=s.get("cwd", ""),
         git_commit=s.get("git_commit", global_git_commit),
         commit_message=s.get("commit_message", ""),
@@ -651,43 +653,54 @@ def _execute_or_tasks(stage: Stage, tasks: list, reused_outputs: list,
 
 
 def _run_stage_commands(stage: Stage) -> bool:
-    """Run the stage's shell commands (post-task hooks); False when any
-    command failed, making hooks act as a failure gate for the stage."""
-    if not stage.commands:
-        return True
-    log.info("")
-    log.info("Running %d commands for stage '%s'... (parallel=%s)",
-             len(stage.commands), stage.name, stage.commands_parallel)
+    """Post-hook commands + L4 verify-experiment；任一失败即阶段失败。"""
     cmd_cwd = stage.cwd or os.getcwd()
+    all_cmd_ok = _run_cmd_set(stage, stage.commands, "commands",
+                              stage.commands_parallel, cmd_cwd)
+    experiments = stage.verify_experiment
+    if experiments:
+        all_cmd_ok = _run_cmd_set(stage, experiments, "verify-experiment",
+                                  False, cmd_cwd) and all_cmd_ok
+    return all_cmd_ok
 
-    if stage.commands_parallel:
-        with ThreadPoolExecutor(max_workers=len(stage.commands)) as pool:
+
+def _run_cmd_set(stage: Stage, cmds: list, kind: str, parallel: bool,
+                 cmd_cwd: str) -> bool:
+    """Run one command set (post-hooks or L4 verify-experiment) within
+    the stage's timeout/output bounds; parallel when requested."""
+    if not cmds:
+        return True
+    log.info("Running %d %s for stage '%s'... (parallel=%s)",
+             len(cmds), kind, stage.name, parallel)
+
+    if parallel:
+        with ThreadPoolExecutor(max_workers=len(cmds)) as pool:
             futs = {
-                pool.submit(_run_single_cmd, cmd, i, len(stage.commands), cmd_cwd,
+                pool.submit(_run_single_cmd, cmd, i, len(cmds), cmd_cwd,
                             stage.command_timeout,
                             stage.command_output_max_bytes): cmd
-                for i, cmd in enumerate(stage.commands, 1)
+                for i, cmd in enumerate(cmds, 1)
             }
-            cmd_results = [f.result() for f in as_completed(futs)]
-        all_cmd_ok = all(cmd_results)
+        all_cmd_ok = all(f.result() for f in as_completed(futs))
     else:
         all_cmd_ok = True
-        for i, cmd in enumerate(stage.commands, 1):
-            if not _run_single_cmd(cmd, i, len(stage.commands), cmd_cwd,
+        for i, cmd in enumerate(cmds, 1):
+            if not _run_single_cmd(cmd, i, len(cmds), cmd_cwd,
                                    stage.command_timeout,
                                    stage.command_output_max_bytes):
                 all_cmd_ok = False
 
     if all_cmd_ok:
-        log.info("All %d commands passed for stage '%s'", len(stage.commands), stage.name)
-    else:
-        log.warning("Stage '%s' FAILED: some post-stage commands failed", stage.name)
-    return all_cmd_ok
+        log.info("All %d %s passed for stage '%s'", len(cmds), kind, stage.name)
+        return True
+    log.warning("Stage '%s' FAILED: some %s failed", stage.name, kind)
+    return False
 
 def _run_single_cmd(cmd: str, index: int, total: int, cmd_cwd: str,
                     timeout: int, output_max_bytes: int) -> bool:
     """Run one post-stage command with a hard process-tree deadline."""
     from .runner import expand_command_placeholders
+    from .triage import write_cmd_failure_diagnostics
     cmd = expand_command_placeholders(cmd, cmd_cwd, cmd_cwd)
     log.info("CMD [%d/%d]: %s", index, total, cmd)
     result = run_validation(cmd, cmd_cwd, timeout=timeout, cap=output_max_bytes)
@@ -701,14 +714,14 @@ def _run_single_cmd(cmd: str, index: int, total: int, cmd_cwd: str,
         log.warning("CMD FAILED (exit=%d) [%d/%d]", result.exit_code, index, total)
     _log_command_tail(result.stderr, log.warning, 10)
     _log_command_tail(result.stdout, log.info, 5)
+    write_cmd_failure_diagnostics(cmd, result.exit_code, result.stderr, cmd_cwd)
     return False
+
 
 def _log_command_tail(value: str, writer, lines: int) -> None:
     """Log only the already-bounded diagnostic tail for a stage command."""
     for line in (value or "").strip().splitlines()[-lines:]:
         writer("  | %s", line)
-
-_GATE_VERDICT_RE = re.compile(r"^\s*\*{0,2}VERDICT\s*:\s*\*{0,2}(PASS|FAIL|REJECT)\b", re.IGNORECASE | re.MULTILINE)
 
 def _archive_outputs(outputs: list, archive_dir: str, label: str) -> list:
     """Compatibility wrapper around the extracted archive implementation."""
@@ -761,41 +774,6 @@ def _maybe_reuse_task(stage: Stage, task: Task, out_resolved: str, output_path: 
     log.info("REUSE: %s (reused+validated)", output_path)
     reused.append(out_resolved)
     return True
-
-def _gate_verdict(output_paths: list) -> Optional[str]:
-    """Read a gate stage's deliverables and return its verdict
-    (PASS/FAIL/REJECT) or None when no usable VERDICT: line is present.
-    T12b: a bare "VERDICT: PASS" with no reason fails closed (a verdict
-    must justify itself); the verdict text is untrusted, so any other
-    absence is a FAIL too. FAIL/REJECT anywhere wins over an earlier PASS
-    (order-independent: a self-contradictory deliverable must not unlock
-    downstream stages — round-4 finding L2/DS-6)."""
-    first_pass = None
-    for p in output_paths:
-        path = Path(p)
-        if not path.exists():
-            continue
-        try:
-            text = read_text_bounded(path, config.OUTPUT_MAX_BYTES,
-                                     "gate artifact")
-        except ValueError as exc:
-            log.error("GATE: %s; failing closed", exc)
-            continue
-        for m in _GATE_VERDICT_RE.finditer(text):
-            # the reason is the text between the match end and the line end
-            line_end = text.find("\n", m.end())
-            if line_end == -1:
-                line_end = len(text)
-            rest = text[m.end():line_end].strip()
-            if not rest:
-                log.warning("GATE: %s has a bare VERDICT with no reason; failing closed", path)
-                continue
-            verdict = m.group(1).upper()
-            if verdict in ("FAIL", "REJECT"):
-                return verdict
-            if first_pass is None:
-                first_pass = verdict
-    return first_pass
 
 def _include_reused_results(results: list, outputs: list[str]) -> list:
     if results or not outputs:
@@ -920,10 +898,16 @@ def _handle_gate(stage: Stage, stage_outputs: dict, session_name: str = "") -> O
     the verdict or None when the stage is not a gate."""
     if not stage.gate:
         return None
-    verdict = _gate_verdict(stage_outputs.get(stage.name, []))
+    decision = evaluate_gate_artifacts(stage_outputs.get(stage.name, []))
+    verdict = decision.verdict
     if verdict is None:
         verdict = "FAIL"
-        log.error("GATE stage '%s' produced no VERDICT: line; failing closed", stage.name)
+        if decision.source == "none":
+            log.error("GATE stage '%s' produced no VERDICT: line; failing closed",
+                      stage.name)
+        else:
+            log.error("GATE stage '%s' rejected: %s (failing closed)", stage.name,
+                      decision.reason or "no usable verdict")
     elif verdict in ("FAIL", "REJECT"):
         log.error("GATE REJECTED at stage '%s' (verdict: %s) — later stages blocked", stage.name, verdict)
     else:
@@ -931,6 +915,13 @@ def _handle_gate(stage: Stage, stage_outputs: dict, session_name: str = "") -> O
     from .memory import record_gate
     record_gate(stage.name, verdict, stage_outputs.get(stage.name, []),
                 stage.cwd or os.getcwd(), session_name)
+    metering.record_event(
+        "gate_pass" if verdict == "PASS" else "gate_reject",
+        stage.name,
+        f"verdict={verdict};source={decision.source};"
+        f"findings={len(decision.findings)};reason={decision.reason[:300]}",
+        stage.cwd or os.getcwd(), session_name,
+        stage_id=stage.name, phase="governance")
     return verdict
 
 def _run_gate_fix_loop(stage: Stage, stage_outputs: dict, validate_cmd: str,

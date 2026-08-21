@@ -1,8 +1,9 @@
 """Prompt atomization (AADM §2, MUST #1: 先原子化，不能直接转代码).
 
 把需求文本确定性拆成认知原子：目标/角色/操作对象/行为/约束/未知/风险/
-验收/假设。每个原子带来源（source=text）、置信度与硬度——Agent 不能把
-自己的推断当成用户给出的事实。可选 --graph 把原子组装成超图 JSON。
+验收/假设。每个原子带来源（source=text）、来源类型、置信度、硬度和四类
+时间元数据——Agent 不能把自己的推断当成用户给出的事实。可选 --graph
+把原子组装成超图 JSON。
 
 Usage:
     pi-batch atomize "审批人可以拒绝文件申请，审批完成后必须记录审计" --json
@@ -18,9 +19,19 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-# 原子类型（AADM §2 子集：确定性可提取的 9 类）。
+# 原子类型（AADM §2：确定性可提取的认知原子子集）。
 ATOM_TYPES = ("goal", "actor", "object", "operation", "constraint",
-              "unknown", "risk", "acceptance", "assumption")
+              "fact", "preference", "unknown", "risk", "acceptance",
+              "assumption", "evidence", "observation", "decision")
+
+# ``source=text`` 是历史 JSON 的兼容值；source_type 将它明确解释为用户
+# 输入。后续代码/文档/日志来源可直接使用规范类型，不必把来源误当成事实。
+SOURCE_TYPES = ("user", "code", "document", "runtime_log", "rule",
+                "model", "text")
+_SOURCE_TYPE_ALIASES = {
+    "text": "user", "prompt": "user", "doc": "document", "docs": "document",
+    "log": "runtime_log", "runtime": "runtime_log", "rules": "rule",
+}
 
 _SIGNALS = {
     "goal": ("实现", "开发", "做一个", "目标", "完成", "支持", "增加",
@@ -33,9 +44,12 @@ _SIGNALS = {
                   "记录", "查询", "导入", "导出", "重构", "消除", "修复",
                   "拆分", "优化", "重构", "改造", "升级", "重构",
                   "create", "approve", "submit", "send", "record",
-                  "refactor", "fix", "optimize", "split"),
+                 "refactor", "fix", "optimize", "split"),
     "constraint": ("必须", "不得", "禁止", "不能", "需要", "必须兼容",
                    "must", "must not", "required", "forbidden"),
+    "fact": ("可以", "已有", "现有", "已支持", "已存在", "can", "existing",
+             "supported"),
+    "preference": ("优先", "最好", "建议", "倾向", "prefer", "recommended"),
     "unknown": ("是否", "未知", "待确认", "可能", "暂定", "未定", "不确定",
                 "unknown", "tbd", "whether"),
     "risk": ("审批", "支付", "删除", "作废", "迁移", "生产", "权限",
@@ -43,6 +57,9 @@ _SIGNALS = {
     "acceptance": ("验收", "测试", "完成标准", "通过标准", "checklist",
                    "acceptance", "criteria"),
     "assumption": ("默认", "假设", "假定", "暂按", "assume", "assuming"),
+    "evidence": ("证据", "日志", "测试结果", "截图", "benchmark", "evidence"),
+    "observation": ("观察到", "发现", "结果显示", "测得", "observed", "measured"),
+    "decision": ("决定", "采用", "选择", "定为", "decision", "adopt"),
 }
 
 # 约束词 → 硬度（用户明确说"必须/不得"= hard；"需要"= required）。
@@ -51,9 +68,36 @@ _HARDNESS = {"必须": "hard", "不得": "hard", "禁止": "hard", "must": "hard
              "需要": "required", "required": "required"}
 
 
-def atomize(text: str) -> dict:
-    """确定性原子化：按信号词提取命题 + 元数据（来源/置信度/硬度）。"""
+def _source_metadata(source: str) -> tuple[str, str]:
+    """Return the compatibility source and normalized source type."""
+    value = str(source or "text").strip().lower()
+    source_type = _SOURCE_TYPE_ALIASES.get(value, value)
+    if source_type not in SOURCE_TYPES:
+        raise ValueError(f"source must be one of {SOURCE_TYPES}")
+    return value, source_type
+
+
+def _time_metadata(time_info: Optional[dict]) -> dict:
+    """Normalize the four-time model without inventing timestamps."""
+    value = time_info or {}
+    if not isinstance(value, dict):
+        raise ValueError("time must be a mapping")
+    fields = ("event_time", "processing_time", "valid_from", "valid_until",
+              "transaction_time", "version")
+    return {field: value.get(field) for field in fields}
+
+
+def atomize(text: str, *, source: str = "text",
+            time: Optional[dict] = None) -> dict:
+    """确定性原子化：提取命题并附带完整来源/时间元数据。
+
+    ``source=text`` 和 ``source_type=user`` 保留旧调用与旧产物兼容性；
+    ``time`` 由调用方提供，缺失字段保持 ``None``，避免把当前时钟伪装成
+    需求发生或生效时间。
+    """
     lowered = (text or "").lower()
+    source_value, source_type = _source_metadata(source)
+    time_value = _time_metadata(time)
     atoms = []
     seen = set()
     for atom_type, signals in _SIGNALS.items():
@@ -71,9 +115,11 @@ def atomize(text: str) -> dict:
             elif atom_type == "goal":
                 hardness = "required"
             atoms.append({
+                "id": f"{atom_type}-{len(atoms) + 1}",
                 "type": atom_type, "proposition": proposition,
-                "source": "text", "confidence": 0.7,
-                "hardness": hardness, "scope": "task",
+                "source": source_value, "source_type": source_type,
+                "confidence": 0.7, "hardness": hardness, "scope": "task",
+                "time": dict(time_value),
             })
     return {"atoms": atoms, "count": len(atoms)}
 
@@ -94,6 +140,8 @@ def _proposition_for(atom_type: str, signal: str, text: str) -> str:
         return f"风险域：{signal}"
     if atom_type == "acceptance":
         return f"验收条件：{signal}"
+    if atom_type in ("fact", "preference", "evidence", "observation", "decision"):
+        return f"{atom_type}：{signal}"
     return signal
 
 
@@ -144,11 +192,11 @@ def goal_model(text: str) -> dict:
 
 def atoms_to_graph(atoms: list) -> dict:
     """把原子组装成超图 JSON（AADM §5：原子节点 + 语义关系）。"""
-    nodes = [{"id": f"{atom['type']}-{index + 1}",
+    nodes = [{"id": atom.get("id", f"{atom['type']}-{index + 1}"),
               "type": "atom",
-              "payload": {key: atom[key] for key in
-                          ("proposition", "source", "confidence",
-                           "hardness", "scope")}}
+              "payload": {key: atom.get(key) for key in
+                          ("proposition", "source", "source_type",
+                           "confidence", "hardness", "scope", "time")}}
              for index, atom in enumerate(atoms)]
     relations = []
     for index, node in enumerate(nodes):

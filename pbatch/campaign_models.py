@@ -110,9 +110,16 @@ class CampaignSettings:
     requirement_stage: str = "requirements"
     pipeline_concurrency: int = 1
     pipeline_timeout: int = 4 * 60 * 60
-    worktree_root: str = ".pi-batch/worktrees"
+    worktree_root: str = ""  # 空 = data_dir/worktrees（PBATCH_DATA_DIR 感知）
     analysis_minutes: float = 3
     pipeline_minutes: float = 20
+
+    def effective_worktree_root(self, root: Path) -> Path:
+        """worktree 根：显式配置优先；空 = data_dir/worktrees（可移出项目）。"""
+        from .config import data_dir
+        if self.worktree_root:
+            return self.path(root, self.worktree_root)
+        return data_dir(str(root)) / "worktrees"
 
     @classmethod
     def from_mapping(cls, data: dict) -> "CampaignSettings":
@@ -142,7 +149,7 @@ class CampaignSettings:
             requirement_stage=_string_value(implementation, "requirement_stage", "requirements"),
             pipeline_concurrency=_int_value(implementation, "concurrency", 1),
             pipeline_timeout=_int_value(implementation, "timeout", 4 * 60 * 60),
-            worktree_root=_string_value(implementation, "worktree_root", ".pi-batch/worktrees"),
+            worktree_root=_string_value(implementation, "worktree_root", ""),
             analysis_minutes=_float_value(estimates, "analysis_minutes", 3),
             pipeline_minutes=_float_value(estimates, "pipeline_minutes", 20),
         )

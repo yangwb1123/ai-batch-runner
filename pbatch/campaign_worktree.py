@@ -64,7 +64,7 @@ def finalize_worktree(worktree: Path, branch: str, baseline: str,
 def ensure_worktree(root: Path, settings: CampaignSettings,
                     direction: Direction) -> tuple[Path, str, str]:
     campaign_id = safe_slug(settings.name)
-    base = settings.path(root, settings.worktree_root) / campaign_id
+    base = settings.effective_worktree_root(root) / campaign_id
     worktree = base / direction.direction_id
     branch = f"pbatch-campaign/{campaign_id}/{direction.direction_id}"
     baseline = git_text(root, ["rev-parse", "HEAD"])

@@ -19,12 +19,13 @@ from datetime import date
 from pathlib import Path
 from typing import Optional
 
+from . import config
 from .config import log
 
 DRAFT_DIR = Path("docs/rules/drafts")
 EXCEPTION_DIR = Path("docs/rules/exceptions")
 CATEGORIES = ("backend", "frontend", "product", "database", "security",
-              "testing", "devops")
+              "testing", "devops", "evolution")
 SEVERITIES = ("error", "warning", "advice")
 _RULE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
 _FAILURE_MAX_CHARS = 1000
@@ -117,6 +118,39 @@ def shadow_evaluate(rule_id: str, log_path: str, draft_dir: Path = DRAFT_DIR,
 PROMOTED_DIR = Path("docs/rules/promoted")
 
 
+def _promote_block(rule_id: str, draft: dict, files: list, min_tier: str,
+                   level: str, required: bool, registry: str) -> str:
+    """注册表追加块；evolution 域强制携带 samples/confidence 元数据。"""
+    block = (
+        f"  {rule_id}:\n"
+        f"    description: {draft.get('title', rule_id)}\n"
+        f"    files: {files}\n"
+        f"    min_tier: {min_tier}\n"
+        f"    level: {level}\n"
+        f"    required: {str(required).lower()}\n"
+        f"    # promoted from draft {rule_id}（{draft.get('severity', '')}，"
+        f"影子/人工批准后并入）\n")
+    if registry == "evolution":
+        block += (
+            f"    samples: {list(draft.get('samples') or [])}\n"
+            f"    confidence: {float(draft.get('confidence', 0.5))}\n")
+    return block
+
+
+def _resolve_registry_path(registry: str) -> str:
+    """按域名解析注册表路径（cwd 相对 → 工具根回退）。"""
+    rel = {"frontend": "ui-specs/rules.yaml",
+           "backend": "backend-specs/rules.yaml",
+           "evolution": "evolution-specs/rules.yaml"}.get(registry, "")
+    if rel and Path(rel).exists():
+        return rel
+    if rel:
+        resolved = config.resolve_asset_path(rel)
+        if Path(resolved).exists():
+            return resolved
+    return ""
+
+
 def promote_draft(rule_id: str, registry: str = "frontend",
                   files: Optional[list] = None, min_tier: str = "standard",
                   level: str = "policy", required: bool = False,
@@ -136,26 +170,20 @@ def promote_draft(rule_id: str, registry: str = "frontend",
                          "——先完成根因分析再提升")
     if not files:
         raise ValueError("--files 必填（规则引用的规范文件，须存在）")
+    if registry == "evolution":
+        _require_evolution_metadata(rule_id, draft)
     missing = [f for f in files if not Path(f).exists()]
     if missing:
         raise ValueError(f"rule files missing: {missing}")
     if not registry_path:
-        registry_path = {"frontend": "ui-specs/rules.yaml",
-                         "backend": "backend-specs/rules.yaml"}.get(registry, "")
+        registry_path = _resolve_registry_path(registry)
     if not registry_path or not Path(registry_path).exists():
         raise ValueError(f"unknown registry {registry!r}")
     text = Path(registry_path).read_text(encoding="utf-8")
     if f"\n  {rule_id}:\n" in text or f"  {rule_id}:\n" in text:
         raise ValueError(f"rule '{rule_id}' already exists in {registry_path}")
-    block = (
-        f"  {rule_id}:\n"
-        f"    description: {draft.get('title', rule_id)}\n"
-        f"    files: {files}\n"
-        f"    min_tier: {min_tier}\n"
-        f"    level: {level}\n"
-        f"    required: {str(required).lower()}\n"
-        f"    # promoted from draft {rule_id}（{draft.get('severity', '')}，"
-        f"影子/人工批准后并入）\n")
+    block = _promote_block(rule_id, draft, files, min_tier, level, required,
+                           registry)
     if not text.endswith("\n"):
         text += "\n"
     text += block
@@ -163,6 +191,12 @@ def promote_draft(rule_id: str, registry: str = "frontend",
     PROMOTED_DIR.mkdir(parents=True, exist_ok=True)
     moved = _move_draft(draft_dir, rule_id)
     return registry_path, moved
+
+
+def _require_evolution_metadata(rule_id: str, draft: dict) -> None:
+    """evolution 域 promote 强制元数据（实现委托 evolution 域模块）。"""
+    from .evolution import require_evolution_metadata
+    require_evolution_metadata(rule_id, draft)
 
 
 def _move_draft(draft_dir: Path, rule_id: str) -> str:
@@ -204,6 +238,11 @@ def rule_schema_template() -> dict:
         "exceptions": [{"condition": ""}],
         "verification": {"static": [], "tests": []},
         "examples": {"good": [], "bad": []},
+        # evolution 域元数据（promote 到 evolution-specs/rules.yaml 时必填）：
+        # samples = 归纳出处（哪个实战项目验证过）；confidence = 归纳强度
+        # （0-1，<0.6 默认只以 suggestion 形态生效）。
+        "samples": [],
+        "confidence": 0.5,
         "owner": "",
         "version": "0.1.0",
         "status": "draft",
@@ -357,7 +396,7 @@ def _build_learn_parser():
         "promote", help="把已批准草案并入规则注册表（规则生命周期闭环）")
     p_promote.add_argument("--rule-id", required=True)
     p_promote.add_argument("--registry", default="frontend",
-                           choices=("frontend", "backend"))
+                           choices=("frontend", "backend", "evolution"))
     p_promote.add_argument("--files", default="",
                            help="逗号分隔的规范文件（须存在）")
     p_promote.add_argument("--min-tier", default="standard",

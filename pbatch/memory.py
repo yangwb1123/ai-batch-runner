@@ -3,6 +3,7 @@ index and a bounded manifest for LLM-directed, on-demand history access."""
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import hashlib
 import heapq
@@ -10,6 +11,7 @@ import json
 import os
 import re
 import threading
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,7 +20,7 @@ from .config import log
 from . import session
 from .index_io import scan_events
 from .memory_io import bounded_lines, cap_manifest
-from .memory_policy import classify_prompt
+from .memory_policy import classify_prompt, memory_scope, scope_matches
 from .memory_records import (
     message_view as _message_view,
     redact as _redact,
@@ -49,6 +51,9 @@ def project_root(cwd: str = "") -> Path:
 
 def index_path(cwd: str = "", override: str = "") -> Path:
     value = override or config.MEMORY_INDEX_FILE
+    if not override and value == ".pi-batch/memory/sessions.index.jsonl":
+        # 默认索引随 data_dir（PBATCH_DATA_DIR 可移出项目）
+        return config.data_dir(cwd) / "memory" / "sessions.index.jsonl"
     path = Path(value)
     if path.is_absolute():
         return path
@@ -82,6 +87,15 @@ def append_event(event: dict, cwd: str = "", override: str = "") -> Path:
     if path.is_symlink():
         raise ValueError(f"refusing symlink memory index: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
+    if not isinstance(event, dict):
+        raise ValueError("memory event must be a mapping")
+    event = dict(event)
+    expected_scope = memory_scope(cwd)
+    supplied_scope = event.get("scope")
+    if supplied_scope is None:
+        event["scope"] = expected_scope
+    elif not scope_matches({"scope": supplied_scope}, expected_scope):
+        raise ValueError("memory event scope does not match current boundary")
     payload = _redact_index_event(event)
     payload.setdefault("ts", datetime.now(timezone.utc).isoformat(timespec="seconds"))
     line = json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n"
@@ -89,26 +103,98 @@ def append_event(event: dict, cwd: str = "", override: str = "") -> Path:
     if size > config.MEMORY_INDEX_LINE_MAX_BYTES:
         raise ValueError(
             f"memory index event exceeds {config.MEMORY_INDEX_LINE_MAX_BYTES} bytes ({size})")
+    if size > config.MEMORY_INDEX_MAX_BYTES:
+        raise ValueError(
+            f"memory index event exceeds file cap {config.MEMORY_INDEX_MAX_BYTES} bytes ({size} bytes)")
     with _INDEX_LOCK:
-        with path.open("a", encoding="utf-8") as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            handle.write(line)
+        _append_index_line(path, line.encode("utf-8"), size)
+    return path
+
+
+def _append_index_line(path: Path, line: bytes, size: int) -> None:
+    """Append under a stable inode lock, compacting the oldest records if needed."""
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags, 0o644)
+    except OSError as exc:
+        if getattr(exc, "errno", None) == errno.ELOOP:
+            raise ValueError(f"refusing symlink memory index: {path}") from exc
+        raise
+    with os.fdopen(descriptor, "r+b", buffering=0) as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            handle.seek(0, os.SEEK_END)
+            current = handle.tell()
+            maximum = config.MEMORY_INDEX_MAX_BYTES
+            if current + size <= maximum:
+                handle.write(line)
+            else:
+                _compact_index(handle, line, maximum)
             handle.flush()
             os.fsync(handle.fileno())
+        finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-    return path
+
+
+def _compact_index(handle, line: bytes, maximum: int) -> None:
+    """Keep the newest complete records while reserving space for ``line``."""
+    if len(line) > maximum:
+        raise ValueError(
+            f"memory index event exceeds file cap {maximum} bytes ({len(line)} bytes)")
+    budget = maximum - len(line)
+    kept = deque()
+    used = 0
+    handle.seek(0)
+    for raw in _bounded_index_lines(handle):
+        if not raw or len(raw) > config.MEMORY_INDEX_LINE_MAX_BYTES:
+            continue
+        if len(raw) > budget:
+            continue
+        kept.append(raw)
+        used += len(raw)
+        while used > budget and kept:
+            used -= len(kept.popleft())
+    payload = b"".join(kept) + line
+    handle.seek(0)
+    handle.truncate()
+    handle.write(payload)
+
+
+def _bounded_index_lines(handle):
+    """Yield raw lines without loading an oversized corrupt record."""
+    limit = config.MEMORY_INDEX_LINE_MAX_BYTES
+    chunk = limit + 1
+    while True:
+        raw = handle.readline(chunk)
+        if not raw:
+            return
+        if len(raw) <= limit:
+            yield raw
+            continue
+        while raw and not raw.endswith(b"\n"):
+            raw = handle.readline(chunk)
 
 def iter_events(cwd: str = "", override: str = ""):
     """Stream valid bounded metadata records in append order."""
-    return scan_events(index_path(cwd, override), config.MEMORY_INDEX_LINE_MAX_BYTES)
+    expected_scope = memory_scope(cwd)
+    for event in scan_events(index_path(cwd, override),
+                             config.MEMORY_INDEX_LINE_MAX_BYTES):
+        if scope_matches(event, expected_scope):
+            yield event
 
 def events(cwd: str = "", override: str = "") -> list[dict]:
     """Compatibility snapshot; query paths use iterators to stay bounded."""
     return list(iter_events(cwd, override))
 
 def _reverse_events(cwd: str = "", override: str = ""):
-    return scan_events(index_path(cwd, override), config.MEMORY_INDEX_LINE_MAX_BYTES,
-                       newest_first=True)
+    expected_scope = memory_scope(cwd)
+    for event in scan_events(index_path(cwd, override),
+                             config.MEMORY_INDEX_LINE_MAX_BYTES,
+                             newest_first=True):
+        if scope_matches(event, expected_scope):
+            yield event
 
 def record_task(result, cwd: str = "") -> None:
     if not memory_enabled():
@@ -342,7 +428,8 @@ def _safe_raw_path(path: Path, cwd: str) -> bool:
 def _public_event(item: dict) -> dict:
     fields = ("ts", "type", "session_id", "session_name", "status", "mode", "domains",
               "stage", "role", "prompt_excerpt", "output", "output_hash", "reason", "verdict", "outputs",
-              "artifacts", "campaign", "module", "direction_id", "direction", "evidence")
+              "artifacts", "campaign", "module", "direction_id", "direction", "evidence",
+              "scope")
     extra = ("message_count", "roles", "total_tokens", "cost", "raw_size",
              "observed_verdict", "observed_failure")
     public = {key: item[key] for key in (*fields, *extra)

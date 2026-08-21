@@ -37,6 +37,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import Optional
 
 VALID_RESULTS = {"passed", "failed", "not_executed"}
 _FABRICATED_RE = re.compile(
@@ -62,6 +63,103 @@ def _has_yaml() -> bool:
         return True
     except ImportError:
         return False
+
+
+def _scalar_list(value: str) -> list:
+    """Parse the small inline-list subset needed by the stdlib fallback."""
+    value = value.strip()
+    if not value or value == "[]":
+        return []
+    if value.startswith("[") and value.endswith("]"):
+        body = value[1:-1].strip()
+        if not body:
+            return []
+        return [item.strip().strip("\"'") for item in body.split(",")
+                if item.strip()]
+    return [value.strip("\"'")]
+
+
+_TEXTUAL_LIST_SECTIONS = {"changed_files", "residual_risks", "assumptions"}
+_TEXTUAL_MAP_SECTIONS = {"commands_executed", "not_executed"}
+
+
+def _textual_section(report: dict, key: str, value: str) -> str:
+    """Store a top-level completion field and return the active section."""
+    if key in _TEXTUAL_LIST_SECTIONS:
+        report[key] = _scalar_list(value)
+    elif key in _TEXTUAL_MAP_SECTIONS:
+        report[key] = []
+    else:
+        report[key] = value.strip("\"'")
+    return key
+
+
+def _textual_nested(report: dict, section: str, key: str, value: str,
+                    current: Optional[dict]) -> Optional[dict]:
+    """Apply a nested command/not-executed field."""
+    if section not in _TEXTUAL_MAP_SECTIONS:
+        return current
+    value = value.strip("\"'")
+    if key in {"command", "check"}:
+        current = {key: value}
+        report[section].append(current)
+    elif key in {"result", "reason"} and current is not None:
+        current[key] = value
+    return current
+
+
+def _textual_item(report: dict, section: str, content: str,
+                  current: Optional[dict]) -> Optional[dict]:
+    """Apply one YAML-style list item in the fallback grammar."""
+    if section in _TEXTUAL_LIST_SECTIONS:
+        report.setdefault(section, []).append(content.strip("\"'"))
+        return current
+    if section not in _TEXTUAL_MAP_SECTIONS:
+        return current
+    pair = re.match(r"(command|check):\s*(.*)$", content)
+    if not pair:
+        return current
+    current = {pair.group(1): pair.group(2).strip("\"'")}
+    report[section].append(current)
+    return current
+
+
+def _textual_report(block: str) -> Optional[dict]:
+    """Parse the deliberately narrow completion schema without PyYAML."""
+    if not any(line.strip() == "completion_report:" for line in block.splitlines()):
+        return None
+    report, section, current = {}, "", None
+    for raw in block.splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped == "completion_report:":
+            continue
+        match = re.match(r"^( {2,})([A-Za-z_][\w-]*):(?:[ \t]*(.*))?$", raw)
+        if match:
+            key, value = match.group(2), (match.group(3) or "").strip()
+            if len(match.group(1)) <= 2:
+                section, current = _textual_section(report, key, value), None
+            else:
+                current = _textual_nested(report, section, key, value, current)
+            continue
+        item = re.match(r"^\s+-\s+(.*)$", raw)
+        if item:
+            current = _textual_item(report, section, item.group(1), current)
+    return report
+
+
+def _parse_report_block(block: str) -> Optional[dict]:
+    """Load one report with PyYAML when present, otherwise use the fallback."""
+    try:
+        import yaml
+    except ImportError:
+        return _textual_report(block)
+    try:
+        data = yaml.safe_load(block)
+    except Exception:
+        return None
+    return data.get("completion_report") if isinstance(data, dict) else None
 
 
 def _check_commands(commands, violations) -> None:
@@ -101,18 +199,12 @@ def check_report(text: str) -> list:
     if _FABRICATED_RE.search(text):
         violations.append("fabricated-pass phrasing used as verification "
                           f"evidence: {_FABRICATED_RE.search(text).group(0)[:40]}")
-    if not _has_yaml():
-        violations.append("PyYAML not available; falling back to textual checks")
-    import yaml  # noqa: F401
     report = None
     for block in blocks:
-        try:
-            data = yaml.safe_load(block)
-        except Exception:
-            continue
-        if isinstance(data, dict) and isinstance(data.get("completion_report"), dict):
-            report = data["completion_report"]
+        report = _parse_report_block(block)
+        if isinstance(report, dict):
             break
+        report = None
     if report is None:
         return violations + ["completion_report is not valid YAML mapping"]
     commands = report.get("commands_executed")

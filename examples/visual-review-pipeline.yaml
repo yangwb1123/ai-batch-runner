@@ -29,7 +29,7 @@ stages:
       Implement the page per the rule manifest (pi-batch assess --prompt)
       and the ui-specs. Output docs/ui/visual/page.tsx.
     output: docs/ui/visual/page.tsx
-    validate: uispacing,uicolor,uistyle
+    validate: uispacing,uicolor,uistyle,uifont
     mode: serial
 
   # ── 2. 截图评审：渲染 → 截图 → 视觉评分（<90 失败 → 修复循环）──

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
+from typing import Optional
 
 from .memory_io import bounded_lines
 
@@ -141,17 +143,38 @@ def classify_violation(detail: str, checker: str = "") -> str:
     return fallback or "be_architecture"
 
 
-def build_batches(scan: dict) -> list:
-    """P0 -> P1 -> P2 batches: one batch per dimension with findings."""
-    return [
-        {"priority": _PRIORITY_LABEL[value["priority"]], "id": dimension,
-         "count": value["count"], "label": value["label"], "fix": value["fix"],
-         "files": value["files"][:8], "samples": value["samples"]}
-        for dimension, value in sorted(
+def _denylist_matches(rel: str, patterns: list) -> bool:
+    """denylist glob 匹配（** 递归，* 单段）——与 check-changebudget 同语义。"""
+    for pattern in patterns:
+        if not pattern:
+            continue
+        regex = re.escape(str(pattern)).replace(r"\*\*", "__DOUBLE__")
+        regex = regex.replace(r"\*", "[^/]*").replace("__DOUBLE__", ".*")
+        if re.fullmatch(regex, rel):
+            return True
+    return False
+
+
+def build_batches(scan: dict, denylist: Optional[list] = None) -> list:
+    """P0 -> P1 -> P2 batches: one batch per dimension with findings.
+
+    denylist（项目宪法 change_budget.denylist）命中的文件从批次中剔除——
+    advance 的修复任务绝不触碰被禁路径（L9/AP-6）。"""
+    patterns = denylist or []
+    batches = []
+    for dimension, value in sorted(
             scan["dimensions"].items(), key=lambda item: (
-                item[1]["priority"], -item[1]["count"]))
-        if value["count"] > 0
-    ]
+                item[1]["priority"], -item[1]["count"])):
+        if value["count"] <= 0:
+            continue
+        files = [f for f in value["files"] if not _denylist_matches(f, patterns)]
+        if not files and patterns:
+            continue
+        batches.append({"priority": _PRIORITY_LABEL[value["priority"]],
+                        "id": dimension, "count": value["count"],
+                        "label": value["label"], "fix": value["fix"],
+                        "files": files[:8], "samples": value["samples"]})
+    return batches
 
 
 def _state_symlink(path: Path) -> Path | None:

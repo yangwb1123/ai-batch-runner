@@ -94,6 +94,28 @@ def test_single_file_mode_still_works(tmp_path):
     assert "13" in result.stderr
 
 
+def test_font_gate_uses_typography_tokens(tmp_path):
+    bad = tmp_path / "bad.tsx"
+    bad.write_text("fontSize: 15\nfont-size: 18px\ntext-[13px]\n", encoding="utf-8")
+    result = _run("--mode", "font", str(bad))
+    assert result.returncode == 1
+    assert "typography tokens" in result.stderr
+    good = tmp_path / "good.tsx"
+    good.write_text("fontSize: 16\nfont-size: 24px\ntext-[12px]\n", encoding="utf-8")
+    assert _run("--mode", "font", str(good)).returncode == 0
+
+
+def test_spacing_gate_checks_tailwind_utility_classes(tmp_path):
+    bad = tmp_path / "tailwind.tsx"
+    bad.write_text('className="p-13 gap-7 space-x-2 m-[13px]"\n', encoding="utf-8")
+    result = _run("--mode", "spacing", str(bad))
+    assert result.returncode == 1
+    assert "13" in result.stderr and "7" in result.stderr
+    good = tmp_path / "tailwind-good.tsx"
+    good.write_text('className="p-2 p-4 gap-4 space-x-4 m-[16px]"\n', encoding="utf-8")
+    assert _run("--mode", "spacing", str(good)).returncode == 0
+
+
 def test_unknown_mode_exits_2():
     result = _run("--mode", "bogus", "x.tsx")
     assert result.returncode == 2

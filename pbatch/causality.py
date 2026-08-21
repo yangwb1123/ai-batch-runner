@@ -25,9 +25,22 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-CAUSALITY_FILE = Path(".pi-batch") / "causality.jsonl"
+_LEGACY_CAUSALITY_FILE = Path(".pi-batch") / "causality.jsonl"
+CAUSALITY_FILE = _LEGACY_CAUSALITY_FILE  # 兼容旧引用
 LINE_MAX = 256 * 1024
 FILE_MAX = 4 * 1024 * 1024
+
+
+def causality_file(cwd: str = "") -> Path:
+    """因果假设账本路径（遵循 --data-dir/PBATCH_DATA_DIR）。"""
+    from .config import data_dir
+    return data_dir(cwd) / "causality.jsonl"
+
+
+def _effective_causality_file(cwd: str = "") -> Path:
+    """新运行时路径；显式改写 CAUSALITY_FILE 时保留旧集成行为。"""
+    legacy = Path(CAUSALITY_FILE)
+    return legacy if legacy != _LEGACY_CAUSALITY_FILE else causality_file(cwd)
 
 STATUSES = ("unverified", "supported", "rejected", "inconclusive")
 
@@ -74,15 +87,17 @@ def apply_evidence(hypothesis: dict, supports: str = "", refutes: str = "",
 
 
 def _append(record: dict) -> str:
-    CAUSALITY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with CAUSALITY_FILE.open("a", encoding="utf-8") as handle:
+    path = _effective_causality_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-    return CAUSALITY_FILE.name
+    return path.name
 
 
-def load_hypotheses(path: Path = CAUSALITY_FILE) -> dict:
+def load_hypotheses(path: Optional[Path] = None) -> dict:
     """按日志回放重建假设库（有界行缓冲）。"""
     hypotheses = {}
+    path = Path(path) if path is not None else _effective_causality_file()
     if not path.exists():
         return hypotheses
     try:

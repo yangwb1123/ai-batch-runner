@@ -154,7 +154,8 @@ ACTION_RULES = {
 
 def _reflection_actions() -> list:
     """聚合 .pi-batch/reflections.jsonl：重复发现 → 动作（闭环）。"""
-    path = Path(".pi-batch") / "reflections.jsonl"
+    from .config import data_dir
+    path = data_dir() / "reflections.jsonl"
     if not path.exists():
         return []
     counts = {}
@@ -202,7 +203,7 @@ def _reflection_actions() -> list:
 
 
 def _generate_actions(counts: Counter) -> list:
-    """从失败模式生成动作；叠加反思账本聚合。"""
+    """从当前失败模式生成动作，并按需叠加历史反思账本。"""
     actions = []
     for name, count in counts.items():
         rule = ACTION_RULES.get(name)
@@ -210,7 +211,11 @@ def _generate_actions(counts: Counter) -> list:
             actions.append({"type": name, "count": count,
                             "rule_id": rule[0], "title": rule[1],
                             "action": rule[2]})
-    actions.extend(_reflection_actions())
+    # 历史反思只在本次运行已有可行动失败时参与，避免一份旧账本把
+    # 完全健康的日志误报成当前运行需要修复；调用方仍可直接使用
+    # _reflection_actions() 查看历史闭环信号。
+    if actions:
+        actions.extend(_reflection_actions())
     return actions
 
 

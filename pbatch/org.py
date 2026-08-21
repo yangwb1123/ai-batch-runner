@@ -1,6 +1,6 @@
 """Agent 工程组织规范校验器（`pi-batch org`）.
 
-agent-engineering/*.yaml 是 16 个流程节点的"岗位说明书"（9 要素）。
+agent-engineering/*.yaml 是 17 个流程节点的"岗位说明书"（9 要素）。
 `org check` 强制校验：9 要素齐全、stage 0-16 连续、id 唯一、auto_checks
 引用的命令真实存在（规范可验证，不是文档）。
 
@@ -16,6 +16,7 @@ import argparse
 import json
 import re
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
@@ -27,6 +28,22 @@ REQUIRED_KEYS = ("id", "name", "role", "stage", "parent",
                  "responsibilities", "inputs", "outputs", "check_rules",
                  "forbidden", "best_practices", "failure_cases",
                  "auto_checks", "review_checklist", "role_template")
+SUPPORTED_PLACEHOLDERS = ("{task}", "{code}", "{file}", "{log}")
+_PLACEHOLDER_RE = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
+
+
+def _unsupported_placeholders(value: str) -> list[str]:
+    """Return unknown command placeholders in first-seen order."""
+    seen = set()
+    return [token for token in _PLACEHOLDER_RE.findall(str(value))
+            if token not in SUPPORTED_PLACEHOLDERS and not (token in seen or seen.add(token))]
+
+
+def _gate_params(task: str, code_dir: str, file_path: str,
+                 log_path: str) -> dict[str, str]:
+    """Build gate substitutions from the single supported-token registry."""
+    return dict(zip(SUPPORTED_PLACEHOLDERS,
+                    (task, code_dir, file_path, log_path)))
 
 
 def load_nodes(org_dir: Optional[Path] = None) -> list:
@@ -69,12 +86,24 @@ def _check_exists(check: str, commands: set) -> bool:
     return Path(first).exists()
 
 
+def _auto_check_problem(node_id: str, check: str, commands: set) -> str:
+    """Return one actionable static problem for an auto_check, if any."""
+    unsupported = _unsupported_placeholders(check)
+    if unsupported:
+        return (f"{node_id}: auto_check 占位符不支持: "
+                f"{', '.join(unsupported)}")
+    if not _check_exists(check, commands):
+        return f"{node_id}: auto_check 命令不存在: {check}"
+    return ""
+
+
 def org_check(nodes: Optional[list] = None,
              org_dir: Optional[Path] = None) -> dict:
     """规范完整性：9 要素 / 顺序 / id 唯一 / 命令存在。"""
     nodes = nodes if nodes is not None else load_nodes(org_dir)
     problems = []
     by_id = {}
+    commands = _known_commands()
     for node in nodes:
         node_id = node.get("id", "")
         if node_id in by_id:
@@ -90,10 +119,10 @@ def org_check(nodes: Optional[list] = None,
         parent = node.get("parent", "")
         if parent and parent not in by_id:
             problems.append(f"{node.get('id')}: parent '{parent}' 不存在")
-        commands = _known_commands()
         for check in node.get("auto_checks", []):
-            if not _check_exists(str(check), commands):
-                problems.append(f"{node_id}: auto_check 命令不存在: {check}")
+            problem = _auto_check_problem(node_id, str(check), commands)
+            if problem:
+                problems.append(problem)
     stages = sorted(node.get("stage", -1) for node in nodes)
     expected = list(range(len(nodes))) if nodes else []
     if stages != expected:
@@ -147,9 +176,13 @@ def run_gate(node_id: str, task: str = "", code_dir: str = "",
     if node is None:
         return {"error": f"unknown node {node_id!r}"}
     results = []
-    params = {"{task}": task, "{code}": code_dir, "{file}": file_path,
-              "{log}": log_path}
+    params = _gate_params(task, code_dir, file_path, log_path)
     for check in node.get("auto_checks", []):
+        unsupported = _unsupported_placeholders(str(check))
+        if unsupported:
+            results.append({"check": check, "status": "skipped",
+                            "reason": f"不支持的占位符 {', '.join(unsupported)}"})
+            continue
         missing = [key for key, value in params.items()
                    if key in str(check) and not value]
         if missing:
@@ -160,25 +193,51 @@ def run_gate(node_id: str, task: str = "", code_dir: str = "",
     return _summarize(node_id, results)
 
 
+def _render_check_argv(check, params: dict) -> tuple[Optional[list], str]:
+    """Expand trusted command templates into argv without invoking a shell.
+
+    Placeholder values are inserted after ``shlex.split``.  A task containing
+    ``;``, ``$()`` or pipes therefore remains one argument and cannot become
+    a second command.  Shell syntax in the static organization file is not a
+    supported auto-check contract; use an explicit executable instead.
+    """
+    template = str(check)
+    sentinels = {}
+    for index, (key, value) in enumerate(params.items()):
+        sentinel = f"PBATCH_PARAM_{index}_TOKEN"
+        sentinels[sentinel] = value
+        template = template.replace(key, sentinel)
+    leftovers = _PLACEHOLDER_RE.findall(template)
+    if leftovers:
+        return None, f"未替换占位符 {', '.join(leftovers)}（配置错误）"
+    try:
+        argv = shlex.split(template)
+    except ValueError as exc:
+        return None, f"命令引号无效: {exc}"
+    if not argv:
+        return None, "auto_check 命令为空"
+    for index, token in enumerate(argv):
+        for sentinel, value in sentinels.items():
+            argv[index] = token.replace(sentinel, value)
+    return _normalize_check_argv(argv), ""
+
+
+def _normalize_check_argv(argv: list) -> list:
+    """Apply the repository's script and ``pi-batch`` executable aliases."""
+    if argv[0].startswith("scripts/"):
+        argv.insert(0, sys.executable)
+    if argv[0] == "pi-batch":
+        argv = [sys.executable, "-m", "pbatch", *argv[1:]]
+    return argv
+
+
 def _execute_check(check, params: dict) -> dict:
     """执行单个 auto_check（有界子进程；reflect 低分 = attention）。"""
-    import subprocess
-    cmd = str(check)
-    for key, value in params.items():
-        cmd = cmd.replace(key, shlex.quote(value))
-    leftover = re.findall(r"\{[a-z_]+\}", cmd)
-    if leftover:
-        # 未知占位符未替换 → 配置错误显式暴露（campaign 实战：evolution
-        # 节点 {log} 曾静默假通过，方向被 gate 拒绝但 bug 真实）。
-        return {"check": check, "status": "failed",
-                "reason": f"未替换占位符 {', '.join(leftover)}（配置错误）"}
-    # scripts/*.py 无执行位（仓库惯例用解释器调用）——自动加 python 前缀。
-    if cmd.startswith("scripts/") and not cmd.startswith(("python", "bash")):
-        cmd = f"{sys.executable} {cmd}"
-    if cmd == "pi-batch" or cmd.startswith("pi-batch "):
-        cmd = f"{shlex.quote(sys.executable)} -m pbatch{cmd[len('pi-batch'):]}"
+    argv, error = _render_check_argv(check, params)
+    if error:
+        return {"check": check, "status": "failed", "reason": error}
     try:
-        result = subprocess.run(cmd, shell=True, capture_output=True,
+        result = subprocess.run(argv, shell=False, capture_output=True,
                                 text=True, timeout=120)
         ok = result.returncode == 0
         status = ("passed" if ok else
@@ -301,12 +360,30 @@ def _build_parser():
 LEVEL_NODES = {
     "L0": ["requirement", "developer", "testing"],
     "L1": ["requirement", "developer", "testing", "code_review"],
-    "L2": ["requirement", "domain", "architecture", "data", "developer",
-           "code_review", "security", "testing"],
-    "L3": ["requirement", "product", "domain", "architecture", "data",
-           "api", "developer", "code_review", "security", "testing",
-           "performance", "release"],
+    "L2": ["requirement", "domain", "architecture", "data", "planning",
+           "developer", "code_review", "security", "testing"],
+    "L3": ["orchestrator", "requirement", "product", "ux_designer",
+           "domain", "architecture", "data", "api", "planning",
+           "developer", "code_review", "security", "testing",
+           "performance", "release", "operation", "evolution"],
 }
+
+_FRONTEND_HINTS = ("前端", "页面", "按钮", "界面", "react", "vue", "flutter",
+                   "tsx", "jsx", "css", "ui")
+
+
+def _flow_nodes(level: str, task: str) -> list:
+    """Return the level's nodes, adding UX review for frontend work.
+
+    UX is intentionally conditional for L1/L2 so a backend change does not
+    pay for an irrelevant visual gate; L3 includes every organization node.
+    """
+    nodes = list(LEVEL_NODES.get(level, LEVEL_NODES["L1"]))
+    frontend = any(term in (task or "").casefold() for term in _FRONTEND_HINTS)
+    if level in {"L1", "L2"} and frontend and "ux_designer" not in nodes:
+        insert_at = nodes.index("requirement") + 1
+        nodes.insert(insert_at, "ux_designer")
+    return nodes
 
 
 def run_flow(task: str, code_dir: str = "", level: str = "",
@@ -317,11 +394,17 @@ def run_flow(task: str, code_dir: str = "", level: str = "",
     impact = change_impact(task, code_dir)
     if not level:
         level = impact["work_level"]
-    nodes = LEVEL_NODES.get(level, LEVEL_NODES["L1"])
+    nodes = _flow_nodes(level, task)
     results = []
     for node_id in nodes:
         gate = run_gate(node_id, task, code_dir, file_path, log_path)
         if "error" in gate:
+            failed_gate = _failed_gate(gate["error"])
+            results.append({"node": node_id, "passed": 0, "failed": 1,
+                            "skipped": 0, "attention": 0,
+                            "gate_passed": False, "error": gate["error"]})
+            if artifact_dir:
+                _write_artifact(artifact_dir, node_id, failed_gate)
             continue
         results.append({"node": node_id, "passed": gate["passed"],
                         "failed": gate["failed"], "skipped": gate["skipped"],
@@ -339,6 +422,14 @@ def run_flow(task: str, code_dir: str = "", level: str = "",
     }
 
 
+def _failed_gate(error: str) -> dict:
+    """Represent a node lookup/configuration error as a blocking gate."""
+    return {"passed": 0, "failed": 1, "skipped": 0, "attention": 0,
+            "gate_passed": False,
+            "results": [{"status": "failed", "check": "org.run_gate",
+                         "reason": str(error)}]}
+
+
 def _write_artifact(artifact_dir: str, node_id: str, gate: dict) -> None:
     """节点输出工件落盘（下游节点输入；只写证据摘录，不写全量）。"""
     target = Path(artifact_dir)
@@ -354,17 +445,22 @@ def _write_artifact(artifact_dir: str, node_id: str, gate: dict) -> None:
                                            encoding="utf-8")
 
 
+def flows_dir(cwd: str = "") -> Path:
+    """流程工件目录（data_dir 感知）。"""
+    from .config import data_dir
+    return data_dir(cwd) / "flows"
+
+
 FLOWS_DIR = Path(".pi-batch") / "flows"
-
-
 def save_flow(report: dict) -> str:
     """流程工件落盘（可审计、可续查）：.pi-batch/flows/<ts>-<slug>.json。"""
     import time as _time
     import re as _re
     slug = _re.sub(r"[^a-z0-9]+", "-", (report.get("task") or "flow")
                    .lower())[:40].strip("-") or "flow"
-    path = FLOWS_DIR / f"{_time.strftime('%Y%m%d-%H%M%S')}-{slug}.json"
-    FLOWS_DIR.mkdir(parents=True, exist_ok=True)
+    flows = flows_dir()
+    path = flows / f"{_time.strftime('%Y%m%d-%H%M%S')}-{slug}.json"
+    flows.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, ensure_ascii=False, indent=2),
                     encoding="utf-8")
     return str(path)
@@ -373,9 +469,9 @@ def save_flow(report: dict) -> str:
 def list_flows() -> list:
     """历史流程工件（新→旧，有界读取）。"""
     records = []
-    if not FLOWS_DIR.exists():
+    if not flows_dir().exists():
         return records
-    for path in sorted(FLOWS_DIR.glob("*.json"), reverse=True):
+    for path in sorted(flows_dir().glob("*.json"), reverse=True):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):

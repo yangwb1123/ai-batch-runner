@@ -14,7 +14,7 @@ _STAGE_FIELDS = frozenset((
     "gate_fix_validate", "approval", "from_prompt", "output", "tasks",
     "commands", "commands_parallel", "command_timeout",
     "command_output_max_bytes", "cwd", "git_commit", "commit_message",
-    "or_tasks",
+    "or_tasks", "verify_experiment",
 ))
 _TASK_FIELDS = frozenset((
     "prompt", "prompt_template", "output", "model", "provider", "thinking",
@@ -77,6 +77,20 @@ def _validate_stage(stage, index: int, seen: set[str]) -> tuple[list[str], str]:
     return errors, name
 
 
+def _command_list_errors(stage: dict, prefix: str) -> list:
+    """commands / verify_experiment 列表字段校验。"""
+    errors = []
+    commands = stage.get("commands", [])
+    if not isinstance(commands, list) or not all(
+            isinstance(item, str) for item in commands):
+        errors.append(f"{prefix}.commands must be a string list")
+    experiments = stage.get("verify_experiment", [])
+    if not isinstance(experiments, list) or not all(
+            isinstance(item, str) and bool(item.strip()) for item in experiments):
+        errors.append(f"{prefix}.verify_experiment must be a non-empty string list")
+    return errors
+
+
 def _field_errors(stage: dict, prefix: str) -> list[str]:
     errors = [f"{prefix}.{key} must be a string" for key in _STRING_FIELDS
               if key in stage and not isinstance(stage[key], str)]
@@ -92,9 +106,7 @@ def _field_errors(stage: dict, prefix: str) -> list[str]:
         value = stage.get(key, minimum)
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
             errors.append(f"{prefix}.{key} must be an integer >= {minimum}")
-    commands = stage.get("commands", [])
-    if not isinstance(commands, list) or not all(isinstance(item, str) for item in commands):
-        errors.append(f"{prefix}.commands must be a string list")
+    errors.extend(_command_list_errors(stage, prefix))
     for key in ("validate", "validate_cmd", "gate_fix_validate"):
         value = stage.get(key)
         if value is not None and not isinstance(value, str):

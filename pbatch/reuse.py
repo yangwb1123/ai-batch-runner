@@ -285,7 +285,8 @@ def preserve_failed_worktree(workdir: str, label: str, before: str) -> str:
     if not before or before == after:
         return ""
     safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in label)[:80]
-    target = (Path(workdir or os.getcwd()) / ".pi-batch" / "rejected" /
+    from .config import data_dir
+    target = (data_dir(workdir) / "rejected" /
               f"{safe or 'task'}-{time.time_ns()}-worktree.txt")
     try:
         target.parent.mkdir(parents=True, exist_ok=True)

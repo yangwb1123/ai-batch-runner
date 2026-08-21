@@ -426,14 +426,14 @@ def classify_main(argv: list) -> None:
     target = routing_target(per_task)
     route = target == FRONTEND
     route_backend = target == BACKEND
+    route_pipeline = _resolved_route_pipeline(target)
     if args.json:
         payload = {
             "dominant": dominant.to_dict(),
             "route_frontend": route,
             "route_backend": route_backend,
-            "route_pipeline": (config.CLASSIFIER_FRONTEND_PIPELINE if route else
-                               config.CLASSIFIER_BACKEND_PIPELINE if route_backend else ""),
-            "frontend_pipeline": config.CLASSIFIER_FRONTEND_PIPELINE if route else "",
+            "route_pipeline": route_pipeline,
+            "frontend_pipeline": route_pipeline if route else "",
             "tasks": [item.to_dict() for item in per_task],
         }
         print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -443,3 +443,16 @@ def classify_main(argv: list) -> None:
     print(f"dominant: {dominant.task_type}; route target: {target}")
     print(f"route to frontend pipeline: {route}")
     print(f"route to backend pipeline: {route_backend}")
+    if route_pipeline:
+        print(f"pipeline: {route_pipeline}")
+
+
+def _resolved_route_pipeline(target: str) -> str:
+    if target not in (FRONTEND, BACKEND):
+        return ""
+    from .classify_route import resolve_pipeline
+    if target == FRONTEND:
+        return resolve_pipeline(config.CLASSIFIER_FRONTEND_PIPELINE,
+                                "Frontend", "frontend_pipeline")
+    return resolve_pipeline(config.CLASSIFIER_BACKEND_PIPELINE,
+                            "Backend", "backend_pipeline")

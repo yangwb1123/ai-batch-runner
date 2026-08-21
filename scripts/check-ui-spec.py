@@ -17,6 +17,8 @@ agent's next attempt:
 Modes:
   spacing  reject spacing values outside the 8pt token set
            (SizedBox(height:3), EdgeInsets.only(left:13), margin:11 ...)
+  font     reject font sizes outside the typography token set
+           (fontSize: 15, font-size: 15px, text-[15px])
   color    reject hardcoded hex/rgb/Color(0x...) literals
   style    reject inline styles (style={{...}}, style="margin:...")
   all      run spacing + color + style
@@ -45,6 +47,7 @@ import ui_tokens
 # 双向校验）。0 允许用于 reset。tokens.json 缺失/不可解析 → fail closed。
 try:
     SPACING_TOKENS = ui_tokens.spacing_tokens()
+    TYPOGRAPHY_TOKENS = ui_tokens.typography_tokens()
 except ui_tokens.TokenLoadError as exc:
     print(f"UI-SPEC: {exc}", file=sys.stderr)
     sys.exit(2)
@@ -57,6 +60,12 @@ _SPACING_PATTERNS = [
     re.compile(r"\b(?:margin|padding)(?:Left|Right|Top|Bottom):\s*(\d+)"),
     re.compile(r"style=\{\{?\s*(?:margin|padding):\s*(\d+)"),
 ]
+_TAILWIND_SCALE = re.compile(
+    r"(?<![\w-])-?(?:m|mx|my|mt|mr|mb|ml|p|px|py|pt|pr|pb|pl|"
+    r"gap|space-[xy])-(\d+)(?![\w-])")
+_TAILWIND_ARBITRARY = re.compile(
+    r"(?<![\w-])-?(?:m|mx|my|mt|mr|mb|ml|p|px|py|pt|pr|pb|pl|"
+    r"gap|space-[xy])-\[(\d+)px\](?![\w-])")
 _COLOR_PATTERNS = [
     re.compile(r"#[0-9a-fA-F]{3,8}\b"),
     re.compile(r"Color\(0x[0-9a-fA-F]{6,8}\)"),
@@ -69,6 +78,11 @@ _STYLE_PATTERNS = [
     re.compile(r"style=\{\{"),
     re.compile(r"style=\"[^\"]*(?:margin|padding|font|color|width|height):"),
 ]
+_FONT_PATTERNS = [
+    re.compile(r"\bfontSize\s*:\s*[\"']?(\d+)"),
+    re.compile(r"\bfont-size\s*:\s*[\"']?(\d+)px?"),
+    re.compile(r"\btext-\[(\d+)px\]"),
+]
 
 DEFAULT_EXTS = (".tsx", ".jsx", ".ts", ".js", ".dart", ".vue")
 DEFAULT_EXCLUDES = {
@@ -80,7 +94,9 @@ DEFAULT_EXCLUDES = {
 }
 
 
-def _find_matches(text: str, patterns: list, label: str, check_number=None) -> list:
+def _find_matches(text: str, patterns: list, label: str, check_number=None,
+                  token_label: str = "spacing tokens", allow_large: bool = True,
+                  number_transform=None) -> list:
     """Collect unique violations; optional numeric value validation."""
     found = []
     for pattern in patterns:
@@ -91,10 +107,11 @@ def _find_matches(text: str, patterns: list, label: str, check_number=None) -> l
                 if not numbers:
                     continue
                 number = int(numbers[0])
-                if number in check_number or number > 128:
+                checked = number_transform(number, match) if number_transform else number
+                if checked in check_number or (allow_large and checked > 128):
                     continue
                 found.append(f"{label}: {match.group(0).strip()} "
-                             f"(value {number} not in spacing tokens "
+                             f"(value {number} not in {token_label} "
                              f"{sorted(check_number)})")
             else:
                 found.append(f"{label}: {match.group(0).strip()}")
@@ -102,7 +119,11 @@ def _find_matches(text: str, patterns: list, label: str, check_number=None) -> l
 
 
 def check_spacing(text: str) -> list:
-    return _find_matches(text, _SPACING_PATTERNS, "spacing", SPACING_TOKENS)
+    violations = _find_matches(text, _SPACING_PATTERNS, "spacing", SPACING_TOKENS)
+    violations.extend(_find_matches(text, [_TAILWIND_SCALE], "spacing", SPACING_TOKENS,
+                                    number_transform=lambda value, _match: value * 4))
+    violations.extend(_find_matches(text, [_TAILWIND_ARBITRARY], "spacing", SPACING_TOKENS))
+    return violations
 
 
 def check_color(text: str) -> list:
@@ -116,7 +137,13 @@ def check_style(text: str) -> list:
     return _find_matches(text, _STYLE_PATTERNS, "style")
 
 
-_MODES = {"spacing": check_spacing, "color": check_color, "style": check_style}
+def check_font(text: str) -> list:
+    return _find_matches(text, _FONT_PATTERNS, "font", TYPOGRAPHY_TOKENS,
+                         "typography tokens", allow_large=False)
+
+
+_MODES = {"spacing": check_spacing, "color": check_color, "style": check_style,
+          "font": check_font}
 
 
 def scan_directory(directory: Path, exts: tuple, excludes: set) -> list:
@@ -205,7 +232,8 @@ def resolve_checkers(mode: str) -> list:
     if mode == "all":
         return sorted(_MODES.items())
     if mode not in _MODES:
-        print(f"UI-SPEC: unknown mode '{mode}' (spacing|color|style|all)", file=sys.stderr)
+        print(f"UI-SPEC: unknown mode '{mode}' (spacing|color|style|font|all)",
+              file=sys.stderr)
         sys.exit(2)
     return [(mode, _MODES[mode])]
 

@@ -28,12 +28,16 @@ logging.basicConfig(
 )
 log = logging.getLogger("pi-batch")
 
-def _find_batch_config() -> Optional[dict]:
-    """Locate and parse pi-batch.yaml: the entry script directory
-    (PBATCH_SCRIPT_DIR, set by the pi-batch.py shim) wins, then the package
-    directory, then the process working directory. None when absent."""
-    if not yaml:
-        return None
+
+# Configuration documents are versioned independently from the package
+# version.  Missing ``config_version`` remains accepted as version 0 so old
+# projects keep working; a future version must fail closed instead of being
+# silently interpreted with today's defaults.
+CONFIG_SCHEMA_VERSION = 1
+
+
+def _batch_config_candidates() -> list[Path]:
+    """Return config candidates in the same order used by the loader."""
     candidates = []
     script_dir = os.environ.get("PBATCH_SCRIPT_DIR", "")
     if script_dir:
@@ -41,12 +45,40 @@ def _find_batch_config() -> Optional[dict]:
     candidates.append(Path(__file__).resolve().parent / "pi-batch.yaml")
     candidates.append(Path("pi-batch.yaml"))
     candidates.append(Path(TOOL_ROOT) / "pi-batch.yaml")
-    for p in candidates:
-        if not p.exists():
-            continue
-        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-        if isinstance(data, dict):
-            return data
+    return candidates
+
+
+def _batch_config_path() -> Optional[Path]:
+    """Return the first existing project/tool config path, if any."""
+    return next((path for path in _batch_config_candidates() if path.exists()), None)
+
+
+def _validate_config_version(data: dict, path: Path) -> None:
+    """Reject malformed or newer config documents before applying defaults."""
+    version = data.get("config_version", 0)
+    if isinstance(version, bool) or not isinstance(version, int):
+        raise ValueError(f"{path}: config_version must be an integer")
+    if version < 0:
+        raise ValueError(f"{path}: config_version must be >= 0")
+    if version > CONFIG_SCHEMA_VERSION:
+        raise ValueError(
+            f"{path}: config_version {version} is newer than supported "
+            f"version {CONFIG_SCHEMA_VERSION}")
+
+
+def _find_batch_config() -> Optional[dict]:
+    """Locate and parse pi-batch.yaml: the entry script directory
+    (PBATCH_SCRIPT_DIR, set by the pi-batch.py shim) wins, then the package
+    directory, then the process working directory. None when absent."""
+    if not yaml:
+        return None
+    path = _batch_config_path()
+    if path is None:
+        return None
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if isinstance(data, dict):
+        _validate_config_version(data, path)
+        return data
     return None
 
 def _load_batch_config(path: str = "pi-batch.yaml") -> dict:
@@ -70,6 +102,8 @@ def _find_user_config() -> dict:
     except (OSError, ValueError):
         log.warning("User settings %s unreadable; ignoring", path)
         return {}
+    if isinstance(data, dict):
+        _validate_config_version(data, path)
     return data if isinstance(data, dict) else {}
 
 def _merge_config(project: dict, user: dict) -> dict:
@@ -266,7 +300,15 @@ def agent_error_patterns(bin_name: str = "") -> tuple:
     if not patterns:
         # explicit empty list disables signature rejection for this agent
         return ()
-    return _compile_patterns(patterns)
+    try:
+        return _compile_patterns(patterns)
+    except re.error as exc:
+        # A malformed configured matcher must not crash a long-running
+        # review/batch process.  Revert to the known-safe built-ins instead
+        # of silently disabling provider-failure rejection.
+        log.warning("Invalid agent error pattern for %s (%s); using defaults",
+                    name, exc)
+        return _compile_patterns(_DEFAULT_ERROR_PATTERNS)
 _COMMIT_CFG = _section("commit")
 _PROJECT_CFG = _section("project")
 _LOGGING_CFG = _section("logging")
@@ -354,6 +396,10 @@ COMMAND_OUTPUT_MAX_BYTES = _int_setting(
 # Progressive memory: preserve pi's raw JSONL sessions, while exposing only
 # a small metadata manifest to the model unless it elects to read more.
 MEMORY_MODE = _choice_setting(_MEMORY_CFG, "mode", "auto", ("auto", "on", "off"))
+MEMORY_TENANT = _string_setting(_MEMORY_CFG, "tenant", "default", allow_empty=False)
+MEMORY_SENSITIVITY = _choice_setting(
+    _MEMORY_CFG, "sensitivity", "internal",
+    ("public", "internal", "confidential", "secret", "regulated"))
 _MEMORY_AGENT_VALUE = _MEMORY_CFG.get("agent_names", ("pi",))
 if isinstance(_MEMORY_AGENT_VALUE, str):
     _MEMORY_AGENT_VALUE = (_MEMORY_AGENT_VALUE,)
@@ -361,6 +407,30 @@ elif not isinstance(_MEMORY_AGENT_VALUE, (list, tuple)):
     log.warning("Config value 'agent_names' must be a string or list; using pi")
     _MEMORY_AGENT_VALUE = ("pi",)
 MEMORY_AGENT_NAMES = tuple(str(value) for value in _MEMORY_AGENT_VALUE)
+# ── 运行时数据目录（data_dir）───────────────────────────────────────
+# 运行状态（记忆索引/被拒产物/worktrees/设备状态/预算/流程工件/反思）
+# 默认在项目内 .pi-batch/（随仓库共享）；--data-dir / PBATCH_DATA_DIR
+# 可整体移到项目外（如 ~/data/pbatch/<project>），避免污染项目代码结构。
+# 锁保持按 cwd（.pi-batch.lock），与数据位置解耦（单实例语义不变）。
+_DATA_DIR_OVERRIDE = ""  # CLI --data-dir（进程级，优先于 env）
+
+
+def data_dir(cwd: str = "") -> Path:
+    """运行时数据根：CLI --data-dir > env PBATCH_DATA_DIR > cwd/.pi-batch。
+    env 每次读取（import 后设置也生效）。"""
+    override = _DATA_DIR_OVERRIDE or os.environ.get("PBATCH_DATA_DIR", "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    base = Path(cwd).resolve() if cwd else Path.cwd()
+    return base / ".pi-batch"
+
+
+def set_data_dir_override(path: str) -> None:
+    """CLI --data-dir 设置（早于 env，进程级）。"""
+    global _DATA_DIR_OVERRIDE
+    _DATA_DIR_OVERRIDE = path.strip()
+
+
 MEMORY_INDEX_FILE = _string_setting(
     _MEMORY_CFG, "index_file", ".pi-batch/memory/sessions.index.jsonl", allow_empty=False)
 MEMORY_MANIFEST_RECENT = _int_setting(_MEMORY_CFG, "manifest_recent", 3, 0)
@@ -369,6 +439,8 @@ MEMORY_MANIFEST_MAX_BYTES = _int_setting(_MEMORY_CFG, "manifest_max_bytes", 4096
 MEMORY_READ_MAX_BYTES = _int_setting(_MEMORY_CFG, "read_max_bytes", 65536, 1)
 MEMORY_INDEX_LINE_MAX_BYTES = _int_setting(
     _MEMORY_CFG, "index_line_max_bytes", 256 * 1024, 1)
+MEMORY_INDEX_MAX_BYTES = _int_setting(
+    _MEMORY_CFG, "index_max_bytes", 16 * 1024 * 1024, 1)
 
 # F line (round-5 F): provider rate limiting. A process-wide token bucket
 # serializes agent invocations across parallel workers / meta role fan-out;
@@ -393,6 +465,8 @@ DEVICE_FABRIC_LAN_SCAN = _DEVICE_FABRIC.lan_scan
 DEVICE_FABRIC_BENCHMARK = _DEVICE_FABRIC.benchmark
 DEVICE_FABRIC_AUTO_INSTALL = _DEVICE_FABRIC.auto_install
 DEVICE_FABRIC_APPROVAL_REQUIRED = _DEVICE_FABRIC.approval_required
+DEVICE_FABRIC_MTLS_REQUIRED = _DEVICE_FABRIC.mtls_required
+DEVICE_FABRIC_SHORT_LIVED_CREDENTIALS = _DEVICE_FABRIC.short_lived_credentials
 DEVICE_FABRIC_STATIC = _DEVICE_FABRIC.static
 DEVICE_FABRIC_CLUSTERS = _DEVICE_FABRIC.clusters
 
@@ -446,13 +520,14 @@ def _session_flags(key: str, session_id: str, session_name: str) -> list:
     return agent_session_flags(key, session_id, session_name)
 
 def _load_validators() -> dict:
-    """Read the named validators registry from pi-batch.yaml (like the
-    project's engineering.yaml declares gates for cli.py); empty when absent
-    so the script stays portable."""
-    data = _find_batch_config()
-    if not data:
-        return {}
-    registry = data.get("validators")
+    """Read validators from the already merged project/user configuration.
+
+    The rest of this module resolves settings from ``_BATCH_CFG``.  Loading
+    the registry from the project file alone would make user-level validator
+    additions and overrides silently ineffective, violating the documented
+    precedence contract.
+    """
+    registry = _BATCH_CFG.get("validators")
     if not isinstance(registry, dict):
         return {}
     return expand_validator_registry(
@@ -470,10 +545,28 @@ class ValidatorSpec(NamedTuple):
     scope: "file" = run per artifact before it is committed (default);
            "repo" = full-tree gate deferred to stage end / batch end so it
            never races concurrent role agents writing the tree (N2)
+    requires_any: relative file paths; the validator is applicable only when
+                  at least one path exists under the target working directory
     """
     cmd: str
     judge: bool = False
     scope: str = "file"
+    requires_any: tuple = ()
+
+
+def _required_paths(entry) -> tuple:
+    """Normalize an optional validator applicability file list."""
+    raw = entry.get("requires_any", ()) if isinstance(entry, dict) else ()
+    if isinstance(raw, str):
+        raw = (raw,)
+    if not isinstance(raw, (list, tuple)):
+        log.warning("Validator requires_any must be a string or string list; ignoring")
+        return ()
+    paths = tuple(item.strip() for item in raw
+                  if isinstance(item, str) and item.strip())
+    if len(paths) != len(raw):
+        log.warning("Validator requires_any contains invalid paths; ignoring invalid entries")
+    return paths
 
 def _validator_spec(entry) -> Optional[ValidatorSpec]:
     """Normalize one registry entry: a string command, or a mapping with
@@ -489,13 +582,39 @@ def _validator_spec(entry) -> Optional[ValidatorSpec]:
             if scope not in ("file", "repo"):
                 log.warning("Validator scope '%s' must be file or repo; using file", scope)
                 scope = "file"
-            return ValidatorSpec(cmd=cmd.strip(), judge=judge, scope=scope)
+            return ValidatorSpec(cmd=cmd.strip(), judge=judge, scope=scope,
+                                 requires_any=_required_paths(entry))
     log.warning("Validator entry must be a command string or a {cmd, judge, scope} "
                 "mapping; skipping %r", entry)
     return None
 
 VALIDATOR_SPECS: dict = {name: spec for name, entry in VALIDATORS.items()
                          if (spec := _validator_spec(entry)) is not None}
+
+
+def validator_applies(spec: ValidatorSpec, cwd: str = "") -> bool:
+    """Return whether a validator's declared applicability files are present.
+
+    ``requires_any`` is an explicit opt-in for cross-language registries: an
+    absent prerequisite means the gate is not applicable, not that a failed
+    command should be hidden. Callers log the skip so the decision remains
+    observable and easy to audit.
+    """
+    required = tuple(getattr(spec, "requires_any", ()) or ())
+    if not required:
+        return True
+    root = Path(cwd or os.getcwd()).resolve()
+    for raw in required:
+        candidate = Path(raw).expanduser()
+        if candidate.is_absolute():
+            matches = (candidate,)
+        elif any(marker in raw for marker in "*?["):
+            matches = root.glob(raw)
+        else:
+            matches = (root / candidate,)
+        if any(path.is_file() for path in matches):
+            return True
+    return False
 
 def _resolve_validator_specs(value: str) -> list:
     """Resolve registry names, jsonschema=PATH, and raw commands."""

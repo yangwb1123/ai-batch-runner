@@ -21,13 +21,23 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-PINNED_DEFAULT = Path(".pi-batch") / "pinned.md"
+_LEGACY_PINNED_DEFAULT = Path(".pi-batch") / "pinned.md"
+PINNED_DEFAULT = _LEGACY_PINNED_DEFAULT  # 兼容旧引用
+
+
+def _default_pinned_path(root: Path) -> Path:
+    """Pinned defaults follow data_dir; explicit legacy overrides stay local."""
+    from .config import data_dir
+    current = Path(PINNED_DEFAULT)
+    if current != _LEGACY_PINNED_DEFAULT:
+        return root / current
+    return data_dir(str(root)) / "pinned.md"
 
 
 def pinned_sources(cwd: str = "", extra_files: Optional[list] = None) -> list:
     """Pinned 源文件：默认 .pi-batch/pinned.md + 额外文件（存在的才返回）。"""
     root = Path(cwd or ".")
-    candidates = [root / PINNED_DEFAULT]
+    candidates = [_default_pinned_path(root)]
     candidates += [Path(path) if Path(path).is_absolute() else root / path
                    for path in (extra_files or [])]
     return [str(path) for path in candidates if path.exists()]

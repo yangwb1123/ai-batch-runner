@@ -239,7 +239,12 @@ def _replace_requirement_prompt(stages: list, settings: CampaignSettings,
             f"Selected direction:\n{payload}\n\n"
             f"Source analysis: {analysis_path}\n"
             "Verify every cited file/symbol against the repository. Preserve the supplied acceptance "
-            "checks and make them testable. Do not expand scope beyond this direction."
+            "checks and make them testable. Do not expand scope beyond this direction.\n"
+            "Output the COMPLETE specification as your final response text — the entire spec body, "
+            "not a summary or pointer. Do NOT use the write tool for the deliverable (the runner "
+            "captures your final response to the output file; a write-tool file gets overwritten "
+            "by your response). After producing the full spec, STOP — do not run cleanup, "
+            "re-verification, or any further commands."
         )
         return True
     return False
@@ -404,7 +409,7 @@ def _run_in_worktree(settings: CampaignSettings, direction: Direction, analysis_
                      worktree: Path, branch: str, baseline: str,
                      agent_args: list[str]) -> PipelineOutcome:
     start = time.monotonic()
-    local_analysis = worktree / ".pi-batch" / "campaign" / f"{direction.direction_id}-analysis.json"
+    local_analysis = config.data_dir(str(worktree)) / "campaign" / f"{direction.direction_id}-analysis.json"
     local_analysis.parent.mkdir(parents=True, exist_ok=True)
     local_analysis.write_text(read_text_bounded(
         analysis_path, config.OUTPUT_MAX_BYTES, "campaign analysis"), encoding="utf-8")

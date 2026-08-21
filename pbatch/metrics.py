@@ -20,12 +20,37 @@ from pathlib import Path
 from typing import Optional
 
 from . import config
+from .memory_policy import memory_scope, scope_matches
 
-REJECTED_DIR = Path(".pi-batch") / "rejected"
-MEMORY_INDEX = Path(".pi-batch") / "memory" / "sessions.index.jsonl"
-TRUTH_FILE = Path(".pi-batch") / "truth.jsonl"
+_LEGACY_REJECTED_DIR = Path(".pi-batch") / "rejected"
+_LEGACY_MEMORY_INDEX = Path(".pi-batch") / "memory" / "sessions.index.jsonl"
+_LEGACY_TRUTH_FILE = Path(".pi-batch") / "truth.jsonl"
+REJECTED_DIR = _LEGACY_REJECTED_DIR  # 兼容旧引用
+MEMORY_INDEX = _LEGACY_MEMORY_INDEX  # 兼容旧引用
+TRUTH_FILE = _LEGACY_TRUTH_FILE  # 兼容旧引用
 INDEX_LINE_MAX = 256 * 1024
 INDEX_MAX_BYTES = 16 * 1024 * 1024
+
+
+def _runtime_path(current: Path, legacy: Path, relative: str) -> Path:
+    """Resolve a data_dir-backed metric source with legacy override support."""
+    current = Path(current)
+    if current != legacy:
+        return current
+    return config.data_dir() / relative
+
+
+def _rejected_dir() -> Path:
+    return _runtime_path(REJECTED_DIR, _LEGACY_REJECTED_DIR, "rejected")
+
+
+def _memory_index() -> Path:
+    return _runtime_path(MEMORY_INDEX, _LEGACY_MEMORY_INDEX,
+                         "memory/sessions.index.jsonl")
+
+
+def _truth_file() -> Path:
+    return _runtime_path(TRUTH_FILE, _LEGACY_TRUTH_FILE, "truth.jsonl")
 
 
 def _count_files(directory: Path, suffix: str = "") -> int:
@@ -43,13 +68,15 @@ def _count_docs(pattern: str) -> int:
 def _scan_memory_index() -> dict:
     """内存索引：首次正确率（GATE_PASS vs FAILED 观察）与资源合计。"""
     stats = {"sessions": 0, "passed": 0, "failed": 0, "cost": 0.0}
-    if not MEMORY_INDEX.exists():
+    path = _memory_index()
+    if not path.exists():
         return stats
     try:
-        handle = MEMORY_INDEX.open("r", encoding="utf-8")
+        handle = path.open("r", encoding="utf-8")
     except OSError:
         return stats
     with handle:
+        expected_scope = memory_scope()
         total = 0
         for line in handle:
             total += len(line.encode("utf-8", errors="replace"))
@@ -62,6 +89,8 @@ def _scan_memory_index() -> dict:
             except ValueError:
                 continue
             if not isinstance(record, dict):
+                continue
+            if not scope_matches(record, expected_scope):
                 continue
             stats["sessions"] += 1
             verdict = str(record.get("observed_verdict", ""))
@@ -97,10 +126,11 @@ def _count_lines(path: Path) -> int:
 def _count_truth_invalidations() -> int:
     """真值失效记录数（决策质量）。"""
     count = 0
-    if not TRUTH_FILE.exists():
+    path = _truth_file()
+    if not path.exists():
         return count
     try:
-        handle = TRUTH_FILE.open(encoding="utf-8")
+        handle = path.open(encoding="utf-8")
     except OSError:
         return count
     with handle:
@@ -126,7 +156,7 @@ def metrics_report() -> dict:
     truth_invalidated = _count_truth_invalidations()
     return {
         "result_quality": {
-            "rejected_artifacts": _count_files(REJECTED_DIR, ".rejected.md"),
+            "rejected_artifacts": _count_files(_rejected_dir(), ".rejected.md"),
             "first_try_rate": first_try,
             "observed_passes": memory["passed"],
             "observed_failures": memory["failed"],

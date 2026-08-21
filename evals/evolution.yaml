@@ -1,0 +1,76 @@
+# Evolution-patterns regression suite (第四域，pbatch/evolution.py)。
+# 归纳自 snaplink-console / iris-ui 实战：形态分类、探索豁免、规律分级。
+# 运行：pi-batch eval（或 --filter evolution）
+name: evolution
+cases:
+  # ── 形态分类 ──
+  - id: contract-driven-shape
+    input: "实现审计时间线，走后端契约目录，权限边界严格，租户隔离"
+    assert:
+      evolution_shape: contract_driven
+  - id: platform-shape
+    input: "发布组件库新包，四框架对齐，插件体系，npm 分发"
+    assert:
+      evolution_shape: platform_product
+  - id: exploration-shape
+    input: "探索一下这个创意：AI 生成登录页原型，先调研再定方案"
+    assert:
+      evolution_shape: exploration
+  - id: generic-shape-no-signal
+    input: "修复登录按钮的 hover 样式"
+    assert:
+      evolution_shape: generic
+
+  # ── 规律分级（级别 = 生效级别，含反例信号降级）──
+  - id: contract-project-loads-authority
+    input: "实现审计时间线，走后端契约目录，权限边界严格"
+    assert:
+      evolution_shape: contract_driven
+      evolution_rule_level:
+        - [authority-layering, contract]
+        - [machine-gates, invariant]
+        - [evidence-discipline, invariant]
+        - [non-goal-restraint, invariant]
+  - id: exploration-downgrades-everything
+    input: "探索一下这个创意：AI 生成登录页原型"
+    assert:
+      evolution_shape: exploration
+      evolution_rule_level:
+        - [authority-layering, <absent>]   # scope 不匹配 → 跳过
+        - [verify-by-doing, <absent>]      # scope 不匹配 → 跳过
+        - [adversarial-gate, <absent>]     # 非高风险 → 跳过
+        - [change-budget, <absent>]        # demo 信号显式抑制
+        - [decision-memory, suggestion]    # contract → suggestion
+        - [machine-gates, invariant]       # 安全底线保留
+        - [evidence-discipline, invariant]
+        - [non-goal-restraint, invariant]
+  - id: platform-loads-verify-by-doing
+    input: "发布组件库新包，四框架对齐，插件体系"
+    assert:
+      evolution_shape: platform_product
+      evolution_has_rule: [verify-by-doing]
+      evolution_lacks_rule: [authority-layering]   # 契约驱动专属 scope
+      evolution_rule_level:
+        - [verify-by-doing, suggestion]
+        - [machine-gates, invariant]
+  - id: generic-skips-scoped-laws
+    input: "修复登录按钮的 hover 样式"
+    assert:
+      evolution_shape: generic
+      evolution_lacks_rule: [authority-layering, verify-by-doing]
+      evolution_has_rule: [machine-gates, non-goal-restraint,
+                           evidence-discipline, decision-memory]
+
+  # ── L8 管线形状路由（发布 > 风险 > 领域）──
+  - id: release-routes-to-maintainer-gate
+    input: "发布组件库新包到 npm"
+    assert:
+      evolution_route: release
+  - id: backend-routes-to-backend-pipeline
+    input: "写一个订单创建接口，含支付审批，生产，go"
+    assert:
+      evolution_route: backend
+  - id: high-risk-adversarial-route
+    input: "企业支付审批系统：资金流转，生产环境，多租户"
+    assert:
+      evolution_route: adversarial

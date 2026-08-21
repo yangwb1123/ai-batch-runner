@@ -65,8 +65,8 @@ def _registry_path(domain: str) -> Optional[Path]:
 
 
 def _check_registries_cli() -> None:
-    """Validate all three bundled registries; missing/empty is a failure."""
-    for domain in ("frontend_ui", "backend", "product"):
+    """Validate all bundled domain registries; missing/empty is a failure."""
+    for domain in ("frontend_ui", "backend", "product", "evolution"):
         path = _registry_path(domain)
         if path is None:
             log.error("[%s] registry missing; refusing OK", domain)

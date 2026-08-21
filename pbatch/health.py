@@ -15,10 +15,24 @@ from . import config
 ROOT = Path(config.TOOL_ROOT)
 ASSET_ROOT = Path(config.TOOL_ROOT)
 SKIP = ".git,.dart_tool,test,build,vendor,checks"
+REQUIRED_ASSETS = (
+    "quality.py", "scripts/check-ui-spec.py", "scripts/check-frontend-quality.py",
+    "ui-specs/rules.yaml", "backend-specs/rules.yaml", "product-specs/rules.yaml",
+    "evolution-specs/rules.yaml", "examples/frontend-implementation-pipeline.yaml",
+    "examples/backend-implementation-pipeline.yaml",
+)
 
 
 def _resolved_root(root: Optional[Path]) -> Path:
     return Path(root or ROOT).resolve()
+
+
+def _asset_status() -> dict:
+    """Report distributed assets explicitly; missing assets are unknown, not OK."""
+    missing = [relative for relative in REQUIRED_ASSETS
+               if not (ASSET_ROOT / relative).is_file()]
+    return {"root": str(ASSET_ROOT), "required": len(REQUIRED_ASSETS),
+            "missing": missing, "healthy": not missing}
 
 
 def _count_tests(root: Optional[Path] = None) -> int:
@@ -98,7 +112,7 @@ def _line_count(path: Path) -> int:
 def _governance_counts(root: Optional[Path] = None) -> dict:
     """Device-fabric and governance-state counters (best-effort, read-only)."""
     project_root = _resolved_root(root)
-    state_dir = project_root / ".pi-batch" / "devices"
+    state_dir = config.data_dir(str(project_root)) / "devices"
     counts = {
         "runners": _line_count(state_dir / "runners.jsonl"),
         "events": _line_count(state_dir / "events.jsonl"),
@@ -107,7 +121,7 @@ def _governance_counts(root: Optional[Path] = None) -> dict:
         "promoted": len(list((project_root / "docs/rules/promoted").glob("*.yaml"))),
         "truth_invalidations": 0,
     }
-    truth = project_root / ".pi-batch" / "truth.jsonl"
+    truth = config.data_dir(str(project_root)) / "truth.jsonl"
     if truth.exists():
         try:
             counts["truth_invalidations"] = sum(
@@ -159,6 +173,7 @@ def health_report(root: Optional[Path] = None) -> dict:
     explicit = root is not None
     project_root = _resolved_root(root)
     tests = _count_tests(project_root) if explicit else _count_tests()
+    assets = _asset_status()
     checkers = {
         name: (_checker_violations(script, project_root) if explicit
                else _checker_violations(script))
@@ -168,6 +183,7 @@ def health_report(root: Optional[Path] = None) -> dict:
             "backendquality": "check-backend-quality",
         }.items()
     }
+    checkers["packaged_assets"] = len(assets["missing"])
     quality = (_quality_violations(project_root) if explicit
                else _quality_violations())
     specs = _spec_counts(project_root) if explicit else _spec_counts()
@@ -178,9 +194,10 @@ def health_report(root: Optional[Path] = None) -> dict:
         "score": _health_score(checkers, quality, tests),
         "tests": tests,
         "checkers": checkers,
+        "assets": assets,
         "quality_violations": quality,
         "specs": specs,
-        "healthy": (quality == 0
+        "healthy": (assets["healthy"] and quality == 0
                     and all(value == 0 for value in checkers.values())
                     and tests > 0),
     }
@@ -200,6 +217,9 @@ def _render(report: dict) -> str:
     lines.append(f"- 技术债(quality): {'未知' if quality < 0 else quality}")
     for name, count in report["checkers"].items():
         lines.append(f"- 门禁 {name}: {'未知' if count < 0 else f'{count} 违规'}")
+    assets = report.get("assets", {})
+    if assets.get("missing"):
+        lines.append("- 缺失分发资产: " + ", ".join(assets["missing"]))
     governance = report.get("governance", {})
     lines.extend(["", "## 治理与设备织网",
                   f"- Runner 设备: {governance.get('runners', 0)} | "

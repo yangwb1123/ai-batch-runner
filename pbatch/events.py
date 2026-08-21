@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from .fabric_devices import DEVICE_STATE_DIR
+from .fabric_devices import _effective_device_state_dir
 
 EVENT_LINE_MAX = 256 * 1024
 EVENT_FILE_MAX = 16 * 1024 * 1024
@@ -24,7 +24,7 @@ EVENT_FILE_MAX = 16 * 1024 * 1024
 
 def read_events(state_dir: str = "", limit: int = 50) -> list:
     """从事件账本读最近 limit 条（有界读取，新→旧）。"""
-    path = Path(state_dir or DEVICE_STATE_DIR) / "events.jsonl"
+    path = Path(state_dir or _effective_device_state_dir()) / "events.jsonl"
     records = []
     if not path.exists():
         return records

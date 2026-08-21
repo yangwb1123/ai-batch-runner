@@ -3,13 +3,14 @@
 # this file into another project and edit `agent.bin` to point at whatever
 # CLI agent you use (pi, claude, codex, gemini, opencode, ...); no code
 # changes needed.
+config_version: 1
 
 agent:
   # The CLI binary invoked for every task. Must accept:
   #   <bin> -p PROMPT [--model M] [--provider P] [--thinking T] [--tools T] [--exclude-tools T]
   bin: pi
   default_model: ""     # empty = the agent's own default
-  default_timeout: 900  # seconds, per task (aligned with pi httpIdleTimeoutMs)
+  default_timeout: 1500  # seconds, per task (aligned with pi httpIdleTimeoutMs)
   default_workers: 4    # parallel mode default worker count
   # Session reuse flags used by --session-mode shared/per-stage.
   # {session} is the session id, {name} the display name. Other agent CLIs
@@ -44,6 +45,8 @@ limits:
   per_second: 0        # max agent invocations per second (0 = unlimited)
   burst: 1             # token bucket capacity
   providers: {}        # per-provider overrides, e.g. {openai: {per_second: 2}}
+  # Campaign isolated worktrees share this state through PBATCH_RATE_LIMIT_FILE.
+  # The campaign command sets it automatically; direct runners may set the env.
 
 
 # Preserve pi's original JSONL messages, but inject only a small metadata
@@ -52,6 +55,10 @@ limits:
 memory:
   mode: auto
   agent_names: [pi]
+  # Memory queries are scoped by tenant + project digest + sensitivity.
+  # PBATCH_MEMORY_TENANT / PBATCH_MEMORY_SENSITIVITY override these per worker.
+  tenant: default
+  sensitivity: internal
   index_file: .pi-batch/memory/sessions.index.jsonl
   manifest_recent: 3
   # Execute-mode static precheck searches only this many newest metadata rows
@@ -61,6 +68,8 @@ memory:
   read_max_bytes: 65536
   # Reject pathological metadata records; raw Pi messages remain untouched.
   index_line_max_bytes: 262144
+  # Compact metadata at the append boundary; raw Pi sessions are retained.
+  index_max_bytes: 16777216
 
 # Raw session files remain owned by Pi and are never rewritten. These bounds
 # govern only coordinator scans/rotation decisions.
@@ -128,9 +137,9 @@ validators:
   # Reference path had an  prefix (snaplink repo layout); this repo
   # keeps quality.py at the root, so the path is adapted accordingly.
   pyquality: "python {cwd}/quality.py {cwd}"
-  designintelligence: "python {cwd}/scripts/check-design-intelligence.py --dir {cwd} --json --skip .dart_tool,test,build,ephemeral" 
-  backendexperience: "python {cwd}/scripts/check-backend-experience.py --dir {cwd} --json --skip .dart_tool,test,build,ephemeral,vendor"
-  knowledge: "python {cwd}/scripts/check-knowledge-freshness.py --dir {cwd} --json --skip .git,.dart_tool,test,build,vendor --skip-modules pbatch,checks,scripts,tools"
+  designintelligence: "python {tool_root}/scripts/check-design-intelligence.py --dir {cwd} --json --skip .dart_tool,test,build,ephemeral"
+  backendexperience: "python {tool_root}/scripts/check-backend-experience.py --dir {cwd} --json --skip .dart_tool,test,build,ephemeral,vendor"
+  knowledge: "python {tool_root}/scripts/check-knowledge-freshness.py --dir {cwd} --json --skip .git,.dart_tool,test,build,vendor --skip-modules pbatch,checks,scripts,tools"
   # T12f: reject artifacts containing likely secrets (registry hook, not a
   # built-in scanner). Adapt the patterns to the project's secret formats.
   secretscan: 'grep -nE "(api[_-]?key|secret|password|token|private[_-]?key)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_./+-]{8,}" {output} && exit 1 || exit 0' 
@@ -145,32 +154,41 @@ validators:
   clirepo:
     cmd: "python3 cli.py check"
     scope: repo
-  # 目标仓库无 scripts/check-completion-report.py 时用绝对路径指向本工具集。
+  # Rust 仓库（aero-im 等）：repo-scope cargo check，阶段末尾跑一次（N2），
+  # 避免与并发角色写入竞争；cargo check 退出码即门禁。
+  cargocheck:
+    cmd: "cargo check --quiet"
+    scope: repo
+    # This gate is for Rust repositories; non-Rust campaign targets record a
+    # visible not-applicable skip instead of failing on a missing manifest.
+    requires_any: [Cargo.toml]
+  # 目标仓库无 scripts/check-completion-report.py 时使用 wheel 随带的工具资产。
   completion_go:
-    cmd: "python /home/u1/ai-batch-runner/scripts/check-completion-report.py {output}"
+    cmd: "python {tool_root}/scripts/check-completion-report.py {output}"
 
   # UI generation gates: AI-generated TSX/Dart spacing/color/style problems
   # are specification problems, so these deterministic checks reject
   # artifacts mechanically (fail closed -> retry feedback loop). Attach via
   # stage `validate: uispacing,uicolor,uistyle` on UI generation stages.
-  uispacing: "python {cwd}/scripts/check-ui-spec.py --mode spacing {output}"
-  uicolor: "python {cwd}/scripts/check-ui-spec.py --mode color {output}"
-  uistyle: "python {cwd}/scripts/check-ui-spec.py --mode style {output}"
+  uispacing: "python {tool_root}/scripts/check-ui-spec.py --mode spacing {output}"
+  uicolor: "python {tool_root}/scripts/check-ui-spec.py --mode color {output}"
+  uistyle: "python {tool_root}/scripts/check-ui-spec.py --mode style {output}"
+  uifont: "python {tool_root}/scripts/check-ui-spec.py --mode font {output}"
   # Project-wide frontend UI spec gate (gofmt -l style): scans the whole
   # frontend source tree for spec violations, not just one artifact. The
   # scan root comes from the top-level ui_scan_dir key (below); default
   # {cwd}/src. No frontend files found -> pass with an explicit stderr
   # warning (never a silent vacuous green). Violations (stderr) feed the
   # retry prompt, driving the refactor loop.
-  uicheck: "python {cwd}/scripts/check-ui-spec.py --dir {ui_scan_dir} --all --json -o {cwd}/docs/ui/refactor/report.json"
+  uicheck: "python {tool_root}/scripts/check-ui-spec.py --dir {ui_scan_dir} --all --json -o {cwd}/docs/ui/refactor/report.json"
   # UI 几何门禁：裸数字小偏移/随机圆角/随机线条宽度（ui-specs/geometry.md）
-  uigeometry: "python {cwd}/scripts/check-ui-geometry.py --dir {ui_scan_dir} --all --json -o {cwd}/docs/ui/refactor/geometry.json"
+  uigeometry: "python {tool_root}/scripts/check-ui-geometry.py --dir {ui_scan_dir} --all --json -o {cwd}/docs/ui/refactor/geometry.json"
   # Project-wide frontend ENGINEERING gate (gofmt -l style): machine-checkable
   # half of the engineering spec — console.log/any/unsafe html are always
   # errors; god-file/complexity budgets fail with --strict. Judgment calls
   # (races, debounce policy, state placement) go to the engineering review
   # roles and ui-specs/engineering/defect-patterns.md.
-  uiquality: "python {cwd}/scripts/check-frontend-quality.py --dir {ui_scan_dir} --strict --json -o {cwd}/docs/ui/refactor/quality.json"
+  uiquality: "python {tool_root}/scripts/check-frontend-quality.py --dir {ui_scan_dir} --strict --json -o {cwd}/docs/ui/refactor/quality.json"
   # Project-wide BACKEND engineering gate (gofmt -l style): over-engineering
   # signals (single-implementation interfaces, Base classes, fuzzy names),
   # god-service signals, scattered status assignment, domain->infra imports
@@ -180,17 +198,29 @@ validators:
   # levels) with 0 files scanned -> exit 1; no manifest -> exit 0 with an
   # explicit 'no backend manifest detected; gate skipped' signal. Report is
   # written to docs/backend/ (not the ui/refactor dir).
-  backendquality: "python {cwd}/scripts/check-backend-quality.py --dir {cwd} --strict --json -o {cwd}/docs/backend/backend-quality.json"
+  backendquality: "python {tool_root}/scripts/check-backend-quality.py --dir {cwd} --strict --json -o {cwd}/docs/backend/backend-quality.json"
   # Definition-of-Done gate: the artifact must carry an honest completion
   # report (commands executed vs not_executed, no fabricated passes).
-  completion: "python {cwd}/scripts/check-completion-report.py {output}"
+  completion: "python {tool_root}/scripts/check-completion-report.py {output}"
   # Fail-closed refusal gate: LLM "cannot proceed" artifacts are failures.
-  refusalcheck: "python {cwd}/scripts/check-no-refusal.py {output}"
+  refusalcheck: "python {tool_root}/scripts/check-no-refusal.py {output}"
   # H line (LLM-as-judge): a judge gate must answer VERDICT: PASS|FAIL - reason;
   # fail closed on bare/missing verdicts. scripts/judge.py wraps the agent.
   # quality_judge:
-  #   cmd: 'python {cwd}/scripts/judge.py -p "Does the design meet the rubric? VERDICT: PASS|FAIL - reason." {output}'
+  #   cmd: 'python {tool_root}/scripts/judge.py -p "Does the design meet the rubric? VERDICT: PASS|FAIL - reason." {output}'
   #   judge: true
+  # Evolution Patterns 第四域门禁（归纳自 snaplink-console / iris-ui 实战，
+  # 见 evolution-specs/rules.yaml）：
+  #   L1 baseline-first 产品基线先行（缺基线 → 方向只能标 [PROPOSED]）
+  baseline: "python {tool_root}/scripts/check-baseline.py {cwd}"
+  #   L2 authority-layering 权威源分层（产物能力声明必须带契约出处）
+  authority: "python {tool_root}/scripts/check-authority.py {output} --dir {cwd}"
+  #   L7 evidence-discipline 证据纪律（[PROPOSED] 不得冒充 VERIFIED）
+  evidence: "python {tool_root}/scripts/check-evidence.py {output}"
+  #   L6 non-goal-restraint 明确不做（方向撞线 fail closed）
+  nongoal: "python {tool_root}/scripts/check-nongoal.py {output} --dir {cwd}"
+  #   L9 change-budget 变更预算（≤5 文件/≤300 行，allowlist/denylist）
+  changebudget: "python {tool_root}/scripts/check-changebudget.py --dir {cwd}"
   # N2 (repo scope): full-tree gates run once at stage/batch end, never per
   # artifact mid-stage (they would race concurrent writers). Repo gates use
   # {cwd}; {output} is substituted with the stage's output directory.
@@ -278,3 +308,8 @@ device_fabric:
       #   kind: physical_device
       #   host: rtx-node
       #   labels: { ai.backend.cuda: "true" }
+      #   trust:
+      #     level: 3
+      #     zone: trusted-datacenter
+      #     max_effect_class: sandboxed
+      #     allowed_data_classes: [public, internal]

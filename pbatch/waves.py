@@ -122,14 +122,36 @@ def priority_score(node: TaskNode, nodes: list, done: Optional[set] = None,
                  - write_conflict - context_load, 3)
 
 
-def rank_nodes(ready: list, nodes: list, done: Optional[set] = None) -> list:
-    """按优先级排序就绪节点（高优先级先执行）。"""
-    return sorted(ready, key=lambda node: -priority_score(node, nodes, done))
+def fair_priority_score(node: TaskNode, nodes: list,
+                        done: Optional[set] = None,
+                        wait_cycles: int = 0,
+                        aging_factor: float = 0.1) -> float:
+    """Priority with bounded, explicit aging for starvation prevention."""
+    return round(priority_score(node, nodes, done)
+                 + aging_boost(wait_cycles, aging_factor), 3)
+
+
+def rank_nodes(ready: list, nodes: list, done: Optional[set] = None,
+               wait_cycles: Optional[dict] = None,
+               aging_factor: float = 0.1) -> list:
+    """按优先级排序就绪节点，并可按等待轮次公平提升。
+
+    ``wait_cycles`` 是 ``node_id -> 已等待波次数`` 的有界调度状态。缺失
+    的节点按 0 计算；默认不传时保持历史排序，调用方可在每个屏障后递增
+    未被选中的节点，从而避免长任务被持续插队饿死。
+    """
+    waits = wait_cycles or {}
+    return sorted(ready, key=lambda node: -fair_priority_score(
+        node, nodes, done, int(waits.get(node.id, 0)), aging_factor))
 
 
 def aging_boost(wait_cycles: int, factor: float = 0.1) -> float:
     """公平性老化（AADM-G §35.10）：长任务不能饿死小任务——等待轮次越多
     优先级越高（调度器用 wait_cycles 累计提升，防无限饥饿）。"""
+    if isinstance(wait_cycles, bool) or wait_cycles < 0:
+        raise ValueError("wait_cycles must be >= 0")
+    if factor < 0:
+        raise ValueError("factor must be >= 0")
     return round(wait_cycles * factor, 3)
 
 

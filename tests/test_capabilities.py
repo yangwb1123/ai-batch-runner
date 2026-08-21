@@ -8,6 +8,7 @@ health: Health Score 组件与扣分逻辑。
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -79,6 +80,48 @@ def test_capabilities_cli_check(capsys):
     assert exc.value.code == 0
     report = json.loads(capsys.readouterr().out)
     assert report["valid"] is True
+
+
+def test_capability_grant_binds_identity_scope_and_expiry():
+    grant = capabilities.CapabilityGrant(
+        agent_id="agent-a", node_id="node-1", actions=["devices.run"],
+        resources=["host-*"], environment="trusted-local",
+        expires_at="2099-01-01T00:00:00Z", max_side_effect_class="sandboxed",
+        capability="devices")
+    ok, reasons = capabilities.authorize_grant(
+        "devices", grant, 4, "agent-a", "node-1", "devices.run", "host-7",
+        "trusted-local", "sandboxed", device_zone="trusted-local",
+        now=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    assert ok is True and reasons == []
+    denied, reasons = capabilities.authorize_grant(
+        "devices", grant, 4, "agent-a", "other-node", "devices.run", "host-7",
+        "trusted-local", "sandboxed", device_zone="trusted-local",
+        now=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    assert denied is False and any("node_id" in reason for reason in reasons)
+    expired, reasons = capabilities.authorize_grant(
+        "devices", grant, 4, "agent-a", "node-1", "devices.run", "host-7",
+        "trusted-local", "sandboxed", device_zone="trusted-local",
+        now=datetime(2100, 1, 1, tzinfo=timezone.utc))
+    assert expired is False and any("过期" in reason for reason in reasons)
+
+
+def test_capabilities_authorize_cli(tmp_path, capsys):
+    grant = tmp_path / "grant.json"
+    grant.write_text(json.dumps({
+        "agentId": "agent-a", "nodeId": "node-1", "actions": ["world"],
+        "resources": ["repo-1"], "environment": "trusted-local",
+        "expiresAt": "2099-01-01T00:00:00Z",
+        "maxSideEffectClass": "read_only", "capability": "world",
+    }), encoding="utf-8")
+    with pytest.raises(SystemExit) as exc:
+        capabilities.capabilities_main([
+            "authorize", "--grant", str(grant), "--capability", "world",
+            "--agent-level", "2", "--agent-id", "agent-a", "--node-id", "node-1",
+            "--action", "world", "--resource", "repo-1",
+            "--environment", "trusted-local", "--device-zone", "trusted-local",
+            "--json"])
+    assert exc.value.code == 0
+    assert json.loads(capsys.readouterr().out)["allowed"] is True
 
 
 def test_health_score_components():

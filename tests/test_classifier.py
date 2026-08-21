@@ -216,14 +216,14 @@ def test_ui_pipeline_schema_valid():
     names = [stage.name for stage in pipeline.stages]
     assert names == ["classify", "generate", "review", "gate"]
     generate = pipeline.stages[1]
-    assert generate.validate_cmd == "uispacing,uicolor,uistyle,uigeometry"
+    assert generate.validate_cmd == "uispacing,uicolor,uistyle,uifont,uigeometry"
 
 
 def test_ui_validators_resolve():
     from pbatch.config import _resolve_validators
-    commands = _resolve_validators("uispacing,uicolor,uistyle,uigeometry")
-    assert all("check-ui-spec.py" in cmd for cmd in commands[:3])
-    assert "check-ui-geometry.py" in commands[3]
+    commands = _resolve_validators("uispacing,uicolor,uistyle,uifont,uigeometry")
+    assert all("check-ui-spec.py" in cmd for cmd in commands[:4])
+    assert "check-ui-geometry.py" in commands[4]
 
 
 def test_check_ui_spec_script_rejects_and_accepts(tmp_path):
@@ -253,7 +253,7 @@ def test_frontend_implementation_pipeline_schema():
     from pbatch.pipeline import load_pipeline
     pipeline = load_pipeline("examples/frontend-implementation-pipeline.yaml")
     assert [s.name for s in pipeline.stages] == ["plan", "implement", "review", "gate"]
-    assert pipeline.stages[1].validate_cmd == "uiquality,uicheck,uigeometry,completion"
+    assert pipeline.stages[1].validate_cmd == "uiquality,uicheck,uifont,uigeometry,completion"
     assert pipeline.stages[2].meta is True
     assert pipeline.stages[3].gate is True
     plan = pipeline.stages[0].from_prompt

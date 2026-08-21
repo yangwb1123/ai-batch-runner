@@ -213,6 +213,24 @@ def load_context_content(manifest: dict, maximum: int = 0,
     return combine_outputs(files, maximum)
 
 
+def _with_constitution_route(routes: list, text: str, root: str) -> list:
+    """项目宪法自动注入（L1/L6）：任务命中宪法关键词且项目存在
+    docs/evolution/constitution.yaml 时，把宪法追加为上下文文档。
+
+    宪法是项目自己的规则（明确不做/变更预算/豁免）——相关任务必须
+    知道边界；缺省无宪法不注入（不臆造）。"""
+    lowered = (text or "").lower()
+    if not any(k in lowered for k in ("宪法", "规律", "不做", "预算", "豁免",
+                                      "constitution", "non-goal", "budget",
+                                      "evolution", "restraint")):
+        return routes
+    constitution = Path(root) / "docs" / "evolution" / "constitution.yaml"
+    if not constitution.is_file():
+        return routes
+    return routes + [{"when": {"task_contains": []},
+                      "load": ["docs/evolution/constitution.yaml"]}]
+
+
 def context_main(argv: list) -> int:
     """`pi-batch context "<task>" [--paths P1,P2] [--json]`."""
     import argparse
@@ -242,6 +260,7 @@ def context_main(argv: list) -> int:
                   load_context_map(str(default_map)) if default_map.exists() else [])
     except ValueError as exc:
         parser.error(str(exc))
+    routes = _with_constitution_route(routes, text, args.root)
     try:
         manifest = match_context(text, paths or None, routes, args.root)
         if args.content:

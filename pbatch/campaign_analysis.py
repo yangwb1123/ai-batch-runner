@@ -9,9 +9,11 @@ from pathlib import Path
 
 from .campaign_models import CampaignSettings, Direction
 from .campaign_state import digest, tool_digest, tree_digest
+from .evolution import load_constitution
 from .meta import _extract_json_array
 from .models import Task, TaskResult
 from .runner import run_parallel
+from .triage import is_retryable
 
 _PLANNING_FAILURE_STATUSES = frozenset({
     "FAILED", "VALIDATION_FAILED", "GATE_REJECTED", "GATE_REJECTED_OBSERVED",
@@ -113,10 +115,72 @@ def analysis_prompt(settings: CampaignSettings, module: str) -> str:
             .replace("{candidate_limit}", str(settings.candidate_limit)))
 
 
+# L6/L10 注入上限：已拒方向最多带最近 N 条（有界，防 prompt 膨胀）。
+_MAX_REJECTED_INJECT = 12
+_STATE_LINE_SCAN = 2000
+
+
+def _evolution_context(root: Path) -> str:
+    """项目宪法 + 历史已拒方向 → 分析 prompt 附加块（有界）。
+
+    L6（明确不做）与 L10（决策记忆）的 campaign 挂点：方向建议必须
+    知道项目边界与历史被拒记录——snaplink state.jsonl 里大量
+    `DIRECTION_REJECTED: duplicate` 证明不带历史的分析会重复建议。
+    """
+    parts = []
+    constitution = load_constitution(root)
+    goals = constitution.get("explicit_non_goals") or []
+    if isinstance(goals, list) and goals:
+        goals_text = "\n".join(f"- {g}" for g in goals)
+        parts.append("Project constitution explicit non-goals "
+                     "(MUST NOT propose directions that collide):\n" + goals_text)
+    budget = (constitution.get("change_budget") or {})
+    if budget.get("max_files"):
+        parts.append(f"Change budget: max_files={budget['max_files']}, "
+                     f"max_lines={budget.get('max_lines', 0)}")
+    state = root / "docs" / "auto" / "state.jsonl"
+    if state.is_file():
+        rejected = _recent_rejected(state)
+        if rejected:
+            lines = "\n".join(f"- {d[:120]} ({r})" for d, r in rejected)
+            parts.append("Previously rejected directions (do NOT re-propose "
+                         "the same or overlapping work):\n" + lines)
+    return "\n\n".join(parts)
+
+
+def _recent_rejected(state: Path, limit: int = _MAX_REJECTED_INJECT) -> list:
+    """从 state.jsonl 尾部扫描最近被拒方向（有界行缓冲，倒序收集）。"""
+    rejected = []
+    try:
+        with state.open(encoding="utf-8") as handle:
+            tail = list(handle)[-_STATE_LINE_SCAN:]
+    except (OSError, ValueError):
+        return []
+    for line in reversed(tail):
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        status = row.get("status")
+        direction = row.get("direction")
+        if status in ("DIRECTION_REJECTED", "GATE_REJECTED") and direction:
+            rejected.append((str(direction), str(row.get("reason") or "")))
+        if len(rejected) >= limit:
+            break
+    return rejected
+
+
 def build_analysis_task(root: Path, settings: CampaignSettings, module: str,
                         model: str = "", provider: str = "", timeout: int = 0) -> Task:
     output = settings.path(root, settings.output_dir) / "analyses" / f"{module_slug(module)}.json"
-    task = Task(prompt=analysis_prompt(settings, module), output=str(output), cwd=str(root))
+    prompt = analysis_prompt(settings, module)
+    context = _evolution_context(root)
+    if context:
+        prompt += ("\n\n==== Project context (constitution + rejected history) ====\n"
+                   + context)
+    task = Task(prompt=prompt, output=str(output), cwd=str(root))
     task.memory = {"stage": "campaign-analysis", "memory_mode": "execute"}
     task.model = model or task.model
     task.provider = provider or task.provider
@@ -168,7 +232,8 @@ def run_analysis_tasks(tasks: list[Task], jobs: int, retries: int,
                 result.reason = "analysis produced no structured directions"
                 result.task.output_path().unlink(missing_ok=True)
             final[str(result.task.output_path())] = result
-        pending = [result.task for result in results if not result.success]
+        pending = [result.task for result in results
+                   if not result.success and is_retryable(result.reason)]
         if pending and attempt < retries:
             time.sleep(max(0, retry_delay) * (2 ** attempt))
     return final
@@ -248,11 +313,34 @@ def _evidence_candidates(evidence: str) -> list[str]:
     return candidates
 
 
+def non_goal_collision(root: Path, direction: Direction) -> str:
+    """方向撞项目明确不做（L6）→ 返回碰撞理由（空 = 通过）。
+
+    读取项目宪法 explicit_non_goals（docs/evolution/constitution.yaml
+    或 evolution.yaml）；无宪法时不拦截（vacuous-green ban：缺省边界
+    不是通过信号，但也不臆造边界）。实战出处：iris-ui ROADMAP 明确
+    不做清单阻止 agent 自动开工维护者未选择的方向。
+    """
+    from .evolution import check_conformance, load_constitution
+    constitution = load_constitution(root)
+    goals = constitution.get("explicit_non_goals") or []
+    if not isinstance(goals, list) or not goals:
+        return ""
+    text = f"{direction.title} {direction.problem}"
+    collisions = check_conformance(text, goals)
+    if collisions:
+        return f"non-goal collision: {collisions[0]['goal']}"
+    return ""
+
+
 def rejection_reason(root: Path, direction: Direction, minimum_score: float,
                      seen: list[Direction]) -> str:
     """Precise reason a direction was not selected (real-world lesson:
     a conflated "duplicate, low score, missing evidence..." string made
     a 9-direction rejection impossible to diagnose)."""
+    collision = non_goal_collision(root, direction)
+    if collision:
+        return collision
     if any(_similar_direction(direction, previous) for previous in seen):
         return ("duplicate of a higher-ranked direction "
                 "(title overlap >= 0.75 or evidence overlap >= 0.8)")
@@ -280,7 +368,9 @@ def select_directions(root: Path, directions: list[Direction], maximum: int,
     seen: list[Direction] = []
     for _, direction in ordered:
         duplicate = any(_similar_direction(direction, previous) for previous in seen)
-        valid = (not duplicate and direction.score >= minimum_score and
+        blocked = bool(non_goal_collision(root, direction))
+        valid = (not duplicate and not blocked and
+                 direction.score >= minimum_score and
                  direction.implementable and evidence_exists(root, direction))
         seen.append(direction)
         if valid and len(selected) < maximum:

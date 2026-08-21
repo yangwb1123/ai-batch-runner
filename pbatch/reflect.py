@@ -33,7 +33,22 @@ import time
 from pathlib import Path
 from typing import Optional
 
-REFLECTIONS_FILE = Path(".pi-batch") / "reflections.jsonl"
+def reflections_file(cwd: str = "") -> Path:
+    """反思账本（data_dir 感知）。"""
+    from .config import data_dir
+    return data_dir(cwd) / "reflections.jsonl"
+
+
+_LEGACY_REFLECTIONS_FILE = Path(".pi-batch") / "reflections.jsonl"
+REFLECTIONS_FILE = _LEGACY_REFLECTIONS_FILE  # 兼容旧引用
+
+
+def _reflection_path(cwd: str = "") -> Path:
+    """Resolve the new data root while honoring legacy test/integration hooks."""
+    legacy = Path(REFLECTIONS_FILE)
+    if legacy != _LEGACY_REFLECTIONS_FILE:
+        return legacy
+    return reflections_file(cwd)
 
 SEVERITY_WEIGHTS = {"critical": 20, "warning": 8, "info": 3}
 
@@ -346,10 +361,11 @@ def reflect_on(task: str, code_dir: str = "", evidence: str = "",
 
 def _append_reflection(report: dict) -> str:
     """追加式反思账本（truth/learn/eval 闭环的输入）。"""
-    REFLECTIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with REFLECTIONS_FILE.open("a", encoding="utf-8") as handle:
+    file = _reflection_path()
+    file.parent.mkdir(parents=True, exist_ok=True)
+    with file.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(report, ensure_ascii=False) + "\n")
-    return str(REFLECTIONS_FILE)
+    return str(file)
 
 
 def _render(report: dict) -> str:

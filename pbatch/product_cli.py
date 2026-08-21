@@ -23,29 +23,15 @@ except ImportError:
 
 from . import user_dirs
 from .tools import list_subcommands
+from .version import VERSION
 
 # 产品名（与 pyproject 的 [project] name 一致；单事实源在 pyproject.toml）
 PRODUCT = "pi-batch"
 
 
 def _version_from_pyproject() -> str:
-    """从 pyproject.toml 读版本（单事实源）；缺省回退 0.0.0-dev。"""
-    candidates = [
-        Path(__file__).resolve().parent.parent / "pyproject.toml",
-        Path("pyproject.toml"),
-    ]
-    for path in candidates:
-        if not path.exists():
-            continue
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        for line in text.splitlines():
-            line = line.strip()
-            if line.startswith("version ="):
-                return line.split("=", 1)[1].strip().strip('"').strip("'")
-    return "0.0.0-dev"
+    """兼容旧调用面的版本读取；实现集中在 pbatch.version。"""
+    return VERSION
 
 
 def init_main(argv: Optional[list] = None) -> int:
@@ -61,14 +47,15 @@ def init_main(argv: Optional[list] = None) -> int:
         settings.write_text(
             "# pi-batch 用户配置（分层：CLI > 项目 pi-batch.yaml > 此处 > 默认）\n"
             "# 示例：\n"
-            "# agent_bin: pi\n"
-            "# session_mode: shared\n",
+            "# agent:\n"
+            "#   bin: pi\n"
+            "#   default_workers: 4\n",
             encoding="utf-8",
         )
     if args.json:
-        print(json.dumps({k: str(v) for k, v in dirs.items()}
-                          + {"settings": str(settings)}, ensure_ascii=False,
-                          indent=2))
+        report = {k: str(v) for k, v in dirs.items()}
+        report["settings"] = str(settings)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
         print(f"# {PRODUCT} 用户目录已就绪")
         for kind, path in dirs.items():

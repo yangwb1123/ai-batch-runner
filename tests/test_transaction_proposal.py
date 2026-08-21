@@ -15,9 +15,11 @@ import pytest
 
 from pbatch import pinned, proposal, transaction
 from pbatch.fabric_devices import DEVICE_STATE_DIR, device_inventory
-from pbatch.transaction import (DecisionTransaction, can_transition,
-                                is_terminal, transition,
-                                validate_minimality, verify_transaction)
+from pbatch.transaction import (DecisionTransaction, ExecutionBudget,
+                                authorize_execution, can_transition,
+                                is_terminal, transition, validate_contract,
+                                validate_minimality, rollback_transaction,
+                                verify_and_transition, verify_transaction)
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +76,96 @@ def test_minimality_six_criteria():
     assert any("拆分" in v for v in violations)
     assert any("验证义务" in v for v in violations)
     assert any("补偿" in v for v in violations)
+
+
+def _complete_transaction(status="draft"):
+    return DecisionTransaction(
+        id="tx-full", task_id="task-1", goal="审批文件",
+        goal_atom_id="goal-1", trigger_atom_ids=["request-1"],
+        read_set=["file-1", "approval-1"], guard_atom_ids=["can-approve"],
+        candidate_actions=[{"id": "approve", "description": "通过"}],
+        selected_action="approve", write_set=["approval-1.status"],
+        expected_evidence=["test_pass"], verifier={"kind": "command"},
+        compensation="restore approval-1.status",
+        budget=ExecutionBudget(max_cost=2, max_seconds=10, max_risk=0.5,
+                               required_capabilities=["approval.write"]),
+        status=status,
+    )
+
+
+def test_full_transaction_contract_roundtrip():
+    tx = _complete_transaction()
+    assert validate_contract(tx) == []
+    restored = DecisionTransaction.from_dict(tx.to_dict())
+    assert restored.to_dict() == tx.to_dict()
+
+
+def test_authorize_execution_is_guard_and_budget_fail_closed():
+    tx = _complete_transaction("authorized")
+    with pytest.raises(ValueError, match="guards unsatisfied"):
+        authorize_execution(tx, [], {"capabilities": ["approval.write"]})
+    assert tx.status == "authorized"
+    with pytest.raises(ValueError, match="超过预算"):
+        authorize_execution(tx, ["can-approve"],
+                            {"cost": 3, "capabilities": ["approval.write"]})
+    assert tx.status == "authorized"
+    authorize_execution(tx, ["can-approve"],
+                        {"cost": 1, "seconds": 2, "risk": 0.2,
+                         "capabilities": ["approval.write"]})
+    assert tx.status == "executing"
+
+
+def test_authorize_execution_can_enforce_capability_grants():
+    tx = _complete_transaction("authorized")
+    grant = {
+        "agent_id": "agent-a", "node_id": "node-1",
+        "actions": ["approval.write"], "resources": ["approval:*"],
+        "environment": "trusted-local", "expires_at": "2099-01-01T00:00:00Z",
+        "max_side_effect_class": "reversible",
+    }
+    observed = {
+        "agent_level": 3, "agent_id": "agent-a", "node_id": "node-1",
+        "action": "approval.write", "resource": "approval:1",
+        "environment": "trusted-local", "device_zone": "trusted-local",
+        "effect_class": "reversible", "capability_grants": [grant],
+    }
+    authorize_execution(tx, ["can-approve"], observed)
+    assert tx.status == "executing"
+
+    denied = _complete_transaction("authorized")
+    observed["node_id"] = "other-node"
+    with pytest.raises(ValueError, match="能力授权"):
+        authorize_execution(denied, ["can-approve"], observed)
+    assert denied.status == "authorized"
+
+
+def test_verify_and_transition_rejects_false_evidence():
+    tx = _complete_transaction("observed")
+    assert verify_transaction(tx, {"test_pass": False}) is False
+    assert verify_and_transition(tx, {"test_pass": False}) is False
+    assert tx.status == "failed"
+
+
+def test_rollback_requires_failed_state_and_compensation():
+    tx = _complete_transaction("failed")
+    rollback_transaction(tx)
+    assert tx.status == "rolled_back"
+    active = _complete_transaction("authorized")
+    with pytest.raises(ValueError):
+        rollback_transaction(active)
+
+
+def test_transaction_cli_validate(tmp_path, capsys):
+    from pbatch.transaction import transaction_main
+    source = tmp_path / "transaction.json"
+    source.write_text(json.dumps(_complete_transaction().to_dict()),
+                      encoding="utf-8")
+    with pytest.raises(SystemExit) as exc:
+        transaction_main(["--input", str(source), "--json"])
+    assert exc.value.code == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["valid"] is True
+    assert report["transaction"]["budget"]["max_cost"] == 2
 
 
 # ---------------------------------------------------------------------------

@@ -64,6 +64,48 @@ def test_org_check_detects_bad_command(tmp_path, monkeypatch):
     assert any("命令不存在" in p for p in report["problems"])
 
 
+def test_org_check_detects_unsupported_placeholder(tmp_path, monkeypatch):
+    """未知占位符在静态层拒绝，避免运行时把字面量交给 shell。"""
+    (tmp_path / "evolution.yaml").write_text(
+        "id: evolution\nname: Evolution\nrole: 演化\nstage: 0\nparent: ''\n"
+        "responsibilities: []\ninputs: []\noutputs: []\ncheck_rules: []\n"
+        "forbidden: []\nbest_practices: []\nfailure_cases: []\n"
+        "auto_checks: ['pi-batch retro --actions {unknown_token}']\n"
+        "review_checklist: []\nrole_template: ''\n", encoding="utf-8")
+    monkeypatch.setattr(org, "ORG_DIR", tmp_path)
+    report = org.org_check()
+    assert report["valid"] is False
+    assert any("evolution" in problem and "{unknown_token}" in problem
+               for problem in report["problems"])
+
+
+def test_org_gate_skips_unsupported_placeholder(tmp_path, monkeypatch):
+    """运行时遇到未知 token 不执行，也不能标记 passed。"""
+    (tmp_path / "evolution.yaml").write_text(
+        "id: evolution\nname: Evolution\nrole: 演化\nstage: 0\nparent: ''\n"
+        "responsibilities: []\ninputs: []\noutputs: []\ncheck_rules: []\n"
+        "forbidden: []\nbest_practices: []\nfailure_cases: []\n"
+        "auto_checks: ['echo {unknown_token}']\nreview_checklist: []\n"
+        "role_template: ''\n", encoding="utf-8")
+    monkeypatch.setattr(org, "ORG_DIR", tmp_path)
+    report = org.run_gate("evolution", task="task", code_dir="code")
+    entry = report["results"][0]
+    assert entry["status"] == "skipped"
+    assert "不支持的占位符" in entry["reason"]
+    assert "{unknown_token}" in entry["reason"]
+
+
+def test_org_gate_does_not_shell_interpret_placeholder_values(tmp_path):
+    """Untrusted task text is passed as argv data, never shell syntax."""
+    marker = tmp_path / "injected"
+    check = "python -c \"import sys; print(sys.argv[1])\" {task}"
+    result = org._execute_check(
+        check, {"{task}": f"; touch {marker}; echo INJECTED"})
+    assert result["status"] == "passed"
+    assert not marker.exists()
+    assert "touch" in result["evidence"]
+
+
 def test_check_exists_pi_batch_subcommand():
     commands = org._known_commands()
     assert org._check_exists("pi-batch impact --task", commands) is True
@@ -224,6 +266,24 @@ def test_org_run_flow_l1_simple_change():
     assert "developer" in node_ids
 
 
+def test_org_frontend_flow_includes_ux_gate():
+    report = org.run_flow(task="调整 React 订单页面按钮")
+    assert "ux_designer" in [node["node"] for node in report["nodes"]]
+
+
+def test_org_l3_flow_routes_all_organization_nodes(monkeypatch):
+    monkeypatch.setattr(
+        org, "run_gate",
+        lambda node_id, *args: {"passed": 1, "failed": 0, "skipped": 0,
+                                "attention": 0, "gate_passed": True,
+                                "results": []},
+    )
+    report = org.run_flow(task="平台级生产变更", level="L3")
+    ids = [node["node"] for node in report["nodes"]]
+    assert set(ids) == {node["id"] for node in org.load_nodes()}
+    assert report["flow_passed"] is True
+
+
 @pytest.mark.scenario
 def test_org_run_flow_l2_high_risk():
     """生产导出 → L2 流程：含架构/安全评审节点。"""
@@ -237,6 +297,22 @@ def test_org_run_flow_passed_semantics():
     """flow_passed：节点 gate 全过才 True（skipped 不阻塞，failed 阻塞）。"""
     report = org.run_flow(task="把订单页按钮对齐")
     assert report["flow_passed"] is True
+
+
+def test_org_run_flow_node_error_fails_closed(monkeypatch):
+    """节点查找/配置错误不能被 continue 吞掉并把空流程判为通过。"""
+    def fake_gate(node_id, *args):
+        if node_id == "developer":
+            return {"error": "developer gate configuration missing"}
+        return {"passed": 0, "failed": 0, "skipped": 0, "attention": 0,
+                "gate_passed": True, "results": []}
+
+    monkeypatch.setattr(org, "run_gate", fake_gate)
+    report = org.run_flow(task="把订单页按钮对齐", level="L1")
+    failed = next(node for node in report["nodes"] if node["node"] == "developer")
+    assert report["flow_passed"] is False
+    assert failed["gate_passed"] is False
+    assert failed["error"] == "developer gate configuration missing"
 
 
 def test_org_run_cli_json(capsys):
@@ -253,7 +329,7 @@ def test_org_run_cli_json(capsys):
 # ---------------------------------------------------------------------------
 
 def test_save_and_list_flows(tmp_path, monkeypatch):
-    monkeypatch.setattr(org, "FLOWS_DIR", tmp_path)
+    monkeypatch.setenv("PBATCH_DATA_DIR", str(tmp_path))
     report = {"task": "把订单页按钮对齐", "run_level": "L1",
               "flow_passed": True, "nodes": []}
     path = org.save_flow(report)
@@ -265,7 +341,7 @@ def test_save_and_list_flows(tmp_path, monkeypatch):
 
 
 def test_list_flows_bounded_and_ordered(tmp_path, monkeypatch):
-    monkeypatch.setattr(org, "FLOWS_DIR", tmp_path)
+    monkeypatch.setenv("PBATCH_DATA_DIR", str(tmp_path))
     for index in range(3):
         org.save_flow({"task": f"t{index}", "run_level": "L0",
                        "flow_passed": True, "nodes": []})
@@ -288,7 +364,7 @@ def test_lesson_for_no_cases():
 
 
 def test_org_runs_cli(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(org, "FLOWS_DIR", tmp_path)
+    monkeypatch.setenv("PBATCH_DATA_DIR", str(tmp_path))
     org.save_flow({"task": "测试流程", "run_level": "L0",
                    "flow_passed": True, "nodes": []})
     with pytest.raises(SystemExit) as exc:

@@ -24,6 +24,13 @@ def test_python_m_pbatch_help():
     assert "health" in result.stdout
 
 
+def test_python_m_pbatch_version_uses_runtime_source():
+    result = _run([sys.executable, "-m", "pbatch", "--version"])
+    assert result.returncode == 0
+    from pbatch.version import VERSION
+    assert result.stdout.strip() == f"pi-batch {VERSION}"
+
+
 def test_python_m_pbatch_classify_subcommand():
     result = _run([sys.executable, "-m", "pbatch", "classify", "生成登录页面 tsx"])
     assert result.returncode == 0

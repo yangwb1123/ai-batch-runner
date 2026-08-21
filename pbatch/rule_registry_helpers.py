@@ -9,19 +9,62 @@ from .rule_registry import check_registry as _validate_core
 
 _LEVELS = ("invariant", "contract", "policy", "heuristic", "suggestion")
 _TIERS = {"demo", "standard", "production"}
-_EXTENSION_FIELDS = {"level", "suppress_on"}
+_EXTENSION_FIELDS = {"level", "suppress_on", "scope", "counter_signals",
+                       "samples", "confidence"}
+
+
+def _string_list_ok(value) -> bool:
+    return (isinstance(value, list) and bool(value)
+            and all(isinstance(item, str) and item.strip() for item in value))
+
+
+def _list_field_errors(rule_id: str, rule: dict, signals: set) -> list:
+    """counter_signals / samples 列表字段校验（含信号声明检查）。"""
+    errors = []
+    for key in ("counter_signals", "samples"):
+        value = rule.get(key)
+        if value is not None and not _string_list_ok(value):
+            errors.append(f"rule '{rule_id}': {key} must be a non-empty "
+                          f"string list")
+        elif key == "counter_signals" and value is not None:
+            unknown = sorted(set(value) - signals)
+            if unknown:
+                errors.append(f"rule '{rule_id}': counter_signals {unknown} "
+                              f"not declared in signals section")
+    return errors
+
+
+def _rule_level_errors(rule_id: str, rule: dict, signals: set) -> list:
+    """level / scope / counter_signals / samples / confidence 校验。"""
+    errors = []
+    level = rule.get("level")
+    if level is not None and level not in _LEVELS:
+        errors.append(
+            f"rule '{rule_id}': invalid level {level!r} "
+            f"(must be one of {_LEVELS})")
+    scope = rule.get("scope")
+    if scope is not None and (not isinstance(scope, str) or not scope.strip()):
+        errors.append(f"rule '{rule_id}': scope must be a non-empty string")
+    elif scope is not None and scope != "any" and scope not in signals:
+        errors.append(f"rule '{rule_id}': scope '{scope}' must be 'any' or "
+                      f"a declared signal ({sorted(signals) or 'none'})")
+    errors.extend(_list_field_errors(rule_id, rule, signals))
+    confidence = rule.get("confidence")
+    if confidence is not None and (not isinstance(confidence, (int, float))
+                                   or isinstance(confidence, bool)
+                                   or not 0 <= confidence <= 1):
+        errors.append(f"rule '{rule_id}': confidence must be a number "
+                      f"in [0, 1]")
+    return errors
 
 
 def _extension_errors(registry: dict) -> list[str]:
     errors = []
+    signals = set((registry.get("signals") or {}).keys())
     for rule_id, rule in (registry.get("rules") or {}).items():
         if not isinstance(rule, dict):
             continue
-        level = rule.get("level")
-        if level is not None and level not in _LEVELS:
-            errors.append(
-                f"rule '{rule_id}': invalid level {level!r} "
-                f"(must be one of {_LEVELS})")
+        errors.extend(_rule_level_errors(str(rule_id), rule, signals))
         errors.extend(_suppression_errors(str(rule_id), rule.get("suppress_on")))
     return errors
 

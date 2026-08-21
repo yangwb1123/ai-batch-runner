@@ -45,6 +45,17 @@ def test_completion_gate_accepts_honest_report(tmp_path):
     assert _run(str(artifact)).returncode == 0
 
 
+def test_completion_gate_stdlib_fallback_without_pyyaml(tmp_path):
+    """The documented pure-stdlib gate remains usable when PyYAML is absent."""
+    artifact = tmp_path / "ok.md"
+    artifact.write_text(GOOD_REPORT, encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, "-S", SCRIPT, str(artifact)],
+        capture_output=True, text=True, timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_completion_gate_rejects_missing_report(tmp_path):
     artifact = tmp_path / "no.md"
     artifact.write_text("# 完成\n测试通过。\n", encoding="utf-8")

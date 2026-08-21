@@ -92,6 +92,10 @@ def _add_metering_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--daily-budget", "--daily-invocations", dest="daily_budget",
                         metavar="N", type=int, default=0)
     parser.add_argument("--daily-state", default="")
+    parser.add_argument("--rate-limit", type=float, default=0.0,
+                        help="provider invocations per second (0 = config/default)")
+    parser.add_argument("--rate-burst", type=float, default=0.0,
+                        help="provider token-bucket burst capacity (0 = config/default)")
 
 
 def load_settings(root: Path, args: argparse.Namespace) -> CampaignSettings:
@@ -121,7 +125,8 @@ def load_settings(root: Path, args: argparse.Namespace) -> CampaignSettings:
 def _validate_runtime_args(args: argparse.Namespace) -> None:
     values = {"timeout": args.timeout, "retry-delay": args.retry_delay,
               "budget-max": args.budget_max, "daily-budget": args.daily_budget,
-              "round-delay": args.round_delay}
+              "round-delay": args.round_delay, "rate-limit": args.rate_limit,
+              "rate-burst": args.rate_burst}
     invalid = [name for name, value in values.items()
                if not math.isfinite(float(value)) or value < 0]
     if args.rounds < 0:

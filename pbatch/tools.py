@@ -19,6 +19,7 @@ from typing import Optional
 
 # 子命令 → 一行描述（与 pbatch/cli.py _SUBCOMMANDS 同步维护）。
 DESCRIPTIONS = {
+    "config": "配置来源/版本/最终解析值检查（explain/check）",
     "memory": "渐进式 message memory（ingest/recent/find/read）",
     "classify": "任务类型判定（frontend/backend 路由）",
     "rules": "规则 manifest（scale×page_type×risk + 双向校验）",
@@ -41,6 +42,7 @@ DESCRIPTIONS = {
     "approve": "批准设备 Runner 接入",
     "runners": "已注册设备清单",
     "atomize": "认知原子提取（MUST #1：先原子化）",
+    "transaction": "决策事务契约（guard/预算/验证/回滚状态机）",
     "pareto": "Pareto 前沿 + Utility + MUC",
     "race": "分阶段竞跑（Successive Halving）",
     "proposal": "多 Agent 提案冲突/合并/收益公式",
@@ -48,6 +50,7 @@ DESCRIPTIONS = {
     "truth": "真值维护（前提级联失效）",
     "causal": "因果假设生命周期（先测量后干预）",
     "temporal": "证据衰减（三类新鲜度）",
+    "formulas": "AADM 确定性指标公式（不确定性/风险/复杂度/置信度）",
     "pinned": "Pinned 上下文 + 摘要失效检测",
     "graph": "类型化超图（校验/deps/cycles/summary）",
     "metrics": "五类运营指标",

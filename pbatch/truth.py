@@ -22,9 +22,22 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-TRUTH_FILE = Path(".pi-batch") / "truth.jsonl"
+_LEGACY_TRUTH_FILE = Path(".pi-batch") / "truth.jsonl"
+TRUTH_FILE = _LEGACY_TRUTH_FILE  # 兼容旧引用
 LINE_MAX_BYTES = 256 * 1024
 FILE_MAX_BYTES = 4 * 1024 * 1024
+
+
+def truth_file(cwd: str = "") -> Path:
+    """真值账本路径（遵循 --data-dir/PBATCH_DATA_DIR）。"""
+    from .config import data_dir
+    return data_dir(cwd) / "truth.jsonl"
+
+
+def _effective_truth_file(cwd: str = "") -> Path:
+    """新运行时路径；测试和旧集成显式改写 TRUTH_FILE 时仍生效。"""
+    legacy = Path(TRUTH_FILE)
+    return legacy if legacy != _LEGACY_TRUTH_FILE else truth_file(cwd)
 
 
 class TruthStore:
@@ -76,15 +89,17 @@ def _record_to_log(store: TruthStore, action: str, payload: dict) -> str:
     record = {"action": action, "payload": payload,
               "at": __import__("time").strftime("%Y-%m-%dT%H:%M:%S")}
     line = json.dumps(record, ensure_ascii=False)
-    TRUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with TRUTH_FILE.open("a", encoding="utf-8") as handle:
+    path = _effective_truth_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
         handle.write(line + "\n")
-    return TRUTH_FILE.name
+    return path.name
 
 
-def load_from_log(path: Path = TRUTH_FILE) -> TruthStore:
+def load_from_log(path: Optional[Path] = None) -> TruthStore:
     """按日志回放重建 TruthStore（有界行缓冲，超长行跳过）。"""
     store = TruthStore()
+    path = Path(path) if path is not None else _effective_truth_file()
     if not path.exists():
         return store
     try:

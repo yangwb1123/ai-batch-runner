@@ -69,3 +69,9 @@ SizedBox(height: 24)
 - 语义化命名优先：`space.md` 优于裸 `16`（若平台支持 token 引用）。
 - compact 模式 ≠ 没有间距：密度差异通过 token 档位表达（如 tableRow
   48→40），**不得**出现 5/9/14/17/19/21/26 等非 token 值。
+
+Tailwind-like `className` utilities are checked too: numeric scales use the
+default `0.25rem` scale (`p-2` → 8px, `p-4` → 16px), while arbitrary values
+such as `p-[13px]` must resolve to the same token set. Use `uifont` for
+typography values; it derives the allowed 12/14/16/20/24/32px family from
+`ui-specs/tokens.json`.
