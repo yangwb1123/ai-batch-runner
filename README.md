@@ -16,6 +16,9 @@ pi-batch -p "写一个订单接口，含支付审批，生产，go" --classify  
 pi-batch completion bash >> ~/.bashrc    # shell 补全（zsh 同理）
 ```
 
+构建 wheel 安装时会同时携带规则注册表、验证脚本、默认流水线、角色模板和
+评估集；`pi-batch health --json` 会检查分发资产是否完整。
+
 ### 用户级工作目录（XDG 兼容）
 
 | 目录 | 用途 |
@@ -29,12 +32,25 @@ pi-batch completion bash >> ~/.bashrc    # shell 补全（zsh 同理）
 CLI 参数 > 项目 `pi-batch.yaml` > 用户 settings.yaml > 内置默认。
 项目相关状态（会话/记忆/被拒产物）保留在项目内 `.pi-batch/`——随仓库共享。
 
+配置变更建议先做只读核验：
+
+```bash
+pi-batch config explain       # 来源、覆盖关系、脱敏后的最终配置与运行时值
+pi-batch config check         # 版本/结构校验，适合 CI
+pi-batch config check --file pi-batch.yaml --json
+```
+
+`pi-batch.yaml` 使用 `config_version: 1`。缺省版本按 legacy v0 兼容；高于当前支持版本
+会 fail closed。`config explain` 不创建目录、不启动 agent；报告中的敏感键（token、password、
+private key 等）只显示 `<redacted>`。
+
 ### 功能全景
 
-- **49+ 子命令**：需求评估（assess/classify/profile/probe）→ 流程编排
+- **50+ 子命令**：需求评估（assess/classify/profile/probe）→ 流程编排
   （campaign/org/advance/race/pareto）→ 规则知识（rules/learn/adr/context/
   memory/capsule/replay）→ 治理（truth/causal/temporal/pinned/metrics/
-  budget/recovery/events）→ 设备织网（devices/serve/runner）
+  budget/recovery/events/world）→ 设备织网（devices/serve/runner）→ **实战规律
+  （evolution：形态分类/规律分级路由/项目宪法/管线形状推荐）**
 - **1086+ 回归测试 + 42 eval 用例**；`pi-batch check` 8 门禁聚合自检
 - 零 LLM 确定性核心：所有检测/路由/校验纯 stdlib + ast，可测试、fail closed
 - 详见 `docs/`（AADM 理论四卷、AGENT_ORGANIZATION、CAMPAIGN_LESSONS）与 `AGENTS.md`
@@ -121,7 +137,9 @@ exponential-backoff retries, and optional auto git-commit after each stage.
 > - T6 spike verified pi session files (`~/.pi/agent/sessions/--<cwd>--/`,
 >   `message.usage` JSON pointers) — report in `docs/spike-pi-session.md`
 > - T7 `pbatch/metering.py`: `--events-file` JSONL events (task_finish/
->   task_fail/budget_cap) with per-call session usage diff; `--webhook`
+>   task_fail/budget_cap) with per-call session usage diff; each event carries
+>   `schema_version`, `event_id`, `run_id`, `task_id`, `stage_id`, `attempt`
+>   and `phase`; `--run-id` can supply an external correlation id; `--webhook`
 >   non-blocking delivery; usage:null degradation
 > - T8 budgets: `--budget-max` (per run) + `--daily-budget` (UTC state
 >   file); cap wins over `--max-rounds 0`, exit 3
@@ -224,7 +242,7 @@ pi-batch check                                 # one-command self-check
 # pipeline (real code in the project; plan -> implement with
 # uiquality/uicheck/completion gates -> adversarial review -> verdict)
 # (classifier.frontend_pipeline), which applies ui-specs + UI validators
-# (uispacing/uicolor/uistyle) + meta UI review + verdict gate
+# (uispacing/uicolor/uistyle/uifont) + meta UI review + verdict gate
 pi-batch -p "生成一个登录页面 tsx" --classify --dry-run
 
 # Batch from a YAML task file
@@ -414,9 +432,10 @@ tasks:
   risk-mandated rules are **vetoed by the algorithm** (fail closed, marked
   `[algorithm-vetoed-llm-skip]`); malformed LLM JSON exits 2. The generation
   pipeline runs this check before writing code.
-- **UI generation gates**: `uispacing`/`uicolor`/`uistyle` validators
+- **UI generation gates**: `uispacing`/`uicolor`/`uistyle`/`uifont` validators
   (`scripts/check-ui-spec.py`, pure stdlib) mechanically reject magic spacing
-  values outside the 8pt token set, hardcoded colors and inline styles —
+  values outside the 8pt token set, typography values outside the token family,
+  hardcoded colors and inline styles —
   spacing quality becomes a hard gate (fail closed, validator stderr feeds the
   retry prompt) instead of a prompt wish. The same script is a **project-wide
   gate** (gofmt -l style): `--dir src --all` scans an existing frontend tree
@@ -447,7 +466,10 @@ tasks:
   positive limits, task validators, and prompt-template paths) before an agent starts.
 - **Execution**: serial or parallel (`--workers`), TTY-aware live output
   (`--stream-output auto|full|none`), per-task `cwd`/`timeout`/`env`, summary report,
-  `--dry-run`. `auto` keeps model bodies out of non-interactive operational streams;
+  `--dry-run`. Parallel execution performs a fail-closed preflight for duplicate or
+  nested outputs and output paths contained by another task's distinct `cwd`; callers
+  that provide `run_parallel(waves=...)` get non-conflicting wave barriers. `auto` keeps
+  model bodies out of non-interactive operational streams;
   artifacts and agent-native message sessions still retain the complete response.
 - **Failure detection**: provider/CLI error signatures (quota, rate limit, auth, billing,
   network/DNS/TLS) are matched against agent output — a non-zero exit, empty output, or such a
@@ -481,6 +503,11 @@ tasks:
   bounded execute hint, allowing future direction planning to learn from prior metadata;
   recent failure-class metadata also invalidates Campaign analysis reuse so new Gate or
   validator failures can trigger a fresh plan.
+  Every metadata event is additionally scoped by tenant, a one-way project identity digest,
+  and sensitivity (`public|internal|confidential|secret|regulated`); mismatched or legacy
+  unscoped records are not returned by memory queries. Configure `memory.tenant` /
+  `memory.sensitivity` or use `PBATCH_MEMORY_TENANT` /
+  `PBATCH_MEMORY_SENSITIVITY` for isolated workers.
 - **Validation gates**: `--validate NAME[,NAME...]` (registry in `pi-batch.yaml` `validators:`)
   or raw `--validate-cmd`; `{output}`/`{cwd}` placeholders; AND semantics; a failing gate
   deletes the temp artifact and marks the task failed (retried/regenerated); per-task
@@ -518,9 +545,11 @@ tasks:
   direction has a configurable wall-clock deadline (`implementation.timeout`, 14400s default)
   that kills its process group on expiry. State lookup caches only the latest event per
   direction and streams bounded JSONL records for long-running use.
-- **Gate stages** (`gate: true`): a stage whose deliverables must contain a `VERDICT: PASS`
-  line with a reason — anything else (bare PASS, FAIL, missing verdict) fails closed and
-  halts the pipeline.
+- **Gate stages** (`gate: true`): prefer the structured contract in
+  `docs/GATE_CONTRACT.md` (`schema_version`, verdict, reason, evidence and
+  validator results). Structured PASS requires evidence and validators; malformed
+  structured JSON fails closed. Existing `VERDICT: PASS - <reason>` artifacts
+  remain compatible, while bare or missing verdicts still halt the pipeline.
 - **Judge validators** (H line): a validator entry may be a mapping
   `{cmd, judge: true, scope: "file|repo"}`. `judge: true` runs the LLM-as-judge protocol —
   the gate must reply `VERDICT: PASS|FAIL - <reason>` (bare or missing verdicts fail

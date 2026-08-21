@@ -846,12 +846,12 @@ Execution = ProgressiveProbe + DynamicGraph + EvidenceDrivenScheduling
 
 | AADM-R 概念 | 仓库现有实现 | 差距 |
 |---|---|---|
-| L0-L3 路由 | `classify`（前后端判定）、`assessor`（scale S/M/L + workflow L0-L3）、`rules`（demo/standard/production 三档） | 🟡 档位已存在，无 Load 公式与硬触发器表 |
-| Dry-run D0/D1 | `assess --prompt`（编译指令块）、`rules --summary`（压缩需求）、`campaign --dry-run`（不创建目录/日志/状态） | 🟡 无 D2 沙箱 Spike；无 ProbeValue 判据 |
+| L0-L3 路由 | `classify`（前后端判定）、`assessor`（scale S/M/L + workflow L0-L3）、`profile`（Load/硬触发器/迟滞）、`rules`（demo/standard/production 三档） | ✅ Load 公式与硬触发器已由确定性画像输出 |
+| Dry-run D0/D1 | `assess --prompt`（编译指令块）、`rules --summary`（压缩需求）、`campaign --dry-run`（不创建目录/日志/状态）、`probe`（ProbeReport + ProbeValue） | 🟡 无 D2 沙箱 Spike；D0/D1 探测价值判据已落地 |
 | 链/DAG | pipeline 阶段 DAG（from_outputs/aggregate，完整 DAG 证据合并） | ✅ |
 | AND/OR 算子 | **OR**：stage `or_tasks: true`（第一个通过验证器者胜出，全败 fail closed）；**AND**：aggregate 合并；**RACE**：`pbatch/racing.py` 分阶段竞跑 | ✅ |
 | 波次调度 | `pbatch/waves.py`：拓扑波次 + 写冲突分解 + 串行化防活锁 + 上下文聚类（`assign_agents`）；runner 轮询认领即设备侧波次 | ✅ |
-| Agent 分配 | meta 相关性评分、去重、运行时数量上限 | 🟡 无上下文连续性优化、无 AgentBenefit 公式 |
+| Agent 分配 | meta 相关性评分、去重、运行时数量上限、`waves.assign_agents` 上下文聚类、`add_agent_benefit` | ✅ 上下文连续性与是否增加 Agent 的收益判据已有纯函数回归 |
 | 分阶段竞跑 | `pbatch/racing.py` + `pi-batch race`：逐轮减半 + 置信度保守淘汰 + 历史追踪 | ✅ |
 | 统一验收 | gate VERDICT（fail closed）+ acceptance 门 + QA 核对 | ✅ |
 | 质量/资源分离 | metering 成本计量 + `runtime_policy.resources`（observe/affect_solution 开关；默认不影响方案正确性）+ 预算 `infeasibility_report` | ✅ |

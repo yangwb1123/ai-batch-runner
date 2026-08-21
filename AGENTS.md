@@ -27,35 +27,38 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `pbatch/relevance.py` | meta 角色关键词评分、命中证据、去重与运行时数量上限 |
 | `pbatch/classifier.py` / `task_keywords.yaml` | 任务类型判断器：执行前双语关键词判定，前端→前端实现流水线、后端→后端实现流水线（`classifier.frontend_pipeline` / `backend_pipeline`，均为 plan→implement+门禁→对抗审查→gate 结构），`--classify` / `classify` 子命令，零 LLM 成本 |
 | `pbatch/rule_matcher.py` / `ui-specs/rules.yaml` | 规则匹配器：按 scale（demo/standard/production）× page_type × risk 三轴算法式筛选适用规范；**双向校验**——算法 manifest 与 LLM 独立选择对比裁决（`rules --summary/--llm-json/--llm-prompt`），必选规则不可被 LLM 跳过（fail closed）；三域注册表（frontend/backend/product，`product-specs/rules.yaml` 按 productization_level L1+ 路由，L0 克制不加载） |
+| `pbatch/isolate.py` | **worktree 隔离执行**（`isolate` 子命令，多任务并行的标准模式）：一个 SSH 会话 = 一个 worktree——自动 `git worktree add` 独立分支、子进程在隔离目录执行（锁按 cwd 天然隔离、运行数据各自独立）、完成后提示人工合并回主分支（不自动合并）；`--copy-memory` 延续主目录会话；fail closed（非 git/分支已存在/目录非空/目标在仓库内/无任务参数 → exit 2） |
+| `pbatch/config.py` `data_dir` | **运行时数据目录**（`--data-dir` / env `PBATCH_DATA_DIR`）：记忆索引/被拒产物/worktrees/设备状态/错误预算/流程工件/反思账本默认在项目内 `.pi-batch/`，可整体移到项目外（如 `~/data/pbatch/<project>/`）——运行状态不污染项目代码结构；锁仍按 cwd 单实例（与数据位置解耦） |
+| `pbatch/evolution.py` / `evolution-specs/` | **第四域：实战规律引擎**（归纳自 snaplink-console / iris-ui 实战）：项目形态分类（契约驱动/平台/面向产品/探索）→ 规律分级路由（invariant 硬执行 / contract-policy 可豁免 / suggestion 只注入）；**探索豁免**（spike 任务自动降级，创新不被锁死）；项目宪法（`docs/evolution/constitution.yaml`：明确不做/变更预算/豁免留痕）——**assess 处方携带宪法块、advance 批次剔除 denylist 文件、campaign 分析注入宪法+已拒方向（L10 防重复）并沉淀批次轨迹事件**；**`evolution track` 演化路径分析**（轨迹事件 → 触发源分类/状态分布/模块热度/被拒收敛信号 → TRACK.md）；门禁五件套——`baseline`（L1 基线先行）、`authority`（L2 权威源分层，禁发明接口）、`evidence`（L7 证据纪律）、`nongoal`（L6 明确不做 fail closed）、`changebudget`（L9 变更预算）；`learn promote --registry evolution` 沉淀闭环（强制 samples/confidence）；eval 第四域回归（10 用例） |
 | `pbatch/advance.py` | 自推进迭代引擎（`advance` 子命令）：扫描项目全部规范维度（UI 间距/颜色/样式、前端工程错误/N+1/复杂度、后端工程/架构）→ 按细颗粒度分批（P0 可恢复性 > P1 视觉 token > P2 架构）→ 状态记录（docs/advance/state.jsonl）逐轮可续 |
 | `pbatch/assessor.py` | 需求评估器（`assess` 子命令）：资深经验式评审——8 维需求完整性检查、规模信号（S/M/L）克制处方（"企业登录页"不会全量上规则）、缺失维度建议、刻意未选用清单、**产品化分级评估**（L0-L3）、**工作流风险分级**（L0 直改 / L1 标准 / L2 高风险对抗 / L3 平台产品） |
 | `pbatch/product.py` / `product-specs/` | 产品思维层：productization_level（L0 小工具不推演 / L1 模块 / L2 平台 / L3 产品）→ 场景推演链（登录/上传/审批/聊天/ERP/搜索，产出待确认问题非功能）、开源要素、商业要素（低成本预留 vs 高成本实现红线）、完成证据报告；`product-specs/rules.yaml` 声明式注册表（L1=demo/L2=standard/L3=production 派生 specs，billing 双重门禁：min_tier production + page_types） |
 | `pbatch/learn.py` | 自演进闭环（Evolution Engineering）：`learn` 子命令把事故/RCA 沉淀为统一 Rule Schema 草案（docs/rules/drafts/），人工批准后并入域注册表 |
-| `pbatch/ratelimit.py` | F 线 provider 令牌桶限速（`limits.per_second/burst/providers` 或 `--rate-limit/--rate-burst`）：并行 worker 与 meta 角色并发在 spawn 前排队；重试等待带 jitter（速率/网络类 30–60s 分散、普通 ±50%）防惊群重试 |
+| `pbatch/ratelimit.py` | F 线 provider 令牌桶限速（`limits.per_second/burst/providers` 或 `--rate-limit/--rate-burst`）：并行 worker 与 meta 角色并发在 spawn 前排队；Campaign 隔离流水线通过共享文件锁跨进程共用 bucket；重试等待带 jitter（速率/网络类 30–60s 分散、普通 ±50%）防惊群重试 |
 | `pbatch/context.py` / `docs/agent-context/` | 上下文路由（Context Engineering）：按文件路径 glob + 任务关键词加载项目文档（ADR/契约/安全基线），`context` 子命令，缺失文档显式警告 |
 | `pbatch/eval.py` / `evals/` | 规则系统回归套件（Evaluation Engineering）：`eval` 子命令跑 23 个断言用例（classify/rules/assess/product/workflow），改关键词或注册表后验证行为不退化（make ci 内自动执行） |
 | `scripts/check-completion-report.py` | Definition-of-Done 门禁（`completion` 验证器）：产物必须携带诚实完成报告——result 枚举/not_executed 必带原因/禁止伪造通过表述 |
 | `backend-specs/` | 后端规范资产（按 classify 的 backend 域自动选用）：architecture、design-patterns、domain-modeling、evolution、oop-and-di、ddd、algorithms-data-structures、complexity-and-scale、**persistence-modeling**（四种模型分离/主键/金额/索引/唯一约束/审计历史/迁移，编码前强制关卡）、**production-readiness**（生产就绪门禁 11 项）、**agent-guardrails**（防幻觉/变更控制/DRY 边界）、**architecture-constitution**（最高层架构宪法：变化管理/可逆决策/耦合八型/爆炸半径/重试预算/一致性显式/15 问）、**testing**（五层测试/复现优先/属性模糊测试）、**system-engineering**（消息/缓存/后台任务/限流/分布式锁）、**network-engineering**（超时分层/重试矩阵/背压）+ `rules.yaml` 后端注册表 |
 | `scripts/check-backend-quality.py` | 后端工程门禁（纯 stdlib）：过度设计信号（单实现接口/Base 类/模糊命名）、上帝服务、状态直接赋值、domain→infra 反向依赖（`backendquality` 验证器） |
 | `ui-specs/` | AI UI 生成规范资产：8pt 间距 token、组件/布局/反例规范、业务风格 profile（ERP/CMS/OA…） |
-| `scripts/check-ui-spec.py` | 确定性 UI 门禁（纯标准库）：魔法间距/硬编码颜色/inline style 机械拦截（`uispacing`/`uicolor`/`uistyle` 产物验证器）；`--dir` 项目级扫描（`uicheck` 门禁，gofmt -l 风格，JSON 报告） |
+| `scripts/check-ui-spec.py` | 确定性 UI 门禁（纯标准库）：魔法间距/硬编码颜色/inline style/非 token 字号机械拦截（`uispacing`/`uicolor`/`uistyle`/`uifont` 产物验证器，含 Tailwind class）；`--dir` 项目级扫描（`uicheck` 门禁，gofmt -l 风格，JSON 报告） |
 | `scripts/check-frontend-quality.py` | 前端工程门禁（纯标准库启发式）：console.log/any/不安全 html/空 catch 吞异常/测试 skip 恒失败，`--strict` 下上帝文件/复杂度/useEffect 泄漏/循环 await（N+1）失败（`uiquality` 验证器）；需推理的交给工程审查角色 |
 | `ui-specs/engineering/` | 前端工程规范资产：异步/防抖竞态/幂等决策表、表单表格状态、交互模式库（操作分级/反馈闭环/批量报告）、错误恢复与权限、架构预算、缺陷模式库（12 种事故档案） |
 | `pbatch/memory*.py` / `index_io.py` | 渐进式 message memory：稳定会话、有界索引、按需 recent/find/read |
 | `pbatch/profile.py` + `governance_policy.py` | 多维任务画像（12 维向量/自主性/L0-L3 路由/裁量包络/假设/StopPolicy/不确定性分类/进展度量/软规则权重） |
 | `pbatch/atomize.py` / `pareto.py` / `racing.py` / `decision.py` / `proposal.py` / `diversity.py` | 原子化 / Pareto+Utility+MUC / 分阶段竞跑+should_fork / 字典序决策+证据仲裁 / 多 Agent 提案 / 独立性评分 |
-| `pbatch/truth.py` / `causality.py` / `temporal.py` / `pinned.py` / `capsule.py` / `nversion.py` / `world.py` / `metrics.py` / `events.py` / `recovery.py` | 真值维护 / 因果假设 / 证据衰减 / Pinned 上下文 / 决策胶囊 / N-version / 世界状态漂移 / 五类指标 / 交互事件账本 / 回滚决策+错误预算 |
+| `pbatch/truth.py` / `causality.py` / `temporal.py` / `pinned.py` / `capsule.py` / `nversion.py` / `world.py` / `metrics.py` / `events.py` / `recovery.py` | 真值维护 / 因果假设 / 证据衰减 / Pinned 上下文 / 决策胶囊 / N-version / 世界状态（WAL+快照/绑定/对账/漂移） / 五类指标 / 交互事件账本 / 回滚决策+错误预算 |
 | `pbatch/transaction.py` / `states.py` / `contracts.py` / `waves.py` / `hypergraph.py` / `tools.py` | 决策事务状态机 / 设备+尝试状态机 / 假设-保证契约 / 波次调度+图操作+并行判定 / 类型化超图 / 命令索引+分派自检 |
 | `pbatch/cli_rounds.py` / `cli_batch.py` | cli.py 拆分出的轮循环治理层与批执行层（dogfooding：自家 backend-quality 门禁发现 god-file 后拆分） |
 | `pbatch/cli_residue.py` / `campaign_exec.py` | 残留标记扫描（cli_batch 拆分）与 campaign 执行层（campaign.py 拆分）——第二轮 dogfooding 产出 |
-| `pbatch/fabric*.py`（fabric/fabric_cli/fabric_cmds/fabric_devices/fabric_exec/fabric_ssh/fabric_runner/fabric_rpc/fabric_sched/fabric_server/fabric_server_http/fabric_server_cli/fabric_server_util） | 设备感知执行织网 D0-D5：ExecutionTarget 抽象、SSH 受控执行、Runner+控制平面（Lease/Fencing/对账）、调度/迁移/检查点/投机执行/预算上限/退役吊销/事件账本 |
+| `pbatch/fabric*.py`（含 `fabric_ledger` / `fabric_lifecycle` / `fabric_outbox` / `fabric_task_store` / `fabric_checkpoint_store`） | 设备感知执行织网 D0-D6：ExecutionTarget 抽象、SSH 受控执行、Runner+控制平面（Lease/Fencing/对账）、任务级 Capability Grant（设备/任务/目录/数据级别/有效期，Runner 执行前验票）、`/task/start` fencing 握手与提交者/执行设备主体授权、显式 TLS/mTLS 与证书指纹绑定、ExecutionEvidence digest/环境摘要校验、设备/任务/尝试维度幂等资源账本、LOST 尝试、显式设备生命周期与调度硬过滤、Runner 证据离线缓冲/重放、控制面任务与 Checkpoint 快照恢复、调度/迁移/检查点/投机执行/预算上限/退役吊销/联邦配额与策略 |
 | `docs/AADM.md` / `AADM_RUNTIME.md` / `AADM_GOVERNANCE.md` / `AADM_DEVICE.md` | AADM 四文档：理论模型 / 运行时内核 / 治理模型 / 设备织网（全部机制已落地，见各文档映射表 ✅） |
 | `pbatch/reflect.py` + `docs/REFLECTION.md` | Reflection Engine（Critic Layer）：12 维度二阶审视 + 假设审计 + 反方验证 + 知识提取，发现对接 truth/learn/eval 闭环 |
 | `pbatch/impact.py` + `adr.py` + `project_memory.py` + `docs/PROJECT_MEMORY.md` | 工程知识循环：Change Impact 增量路由（受影响面→角色→工作等级→变化成本）、ADR 决策记忆库（状态机+决策缓存查询）、Project Memory（facts/架构/索引，防记忆过期） |
 | `pbatch/refactor.py` + `docs/REFACTORING.md` | God File 重构分析器：度量（行数/圈复杂度分级）→ 职责识别（SRP）→ 模式信号（Strategy/DI/AOP）→ 迁移计划（测试保护→渐进提取→知识更新） |
 | `agent-engineering/*.yaml` + `pbatch/org.py` + `docs/AGENT_ORGANIZATION.md` | AI 软件工程组织规范：17 个流程节点岗位说明书（职责/输入/输出/检查规则/禁止事项/最佳实践/失败案例/自动检测/Review Checklist），`pi-batch org check` 校验完整性；`org gate --log` 注入 {log}，残留占位符 fail closed（campaign 实战修复） |
 | `pbatch/capabilities.py` + `docs/ARCHITECTURE.md` | Capability Registry（命令驱动→能力驱动）+ Agent OS 内核冻结（分层架构/ABI 契约/复杂度预算） |
-| `pbatch/campaign*.py` | 项目级模块发现、方向选择、状态/指纹、流水线与 worktree 隔离 |
+| `pbatch/campaign*.py` | 项目级模块发现、方向选择、状态/指纹、流水线与 worktree 隔离；分析 prompt 自动注入项目宪法与历史已拒方向（L6/L10 防重复建议，snaplink 630 行 state 中 `DIRECTION_REJECTED: duplicate` 的直接对策） |
 | `pbatch/cli.py` | 命令行：参数解析、main、轮循环、单批/流水线分发 |
 | `quality.py` | 代码组织质量扫描器（纯标准库）：函数 ≤50 行、复杂度 ≤15、文件 ≤1000 行 |
 | `ai/run-review.py` | 十阶段评审 runner（`--all`/`--resume`/共享会话/验证门禁） |
@@ -67,10 +70,12 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `tests/` | 387 个回归测试（`make ci`，含 25 个 eval 规则回归用例） |
 | `docs/SPEC_SYSTEM.md` | 规范体系总览：资产分层/注册表/决策链/门禁/角色/沉淀闭环/克制原则 |
 | `docs/` | 机制文档（`RUNNING_247.md`、`AUTOMATION_WORKFLOW_SUMMARY.md` 等） |
-| `pi-batch.yaml` | 声明式配置：agent 二进制、会话标志、24 个验证器（含 `pyquality`、`refusalcheck`） |
+| `pi-batch.yaml` | 声明式配置：agent 二进制、会话标志、31 个验证器（含 `pyquality`、`refusalcheck`、`baseline`、`authority`、`evidence`、`nongoal`、`changebudget`） |
 
 **可移植性**：把 `pi-batch.py`（薄壳）+ `pbatch/` 目录 + `pi-batch.yaml`
 复制到其他项目即可用；配置查找顺序为入口脚本旁 → 包目录 → 工作目录。
+通过 `pip install .` 安装时，wheel 也会分发 `{tool_root}` 所需的规则、脚本、
+示例、角色模板与评估资产；`pi-batch health --json` 对缺失资产 fail closed。
 
 ## 2. 能力机制
 
@@ -124,6 +129,9 @@ agent 回复**不是正确输出时一律不落盘**：
   `.pi-batch/rejected/<name>-<时间戳>.rejected.md` 并在日志指出路径——
   交付物路径保持零残留，但人工/重试可诊断"验证器到底拒绝了什么"
   （aero-id 维护 R5 复盘修复：completion 门禁两次拒绝均无明细可查）
+- 并行批次在调度前拒绝重复输出、嵌套输出，以及不同 `cwd` 之间的输出目录包含关系
+  （退出码 2，不启动 agent）；显式提供 `run_parallel(waves=...)` 时，仅允许同一波次
+  无冲突，并在波次之间设置屏障。
 
 ### 2.3 工程质量验证
 
@@ -192,7 +200,9 @@ Pi 原始 JSONL message 保持不变；runner 为新任务分配可追踪的 ses
 `.pi-batch/memory/sessions.index.jsonl`。索引只保存脱敏摘要、哈希和路径，不复制
 完整 message；Manifest/recent/read 从文件尾按块读取，find 流式扫描且只保留
 Top-K，均不会先把全部历史装入内存；异常超长索引记录由
-`memory.index_line_max_bytes`（默认 256KiB）拒绝或跳过。
+`memory.index_line_max_bytes`（默认 256KiB）拒绝或跳过；索引文件还受
+`memory.index_max_bytes`（默认 16MiB）约束，达到上限时在文件锁内保留最新
+完整记录并继续追加。
 
 成本计量按 session 文件 inode/offset 增量折叠新增记录，不在每个任务结束后重扫
 全部历史；`session.line_max_bytes` 只限制协调器读取单条异常 JSONL 的内存，绝不
@@ -201,6 +211,12 @@ Top-K，均不会先把全部历史装入内存；异常超长索引记录由
 每次 prompt 只注入有大小上限的 Memory Manifest。初步问题默认不展开历史；
 execute 请求只在最近 `memory.manifest_scan` 条元数据的固定窗口内选择领域匹配项，
 resume 请求保留时间连续性；当前 LLM 再判断历史是否会实质改善回答并按需调用：
+
+记忆索引每条记录还带有显式的 `tenant`、不可逆 `project_id` 摘要和
+`sensitivity`（`public/internal/confidential/secret/regulated`）边界；查询只返回
+当前边界完全匹配的记录，缺少边界的旧记录 fail closed。可通过
+`memory.tenant`/`memory.sensitivity` 或 `PBATCH_MEMORY_TENANT` /
+`PBATCH_MEMORY_SENSITIVITY` 为隔离 worker 设置边界。
 
 ```bash
 python pi-batch.py memory ingest                    # 增量导入当前项目已有 Pi sessions
@@ -412,6 +428,23 @@ pi-batch.py assess "企业订单管理：新建订单表单，含支付审批流
 pi-batch.py assess "企业登录页面"   # 一句话需求 → 处方档降为 demo，只给 2 条
 pi-batch.py assess --file requirements.md   # 从文件评估需求
 pi-batch.py assess "做一个开源上传产品，断点续传，商业化"  # 产品化 L3：推演链+开源/商业要素
+# 实战规律引擎（第四域，evolution-specs/rules.yaml）：项目形态分类 →
+# 规律分级路由（探索任务自动豁免）+ 项目宪法 + 门禁五件套
+pi-batch.py evolution apply "实现审计时间线，走后端契约目录"  # 形态+规律适用清单
+pi-batch.py evolution apply "探索这个创意：AI 生成登录页原型"  # 探索豁免：只留 invariant
+pi-batch.py evolution init --dir .        # 生成项目宪法（docs/evolution/constitution.yaml）
+pi-batch.py evolution override --rule change-budget --reason "单文件小程序" --dir .  # 豁免留痕
+pi-batch.py evolution check --dir .       # 宪法门禁（baseline/nongoal/changebudget）
+pi-batch.py evolution report --dir .      # 规律命中/豁免/stale 报告
+pi-batch.py evolution track --dir . --out docs/evolution/TRACK.md  # 演化路径分析
+pi-batch.py learn promote --rule-id X --registry evolution --files evolution-specs/rules.yaml  # 实战→规律
+
+# 多任务并行推进：一个 SSH 会话 = 一个 worktree（隔离执行，最后合并主分支）
+pi-batch.py isolate -b task-a -- tasks-a.yaml --git-commit          # SSH 1
+pi-batch.py isolate -b task-b -d ../proj-task-b -- tasks-b.yaml \
+  --log-file logs/task-b.log                                          # SSH 2（同时）
+pi-batch.py isolate -b task-c --copy-memory -- tasks-c.yaml          # 延续主目录会话
+# 跑完提示人工合并：cd 主目录 && git merge task-a && git worktree remove <dir>
 # 产品思维层：product-specs/（product-thinking 分级/推演链/克制红线、
 # commercial-readiness 低成本预留vs高成本实现、open-source-readiness、
 # completion-evidence 完成证据报告——禁止伪造验证结果）
@@ -564,6 +597,7 @@ pi-batch recovery --rollback-cost 30 --forward-cost 5  # 回滚 vs 前向修复
 pi-batch capsule --prompt "..." --out cap.json    # 决策胶囊（版本化重放）
 pi-batch nversion --n 3 -- python3 -c "print(1)"  # N-version 一致性
 pi-batch world bind|drift --out/--bound           # 世界状态版本化 + 漂移
+pi-batch world status|reconcile --json            # 持久化状态健康/对账
 ```
 
 ### 设备织网（AADM-D；默认关闭，`device_fabric.enabled: false`）
@@ -572,7 +606,9 @@ pi-batch world bind|drift --out/--bound           # 世界状态版本化 + 漂�
 pi-batch devices list|probe [NAME]|ssh-hosts|placement   # 探测/清单/放置
 pi-batch devices run NAME -- CMD                        # SSH 受控执行（D2）
 pi-batch serve --port 8765 [--auto-approve]             # 控制平面（D3）
+pi-batch serve --cert-file server.crt --key-file server.key --ca-file ca.crt --require-client-cert # mTLS
 pi-batch runner --control HOST:PORT --name NODE          # 设备 Runner（出站连接）
+pi-batch runner --control https://HOST:PORT --ca-file ca.crt --cert-file client.crt --key-file client.key --name NODE # mTLS Runner
 pi-batch devices schedule [--device X|--os linux] -- CMD # 经 Runner 调度（D4）
 pi-batch devices task TASK_ID --device X                 # 任务状态
 pi-batch devices migrate TASK_ID --device NEW            # 迁移（fencing 换发）
@@ -589,10 +625,12 @@ pi-batch runner --tenant team-a --region cn-east --attestation sha256:... --name
 pi-batch devices schedule --cluster gpu-pool -- CMD           # 集群目标
 pi-batch devices schedule --gang --devices a,b -- CMD         # Gang 原子提交
 pi-batch devices schedule --region cn-east -- CMD             # 跨区域过滤
+pi-batch devices schedule --data-class internal --device X -- CMD # 数据级别策略门
 pi-batch reflect [quick|full] --task "需求" --code src       # 二阶反思（Critic）
 pi-batch reflect assumption --task "..." --evidence "测试输出"  # 假设审计
 pi-batch capabilities list|check                             # 能力注册表
 pi-batch capabilities trust --agent-level 3                    # 信任授权矩阵
+pi-batch capabilities authorize --grant grant.json --capability world --json  # 执行前 grant 校验
 pi-batch devices desired apply --file desired.yaml             # Desired-State 控制器
 pi-batch retro --failures-only logs/ --actions                 # 自动改进动作
 pi-batch impact --task "需求" --code src                        # 变更影响分析（增量路由）
@@ -618,7 +656,9 @@ pi-batch clean [--all]                                   # 清用户级缓存（
 pi-batch completion bash|zsh >> ~/.bashrc                # shell 补全（注册表驱动）
 pi-batch devices keymigrate                              # 旧项目内密钥 → 用户级（跨项目复用）
 # 分层：CLI > 项目 pi-batch.yaml > ~/.config/pbatch/settings.yaml > 默认
-# 边界：项目相关状态（会话/记忆/被拒产物）留项目内 .pi-batch/；用户级只放跨项目数据
+# 边界：项目相关状态（会话/记忆/被拒产物）默认在项目内 .pi-batch/（随仓库共享）；
+#       不想污染项目代码结构时，--data-dir DIR / env PBATCH_DATA_DIR 把运行状态
+#       整体移到项目外（如 ~/data/pbatch/<project>/）；锁仍按 cwd 单实例
 pi-batch profile "多租户 SaaS..." --json                   # 反事实推理（预留建议）
 pi-batch check [--steps org,capabilities]                  # 全面自检（7 门禁聚合）
 pi-batch probe "任务" [--budget-tokens N]                     # Dry-run 标准输出（区间+置信度；预算不足→infeasible）

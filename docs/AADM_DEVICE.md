@@ -398,6 +398,12 @@ At-least-once 调度 + 幂等键 + 任务租约 + Fencing Token + 副作用记�
           → SUCCEEDED / FAILED / LOST → CLEANUP
 ```
 
+仓库中的 `DeviceLifecycleStore` 对设备转移执行合法边校验，并把每次转移
+以 fsync 后的追加式 JSONL 记录；控制平面状态、`/lifecycle` RPC/HTTP 接口
+与 `devices lifecycle` 查询命令都从这份事实源读取。调度器将
+`unregistered/enrolled/probing/offline/stale/maintenance/quarantined/retired`
+作为硬不可调度状态，`cordoned/draining` 保留现有任务语义。
+
 **LOST ≠ FAILED**：FAILED 是明确知道失败；LOST 是设备失联、不知道实际
 结果。对 LOST 任务的处理方式取决于副作用类型（见 §24）。
 
@@ -561,7 +567,7 @@ Clock，**不简单比较两台设备的本地时间戳**。系统时间仍需 N
 平面状态对账 → 检查 Lease Epoch → 终止过期任务 → 上传可接受的
 Checkpoint。
 
-## 30. Cordon 和 Drain 🟡（对笔记本尤其重要）
+## 30. Cordon 和 Drain ✅（对笔记本尤其重要）
 
 - **Cordon**：不再接收新任务，现有任务继续运行
 - **Drain**：停止接收新任务，尽量迁移或结束现有任务
@@ -573,16 +579,18 @@ READY → CORDONED → DRAINING → MAINTENANCE
 用户开始使用电脑时，设备自动进入 `interactive / cordoned`，避免 Agent
 后台任务抢占全部 CPU/GPU/内存。
 
-## 31. 协议版本协商与滚动升级 🔴
+## 31. 协议版本协商与滚动升级 🟡（仓库：D3 最小协商已接线）
 
 ```yaml
 runner:
-  protocol_version: 2.3
-  capabilities: [task.v1, artifact.cas.v2, checkpoint.v1, sandbox.oci.v1]
+  protocol_version: 0.1
+  capabilities: [task.v1, grant.v1, checkpoint.v1]
 ```
 
-不能默认所有设备必须同时升级。支持：滚动升级、向后兼容、能力降级、
-Runner 隔离。
+`fabric.local_probe()` 上报 `protocol_version` 与 capabilities；控制平面只
+接受 `SUPPORTED_PROTOCOLS`，注册响应返回服务端协议/能力，未知版本 fail
+closed。当前支持集合仍是单版本 `0.1`，完整的多版本能力降级、滚动升级和
+Runner 隔离策略留待扩展。
 
 ## 32. 背压与准入控制 🟡（仓库：ratelimit.py 为直接基础）
 
@@ -735,25 +743,33 @@ DeviceFabric = Identity + CapabilityDiscovery + ResourceGraph + PolicyPlacement
 
 ## 41. 补充要点（本文档新增，二十年工程视角）
 
-### 41.1 设备失联演练（Game Day / Chaos Drill）🔴
+### 41.1 设备失联演练（Game Day / Chaos Drill）🟡
 
 恢复路径（断线对账、迁移、fencing 失效、幂等重试）**必须被定期测试**，
-否则它们只是理论。把"设备失联 + 重连 + 对账"做成可编排的演练任务
-（对应 `AADM_GOVERNANCE.md` §29 未知的未知）——在生产设备池中定期
-故意断网/杀 Runner/延迟心跳，验证恢复不依赖"运气"。
+否则它们只是理论。Runner 已提供 `--drill-skip-heartbeats N`，可编排跳过
+心跳并验证 stale→LOST→重排队→重连；证据 outbox 还覆盖控制面短暂不可达。
+真正的断网/杀进程/网络延迟注入仍应由生产演练平台定期执行，不能由本地
+单测冒充。
 
-### 41.2 设备生命周期闭环：退役与密钥撤销 🔴
+### 41.2 设备生命周期闭环：退役与密钥撤销 🟡
 
-文档有 ENROLLED→OFFLINE/QUARANTINED，但缺 **RETIRED（退役）**：
-设备退役时必须吊销证书、撤销密钥、从注册表移除、清理其 Artifact 缓存、
-保留审计记录。密钥轮换与吊销列表（CRL）是长期运行的前提——"只增加、
-不删除"同样适用于设备。
+`DeviceLifecycleStore` 已提供 **RETIRED（退役）** 终态；`devices revoke`
+会先写入 `retired` 转移，再写入撤销事实，后续注册/验签均拒绝，历史仍保留
+在审计日志中。`devices rotate-certificate`/`/rotate-certificate` 支持在
+当前已认证证书上切换新的指纹绑定；证书签发、CRL、自动密钥轮换、Artifact
+缓存清理仍依赖外部 CA 与设备生命周期系统，不能在本地实现中伪装成已完成。
 
-### 41.3 Checkpoint 必须先验证再恢复 🔴
+### 41.3 Checkpoint 必须先验证再恢复 🟡
 
-恢复前校验 Checkpoint 哈希与完整性（防损坏/篡改）；恢复后先运行自检
-（环境 digest、依赖版本、状态一致性）再继续执行。否则"从 Checkpoint
-恢复"可能把损坏状态当成正确状态，比从头重跑更糟。
+恢复前已校验 Checkpoint 的 base64 摘要与完整性（防损坏/篡改），并在控制
+面重启后从 `checkpoints.jsonl` 恢复。恢复后按任务重新执行；环境 digest
+仍由执行证据门禁校验，专用依赖版本/业务状态自检需要由任务自身提供，不能
+由通用 Runner 猜测。Checkpoint 下载/上传还必须携带当前任务租约与
+fencing token；旧尝试或其他设备即使已通过设备级 HMAC 认证也不能读取/覆盖
+该任务的状态。
+任务的 `checkpoint_remote` 必须是任务 cwd 下的相对路径，且只有
+`mobility=checkpointable` 才允许使用；控制面和 Runner 两侧都会拒绝绝对
+路径、目录穿越和 symlink 解析后越出 cwd 的写入。
 
 ### 41.4 成本归属与设备侧预算上限 ✅（仓库：budget-cap 提交即预留 + metering.py 为基础）
 
@@ -761,6 +777,12 @@ DeviceFabric = Identity + CapabilityDiscovery + ResourceGraph + PolicyPlacement
 （对应 `AADM_GOVERNANCE.md` §35.12 计量精度），并设 **per-device
 预算 cap**——防止一个失控任务烧掉整台设备的配额（本地模型推理、
 GPU 占用、带宽都是钱）。预算超限在调度前拒绝，不是事后追责。
+
+控制面还支持显式的并发准入配额：
+`serve --tenant-quota team-a=2 --device-quota node-a=1,rn-b=2`。设备名和
+device_id 都可作为设备配额键；任务提交时先检查并预留租户/设备配额，取消、
+终态、失联恢复和迁移回滚时释放或转移配额。配额参数若格式错误、重复或为
+负数，会在监听端口前退出（fail closed）。
 
 ### 41.5 与现有机制复用，而不是重新发明 🟡
 
@@ -770,12 +792,18 @@ GPU 占用、带宽都是钱）。预算超限在调度前拒绝，不是事后�
 - `.pi/settings.json` 的 `httpIdleTimeoutMs`（当前 900s）在 WAN/慢设备
   场景必须可调——远程执行超时参数要按拓扑分层
 
-### 41.6 控制平面单点：定义明确语义，不上 quorum 🔴
+### 41.6 控制平面单点：定义明确语义，不上 quorum ✅
 
-单控制平面是可接受起点，但必须定义**控制平面宕机时设备 Runner 的行为**：
-任务继续跑完、证据本地缓存、恢复后回传与对账。这比一开始就上
-quorum/多控制平面（Phase 6）成本低得多，且把"控制平面挂了"从灾难
-降级为可恢复事件。
+单控制平面是可接受起点。Runner 在控制面暂时不可达时不杀掉已启动的任务，
+将证据写入有界、0600 的 `evidence-outbox.jsonl`，恢复后按原租约重放；
+控制面用 `tasks.jsonl` 恢复终态任务，并把重启前的活动尝试标记 LOST，
+stateless/restartable 任务重新排队，旧租约仍由 fencing 拒绝。多控制平面
+quorum/转发仍属于后续外部基础设施能力。
+
+任务认领后，Runner 必须先通过带当前 fencing token 的 `/task/start` 握手，
+控制面才把 `leased` 推进为 `running`；取消/迁移若先取得任务锁则不会启动命令。
+任务查询、取消和迁移还限制为提交者或当前执行设备，避免任意已注册设备越权
+操作其他任务。
 
 ### 41.7 远程验证 = 独立证据的免费落地 ✅（仓库：meta 对抗审查为雏形）
 
@@ -784,12 +812,15 @@ quorum/多控制平面（Phase 6）成本低得多，且把"控制平面挂了"�
 降低相关错误）。这应该是 device fabric 的**默认策略**而不是可选优化：
 同一设备上"实现 + 验证"的通过，仍是相关错误。
 
-### 41.8 网络传输预算作为资源账本第一公民 🔴
+### 41.8 网络传输预算作为资源账本第一公民 ✅（价格模型仍需外部策略）
 
 计费网络（手机热点、蜂窝、按量计费 VPS）下，**传输量本身是成本**。
-资源账本记录每次 Artifact 传输的字节与费用；Placement 估计包含
-artifact transfer 的 p50/p90；超限告警或阻止（对应 `AADM_RUNTIME.md`
-§16 成本公式的 `ToolComputeCost` 扩展）。
+`ExecutionEvidence.input_bytes/network_bytes` 与受控 scp 的上传/下载计量
+进入资源账本。任务可通过 `schedule --network-budget-bytes N` 声明硬上限；
+控制面在接受证据前核对 `network_bytes`，超限任务记为失败但仍把实际用量
+写入幂等账本，避免“超限即丢证据”。Placement 的 p50/p90 估计、按网络
+价格换算费用仍需项目/云厂商策略接入（对应 `AADM_RUNTIME.md` §16 成本
+公式的 `ToolComputeCost` 扩展）。
 
 ## 42. 与仓库机制的映射与落地批次
 
@@ -797,15 +828,15 @@ artifact transfer 的 p50/p90；超限告警或阻止（对应 `AADM_RUNTIME.md`
 |---|---|---|
 | ExecutionTarget 抽象 | `pbatch/fabric.py`：ExecutionSpec/Evidence/Attempt + LocalExecutionTarget（进程组、硬超时、输出上限、digest）；`pi-batch devices` 子命令 | ✅ D0 完成；runner.py 执行路径保持零回归，远程路由留待 D2 |
 | 准入控制/背压 | `ratelimit.py` 令牌桶 + spawn 前排队 + jitter 重试；`serve --device-quota` per-device 并发上限（超限拒绝/完成后释放） | ✅ 差值表项已闭合 |
-| 资源账本 | `metering.py`（session 增量计量、inode/offset 折叠） | 🟡 需加 device 维度与幂等归账 |
-| 环境指纹 | campaign fingerprint（模块/快照/pipeline/角色/model/provider） | 🟡 需加 device 维度与 digest 校验 |
-| 外部化状态 | memory JSONL + session 索引 + campaign state.jsonl（追加式） | ✅ 基础已具备；需 checkpoint 语义 |
-| 失败处理 | 失败签名拒绝、指数退避重试、硬超时 SIGKILL | 🟡 需 LOST 语义（设备失联 ≠ 失败）与对账 |
-| 证据 | evidence.py + completion 门禁 + 验证器注册表 | 🟡 需 ExecutionEvidence（digest 绑定） |
+| 资源账本 | `metering.py`（session 增量计量、inode/offset 折叠）+ `fabric_ledger.py`（device/task/attempt 维度、追加式持久化、幂等键、重启恢复） | ✅ 设备执行用量可查询；跨网络传输的真实计费仍需外部计费源 |
+| 环境指纹 | campaign fingerprint（模块/快照/pipeline/角色/model/provider）+ Runner `environment_digest` 与注册 probe 绑定校验 | ✅ 设备执行证据拒绝环境摘要不匹配 |
+| 外部化状态 | memory JSONL + session 索引 + campaign state.jsonl；控制面 `tasks.jsonl` / `checkpoints.jsonl`；Runner `evidence-outbox.jsonl` 有界落盘并在重连后重放 | ✅ 短暂故障、控制面重启、Checkpoint 恢复与旧租约恢复语义均有确定性边界 |
+| 失败处理 | 失败签名拒绝、指数退避重试、硬超时 SIGKILL；设备失联会把旧尝试标记 LOST 并使旧租约失效 | ✅ 设备失联 ≠ 任务失败；可重排队/迁移 |
+| 证据 | evidence.py + completion 门禁 + 验证器注册表；ExecutionEvidence 的输出摘要、环境/输入/代码摘要随任务保存并校验 | ✅ digest 绑定与证据幂等冲突拒绝 |
 | 独立验证 | meta 角色并发 + gate 独立裁决 | ✅ 跨设备验证是自然延伸 |
 | 审计 | 决策日志 append-only + events.jsonl（actor/attempt=租约编号） | ✅ 差值表项已闭合 |
-| 设备身份/信任区/能力授权 | 无 | 🔴 全新 |
-| 设备状态机/Cordon/Drain | 无 | 🔴 全新 |
+| 设备身份/信任区/能力授权 | `pbatch/capabilities.py` 提供 CapabilityGrant 的主体/节点/设备/任务/动作/资源/环境/数据级别/有效期/副作用校验；`fabric_server` 按服务端设备策略签发任务级 grant，`fabric_runner` 执行前验票；TOFU/HMAC 与显式 TLS/mTLS、证书指纹绑定已接线 | 🟡 硬件证明、自动证书签发/轮换仍待后续 |
+| 设备状态机/Cordon/Drain | `pbatch/fabric_lifecycle.py`：合法转移、追加式恢复日志；控制平面与 `/lifecycle` 查询接线；调度器硬过滤失联/退役状态 | ✅ 已落地 |
 | 时钟纪律 | `devices clock-skew`：last_seen 与本机时钟偏差（fresh/stale 分类告警） | ✅ 差值表项已闭合 |
 
 **落地批次（对仓库）**：
@@ -815,9 +846,9 @@ artifact transfer 的 p50/p90；超限告警或阻止（对应 `AADM_RUNTIME.md`
 | D0（✅ 已完成） | `ExecutionTarget/ExecutionAttempt/ArtifactRef/ExecutionEvidence` 抽象（`pbatch/fabric.py`）；`device_fabric: {enabled: false}` 顶层配置；`pi-batch devices list|probe` 子命令（INVENTORY 模式，P0/P1 只读探测）；17 个单测 | 本机行为零回归（pytest 566 全绿、quality 严格模式 OK、eval 40 通过）；抽象层有单测 |
 | D1（✅ 已完成） | SSH inventory（`~/.ssh/config` 只读解析 + 静态配置）；SSH 远程只读探测（固定命令集、BatchMode、不可达也返回报告）；探测状态缓存（`.pi-batch/devices/state.jsonl` 追加式）；Placement Dry-run（OS/架构/内存/能力/副作用等级硬过滤 + 淘汰原因 + stale 警告）；`devices ssh-hosts/placement` 子命令 | 模块拆分为 fabric/fabric_devices/fabric_cli（均 < 500 行）；真实 SSH 探测验证（Manjaro 节点在线）；36 个 fabric 测试全绿 |
 | D2（✅ 已完成） | SSH 受控远程执行 MVP：`SshExecutionTarget`（与本地同一证据格式）；结构化 argv（shlex.quote 防注入）；副作用等级上限 sandboxed；硬超时 SIGKILL + 可取消（进程登记表）；scp Artifact 上传/下载；执行前三重门禁（EXECUTE 模式 / 探测证据有效期 / Placement Dry-run）；`devices run NAME -- CMD` | 模块拆为 fabric/fabric_devices/fabric_exec/fabric_ssh（均 < 500 行）；真实 SSH 执行验证（Manjaro 节点 `python3 --version` → passed + digest 证据）；49 个 fabric 测试全绿 |
-| D3（✅ 已完成） | Device Runner（`pi-batch devices runner`，主动出站连接）；控制平面（`serve`：注册 TOFU+审批/心跳/租约/证据/对账，追加式 JSONL 持久化）；HMAC-SHA256 签名通道（时间窗 + nonce 防重放）；Lease + Epoch + **Fencing Token**（陈旧 token 拒收证据 = 防 split-brain）；随租约签发最小 Capability Grant；断线指数退避重连；`approve`/`runners` 管理命令 | 模块 fabric_rpc/fabric_server/fabric_runner（均 < 500 行）；回环全流程测试 + **控制平面重启对账演练**（旧 fencing token 失效）17 个；真实 CLI 注册演示通过 |
-| D4（✅ 已完成） | 任务调度与 Runner 执行路由：控制平面任务注册表（queued/leased/running/done/failed/cancelled/lost）；Runner 轮询认领 + 本地执行 + 证据回传（fencing token）；任务按 task_id 幂等；**失联设备 stateless/restartable 任务自动重排队**（其他 Runner 认领，pinned/checkpointable 标 lost）；`schedule`（--device 或按约束自动选设备，Cordon 感知）/`task`/`migrate`/`cordon`/`drain` 命令；调度器（关键路径/就绪集/负载/局部性） | 模块 fabric_sched/fabric_cmds（均 < 500 行）；真实 E2E：schedule → runner 执行 → task done + 输出回传；双 Runner 竞争由 fencing 拒收败者（at-least-once）；干净副本 621 测试全绿 |
+| D3（✅ 已完成） | Device Runner（`pi-batch devices runner`，主动出站连接）；控制平面（`serve`：注册 TOFU+审批/心跳/租约/证据/对账，追加式 JSONL 持久化）；HMAC-SHA256 签名通道（时间窗 + nonce 防重放）；显式 TLS/mTLS（服务端证书、客户端 CA、客户端证书/私钥）与 device certificate fingerprint 绑定；Lease + Epoch + **Fencing Token**（陈旧 token 拒收证据 = 防 split-brain）；按服务端策略签发绑定设备/任务/数据级别/目录/有效期的 Capability Grant；Runner 执行前验票；断线指数退避重连；`approve`/`runners` 管理命令 | 模块 fabric_rpc/fabric_server/fabric_runner（均 < 500 行）；回环全流程测试 + **控制平面重启对账演练**（旧 fencing token 失效）+ mTLS 握手/换证书拒绝/grant 越权拒绝测试；硬件身份与自动轮换仍保留为后续项 |
+| D4（✅ 已完成） | 任务调度与 Runner 执行路由：控制平面任务注册表（queued/leased/running/done/failed/cancelled/lost）；Runner 轮询认领 → `/task/start` fencing 握手 → 本地执行 + 证据回传；任务按 task_id 幂等；**失联设备 stateless/restartable 任务自动重排队**（其他 Runner 认领，pinned/checkpointable 标 lost）；`schedule`（--device 或按约束自动选设备，Cordon 感知，`--data-class` 数据级别）/`task`/`migrate`/`cordon`/`drain` 命令；调度器（关键路径/就绪集/负载/局部性） | 模块 fabric_sched/fabric_cmds（均 < 500 行）；真实 E2E：schedule → runner 执行 → task done + 输出回传；双 Runner 竞争由 fencing 拒收败者证据；任务操作主体授权、设备策略与 Runner grant 验票有回归测试 |
 | D5（✅ 已完成） | 任务迁移（`devices migrate`：重新排队 + 新租约，**旧 fencing token 立即失效**）；任务取消（queued/leased）；Cordon/Drain（`devices cordon/drain [--undo]`）；证据幂等（重复提交 accepted+duplicate）；**Checkpoint 断点续传**（schedule --checkpoint-save/--load：控制平面存取有界检查点，Runner 执行前恢复/执行后回传，迁移后新设备续传） | 迁移后旧 token 证据拒收有测试实证；取消后 Runner 不执行有测试实证；检查点往返/恢复/回传/超限拒绝均有测试实证 |
 | D5+（✅ 已完成） | **投机执行**（schedule --speculative --devices a,b：同任务双设备竞跑先完成者胜，败者取消，只限安全副作用）；**设备侧预算上限**（serve --budget-cap：提交即预留，超限拒绝——防失控任务烧配额）；**交互事件账本**（控制平面追加式 events.jsonl + `pi-batch events recent`——谁/何时/何事可审计） | 竞跑无失败任务、预算预留/超限拒绝、事件埋点/有界读取均有测试实证 |
-| D6（✅ 最小件已实现；基础设施绑定项预留） | **多租户配额**（serve --tenant-quota "team-a=2"：进行中任务超限拒绝，完成后释放）；**跨区域资源池**（runner --region + schedule --region 过滤）；**集群目标**（device_fabric.clusters + schedule --cluster 集群内选设备）；**Gang 原子提交**（schedule --gang --devices a,b：任一失败全部取消 all-or-nothing）；**注册证明字段**（runner --attestation，注册/status 记录） | 7 个联邦测试：配额限制/释放/租户隔离、区域元数据/过滤、集群解析/选设备、Gang 回滚/全接受 |
-| D6+（⏸ 预留） | P2P Artifact 直传（NAT 穿越）、多控制平面转发、K8s/Nomad/Slurm Adapter、Gang Scheduling 全量语义、远程 Attestation 硬件证明 | 需外部基础设施（集群/kubectl/TPM）；`ExecutionTarget` 扩展点已留，`--control` 已支持任意控制平面地址 |
+| D6（✅ 最小件已实现；基础设施绑定项预留） | **多租户配额**（serve --tenant-quota "team-a=2"：进行中任务超限拒绝，完成后释放）；**跨区域资源池**（runner --region + schedule --region 过滤）；**集群目标**（device_fabric.clusters + schedule --cluster 集群内选设备）；**Gang 原子提交**（schedule --gang --devices a,b：任一失败全部取消 all-or-nothing）；**注册证明字段**（runner --attestation，注册/status 记录）；服务端设备策略（trust zone/level、max effect、allowed data classes） | 联邦配额/区域/集群/Gang/证明测试 + 任务 grant 数据级别/副作用越权拒绝测试；P2P/硬件 attestation 仍预留 |
+| D6+（⏸ 预留） | P2P Artifact 直传（NAT 穿越）、多控制平面转发、K8s/Nomad/Slurm Adapter、Gang Scheduling 全量语义、远程 Attestation 硬件证明、自动证书签发/轮换 | 需外部基础设施（集群/kubectl/TPM/CA）；显式 mTLS 与 `--control` 任意控制平面地址已支持 |

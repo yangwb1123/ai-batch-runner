@@ -528,8 +528,11 @@ validator exit signature.
   (task_finish / task_fail / budget_cap) with per-call usage read from the
   pi session file (`message.usage` JSON pointers, spike-validated in
   `docs/spike-pi-session.md`); a missing/unparseable session degrades to
-  `usage: null`, never a crash. `--webhook URL` POSTs the same events
-  non-blockingly (5s timeout, failures logged only).
+  `usage: null`, never a crash. Events are versioned and carry
+  `event_id/run_id/task_id/stage_id/attempt/phase` for correlation; use
+  `--run-id ID` when an external controller needs a stable run id.
+  `--webhook URL` POSTs the same events non-blockingly (5s timeout, failures
+  logged only).
 - **Budgets** (T8): `--budget-max N` caps agent invocations per run;
   `--daily-budget N` caps per UTC day (state file
   `.pi-batch/daily-budget.json`, `--daily-state` overrides). On cap the
@@ -553,7 +556,9 @@ select domain matches from only the newest `memory.manifest_scan` metadata
 rows. Recent/read lookup scans backward from the append-only index tail in
 bounded blocks, while find streams forward and keeps only its Top-K matches;
 none first materializes the complete metadata history. Individual metadata
-lines are capped by `memory.index_line_max_bytes` (256KiB default). The same
+lines are capped by `memory.index_line_max_bytes` (256KiB default), and the
+metadata file is compacted at `memory.index_max_bytes` (16MiB default), retaining
+the newest complete records. The same
 LLM decides whether to retrieve more—there is no mandatory extra planner call:
 
 ```bash

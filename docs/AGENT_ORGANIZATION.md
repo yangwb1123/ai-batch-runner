@@ -231,12 +231,13 @@ pi-batch org show [NODE]    # 查看节点规范（JSON）
 pi-batch org prompt NODE    # 岗位说明书 → 角色注入片段（喂给角色 prompt）
 pi-batch org gate NODE --task "需求" --code DIR [--file F]
                             # 节点门禁：auto_checks 注入参数后执行
-                            # （{task}/{code}/{file} 占位符；缺参 → skipped；
+                            # （{task}/{code}/{file}/{log} 占位符；缺参 → skipped；
                             #  reflect 低分 → attention 不阻塞；门禁类失败 → gate FAIL）
 pi-batch org flow           # 全流程节点图
 pi-batch org run --task "需求" [--code DIR] [--level L0-L3]
                             # 流程串联：impact 分流 → 相关节点 gate 顺序
-                            # 执行 → 汇总（L0/L1 轻量，L2/L3 全评审）
+                            # 执行 → 汇总（L0/L1 轻量，L2/L3 全评审；前端任务
+                            # 自动加入 UX，L3 覆盖全部 17 个节点）
 ```
 
 每个节点另配 `role_template`（prompts/ 角色模板）；`org check` 校验
@@ -244,4 +245,8 @@ parent 依赖与模板存在性。
 
 - 节点规范 = Agent 的"岗位说明书"（`org prompt` 生成注入片段）
 - auto_checks = 该节点的质量门禁（`org gate` 可执行化；缺参不伪装通过）
+- `org check` 对不支持的 `{name}` 占位符 fail closed，避免命令配置静默假通过
+- `org gate` 将 auto_check 编译为 argv 并禁用 shell 解释；`{task}` 等不可信值
+  即使包含 `;`、管道或命令替换，也只作为参数传递
+- `org run` 遇到节点配置或门禁错误会记录失败并阻断流程，不会跳过后误报通过
 - review_checklist = 该节点的 Review Gate 标准（gate VERDICT 的依据）

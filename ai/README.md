@@ -39,8 +39,10 @@ for a specific question.
   the paste-style variables of downstream stages (Stage 00 →
   `PRODUCT_DISCOVERY_OUTPUT`; Stage 01 → `ARCHITECTURE_OUTPUT`; completed
   stages → `PRIOR_FINDINGS`, `CRITICAL_HIGH_FINDINGS`,
-  `ALL_PRIOR_FINDINGS_SUMMARY`, `COMMITTED_STORIES`). Explicit context or CLI
-  values win over chained output.
+  `ALL_PRIOR_FINDINGS_SUMMARY`, `COMMITTED_STORIES`). Chained evidence is
+  bounded by `evidence.max_bytes` (and half of `prompt.max_bytes` when set);
+  truncation markers point to the complete stage files. Explicit context or
+  CLI values win over chained output.
 - `--all --resume` continues a previous session: stages whose `stage-NN.out.md`
   already exists and passes the validators requested for the current run are
   skipped (the agent is not called again). Missing, empty, symlinked, or newly

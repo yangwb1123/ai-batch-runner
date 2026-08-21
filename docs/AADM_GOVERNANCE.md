@@ -31,7 +31,7 @@ Prompt → 语义平面 → 世界状态平面 → 规划平面 → 执行平面
 | 平面 | 回答的问题 | 仓库对应 |
 |---|---|---|
 | 语义平面 | 用户真正要什么、谁是角色、操作对象是什么、什么是成功、什么不能发生、哪些是事实/假设/未知 | assessor / product / classifier ✅ |
-| 世界状态平面 | 系统现在到底是什么状态、代码和数据什么版本、哪些任务在跑、哪些资源被锁、外部服务是否可用、哪些证据已过期 | campaign_state.jsonl、memory 索引、fingerprint 🟡 |
+| 世界状态平面 | 系统现在到底是什么状态、代码和数据什么版本、哪些任务在跑、哪些资源被锁、外部服务是否可用、哪些证据已过期 | `pbatch/world.py`：WorldStore（WAL + 原子快照）/绑定/对账/漂移裁决 ✅ |
 | 规划平面 | 生成链/DAG/AND-OR 图、候选方案、拆分节点、计算依赖、升级降级、形成波次 | pipeline / meta / advance ✅ |
 | 执行平面 | 调用工具、修改代码、跑测试、执行脚本、创建分支、产生真实副作用 | runner（进程组隔离、硬超时）✅ |
 | 证据平面 | 收集测试结果、日志、性能数据、契约检查、安全扫描、人工确认、独立 Reviewer 结论；决定"是否真的完成" | evidence.py、验证器、completion 门禁 ✅ |
@@ -81,7 +81,7 @@ Trusted Agent Kernel
 产品思维、架构模式、前端规范、DDD、算法选择、多 Agent 策略，都作为
 **可插拔策略**存在。灵活性存在于策略插件中，**不侵入可信内核**。
 
-## 2. 任务图之外，必须维护"世界状态" 🔴
+## 2. 任务图之外，必须维护"世界状态" ✅
 
 任务图写着"修改接口 → 修改前端 → 测试"，但真实世界可能已经发生：另一个
 Agent 修改了接口、数据库 migration 执行了一半、用户刚改变需求、外部依赖
@@ -115,6 +115,17 @@ execution: current_world_version: 130
 ```
 
 两者差异超过阈值时，**不能继续机械执行，必须重新验证前提**。
+
+仓库实现：`WorldStore` 将运行状态放在 `config.data_dir(cwd)/world/`，其中
+`world.wal.jsonl` 是 fsync 后追加的事实源，`world.snapshot.json` 是可原子
+替换的恢复快照。每次内容变化分配单调 `world_version`；相同内容的重复观测
+幂等，不制造虚假版本。`world bind` 同时写出兼容的绑定文件并登记计划，
+`world reconcile` 在新观测变化时追加记录，`world drift` 根据绑定版本、HEAD、
+协议版本和工作区变化给出 `proceed/replan_required`。
+
+恢复规则是 fail closed：快照之后的 WAL 必须连续且结构合法；缺失、乱序、
+超限或非尾部损坏直接拒绝恢复，只有无换行的最终截断记录被视为崩溃残留。
+这样不会把不完整状态误当成当前事实。
 
 ## 3. 每个节点必须使用"假设—保证契约" 🔴（仓库：pipeline_schema fail-closed 为雏形）
 
@@ -427,7 +438,7 @@ L2 降级到 L1：风险 < 0.40
 改变、关键假设失效、新风险超阈值、关键路径被阻断、世界状态版本变化过大。
 不是每获得一条日志就重新生成整个计划。
 
-## 18. 安全模型使用能力授权，不依赖角色 🔴
+## 18. 安全模型使用能力授权，不依赖角色 ✅
 
 Agent 权限绑定具体能力，而不是"你是后端 Agent 所以可以操作数据库"：
 
@@ -446,6 +457,21 @@ interface CapabilityGrant {
 **所有检索到的文档、网页、代码注释和 Issue 都视为不可信输入**——它们
 可能包含恶意指令、过期规则、伪造操作步骤、泄露密钥的诱导。Prompt、
 上下文和工具权限必须分层隔离，**不能让检索内容直接获得控制权**。
+
+仓库实现：`pbatch/capabilities.py` 的 `CapabilityGrant` 将 agent、node、
+device、task node、actions、resources、environment、数据级别、issued/expires
+时间和最大副作用等级绑定在一张短期授权票据中；`authorize_grant` 同时检查
+注册能力的 trust level、主体/节点、
+动作与资源 glob、环境、有效期、数据级别和副作用上限。事务的 `budget_check` 在显式
+提供 `capability_grants` 时强制走该校验；缺少 grant、身份不匹配或过期均
+fail closed。`pi-batch capabilities authorize` 提供确定性预检，旧的字符串
+能力列表仅作为兼容模式，生产接线应提供 grant 上下文。
+
+设备织网还在 `fabric_server.py` 对每台设备应用服务端策略（trust zone/level、
+最大副作用等级、允许数据级别），任务提交时先过策略门，再由租约签发本任务
+专属 grant；`fabric_runner.py` 在执行前重新验票，拒绝的任务只提交失败证据，
+不启动命令。设备自报 probe 不参与授权，未配置设备默认
+`untrusted-external/public/read_only`。
 
 ## 19. 上下文管理区分"不可压缩"和"可压缩" ✅（pinned 分层 + 摘要失效）
 
@@ -741,12 +767,15 @@ ExecutionLease 过期后，持有旧租约的 Agent 可能仍在写。仅靠租�
 worktree/分支隔离 + 提交时校验世界版本（乐观并发 CAS），而不是信任
 "我持有租约"。
 
-### 35.3 世界状态必须是持久化事务存储（WAL + 快照），不是内存对象 🔴
+### 35.3 世界状态必须是持久化事务存储（WAL + 快照），不是内存对象 ✅
 
-State Store 崩溃时，租约、证据、世界版本都会丢失。要求：追加式 WAL +
-定期快照，定义 RPO/RTO；崩溃恢复走**对账（reconciliation）**而不是
-重放事件（事件可能丢失或乱序）。仓库的 `campaign_state.jsonl` /
-memory 索引已是追加式，但缺少崩溃恢复语义。
+`pbatch/world.py` 已实现最小事务存储：每条观测或计划绑定先追加 WAL 并
+`flush + fsync`，再通过临时文件、`os.replace` 和目录 `fsync` 更新快照；写
+快照失败时，重启会从快照之后的连续 WAL 恢复。默认上限为单条 256 KiB、
+WAL 16 MiB，恢复时间为有界 WAL 扫描（RTO 受该上限约束），已 fsync 的
+记录不会因为快照写失败丢失（RPO=0，前提是底层存储兑现 fsync）。恢复后
+仍需执行 `world reconcile` 获取真实外部状态；系统不会把可能缺失或乱序的
+事件当作可信事实重放。
 
 ### 35.4 回滚 vs 前向修复：先比较成本再决定 🟡
 
@@ -782,25 +811,34 @@ SRE 的错误预算思想可移植到治理层：为系统定义**治理预算**
 机制（`make ci` 内自动执行）。新增验证器时必须同步扩展，否则"验证器
 失效"会成为新的静默故障点。
 
-### 35.9 时钟纪律 🔴
+### 35.9 时钟纪律 🟡
 
 租约、validUntil、TTL、证据新鲜度全部依赖时钟。分布式下：使用单调时钟
 （monotonic clock）测量间隔；互斥与过期判断不得用墙钟；对时钟偏差做
 有界假设（如 Chubby 的 ε 偏差模型）。多 Agent 同机运行时可退化为进程
-内锁，跨机时必须显式声明时钟模型。
+内锁，跨机时必须显式声明时钟模型。仓库 `pbatch/clock.py` 已提供单调
+deadline、租约 clock epoch 和 5 秒保守墙钟 fallback；控制平面的新租约
+携带 `clock_id`/`monotonic_expires_at`，重启或旧格式记录才使用墙钟。
+跨主机授时、NTP/PTP 监控和持久租约恢复的时钟证明仍属于部署层职责。
 
-### 35.10 公平性与饥饿 🔴
+### 35.10 公平性与饥饿 🟡
 
 大 L3 流水线（多轮、多路径、多 Agent）不能饿死小任务。要求：优先级
 队列 + 老化（aging）；波次调度器保证小任务在 L3 任务的两波之间有机会
 执行；资源账本按任务记账，防止单个任务耗尽共享预算。仓库 `--round-delay`
-/ `--min-interval` 是节流雏形，但无公平调度。
+ / `--min-interval` 是节流雏形；当前 `pbatch.waves.rank_nodes` 已接受
+ `wait_cycles` 与 aging factor，并通过 `fair_priority_score` 提供可测试的
+ 优先级队列排序。跨进程/跨设备的持久化等待账本与资源配额仲裁仍需外部
+ 调度器接入，不能把这个纯函数助手冒充完整集群公平调度。
 
-### 35.11 跨会话状态泄漏与隐私 🔴
+### 35.11 跨会话状态泄漏与隐私 🟡
 
 世界状态、上下文索引、memory 跨任务共享时，必须按租户/项目/敏感级别
-隔离（仓库 memory 已做脱敏与按需读取，但无显式租户边界）。检索到的
-内容一律不可信（§18 能力授权 + 分层隔离）。
+隔离。仓库 `memory` 现在为每条索引记录写入 tenant、不可逆 project digest
+和 sensitivity，并在 recent/find/read/manifest 读取时做精确边界匹配；缺少
+边界的历史记录 fail closed，内容仍经过脱敏且一律视为不可信证据（§18
+能力授权 + 分层隔离）。多租户共享索引的密钥管理、跨租户管理员审计和
+外部对象存储隔离仍需部署层接入。
 
 ### 35.12 资源账本的计量精度 🟡
 
@@ -812,8 +850,8 @@ memory 已采用）、幂等记账、账本与证据账本同源。预算硬上�
 
 | AADM-G 概念 | 仓库现有实现 | 差距 |
 |---|---|---|
-| 六平面 | 语义（assessor/product）、世界状态（`pbatch/world.py`：快照+绑定+漂移→replan_required）、规划（pipeline/meta）、执行（runner）、证据（evidence.py + 验证器）、治理（registry/learn/决策日志） | ✅ |
-| 可信内核 | pbatch 确定性模块 + Kill Switch（`devices halt` 一键冻结）+ State Store（world/truth/causality/error_budget JSONL 追加式）+ Lease/Fencing/CapabilityGrant（控制平面） | ✅ |
+| 六平面 | 语义（assessor/product）、世界状态（`pbatch/world.py`：WorldStore WAL+快照/绑定/对账/漂移→replan_required）、规划（pipeline/meta）、执行（runner）、证据（evidence.py + 验证器）、治理（registry/learn/决策日志） | ✅ |
+| 可信内核 | pbatch 确定性模块 + Kill Switch（`devices halt` 一键冻结）+ State Store（world WAL+快照、truth/causality/error_budget JSONL 追加式）+ Lease/Fencing/CapabilityGrant（控制平面） | ✅ |
 | 策略与机制分离 | 声明式配置（pi-batch.yaml）+ 确定性验证器 + 可插拔角色模板 | ✅ |
 | 假设—保证契约 | `pbatch/contracts.py`：NodeContract（assumptions/guarantees/invariants/forbidden/failure_semantics）+ 组合检查（上游 guarantees ⊆ 下游 assumptions）+ 全图违规检测 + 语义自洽校验；TaskNode 已带契约字段 | ✅ |
 | 失败签名 / 分布式失败 | 失败签名拒绝 + 重试退避 + runner 断线重连 + /reconcile 对账 + 失联任务重排队 + 失联演练（--drill-skip-heartbeats） | ✅ |
@@ -823,7 +861,7 @@ memory 已采用）、幂等记账、账本与证据账本同源。预算硬上�
 | 规则生命周期 | learn draft → 例外（90 天复查）→ 影子模式（命中率裁决）→ 人工批准 → 注册表 | ✅ |
 | 版本化重放 | `pbatch/capsule.py` + `pi-batch capsule`：prompt 哈希/世界版本/规则集摘要/工具版本/capsule_diff；fingerprint + 决策日志并存 | ✅ |
 | 迟滞机制 | profile 路由：升级阈值 0.60 / 降级阈值 0.40（中间区保持当前模式） | ✅ |
-| 能力授权 | 无（验证器按输出路径而非能力授予） | 🔴 |
+| 能力授权 | `pbatch/capabilities.py`：CapabilityGrant + trust/主体/节点/设备/任务/动作/资源/环境/数据级别/有效期/副作用校验；`fabric_server` 策略签发 + `fabric_runner` 执行前验票；事务显式 grant 上下文门禁；`capabilities authorize` 预检；显式 TLS/mTLS 与证书指纹绑定 | ✅（硬件证明、自动 CA 签发/轮换仍属 AADM-D 后续项） |
 | 真值维护 | `pbatch/truth.py` + `pi-batch truth claim/invalidate/status`：前提失效级联（invalidated/superseded）、追加式日志回放、幂等 | ✅ |
 | 人工门禁分级 | `approval_level`：auto_report < preview < dry_run_approve < double_review + `question_value` 提问价值 | ✅ |
 | 完成定义 | completion 报告 + `governance_policy.should_stop`（验收覆盖/残余风险/回滚/独立证据/无进展→更换策略）+ StopPolicy 随 profile 输出 | ✅ |

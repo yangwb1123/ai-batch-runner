@@ -48,10 +48,11 @@ required_when_risk / profiles`。`pi-batch rules --check` 校验 schema；
 
 | 门禁 | 检查 | 验证器 |
 |---|---|---|
-| 前端 UI 规范 | 魔法间距/硬编码颜色/inline style（单产物+项目级） | uispacing/uicolor/uistyle/uicheck |
+| 前端 UI 规范 | 魔法间距/硬编码颜色/inline style/字号漂移（单产物+项目级） | uispacing/uicolor/uistyle/uifont/uicheck |
 | 前端工程 | console.log/any/不安全 html/空 catch/测试 skip（恒失败）；上帝文件/复杂度/useEffect 泄漏/循环 await（strict） | uiquality |
 | 后端工程 | 浮点金额/SELECT */无租户查询/LIKE 全扫/危险 DDL/状态直接赋值/domain→infra 依赖（恒失败或 strict） | backendquality |
 | 完成证据 | completion_report 结构/result 枚举/not_executed 带原因/禁伪造通过 | completion |
+| 实战规律（第四域） | 产品基线存在性（L1）/能力声明带契约出处（L2）/证据纪律（L7）/明确不做碰撞（L6）/变更预算（L9） | baseline/authority/evidence/nongoal/changebudget |
 | 秘密扫描 | api key/token 等 | secretscan |
 | 注册表 | 规则 schema/引用文件存在 | rules --check |
 | 规则回归 | 25 个 eval 断言（classify/rules/assess 行为） | make eval / CI |
@@ -71,9 +72,31 @@ testing_reviewer / architecture_constitution_reviewer / architect / ...
 事故/审查发现
  → pi-batch learn（--from-memory 可从消息记忆取失败）
  → docs/rules/drafts/*.yaml（统一 Rule Schema，人工批准门槛）
- → 并入域注册表 rules.yaml
+ → 并入域注册表 rules.yaml（evolution 域 promote 强制 samples/confidence）
  → 匹配器/门禁/审查角色下次自动消费
  → pi-batch eval 防回归（改关键词/规则破坏行为 → make ci 失败）
+```
+
+### 第四域：实战规律（evolution-specs/rules.yaml）
+
+归纳自 snaplink-console（契约驱动高风险控制台）与 iris-ui（四框架平台库）
+两个真实项目的实战轨迹（docs/ 下的基线/决策/门禁/复盘文件）。规律按
+**形态分类 × 反例信号 × 分级**路由（pbatch/evolution.py）：
+
+- **分级**：invariant（安全底线，不可豁免）/ contract-policy（默认强制，
+  宪法可豁免）/ suggestion（只注入不拦截）
+- **探索豁免**：spike/原型任务自动降级非 invariant 规律（创新不被锁死）
+- **项目宪法**：`docs/evolution/constitution.yaml`（明确不做/变更预算/
+  豁免留痕 90 天复查）；campaign 方向撞明确不做 fail closed
+- **验证优先**：pipeline `verify_experiment` 阶段（L4 真实运行验证，
+  失败即阶段失败）
+
+```bash
+pi-batch evolution apply "任务"       # 形态分类 + 规律适用清单
+pi-batch evolution route "任务"       # 管线形状推荐（风险×产品化×预算）
+pi-batch evolution init|check|report  # 宪法生成/门禁/规律报告
+pi-batch evolution override --rule X --reason "..."  # 豁免留痕
+pi-batch learn ... --registry evolution  # 实战事故→规律（强制 samples）
 ```
 
 ## 7. 克制原则（整个体系的纪律）
@@ -90,7 +113,7 @@ testing_reviewer / architecture_constitution_reviewer / architect / ...
 pi-batch check                      # 一键自检（quality+registry+eval）
 pi-batch assess "需求文本"          # 需求评估（处方+产品化+工作流）
 pi-batch rules "需求" --llm-json ...  # 规则匹配+双向校验
-pi-batch context "任务" --paths ...   # 项目文档路由
+pi-batch context "任务" --paths ...   # 项目文档路由（宪法关键词自动带 constitution.yaml）
 pi-batch eval                       # 规则回归套件
 pi-batch learn "失败描述"           # RCA→规则草案
 ```

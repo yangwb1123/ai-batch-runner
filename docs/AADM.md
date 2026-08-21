@@ -53,21 +53,21 @@
 
 | AADM 概念 | 仓库现有实现 | 差距 / 落地项 |
 |---|---|---|
-| 认知原子 Atom（Type/Source/Confidence/Hardness/Scope/Time） | `pbatch/evidence.py`（有界证据注入）、`task_loading.py` | 🔴 无统一 Atom 结构；Source/Confidence/Hardness 未建模，"推断冒充事实"靠 prompt 约束而非结构保证 |
-| 决策事务 DT（Trigger/ReadSet/Goal/Guards/Options/Action/WriteSet/ExpectedEvidence/Verifier/Compensation） | `Task/TaskResult`（models.py）+ runner 验证门禁 + `gate_fix.py` 补偿循环 | 🟡 验证是"输出后验"而非"预期证据"；无 guard 前置条件、无 writeSet/rollback 状态机 |
-| 组合算子（AND/OR/SEQUENCE/PARALLEL/GUARD/LOOP/VERIFY/COMPENSATE/ESCALATE/REFINE） | pipeline 阶段 DAG（from_outputs/aggregate）、gate、gate_fix_rounds | 🟡 有 SEQUENCE/PARALLEL/VERIFY/COMPENSATE 近似；🔴 无 OR、LOOP、ESCALATE、REFINE 算子 |
-| 类型化超图 | 流水线 DAG + 决策日志（append-only） | 🔴 无 conflicts_with/guards/realizes 关系；依赖只在一个 pipeline 内 |
-| 多维任务向量（12 维） | `assessor.py` 8 维完整性 + scale 信号 S/M/L + `system_type_methodology.py` | 🟡 维度是离散检查项；🔴 无 0~1 数值向量与公式 |
-| 自主性向量 A（信息/规划/执行/学习） | `advance.py` P0/P1/P2 分级、gate 裁决阻断 | 🔴 执行自主性没有量化；无四维分离 |
-| 裁量包络 Discretion Envelope | assessor 克制处方、rule_matcher manifest、validate 门禁 | 🟡 包络是 prompt 文本不是数据；🔴 无 allowed/forbidden/maxRisk/requiredProofs 结构 |
-| 五层规则（invariant/contract/policy/heuristic/suggestion） | rules.yaml 三档（demo/standard/production）、architecture-constitution（宪法层）、learn.py severity | 🟡 档位≠层级；🔴 无显式分层与权重竞争 |
-| 动态激活/抑制 | rule_matcher 三轴算法筛选 + min_tier 抑制 | 🟡 无 Activation 公式、无 AttentionValue 预算；抑制靠规则文件设计而非机制 |
-| 约束求解 + Pareto | meta 多角色方案、gate_fix 结构化发现 | 🔴 无硬约束过滤、无 Minimal Unsatisfied Core |
-| 假设记录 | product.py 推演链产出"待确认问题" | 🟡 无 AssumptionRecord 数学（confidence×impact×reversibility）与处理决策表 |
-| 滚动规划 | `--max-rounds` 轮循环、advance 逐轮续跑 | 🟡 无 Horizon 公式（风险/不确定性 → 步长收缩） |
-| 规则晋升机制 | `learn.py` draft → 人工批准 → 并入注册表 | 🟡 只有 draft/registry 两级；🔴 无影子模式/命中率统计 |
-| 软规则例外 | learn schema 有 exceptions 字段、规则双向校验 LLM 可 skip（必选 fail closed） | 🔴 无 RuleException 记录（expectedBenefit/compensatingControls/expiresAt）随任务落盘 |
-| 多 Agent 提案 | meta.py 角色并发 + 证据折叠 + 去重 | 🟡 无标准化 AgentProposal（conflicts/affectedContracts） |
+| 认知原子 Atom（Type/Source/Confidence/Hardness/Scope/Time） | `pbatch/atomize.py`（确定性提取/来源/硬度/时间元数据/超图） | ✅ 原子类型、来源类型、置信度/硬度、四类时间字段与图导出有回归证据 |
+| 决策事务 DT（Trigger/ReadSet/Goal/Guards/Options/Action/WriteSet/ExpectedEvidence/Verifier/Compensation） | `pbatch/transaction.py`（完整契约、guard/预算门、验证/回滚状态机、JSON 重放） | 🟡 事务内核与重放已落地；任意 Agent 调用自动包装仍由具体执行入口选择 |
+| 组合算子（AND/OR/SEQUENCE/PARALLEL/GUARD/LOOP/VERIFY/COMPENSATE/ESCALATE/REFINE） | pipeline 阶段 DAG、`or_tasks`、gate_fix/max-rounds、assessor 路由 | ✅ 仓库支持的算子均有显式入口；未声明的算子仍 fail closed，不把普通 DAG 冒充全语义执行 |
+| 类型化超图 | `pbatch/hypergraph.py` + `pi-batch graph` | ✅ `conflicts_with/guards/realizes`、环检测、级联失效与 JSON 校验均有实现 |
+| 多维任务向量（12 维） | `pbatch/profile.py` + `assessor.py` | ✅ 12 维画像、归一化、L0-L3 路由与硬触发器输出结构化 JSON |
+| 自主性向量 A（信息/规划/执行/学习） | `pbatch/profile.py` autonomy/探索度/迟滞路由 | ✅ 四维自主性与任务等级输出；具体策略仍受 gate/预算硬门约束 |
+| 裁量包络 Discretion Envelope | `profile.py` `_discretion_envelope`、assess --json | ✅ allowed/forbidden/maxRisk/change budget/proofs/rollback/human gate 等字段结构化输出 |
+| 五层规则（invariant/contract/policy/heuristic/suggestion） | `rules.yaml` level + `rule_matcher.py` | ✅ level、activation、required、suppress_on 与必选规则 veto 均显式校验 |
+| 动态激活/抑制 | `rule_matcher` 三轴筛选、证据与有界 manifest | ✅ tier/page/risk/profile/system-type 路由及抑制理由可审计；上下文仍有预算上限 |
+| 约束求解 + Pareto | `pbatch/pareto.py`、MUC/utility、proposal/diversity | ✅ 硬约束过滤、Pareto 前沿、Minimal Unsatisfied Core 与证据仲裁已有回归 |
+| 假设记录 | `profile.py` `assumption_records`（product 推演链） | ✅ AssumptionRisk=(1-C)×I×(1-R)、处理决策表，并随 task profile 输出 |
+| 滚动规划 | `execution_horizon` + `--max-rounds` 轮循环、advance 逐轮续跑 | ✅ Horizon 公式（风险/不确定性 → 步长收缩） |
+| 规则晋升机制 | `learn.py` draft/exception/shadow/promote | ✅ RCA 前置、影子命中率、人工批准、归档与注册表合并均有门禁 |
+| 软规则例外 | `learn exception` + `RuleException` schema | ✅ expectedBenefit/addedRisk/compensatingControls/scope/expiresAt 持久化，invariant/required 不可豁免 |
+| 多 Agent 提案 | `meta.py` + `proposal.py` + diversity/decision | ✅ 标准化 proposal、冲突/影响面、独立性与字典序仲裁均有实现 |
 | 混合架构（LLM↔确定性分工） | check-ui-spec / check-backend-quality / quality.py 确定性门禁、gate VERDICT fail closed、失败签名拒绝落盘 | ✅ 已完全对齐 |
 | MUST/SHOULD/MAY 规范表达 | completion 报告门禁（禁止伪造通过）、失败零产物、gate fail closed | ✅ 已对齐 |
 
@@ -99,7 +99,7 @@ Prompt
 
 ---
 
-## 2. 最小语义单元：认知原子 🔴
+## 2. 最小语义单元：认知原子 ✅
 
 认知原子是不可再拆分的单一命题。示例：
 
@@ -128,8 +128,9 @@ Atom = ⟨Type, Proposition, Source, Confidence, Hardness, Scope, Time⟩
 `ObservationAtom` 执行观察、`DecisionAtom` 决策。
 
 > **每个原子必须带来源**。否则 Agent 很容易把自己的推断当成用户给出的
-> 事实。（仓库对应：`check-completion-report.py` 禁止伪造通过表述 ✅，
-> 但原子级来源标记 🔴 待实现）
+> 事实。（仓库对应：`pbatch/atomize.py` 保留兼容的 `source=text`，并提供
+> `source_type=user|code|document|runtime_log|rule|model`、稳定原子 id 与
+> `time={event_time,processing_time,valid_from,valid_until,transaction_time,version}`。）
 
 ---
 
@@ -403,7 +404,7 @@ M = [Clarity, Scope, Coupling, Risk, Uncertainty, Reversibility,
 
 ---
 
-## 9. 指标计算 🔴（公式待落地为确定性程序）
+## 9. 指标计算 ✅（`pbatch/formulas.py`，纯确定性程序）
 
 ### 9.1 不确定性（按 Criticality 加权，低影响文案不确定 ≠ 数据库迁移不确定）
 
@@ -444,7 +445,7 @@ Confidence = 0.35·EvidenceCoverage + 0.20·PromptClarity
 
 ---
 
-## 10. 量化"主观能动性"：自主性向量 🔴
+## 10. 量化"主观能动性"：自主性向量 ✅
 
 不应只有 `autonomy = true / false`，而是四种自主性：
 
