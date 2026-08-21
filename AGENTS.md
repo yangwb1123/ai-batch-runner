@@ -27,7 +27,7 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `pbatch/relevance.py` | meta 角色关键词评分、命中证据、去重与运行时数量上限 |
 | `pbatch/classifier.py` / `task_keywords.yaml` | 任务类型判断器：执行前双语关键词判定，前端→前端实现流水线、后端→后端实现流水线（`classifier.frontend_pipeline` / `backend_pipeline`，均为 plan→implement+门禁→对抗审查→gate 结构），`--classify` / `classify` 子命令，零 LLM 成本 |
 | `pbatch/rule_matcher.py` / `ui-specs/rules.yaml` | 规则匹配器：按 scale（demo/standard/production）× page_type × risk 三轴算法式筛选适用规范；**双向校验**——算法 manifest 与 LLM 独立选择对比裁决（`rules --summary/--llm-json/--llm-prompt`），必选规则不可被 LLM 跳过（fail closed）；三域注册表（frontend/backend/product，`product-specs/rules.yaml` 按 productization_level L1+ 路由，L0 克制不加载） |
-| `pbatch/isolate.py` | **worktree 隔离执行**（`isolate` 子命令，多任务并行的标准模式）：一个 SSH 会话 = 一个 worktree——自动 `git worktree add` 独立分支、子进程在隔离目录执行（锁按 cwd 天然隔离、运行数据各自独立）、完成后提示人工合并回主分支（不自动合并）；`--copy-memory` 延续主目录会话；fail closed（非 git/分支已存在/目录非空/目标在仓库内/无任务参数 → exit 2） |
+| `pbatch/isolate.py` + `pbatch/session_merge.py` | **worktree 隔离执行 + session 自动合并**（`isolate` 子命令，多任务并行 / session 驱动的标准模式）：一个 SSH 会话 = 一个 worktree——自动 `git worktree add` 独立分支、子进程在隔离目录执行（锁按 cwd 天然隔离、运行数据各自独立）；默认提示人工合并回主分支，`--auto-merge` 时由本进程充当 Merge Controller：根仓库锁内 fetch → rebase 最新主分支 → 验证门禁（`--gate`，默认探测 Makefile ci target）→ 合并（`--no-ff` 保留 checkpoint 或 `--squash`）→ 清理；`--wait-minutes` 排队（合并队列 = 根锁，忙时 exit 5）；账本 data_dir/sessions.jsonl 状态机（CREATED→RUNNING→REBASING→VALIDATING→MERGING→MERGED / ABORTED/CONFLICT/TEST_FAILED/NO_GATE/QUEUE_REFUSED/DIRTY/READY），`isolate sessions` 查询；`--copy-memory` 延续主目录会话；fail closed（非 git/分支已存在/目录非空/目标在仓库内/无任务参数 → exit 2；合并被阻 → exit 6 保留现场） |
 | `pbatch/config.py` `data_dir` | **运行时数据目录**（`--data-dir` / env `PBATCH_DATA_DIR`）：记忆索引/被拒产物/worktrees/设备状态/错误预算/流程工件/反思账本默认在项目内 `.pi-batch/`，可整体移到项目外（如 `~/data/pbatch/<project>/`）——运行状态不污染项目代码结构；锁仍按 cwd 单实例（与数据位置解耦） |
 | `pbatch/evolution.py` / `evolution-specs/` | **第四域：实战规律引擎**（归纳自 snaplink-console / iris-ui 实战）：项目形态分类（契约驱动/平台/面向产品/探索）→ 规律分级路由（invariant 硬执行 / contract-policy 可豁免 / suggestion 只注入）；**探索豁免**（spike 任务自动降级，创新不被锁死）；项目宪法（`docs/evolution/constitution.yaml`：明确不做/变更预算/豁免留痕）——**assess 处方携带宪法块、advance 批次剔除 denylist 文件、campaign 分析注入宪法+已拒方向（L10 防重复）并沉淀批次轨迹事件**；**`evolution track` 演化路径分析**（轨迹事件 → 触发源分类/状态分布/模块热度/被拒收敛信号 → TRACK.md）；门禁五件套——`baseline`（L1 基线先行）、`authority`（L2 权威源分层，禁发明接口）、`evidence`（L7 证据纪律）、`nongoal`（L6 明确不做 fail closed）、`changebudget`（L9 变更预算）；`learn promote --registry evolution` 沉淀闭环（强制 samples/confidence）；eval 第四域回归（10 用例） |
 | `pbatch/advance.py` | 自推进迭代引擎（`advance` 子命令）：扫描项目全部规范维度（UI 间距/颜色/样式、前端工程错误/N+1/复杂度、后端工程/架构）→ 按细颗粒度分批（P0 可恢复性 > P1 视觉 token > P2 架构）→ 状态记录（docs/advance/state.jsonl）逐轮可续 |
@@ -451,7 +451,13 @@ pi-batch.py isolate -b task-a -- tasks-a.yaml --git-commit          # SSH 1
 pi-batch.py isolate -b task-b -d ../proj-task-b -- tasks-b.yaml \
   --log-file logs/task-b.log                                          # SSH 2（同时）
 pi-batch.py isolate -b task-c --copy-memory -- tasks-c.yaml          # 延续主目录会话
-# 跑完提示人工合并：cd 主目录 && git merge task-a && git worktree remove <dir>
+# session 模式：任务通过 → rebase 最新主分支 + 验证门禁（默认 make ci）→ 自动合并 → 清理
+pi-batch.py isolate -b session/20260821-091300 --auto-merge -- tasks.yaml
+pi-batch.py isolate -b fix-x --auto-merge --gate "npm run lint && npm test" -- tasks.yaml
+pi-batch.py isolate -b big-refactor --auto-merge --squash --wait-minutes 10 -- tasks.yaml
+pi-batch.py isolate sessions --json                                 # session 状态账本
+# 合并队列 = 根仓库锁（--wait-minutes 排队；忙时 exit 5）；失败保留现场供诊断
+# 跑完提示人工合并（manual 模式）：cd 主目录 && git merge task-a && git worktree remove <dir>
 # 产品思维层：product-specs/（product-thinking 分级/推演链/克制红线、
 # commercial-readiness 低成本预留vs高成本实现、open-source-readiness、
 # completion-evidence 完成证据报告——禁止伪造验证结果）

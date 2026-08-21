@@ -1,18 +1,37 @@
-"""`pi-batch isolate` — worktree 隔离执行（多任务并行推进的标准模式）。
+"""`pi-batch isolate` — worktree 隔离执行（多任务并行 / session 驱动的标准模式）。
 
 一个 SSH 会话 = 一个 worktree：在同一仓库上为每个任务建独立工作目录
 + 独立分支，各自跑 pi-batch（锁按 cwd 天然隔离、.pi-batch/ 会话/记忆
-各自独立、agent 改代码互不干扰），任务完成后提示人工评审合并回主分支
-（不自动合并——与 campaign --parallel-pipelines 同语义）。
+各自独立、agent 改代码互不干扰）。
+
+两种收尾模式：
+
+- 默认（manual）：任务完成后提示人工评审合并回主分支（不自动合并——与
+  campaign --parallel-pipelines 同语义）。
+- `--auto-merge`（session 模式）：任务成功后由本进程充当 Merge Controller，
+  在根仓库锁内执行「fetch → rebase 最新主分支 → 验证门禁 → 合并」（实现
+  见 pbatch/session.py），全部通过才自动合并主分支并清理 worktree/分支；
+  任一环节失败保留现场。
 
 用法：
     pi-batch isolate --branch task-a -- tasks-a.yaml --git-commit
     pi-batch isolate -b task-b -d ../proj-task-b -- tasks-b.yaml \
         --log-file logs/task-b.log --max-rounds 0
     pi-batch isolate -b task-c --copy-memory -- tasks-c.yaml
+    # session 模式：验证通过后自动合并；Makefile 有 ci target 时默认门禁为 make ci
+    pi-batch isolate -b session/20260821-091300 --auto-merge -- tasks.yaml
+    pi-batch isolate -b fix-x --auto-merge --gate "npm run lint && npm test" -- tasks.yaml
+    pi-batch isolate sessions [--limit 20] [--json]   # session 状态账本
 
 fail closed：非 git 仓库 / 分支已存在 / 目标目录非空 / 目标在仓库内 /
 无任务参数 → 一律拒绝启动（exit 2），绝不静默降级。
+
+session 模式退出码（状态账本见 pbatch/session.py）：
+    0  任务通过且已合并（或被合并状态为无变更）
+    2  前置校验失败 / 非 git
+    5  合并队列忙（根仓库锁被其它 session/实例持有，--wait-minutes 可排队）
+    6  合并被阻止：worktree 脏 / rebase 冲突 / 门禁失败 / 未检测到门禁
+    （其余为子任务退出码：任务失败时保留 worktree 现场）
 """
 
 from __future__ import annotations
@@ -24,7 +43,10 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from .config import log
+from .config import data_dir, log
+from .lock import acquire_lock, release_lock
+from .session_merge import (MERGE_BLOCKED_EXIT, SessionOptions, append_session,
+                      merge_session_block, read_sessions, session_id)
 
 _LOCK_EXIT = 5
 
@@ -41,10 +63,6 @@ def _repo_root(cwd: Path) -> Optional[Path]:
         return None
     root = Path(proc.stdout.strip()).resolve()
     return root if root.is_dir() else None
-
-
-def _inside_repo(root: Path) -> bool:
-    return _repo_root(root) is not None
 
 
 def _branch_exists(root: Path, branch: str) -> bool:
@@ -68,7 +86,6 @@ def _copy_memory(root: Path, worktree: Path) -> None:
     """延续主目录运行数据（会话/记忆/被拒产物）到新 worktree。
 
     src 用 config.data_dir（PBATCH_DATA_DIR 已设置时从外部目录复制）。"""
-    from .config import data_dir
     src = data_dir(str(root))
     dst = worktree / ".pi-batch"
     if not src.is_dir():
@@ -89,63 +106,134 @@ def _child_env(workdir: Path) -> dict:
     return env
 
 
+def _preflight(root: Path, branch: str, workdir: Path, task_args: list,
+               sess: str) -> Optional[int]:
+    """fail-closed 前置检查；违规时记录 ABORTED 并返回退出码，通过返回 None。"""
+    if _branch_exists(root, branch):
+        append_session(root, sess, "ABORTED",
+                       reason=f"branch {branch} already exists")
+        log.error("ISOLATE: branch '%s' already exists", branch)
+        return 2
+    if workdir.exists() and any(workdir.iterdir()):
+        append_session(root, sess, "ABORTED",
+                       reason=f"target directory not empty: {workdir}")
+        log.error("ISOLATE: target directory not empty: %s", workdir)
+        return 2
+    if root.resolve() in workdir.parents or workdir == root:
+        append_session(root, sess, "ABORTED",
+                       reason=f"target inside repository: {workdir}")
+        log.error("ISOLATE: target %s must be outside the repository", workdir)
+        return 2
+    if not task_args:
+        append_session(root, sess, "ABORTED",
+                       reason="no task arguments after '--'")
+        log.error("ISOLATE: no task arguments after '--' "
+                  "(e.g. -- tasks.yaml --git-commit)")
+        return 2
+    return None
+
+
+def _run_child(workdir: Path, task_args: list) -> int:
+    """在 worktree 里跑 pi-batch 子进程（锁按 cwd 天然隔离）。"""
+    cmd = [sys.executable, "-m", "pbatch", *task_args]
+    log.info("ISOLATE: running: %s (cwd=%s)", " ".join(cmd), workdir)
+    return subprocess.run(cmd, cwd=str(workdir),
+                          env=_child_env(workdir)).returncode
+
+
+def _report_task_failure(workdir: Path, exit_code: int) -> None:
+    """任务失败诊断提示：worktree 保留现场。"""
+    kind = "locked" if exit_code == _LOCK_EXIT else "failed"
+    print(f"\n[isolate] TASK {kind.upper()} (exit={exit_code}) — "
+          f"worktree left in place for diagnosis:")
+    print(f"  cd {workdir} && pi-batch ... --reuse   # 续跑")
+    print(f"  git -C {workdir} status                 # 现场")
+
+
 def run_isolated(root: Path, branch: str, workdir: Path, task_args: list,
-                 copy_memory: bool = False) -> int:
-    """建 worktree → 在隔离目录执行 pi-batch → 提示合并。返回子进程退出码。"""
+                 copy_memory: bool = False,
+                 opts: Optional[SessionOptions] = None) -> int:
+    """建 worktree → 执行任务 → manual 提示 / 自动合并（账本全程记录）。"""
     requested_root = root.resolve()
     root = _repo_root(requested_root)
     if root is None:
         log.error("ISOLATE: %s is not a git work tree", requested_root)
         return 2
+    sess = session_id()
+    if opts:
+        opts.session_id = sess  # 单一事实源：账本全程同 id
     workdir = workdir.expanduser().resolve()
-    if _branch_exists(root, branch):
-        log.error("ISOLATE: branch '%s' already exists", branch)
-        return 2
-    if workdir.exists() and any(workdir.iterdir()):
-        log.error("ISOLATE: target directory not empty: %s", workdir)
-        return 2
-    if root.resolve() in workdir.parents or workdir == root:
-        log.error("ISOLATE: target %s must be outside the repository", workdir)
-        return 2
-    if not task_args:
-        log.error("ISOLATE: no task arguments after '--' "
-                  "(e.g. -- tasks.yaml --git-commit)")
-        return 2
+    blocked = _preflight(root, branch, workdir, task_args, sess)
+    if blocked is not None:
+        return blocked
 
     base = _current_branch(root) or "HEAD"
     proc = _git(["worktree", "add", str(workdir), "-b", branch, base], root)
     if proc.returncode != 0:
+        append_session(root, sess, "ABORTED",
+                       reason=f"worktree add failed: {proc.stderr.strip()}")
         log.error("ISOLATE: git worktree add failed: %s", proc.stderr.strip())
         return 2
     log.info("ISOLATE: worktree %s (branch %s, from %s)", workdir, branch, base)
+    append_session(root, sess, "CREATED", branch=branch,
+                   worktree=str(workdir),
+                   base=opts.base if opts else base,
+                   commit=_git(["rev-parse", "--short", "HEAD"],
+                               root).stdout.strip())
     if copy_memory:
         _copy_memory(root, workdir)
 
-    # 子进程用同一 pi-batch 入口，cwd=worktree（锁按 cwd 天然隔离）。
-    entry = sys.executable
-    cmd = [entry, "-m", "pbatch", *task_args]
-    log.info("ISOLATE: running: %s (cwd=%s)", " ".join(cmd), workdir)
-    result = subprocess.run(cmd, cwd=str(workdir),
-                            env=_child_env(workdir))
-    log.info("ISOLATE: task exit=%d", result.returncode)
-    if result.returncode == 0:
+    append_session(root, sess, "RUNNING")
+    exit_code = _run_child(workdir, task_args)
+    log.info("ISOLATE: task exit=%d", exit_code)
+    if exit_code != 0:
+        append_session(root, sess, "ABORTED", exit_code=exit_code)
+        _report_task_failure(workdir, exit_code)
+        return exit_code
+    if opts is None:
+        append_session(root, sess, "READY")
         print(f"\n[isolate] ALL PASSED on branch '{branch}'. Merge when ready:")
         print(f"  cd {root} && git merge {branch}")
         print(f"  git worktree remove {workdir}")
-    else:
-        code = "locked" if result.returncode == _LOCK_EXIT else "failed"
-        print(f"\n[isolate] TASK {code.upper()} (exit={result.returncode}) — "
-              f"worktree left in place for diagnosis:")
-        print(f"  cd {workdir} && pi-batch ... --reuse   # 续跑")
-        print(f"  git -C {workdir} status                 # 现场")
-    return result.returncode
+        return 0
+
+    # session 模式：任务通过 → 验证后自动合并（Merge Controller 事务）。
+    return _finish_session(root, branch, workdir, sess, opts)
+
+
+def _finish_session(root: Path, branch: str, workdir: Path, sess: str,
+                    opts: SessionOptions) -> int:
+    """worktree 干净检查 → 根仓库锁（合并队列）→ 合并事务。"""
+    porcelain = _git(["status", "--porcelain"], workdir).stdout
+    if porcelain:
+        append_session(root, sess, "DIRTY", reason=porcelain.strip()[:500])
+        print("\n[isolate] MERGE BLOCKED: worktree has uncommitted changes "
+              "(commit them in the task or pass --git-commit):")
+        print(f"  cd {workdir} && git status")
+        print(f"  cd {root} && git merge {branch}       # 手动合并")
+        return MERGE_BLOCKED_EXIT
+    try:
+        lock = acquire_lock(str(root), wait_minutes=opts.wait_minutes)
+    except SystemExit as exc:
+        append_session(root, sess, "QUEUE_REFUSED")
+        print("\n[isolate] MERGE QUEUE BUSY: another session/instance holds "
+              "the main-repository lock (exit 5)")
+        print("  retry with --wait-minutes N to queue, or run when free")
+        print(f"  worktree kept: {workdir} (review before merge):")
+        print(f"  cd {root} && git merge {branch}")
+        return int(exc.code)
+    try:
+        return merge_session_block(root, branch, workdir, opts)
+    finally:
+        release_lock(lock)
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pi-batch.py isolate",
         description="Run pi-batch in an isolated git worktree (one SSH "
-                    "session = one worktree; merge back manually).")
+                    "session = one worktree; --auto-merge validates then "
+                    "merges back to the main branch).")
     parser.add_argument("-b", "--branch", required=True,
                         help="new branch for this task (must not exist)")
     parser.add_argument("-d", "--dir", default="",
@@ -153,12 +241,58 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--copy-memory", action="store_true",
                         help="copy .pi-batch/ (sessions/memory) from the main "
                              "worktree to continue context")
+    parser.add_argument("--auto-merge", action="store_true",
+                        help="session mode: after the task passes, fetch + "
+                             "rebase latest main, run the validation gate, "
+                             "auto-merge to the main branch, then clean up")
+    parser.add_argument("--gate", default="",
+                        help="validation command run in the worktree before "
+                             "merge (default: 'make ci' when the repo Makefile "
+                             "has a ci target; auto-merge is refused otherwise)")
+    parser.add_argument("--base", default="main",
+                        help="main branch name to rebase onto and merge into "
+                             "(default: main; remote ref origin/<base> is used "
+                             "when a remote exists)")
+    parser.add_argument("--squash", action="store_true",
+                        help="fold the session's commits into one on merge")
+    parser.add_argument("--no-cleanup", action="store_true",
+                        help="keep the worktree and branch after a successful "
+                             "merge (inspection)")
+    parser.add_argument("--wait-minutes", type=int, default=0,
+                        help="merge queue wait: 0 refuses (exit 5) while "
+                             "another session holds the main-repository lock; "
+                             ">0 polls until free or the budget expires")
     parser.add_argument("task_args", nargs=argparse.REMAINDER,
                         help="args after '--' passed to pi-batch unchanged")
     return parser
 
 
+def sessions_main(argv: list) -> int:
+    """`pi-batch isolate sessions`：session 状态账本（新→旧）。"""
+    parser = argparse.ArgumentParser(prog="pi-batch.py isolate sessions")
+    parser.add_argument("--limit", type=int, default=20)
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+    cwd = Path.cwd().resolve()
+    root = _repo_root(cwd)
+    if root is None:
+        log.error("ISOLATE: %s is not a git work tree", cwd)
+        return 2
+    records = read_sessions(root, args.limit)
+    if args.json:
+        print(__import__("json").dumps(records, ensure_ascii=False, indent=2))
+        return 0
+    for record in records:
+        print(f"{record.get('status', '?'):<14} {record.get('session_id', '?'):<12} "
+              f"{record.get('branch', '?'):<28} {record.get('ts', '')}")
+    if not records:
+        print("(no sessions recorded; run isolate --auto-merge to start one)")
+    return 0
+
+
 def isolate_main(argv: list) -> None:
+    if argv and argv[0] == "sessions":
+        sys.exit(sessions_main(argv[1:]))
     parser = _parser()
     args = parser.parse_args(argv)
     if not args.task_args or args.task_args[0] != "--":
@@ -171,6 +305,12 @@ def isolate_main(argv: list) -> None:
         log.error("ISOLATE: %s is not a git work tree", cwd)
         sys.exit(2)
     workdir = _worktree_dir(root, args.branch, args.dir)
+    opts = None
+    if args.auto_merge:
+        opts = SessionOptions(
+            session_id=session_id(), base=args.base, gate=args.gate,
+            squash=args.squash, no_cleanup=args.no_cleanup,
+            wait_minutes=args.wait_minutes)
     code = run_isolated(root, args.branch, workdir, task_args,
-                        args.copy_memory)
+                        args.copy_memory, opts)
     sys.exit(code)

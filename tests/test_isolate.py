@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -340,3 +341,204 @@ def test_memory_index_follows_data_dir(tmp_path, monkeypatch):
     path = index_path(str(tmp_path))
     assert str(path).startswith(str(external.resolve()))
     assert path.name == "sessions.index.jsonl"
+
+
+# ---------------------------------------------------------------------------
+# session 模式（--auto-merge）：验证后自动合并 / Merge Controller / 状态账本
+# ---------------------------------------------------------------------------
+
+def _init_main_repo(tmp_path, make_ci="echo ci-ok"):
+    """git 仓库（分支固定 main；可选 Makefile ci target），供 session 测试。"""
+    root = tmp_path / "repo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.email", "t@t"],
+                   check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "t"],
+                   check=True)
+    branch = subprocess.run(
+        ["git", "-C", str(root), "branch", "--show-current"],
+        capture_output=True, text=True).stdout.strip()
+    if branch not in ("", "main"):
+        subprocess.run(["git", "-C", str(root), "branch", "-m", branch, "main"],
+                       check=True)
+    (root / "a.txt").write_text("a\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", "a.txt"], check=True)
+    subprocess.run(["git", "-C", str(root), "commit", "-qm", "init"],
+                   check=True)
+    if make_ci:
+        (root / "Makefile").write_text(f"ci:\n\t{make_ci}\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(root), "add", "Makefile"], check=True)
+        subprocess.run(["git", "-C", str(root), "commit", "-qm", "makefile"],
+                       check=True)
+    return root
+
+
+def _commit_agent(root, script_body):
+    """Agent 脚本：在 worktree 里修改并提交（或保持脏）后输出 ok。"""
+    agent = root / "agent.sh"
+    agent.write_text("#!/bin/sh\n" + script_body + "\necho ok\n",
+                     encoding="utf-8")
+    agent.chmod(0o755)
+    return agent
+
+
+def _session_ledger(repo) -> list:
+    ledger = repo / ".pi-batch" / "sessions.jsonl"
+    if not ledger.exists():
+        return []
+    return [json.loads(line) for line in
+            ledger.read_text(encoding="utf-8").splitlines()]
+
+
+_COMMIT_CHANGE = ("echo session-change >> a.txt\n"
+                  "git add a.txt\n"
+                  "git commit -qm 'session change'\n")
+
+
+def test_session_auto_merge_merges_to_main_and_cleans(tmp_path):
+    """成功流：任务在 worktree 提交 → rebase → make ci 门禁 → no-ff 合并
+    → worktree/分支清理；账本终态 MERGED。"""
+    repo = _init_main_repo(tmp_path)
+    agent = _commit_agent(repo, _COMMIT_CHANGE)
+    result = _isolate(repo, "-b", "sess-a", "--auto-merge", "--",
+                      "-p", "task", "--agent-bin", str(agent),
+                      "--memory-mode", "off", "--no-lock")
+    assert result.returncode == 0, result.stderr
+    assert "SESSION MERGED" in result.stdout
+    assert "session-change" in (repo / "a.txt").read_text(encoding="utf-8")
+    log = subprocess.run(["git", "-C", str(repo), "log", "--oneline"],
+                         capture_output=True, text=True).stdout
+    assert "merge: session sess-a" in log          # no-ff 合并提交保留检查点
+    assert not (repo.parent / "repo-sess-a").exists()      # worktree 已清理
+    branches = subprocess.run(["git", "-C", str(repo), "branch", "--list"],
+                              capture_output=True, text=True).stdout
+    assert "sess-a" not in branches                        # 分支已删除
+    states = [r["status"] for r in _session_ledger(repo)]
+    assert states[-1] == "MERGED"
+    assert {"CREATED", "RUNNING", "REBASING", "VALIDATING",
+            "MERGING"} <= set(states)
+
+
+def test_session_auto_merge_squash_single_commit(tmp_path):
+    """--squash：session 的多个 checkpoint 合并为单个提交进入主分支。"""
+    repo = _init_main_repo(tmp_path)
+    two_commits = (_COMMIT_CHANGE +
+                   "echo second-change >> a.txt\n"
+                   "git add a.txt\n"
+                   "git commit -qm 'second change'\n")
+    agent = _commit_agent(repo, two_commits)
+    result = _isolate(repo, "-b", "sess-b", "--auto-merge", "--squash", "--",
+                      "-p", "task", "--agent-bin", str(agent),
+                      "--memory-mode", "off", "--no-lock")
+    assert result.returncode == 0, result.stderr
+    log = subprocess.run(["git", "-C", str(repo), "log", "--oneline"],
+                         capture_output=True, text=True).stdout.splitlines()
+    assert len(log) == 3  # init / makefile / squash 单提交
+    assert "squashed" in log[0]
+
+
+def test_session_auto_merge_no_gate_refused(tmp_path):
+    """无 Makefile 也无 --gate → 拒绝自动合并（NO_GATE），保留现场。"""
+    repo = _init_main_repo(tmp_path, make_ci=None)
+    agent = _commit_agent(repo, _COMMIT_CHANGE)
+    result = _isolate(repo, "-b", "sess-c", "--auto-merge", "--",
+                      "-p", "task", "--agent-bin", str(agent),
+                      "--memory-mode", "off", "--no-lock")
+    assert result.returncode == 6, result.stderr
+    assert "no validation gate detected" in result.stdout
+    assert (repo.parent / "repo-sess-c").is_dir()          # worktree 保留
+    assert "session-change" not in (repo / "a.txt").read_text(encoding="utf-8")
+    assert _session_ledger(repo)[-1]["status"] == "NO_GATE"
+
+
+def test_session_auto_merge_gate_failed_keeps_worktree(tmp_path):
+    """门禁失败 → TEST_FAILED：不合并、保留 worktree/分支、exit 6。"""
+    repo = _init_main_repo(tmp_path, make_ci="false")
+    agent = _commit_agent(repo, _COMMIT_CHANGE)
+    result = _isolate(repo, "-b", "sess-d", "--auto-merge", "--",
+                      "-p", "task", "--agent-bin", str(agent),
+                      "--memory-mode", "off", "--no-lock")
+    assert result.returncode == 6, result.stderr
+    assert "gate failed" in result.stdout
+    assert "session-change" not in (repo / "a.txt").read_text(encoding="utf-8")
+    assert (repo.parent / "repo-sess-d").is_dir()
+    assert _session_ledger(repo)[-1]["status"] == "TEST_FAILED"
+
+
+def test_session_auto_merge_dirty_refused(tmp_path):
+    """worktree 有未提交变更 → 拒绝合并（DIRTY），保留现场。"""
+    repo = _init_main_repo(tmp_path)
+    agent = _commit_agent(repo, "echo dirty > dirty.txt")
+    result = _isolate(repo, "-b", "sess-e", "--auto-merge", "--",
+                      "-p", "task", "--agent-bin", str(agent),
+                      "--memory-mode", "off", "--no-lock")
+    assert result.returncode == 6, result.stderr
+    assert "uncommitted changes" in result.stdout
+    assert (repo.parent / "repo-sess-e").is_dir()
+    assert _session_ledger(repo)[-1]["status"] == "DIRTY"
+
+
+def test_session_auto_merge_rebase_conflict_keeps_worktree(tmp_path):
+    """origin/main 前进且与 session 冲突 → CONFLICT：不合并、现场保留。"""
+    repo = _init_main_repo(tmp_path)
+    bare = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(bare)], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin",
+                    str(bare)], check=True)
+    subprocess.run(["git", "-C", str(repo), "push", "-qu", "origin", "main"],
+                   check=True)
+    # 另一侧推进 origin/main：对 a.txt 做冲突修改
+    other = tmp_path / "other"
+    subprocess.run(["git", "clone", "-qb", "main", str(bare), str(other)],
+                   check=True)
+    subprocess.run(["git", "-C", str(other), "config", "user.email", "t@t"],
+                   check=True)
+    subprocess.run(["git", "-C", str(other), "config", "user.name", "t"],
+                   check=True)
+    (other / "a.txt").write_text("from-remote\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(other), "commit", "-qam", "remote change"],
+                   check=True)
+    subprocess.run(["git", "-C", str(other), "push", "-q", "origin", "main"],
+                   check=True)
+    agent = _commit_agent(repo, _COMMIT_CHANGE)  # session 也改 a.txt
+    result = _isolate(repo, "-b", "sess-f", "--auto-merge", "--",
+                      "-p", "task", "--agent-bin", str(agent),
+                      "--memory-mode", "off", "--no-lock")
+    assert result.returncode == 6, result.stderr
+    assert "rebase conflict" in result.stdout
+    assert (repo / "a.txt").read_text(encoding="utf-8") == "a\n"  # 主分支未动
+    assert (repo.parent / "repo-sess-f").is_dir()
+    assert _session_ledger(repo)[-1]["status"] == "CONFLICT"
+
+
+def test_session_auto_merge_queue_busy_refused(tmp_path):
+    """根仓库锁被其它实例持有 → 拒绝合并（QUEUE_REFUSED, exit 5）。"""
+    repo = _init_main_repo(tmp_path)
+    holder = {"pid": os.getpid(), "start": 0, "host": "x",
+              "argv": [], "token": "held"}
+    (repo / ".pi-batch.lock").write_text(json.dumps(holder),
+                                         encoding="utf-8")
+    agent = _commit_agent(repo, _COMMIT_CHANGE)
+    result = _isolate(repo, "-b", "sess-g", "--auto-merge", "--",
+                      "-p", "task", "--agent-bin", str(agent),
+                      "--memory-mode", "off", "--no-lock")
+    assert result.returncode == 5, result.stderr
+    assert "MERGE QUEUE BUSY" in result.stdout
+    assert (repo.parent / "repo-sess-g").is_dir()
+    assert _session_ledger(repo)[-1]["status"] == "QUEUE_REFUSED"
+
+
+def test_isolate_sessions_lists_ledger(tmp_path):
+    """`isolate sessions`：账本新→旧；manual 模式记录 CREATED/RUNNING/READY。"""
+    repo = _init_main_repo(tmp_path)
+    result = _isolate(repo, "-b", "plain-a", "--", "-p", "test", "--dry-run")
+    assert result.returncode == 0, result.stderr
+    listed = _isolate(repo, "sessions", "--json")
+    assert listed.returncode == 0, listed.stderr
+    records = json.loads(listed.stdout)
+    assert records, "no session records written"
+    assert records[0]["status"] == "READY"          # 新→旧
+    created = next(r for r in records if r["status"] == "CREATED")
+    assert created["branch"] == "plain-a"
+    assert created["session_id"].startswith("sess-")
