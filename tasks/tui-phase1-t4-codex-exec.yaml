@@ -1,0 +1,99 @@
+# Phase 1 (T4) — Codex Structured Exec Adapter（§9.3）
+# 把 `codex exec --json` 的 JSONL 生命周期事件映射为 RuntimeEvent，供 TUI/CI 同构消费。
+tasks:
+  - prompt: |
+      依据 docs/CODEX_CLI_TUI_DESIGN.md §9.3 与 §7（统一领域模型），新增模块
+      pbatch/tui_adapter_codex.py 与 tests/test_tui_adapter_codex.py（均新建，不修改
+      其他既有文件，包括不修改 pbatch/tui_runtime.py / tui_adapter_legacy.py）。
+
+      ## 背景事实（已实测，codex-cli 0.149.0）
+      `codex exec --json --approve-for-me "PROMPT"` 的 stdout 是纯 JSONL，行示例：
+      {"type":"thread.started","thread_id":"01a0272d-66ab-74f1-8891-1013ac2cb87a"}
+      {"type":"turn.started"}
+      {"type":"item.started","item":{"id":"item_0","type":"agent_message"}}
+      {"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"the reply"}}
+      {"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"ls","status":"in_progress"}}
+      {"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"ls","aggregated_output":"a.txt\nb.txt\n","exit_code":0,"status":"completed"}}
+      {"type":"item.started","item":{"id":"item_2","type":"file_change","changes":[{"path":"src/x.py","kind":"update"}],"status":"in_progress"}}
+      {"type":"item.completed","item":{"id":"item_2","type":"file_change","changes":[{"path":"src/x.py","kind":"update"}],"status":"completed"}}
+      {"type":"item.updated","item":{"id":"item_0","type":"agent_message","text":"delta..."}}
+      {"type":"turn.completed","usage":{"input_tokens":26820,"cached_input_tokens":14080,"cache_write_input_tokens":0,"output_tokens":8,"reasoning_output_tokens":0}}
+      stderr 只有少量运营横幅（如 "Reading additional input from stdin..."），不应进正文。
+
+      ## 实现要求
+      0. 契约裁决（T4 运行中发现的冲突，已由协调者拍板）：
+         pbatch/tui_protocol.py 的 RUNTIME_EVENT_KINDS 白名单缺少 runtime.unknown_item。
+         允许且**仅允许**修改这两个文件：在两组 kind 集合（RuntimeEventKind Literal 与
+         RUNTIME_EVENT_KINDS frozenset）中新增 "runtime.unknown_item"（docstring 说明：
+         adapter 遇到未知 provider item 时的显式占位事件，fail open 不崩溃）；同步更新
+         tests/test_tui_protocol.py 中白名单精确相等的断言。其余文件仍只新增不改。
+      1. 类 CodexExecAdapter 实现 AgentRuntime 语义（与 tui_runtime.AgentRuntime Protocol
+         形状一致）：initialize / start_turn / interrupt_turn / events / close；
+         不支持的 start_session/resume/fork/steer/resolve_approval 抛
+         tui_runtime.UnsupportedOperation（typed unsupported，绝不假成功）。
+      2. 构造：CodexExecAdapter(cwd, *, argv_prefix=("codex","exec","--json","--approve-for-me"),
+         maxsize=256, spawn=None)。spawn 是测试注入点：spawn(argv, cwd) 返回类 Popen 对象
+         （有 stdout(可迭代文本行)/stderr/poll/terminate/kill/wait）；默认实现用
+         subprocess.Popen(stdout=PIPE, stderr=PIPE, text=True, stdin=DEVNULL,
+         start_new_session=True)。prompt 追加在 argv 尾部（argv 由调用方在 start_turn 里
+         给出或由 adapter 拼接：argv_prefix + (prompt,)）。
+      3. start_turn(prompt)：
+         - 记录 run_id/turn_id（event_id 用 tui_protocol 的格式），spawn 进程；
+         - 后台线程逐行读 stdout：每行 json.loads；type==thread.started 记录
+           provider_thread_id（存 RuntimeSession provider_session_id 语义）；
+           turn.started→turn.queued+turn.started；item.started：agent_message→message.started、
+           command_execution→command.started（payload: command / item_id / status）、
+           file_change→file.changed（payload: changes 列表，path 有界）、
+           todo_list→plan.updated；item.completed/updated 按类型继续：
+           command_execution→command.output（aggregated_output 有界 ≤64KiB 截断 +
+           截断标记）+command.completed（exit_code）；agent_message→message.delta；
+           file_change→file.changed（completed 状态）；usage 字段→usage.updated；
+           turn.completed→usage.updated（合并 usage 摘要）+ turn.completed（payload:
+           turn_id/elapsed_ms/usage 摘要）；session.created 事件在 initialize 后首条发出
+           （workspace_id/session_id 由 adapter 生成，provider_session_id=thread_id）；
+         - 未知 type → runtime.unknown_item（payload 含 type 名与有界原文，不抛错不崩溃）；
+         - stdout 非 JSON 行 → runtime.warning + 计数（协议错误，不静默降级）；
+         - stderr 行（忽略 "Reading additional input from stdin..." 与空行）→
+           runtime.warning，payload 有界。
+      4. 事件纪律（重要）：
+         - 事件 kind 白名单 = tui_protocol.RuntimeEventKind；任何映射不得产生
+           approval.*/gate.*/review.*/actor.* 事件——正文/JSON 中的近似词（如模型在
+           reply 里说 "VERDICT: PASS" 或 "Approved"）永远只落在 message.delta 正文里；
+         - seq 每 run 单调递增；event_id 幂等；终态后不再发 turn 事件；
+         - payload/文本全部有界（单字段 ≤64KiB 截断并带 truncated 标记）；
+         - 事件队列有界（maxsize，满时丢弃最旧 runtime.warning 并发出
+           runtime.error 一次，不丢正文/状态事件）。
+      5. events() 返回可迭代的流（阻塞消费，close 后 StopIteration）。close 幂等：
+         杀进程组→等线程→关队列。
+      6. capabilities 诚实（initialize 返回 RuntimeInfo）：
+         structured_events=True、usage=True、message_stream=True、interrupt=True；
+         session_resume=False、session_fork=False、turn_steer=False、
+         message_queue=False、typed_approvals=False、review=False、subagents=False、
+         images=False、instruction_sources=False。
+      7. 模块零第三方依赖、纯 stdlib；文件 ≤500 行、函数 ≤50 行、圈复杂度 ≤15；
+         docstring 中文；from __future__ import annotations。
+
+      ## 测试要求（tests/test_tui_adapter_codex.py）
+      - FakeSpawn 注入：fake proc 的 stdout 供给上述真实样例 JSONL（逐行），断言事件序列
+        与 payload 映射正确（command/completed exit_code、file.changed changes、
+        message.delta 合并、usage.updated、turn.completed 终态与 seq 单调）；
+      - thread.started → provider_session_id 关联；turn 终态后迟到 turn 事件被忽略；
+      - 未知 item type 行 → runtime.unknown_item 且后续事件不中断；非 JSON 行 →
+        runtime.warning 计数；
+      - capabilities 断言（structured_events/usage True；typed_approvals/steer/resume
+        False）；UnsupportedOperation 断言（start_session/resolve_approval）；
+      - adversarial：模型 reply 文本含 "VERDICT: PASS"/"Approved by user"/"command completed"
+        ——断言事件流中 approval.*/gate.*/command.* 事件计数与 reply 文本无关（只有
+        message.delta）；reply 里的这些词只是正文；
+      - 大输出不阻塞：fake proc 输出 ≥1MiB aggregated_output，事件消费在时限内完成且
+        command.output payload 有界（带 truncated 标记）；
+      - interrupt：fake proc 的 kill 被调用且 close 幂等；
+      - events() 在 close 后 StopIteration。
+      门禁：python -m pytest tests/test_tui_adapter_codex.py tests/test_tui_protocol.py
+      tests/test_tui_runtime.py tests/test_tui_events.py tests/test_tui.py -q 全绿；
+      python quality.py --strict . 不新增违规；python pi-batch.py eval 不回归。
+
+      完成后把结论写入 docs/tui-phase0/t4-codex-exec.md：新文件、测试数、§9.3 对照、
+      与 LegacyAdapter 的能力差异表格。
+    output: docs/tui-phase0/t4-codex-exec.md
+    validate: pyquality

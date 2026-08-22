@@ -2,6 +2,8 @@
 
 本模块只定义纯数据与确定性校验，不执行 IO，也不依赖具体 TUI 或 Runtime。
 未知事件类型 fail closed；未知顶层字段则原位保留，以支持兼容的 schema 演进。
+`runtime.unknown_item` 是 adapter 遇到未知 provider item 时的显式占位事件，
+用于 fail open 地保留有界证据而不让事件流崩溃。
 """
 
 from __future__ import annotations
@@ -57,6 +59,7 @@ RuntimeEventKind = Literal[
     "usage.updated",
     "runtime.warning",
     "runtime.error",
+    "runtime.unknown_item",
     "runtime.capabilities_changed",
 ]
 
@@ -71,7 +74,8 @@ RUNTIME_EVENT_KINDS = frozenset({
     "validation.completed", "gate.verdict", "approval.requested",
     "approval.resolved", "approval.expired", "actor.spawned", "actor.status",
     "actor.completed", "review.finding", "artifact.created", "usage.updated",
-    "runtime.warning", "runtime.error", "runtime.capabilities_changed",
+    "runtime.warning", "runtime.error", "runtime.unknown_item",
+    "runtime.capabilities_changed",
 })
 
 _EVENT_ID_RE = re.compile(r"^evt_[A-Za-z0-9_-]+$")

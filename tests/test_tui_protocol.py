@@ -31,7 +31,7 @@ command.started command.output command.completed tool.started tool.completed too
 file.changed workspace.snapshot validation.started validation.completed gate.verdict
 approval.requested approval.resolved approval.expired actor.spawned actor.status
 actor.completed review.finding artifact.created usage.updated runtime.warning runtime.error
-runtime.capabilities_changed
+runtime.unknown_item runtime.capabilities_changed
 """.split())
 
 
