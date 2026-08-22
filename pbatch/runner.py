@@ -28,6 +28,9 @@ from .execution_ids import task_id as make_task_id
 from .runner_results import (agent_stdout_banner_reason as _stdout_banner_reason,
                              overflow_result as _overflow_result,
                              prompt_limit_result as _prompt_limit_result)
+from .provider_breaker import (cooldown_failure as _pb_cooldown,
+                               register_provider_failure as _pb_register_fail,
+                               register_success as _pb_register_ok)
 from . import metering
 from . import ratelimit
 from .metering import budget_allows, budget_try_consume, record_event
@@ -74,11 +77,9 @@ def _read_stream(stream, prefix: str, collector: list, cap: int = 0,
                  overflow: Optional[list] = None, emit: bool = False,
                  target=None) -> None:
     """Drain and collect a child stream, optionally displaying it live.
-    Collection is capped at *cap* bytes (T12e): a misbehaving agent must
-    not OOM the runner before the post-hoc size check; overflow is recorded
-    so the caller can reject the result. The stream is still drained (a
-    blocked pipe would hang the agent), while collection and live display
-    stop at the cap."""
+    Collection caps at *cap* bytes (T12e); overflow is recorded so the
+    caller can reject. The stream is still drained (a blocked pipe would
+    hang the agent), while collection/display stop at the cap."""
     total = 0
     sink = target or sys.stdout
     try:
@@ -100,12 +101,9 @@ def _read_stream(stream, prefix: str, collector: list, cap: int = 0,
     finally:
         stream.close()
 def agent_failure_reason(returncode: int, output: str, bin_name: str = "") -> str:
-    """Return a short reason when the agent result must be discarded, or ''
-    when the output is a usable result. Non-zero exit, empty output, and
-    provider/CLI failure signatures (quota, rate limit, auth, billing) all
-    reject the result so error replies are never saved as task outputs.
-    Signatures are per-agent (agent.agents.<bin>.error_patterns can replace
-    the built-in table for claude/codex/... — G line)."""
+    """Discard-reason ('' = usable): non-zero exit / empty output /
+    provider-signature rejections; per-agent patterns replace the
+    built-in table (G line)."""
     if returncode != 0:
         return f"agent exited {returncode}"
     if not output or not output.strip():
@@ -154,8 +152,8 @@ def _kill_group(proc: Optional[subprocess.Popen]) -> None:
 def kill_proc_group(proc: subprocess.Popen) -> None:
     _kill_group(proc)
 def _spawn_agent(cmd: list, workdir: str, env: dict) -> subprocess.Popen:
-    """Spawn the agent in its own process group so the whole child tree
-    can be killed on timeout or interrupt. stdin is /dev/null: prompts
+    """Spawn the agent in its own process group (killed on timeout or
+    interrupt). stdin is /dev/null: prompts
     arrive via argv (piped stdin prompts are buffered by the CLI first),
     so an inherited pipe would let stdin-hungry agents (e.g. codex exec
     appends piped stdin as a <stdin> block) swallow or hang on batch input."""
@@ -206,9 +204,7 @@ def _finish_result(result: TaskResult, task: Task, session_id: str,
 def _stream_task(proc, prefix: str, start: float, timeout: int, emit: bool,
                  stdout_target=None, stderr_target=None):
     """Forward opt-in display targets without changing legacy mock calls."""
-    targets = {}
-    if stdout_target is not None:
-        targets["stdout_target"] = stdout_target
+    targets = {"stdout_target": stdout_target} if stdout_target else {}
     if stderr_target is not None:
         targets["stderr_target"] = stderr_target
     return _stream_proc(proc, prefix, start, timeout, emit, **targets)
@@ -229,33 +225,32 @@ def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = F
     prefix, env, key, usage_before = _prepare_task_run(task, cmd, task_index, total, parallel, workdir, effective_name, session_id, trace_task_id, attempt)
     try:
         _rate_gate(task, effective_name)
+        if (cooldown := _pb_cooldown(task)) is not None:
+            return cooldown
         proc = _spawn_agent(cmd, workdir, env)
         _register_proc(proc)
         write_marker(key, workdir, agent_pid=proc.pid)
         streamed = _stream_output_enabled()
         stdout_lines, stderr_lines, overflow = _stream_task(
-            proc, prefix, start, task.timeout, streamed,
-            stdout_target, stderr_target)
+            proc, prefix, start, task.timeout, streamed, stdout_target,
+            stderr_target)
         completed = True
         if overflow[0]:
-            result = _overflow_result(task, proc, stdout_lines, stderr_lines, start)
-            return _finish_result(result, task, session_id, effective_name, workdir, usage_before, trace_task_id, attempt)
+            _r = _overflow_result(task, proc, stdout_lines, stderr_lines, start)
+            return _finish_result(_r, task, session_id, effective_name, workdir, usage_before, trace_task_id, attempt)
         result = _result_from_proc(task, proc, stdout_lines, stderr_lines, time.monotonic() - start)
         result.streamed_output = streamed
-        if session_flags is not None: _capture_codex_thread(
-            stdout_lines, effective_name, session_id, workdir)
+        if session_flags is not None:
+            _capture_codex_thread(stdout_lines, effective_name, session_id, workdir)
         return _finish_result(result, task, session_id, effective_name, workdir, usage_before, trace_task_id, attempt)
     except subprocess.TimeoutExpired:
-        result = _timeout_result(task, proc, start)
-        return _finish_result(result, task, session_id, effective_name, workdir, usage_before, trace_task_id, attempt)
+        return _finish_result(_timeout_result(task, proc, start), task, session_id, effective_name, workdir, usage_before, trace_task_id, attempt)
     except FileNotFoundError:
-        result = _agent_not_found(task)
-        return _finish_result(result, task, session_id, effective_name, workdir, usage_before, trace_task_id, attempt)
+        return _finish_result(_agent_not_found(task), task, session_id, effective_name, workdir, usage_before, trace_task_id, attempt)
     except Exception as e:
         elapsed = time.monotonic() - start
         log.error("ERROR  [%.1fs]  [%s]", elapsed, e)
-        result = TaskResult(task=task, success=False, stderr=str(e), elapsed=elapsed, reason=str(e))
-        return _finish_result(result, task, session_id, effective_name, workdir, usage_before, trace_task_id, attempt)
+        return _finish_result(TaskResult(task=task, success=False, stderr=str(e), elapsed=elapsed, reason=str(e)), task, session_id, effective_name, workdir, usage_before, trace_task_id, attempt)
     finally:
         if proc is not None and not completed:
             _kill_group(proc)
@@ -718,7 +713,9 @@ def _result_from_proc(task: Task, proc: subprocess.Popen, stdout_lines: list, st
         first_err = (stderr_text or "").strip().splitlines()
         hint = f" | {first_err[0][:200]}" if first_err and first_err[0] else ""
         log.warning("agent output REJECTED: %s%s", reason, hint)
+        _pb_register_fail(reason)
     if success:
+        _pb_register_ok()
         log.info("OK  done  [%.1fs]  [output=%s]", elapsed, task.output or "(stdout)")
     else:
         # F2 (retro finding): failures must carry a stderr tail so root
@@ -766,8 +763,8 @@ def _drain_process(proc: subprocess.Popen, prefix: str, start: float,
     stderr_lines: list[str] = []
     stdout_overflow: list = [False]
     stderr_overflow: list = [False]
-    stdout_sink = sys.stdout if stdout_target is None else stdout_target
-    stderr_sink = sys.stderr if stderr_target is None else stderr_target
+    stdout_sink = stdout_target or sys.stdout
+    stderr_sink = stderr_target or sys.stderr
     args = (cap, stdout_overflow, emit, stdout_sink)
     tout = Thread(target=_read_stream, args=(proc.stdout, prefix, stdout_lines, *args), daemon=True)
     err_args = (cap, stderr_overflow, emit, stderr_sink)

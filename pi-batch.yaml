@@ -114,6 +114,14 @@ project:
 # CLI flags --rate-limit / --rate-burst override these per run.
 limits:
   per_second: 0        # max agent invocations per second (0 = unlimited)
+  # Provider 级熔断（T17a）：连续 N 次 provider 失败签名（quota/rate/
+  # auth/network，跨任务累计）→ 指数退避冷却，冷却中任务先等待；
+  # 任一成功重置。7×24 无人值守防 provider 系统性故障空转。
+  provider_breaker:
+    threshold: 5          # 连续失败数（0 = 关闭）
+    base_cooldown: 60     # 首次冷却秒（×2 退避）
+    max_cooldown: 900     # 单段冷却上限；超出后任务明确失败
+
   burst: 1             # token bucket capacity
   providers: {}        # per-provider overrides, e.g. {openai: {per_second: 2}}
   # Campaign isolated worktrees share this state through PBATCH_RATE_LIMIT_FILE.
@@ -415,3 +423,4 @@ model_routing:
     enabled: true                # 配额见底时降级（保护性成本控制）
     remaining_ratio_threshold: 0.25    # 剩余 < 25% 时最高可用档降一级
     min_tier: low
+
