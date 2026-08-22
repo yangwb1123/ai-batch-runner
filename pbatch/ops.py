@@ -251,8 +251,16 @@ def ops_main(argv: Optional[list[str]] = None) -> int:
     p = sub.add_parser("report", help="生成自包含 HTML 监控页")
     p.add_argument("--html", default=OPS_REPORT_NAME,
                    help="输出路径（默认 ./ops-report.html，须在 cwd 内）")
+    p = sub.add_parser("serve", help="只读 HTTP 监控服务（web/app 实时查看）")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8731)
+    p.add_argument("--token", default="")
     args = parser.parse_args(argv)
     cwd = os.getcwd()
+    if args.command == "serve":
+        from .ops_serve import serve_main
+        return serve_main([f"--host={args.host}", f"--port={args.port}",
+                           f"--token={args.token}"])
     handlers = {
         "overview": _cmd_overview,
         "runs": _cmd_runs,
