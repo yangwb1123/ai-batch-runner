@@ -1,16 +1,15 @@
 # Codex CLI 核心产品能力分析与 pi-batch TUI 演进设计
 
-> 状态：**Phase 0 已完成 + Phase 1 核心达成（2026-08-21 证据闭环）** · 基线日期：2026-08-21 ·
+> 状态：**Phase 0-1 完成 + Phase 2 协议层达成（2026-08-21/22 证据闭环）** · 基线日期：2026-08-21 ·
 > 范围：产品分析、交互模型、运行时协议、分阶段实施与验收。
-> Phase 0（协议地基）已实现：`pbatch/tui_protocol.py`（T1）、`pbatch/tui_runtime.py` +
-> `pbatch/tui_adapter_legacy.py` + `pbatch/tui_events.py`（T2）、TUI 接线与
-> handle-scoped cancel（T3）；Phase 1 核心：Codex Structured Exec Adapter
-> （`pbatch/tui_adapter_codex.py`，T4）、config session-led argv 与 adapter
-> resume/fork（T5）、headless thread 捕获/映射与 `--session-mode shared` 跨任务
-> codex 会话延续（T6，端到端验证：第二轮真实恢复第一轮记忆）。
-> 交付物见 `docs/tui-phase0/`；`make test` 1754 + 53 eval + quality --strict 全绿。
-> 未完：Phase 1 的 TUI session picker/Inspector 视图与 Phase 2（Codex App Server、
-> typed approval、/review）为后续批次。
+> Phase 0（协议地基）已实现（T1-T3）；Phase 1 完成 Structured Exec Adapter（T4）、
+> session 延续（T5/T6）、TUI 结构化时间线（T7/T7.5）；Phase 2 协议层（T8）：
+> Codex App Server 双向 JSON-RPC Adapter（`pbatch/tui_adapter_appserver.py` + support），
+> 含 initialize 握手、thread/turn/steer/interrupt、审批 request/decision 生命周期
+> （TTL/断线 fail closed）、通知→RuntimeEvent 映射与 FakeDaemon 契约测试。
+> 交付物见 `docs/tui-phase0/`；`make test` 1779 + 53 eval + quality --strict 全绿。
+> 待办：TUI 层接入 AppServer（typed approval 弹窗/sandbox 常驻显示）、真实 daemon
+> 落地集成测试（本环境 daemon 组件缺失，协议层以官方 schema fixture 固定契约）、/review。
 
 ## 1. 结论
 

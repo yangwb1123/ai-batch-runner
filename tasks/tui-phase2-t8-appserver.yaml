@@ -1,0 +1,110 @@
+# Phase 2 (T8) — Codex App Server Adapter：双向 JSON-RPC 协议层（§9.4）
+# 传输层抽象 + 官方 schema 驱动的请求/通知/审批映射；daemon 不可用时显式 fail closed。
+tasks:
+  - prompt: |
+      Phase 2 第一步：实现 Codex App Server 的双向协议层（docs/CODEX_CLI_TUI_DESIGN.md
+      §9.4）。当前环境 `codex app-server daemon` 组件缺失（真实双向控制在本地不可用）——
+      因此本任务实现协议层并以 FakeDaemon 契约测试为证据；真实 daemon 可用性由运行时
+      检测并显式降级（§12 Phase 2 完成标准：不伪装富能力）。
+
+      新增 pbatch/tui_adapter_appserver.py（≤500 行，超了拆 support 模块）与
+      tests/test_tui_adapter_appserver.py；不改其他文件（tui_runtime/tui_protocol 只读）。
+
+      ## 协议事实（codex-cli 0.149.0 官方 schema，`codex app-server generate-json-schema`
+      可复现，/tmp/codex-proto 已生成；传输形态：daemon Unix socket + `codex app-server
+      proxy` stdio 代理）
+      JSON-RPC envelope：
+        request   {"id": RequestId(str|int), "method": str, "params": {...}}
+        response  {"id": ..., "result": {...}} | {"id": ..., "error": {"code","message"}}
+        notify    {"method": str, "params": {...}}（无 id）
+      Client→Server 关键方法：initialize、thread/start、thread/resume、thread/fork、
+        thread/archive、thread/list、turn/start、turn/steer、turn/interrupt、review/start
+      Server→Client 通知（节选）：thread/started、thread/status/changed、turn/started、
+        turn/completed、item/started、item/completed、item/agentMessage/delta、
+        item/commandExecution/outputDelta、item/fileChange/patchUpdated、
+        thread/tokenUsage/updated、warning、serverRequest/resolved
+      Server→Client 请求（审批类，均为 server request，client 以 JSON-RPC response 应答，
+        应答 result 携带决策）：execCommandApproval、fileChangeApproval、
+        permissionsRequestApproval、applyPatchApproval、commandExecutionRequestApproval、
+        item/commandExecution/requestApproval、item/fileChange/requestApproval
+
+      ## 实现要求
+      1. 传输抽象：Transport Protocol（send_line/recv_line/close，行分隔 JSON）；
+         DefaultTransport spawn `codex app-server proxy [--sock SOCK]` 子进程
+         （构造参数 daemon_socket: Optional[str]；stdout/stderr=PIPE、stdin=DEVNULL、
+         start_new_session=True，进程组可杀）；测试注入 FakeDaemonTransport（管道/
+         socketpair）。spawn 失败或 proxy 立即退出 → initialize 抛结构化
+         RuntimeError("codex app-server unavailable: ...")（fail closed）。
+      2. initialize(request)：发送 initialize（params 含 client name/version 与
+         protocolVersion 协商字段）→ 记录 server info（server version、schema version、
+         capabilities 原文）；应答异常（error/超时 5s/EOF）→ RuntimeError。
+         初始化成功后提供 runtime_info()：RuntimeInfo with capabilities =
+         structured_events/message_stream/interrupt/usage/session_resume/session_fork/
+         turn_steer/typed_approvals 全 True、review/subagents/images/
+         instruction_sources=True 仅当 initialize 应答声明（缺省 False）；
+         未初始化时 _runtime_info() 返回全 False（能力真实可见规则 §6.2）。
+      3. 会话：start_session→thread/start（params 含 cwd 或 workspace）；resume_session→
+         thread/resume（provider_session_id）；fork_session→thread/fork；
+         list_sessions→thread/list（结果摘要：id/name/status/updated）；返回 RuntimeSession
+         （session_id=pi-batch 生成，provider_session_id=codex thread id）。
+      4. 回合：start_turn(request)→turn/start（params 含 prompt 与 thread id）→
+         TurnHandle；steer_turn→turn/steer；interrupt_turn→turn/interrupt
+         （handle 校验：非当前 handle → 拒绝不发送）。review/start 等未实现方法 →
+         tui_runtime.UnsupportedOperation（typed unsupported）。
+      5. 接收循环：后台线程逐行解析——notification 按映射发 RuntimeEvent：
+         thread/started→session.created（payload: provider_session_id）；
+         turn/started→turn.queued+turn.started；turn/completed→turn.completed
+         （payload 含 usage 摘要）；item/started|completed 按 item type：
+         agentMessage→message.started|completed、commandExecution→command.started|
+         completed（payload: command/exit_code/有界 aggregated_output）、
+         fileChange→file.changed（changes 有界）；item/agentMessage/delta→
+         message.delta；item/commandExecution/outputDelta→command.output（有界）；
+         thread/tokenUsage/updated→usage.updated；warning→runtime.warning；
+         serverRequest/resolved→approval.resolved；未知通知 → runtime.unknown_item
+         （fail open）。seq 单调、kind 白名单、payload 有界（≤64KiB 截断带标记）——
+         全部复用 tui_protocol 纪律。
+      6. server request（审批）：收到后记录 ApprovalEntry(request_id, method/params
+         摘要, received_at) 并发出 approval.requested 事件（payload: request_id、
+         审批类型、目标摘要）；resolve_approval(decision)：
+         - decision.request_id 必须是 pending 中且未过期（TTL 默认 120s，过期即拒绝
+           返回 False）；匹配后构造 JSON-RPC response {id, result: 决策 payload} 发送，
+           发出 approval.resolved 事件，从 pending 移除；
+         - 未知/重复/过期 request id → 不发送、返回 False（§8.4 安全不变量 2/3）；
+         - decision 与请求不匹配（类型不符）→ False。
+      7. 断线与清理：transport EOF/异常 → 未决 pending 全部标记 invalidated（事件
+         approval.expired 或 runtime.error payload 注明"connection lost, approval
+         invalidated"——绝不默认放行）；已确认终态的 turn 不被回改；events() 流发
+         runtime.error 后结束（StopIteration 语义）；close() 幂等（kill 传输进程组、
+         清 pending、标记关闭）。
+      8. 事件队列有界（默认 256；满丢最旧 runtime.warning，正文/状态事件不丢）。
+      9. 模块零第三方依赖；文件结构干净（import 全在顶部）；≤500 行（超则拆
+         tui_appserver_support.py 并说明）。
+
+      ## 测试（tests/test_tui_adapter_appserver.py，FakeDaemon 风格，纯本地无网络）
+      - FakeDaemon：双向管道 + 线程内 JSON-RPC 循环，按驱动脚本应答（scripts 队列：
+        expect method → respond result / push notification / push server request）；
+        支持主动断线（close pipes）。
+      - 用例：
+        a) initialize 握手：断言请求 method=initialize、应答后 capabilities 全 True
+           （review 按应答）；未初始化时 runtime_info 全 False；
+        b) start_session→thread/start 与 turn/start 的请求形状；steer/interrupt 发送
+           turn/steer、turn/interrupt 且非当前 handle 拒绝；
+        c) 通知映射：turn/started→queued+started、item agentMessage delta/completed、
+           commandExecution completed（exit_code/有界输出）、tokenUsage→usage.updated；
+        d) 审批闭环：daemon 推 execCommandApproval server request → adapter 发
+           approval.requested；resolve_approval 决策 → daemon 收到 JSON-RPC response
+           含 id/result；未知 id 决策返回 False 且 daemon 未收到响应；
+        e) 断线：daemon 关管道 → pending 审批 invalidated（不 send 响应、事件
+           approval.expired）、events() 出现 runtime.error 后结束；
+        f) 终态单一性：一次 turn 只产生一个 turn.completed；
+        g) 不支持方法（review/start）→ UnsupportedOperation；
+        h) 未知通知 → runtime.unknown_item 不崩溃。
+      - 门禁：python -m pytest tests/test_tui_adapter_appserver.py
+        tests/test_tui_adapter_codex.py tests/test_tui_protocol.py
+        tests/test_tui_runtime.py tests/test_tui_events.py tests/test_tui.py -q 全绿；
+        python quality.py --strict . 不新增违规；python pi-batch.py eval 不回归。
+      完成后结论写入 docs/tui-phase0/t8-appserver.md：传输模型、通知/请求映射表、
+      审批生命周期（含 TTL/断线规则）、capabilities 协商规则、真实 daemon 接入
+      所需的后续步骤（socket 发现/版本差异落地测试）。
+    output: docs/tui-phase0/t8-appserver.md
+    validate: pyquality
