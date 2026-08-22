@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import os
 import shlex
-from typing import Optional
+from typing import Optional, Sequence
 
 from . import config
 
@@ -29,12 +29,15 @@ def ui_scan_dir() -> Optional[str]:
     return v.strip() if isinstance(v, str) and v.strip() else None
 
 
-def expand_cmd(cmd: str, output, cwd: str, tool_root: str = config.TOOL_ROOT) -> str:
+def expand_cmd(cmd: str, output, cwd: str, tool_root: str = config.TOOL_ROOT,
+               files: Optional[Sequence[str]] = None) -> str:
     """验证器命令占位符展开（唯一入口，runner/repo_gates/cli_batch 共用）。
 
     - {ui_scan_dir}: None → "{cwd}/src"（默认，向后兼容）；相对值 →
       "{cwd}/<值>"（shlex.quote）；绝对路径 → 原样 quote。
     - {output}:      output 为 None 时保留字面量不动（cli_batch 现状语义）。
+    - {files}:       files 为 None 时保留字面量不动；否则空格连接每个
+      shlex.quote 后的路径（review-fix --validate 的改动文件列表）。
     - {cwd}/{tool_root}: 与现状一致。
     展开顺序：{ui_scan_dir} 先于 {cwd}（默认展开串自身含 {cwd} 占位符）。
     """
@@ -50,6 +53,8 @@ def expand_cmd(cmd: str, output, cwd: str, tool_root: str = config.TOOL_ROOT) ->
     out = cmd
     if output is not None:
         out = out.replace("{output}", shlex.quote(str(output)))
+    if files is not None:
+        out = out.replace("{files}", " ".join(shlex.quote(f) for f in files))
     out = out.replace("{cwd}", shlex.quote(cwd)).replace("{tool_root}", shlex.quote(tool_root))
     if "{ui_scan_dir}" in out:  # 防御：任何遗留占位符都不该到达 shell
         config.log.error("expand_cmd: unresolved {ui_scan_dir} in %r", cmd)

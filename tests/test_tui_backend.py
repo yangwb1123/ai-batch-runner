@@ -26,18 +26,30 @@ class FakeProc:
 
 
 class FakeStructuredAdapter:
-    def __init__(self, proc):
+    def __init__(self, proc, provider_session_id=""):
         self.proc = proc
         self.started = threading.Event()
         self.interrupt_calls = []
         self.closed = False
+        self.resume_requests = []
+        self.session_calls = 0
+        self._provider_session_id = provider_session_id
 
     def initialize(self, request):
         self.initialize_request = request
 
     def start_session(self, request):
         self.session_request = request
+        self.session_calls += 1
         return SimpleNamespace(session_id=request["session_id"])
+
+    def resume_session(self, request):
+        self.resume_requests.append(request)
+        self._provider_session_id = request["provider_session_id"]
+        return SimpleNamespace(session_id="resumed")
+
+    def session(self):
+        return SimpleNamespace(provider_session_id=self._provider_session_id)
 
     def start_turn(self, request):
         self.turn_request = request
@@ -327,6 +339,62 @@ def test_structured_turn_projects_typed_events_and_returns_success(tmp_path):
     assert usages[0]["total_tokens"] == 14
     assert backend.snapshot()["status"] == "succeeded"
     assert not (tmp_path / ".pi-batch.lock").exists()
+
+
+def test_structured_turn_resumes_previous_provider_thread(tmp_path):
+    """Multi-turn chats carry context: turn 1 captures the provider
+    thread id on the backend; turn 2 resumes it (T5/T6 headless semantics
+    wired into the TUI structured path)."""
+    def turn_events():
+        return [
+            _runtime_event("message.delta", text="answer"),
+            _runtime_event("turn.completed", elapsed_ms=5),
+        ]
+
+    adapters = []
+    backend = TUIBackend(cwd=str(tmp_path), agent="codex", memory_mode="off",
+                         session_id="multi-turn")
+
+    def factory():
+        adapter = FakeStructuredAdapter(FakeProc(turn_events()),
+                                        provider_session_id="thread-1")
+        adapters.append(adapter)
+        return adapter
+
+    first = backend.run_turn_structured("first turn", adapter_factory=factory)
+    assert first.success
+    assert backend.provider_thread_id == "thread-1"
+    assert adapters[0].session_calls == 1 and not adapters[0].resume_requests
+
+    second = backend.run_turn_structured("second turn", adapter_factory=factory)
+    assert second.success
+    assert adapters[1].resume_requests == [{
+        "provider_session_id": "thread-1", "workspace_id": str(tmp_path),
+    }]
+    assert adapters[1].session_calls == 0
+
+
+def test_structured_resume_failure_falls_back_to_fresh_session(tmp_path):
+    backend = TUIBackend(cwd=str(tmp_path), agent="codex", memory_mode="off",
+                         session_id="resume-fail")
+    backend.provider_thread_id = "thread-stale"
+    adapters = []
+
+    class BrokenResumeAdapter(FakeStructuredAdapter):
+        def resume_session(self, request):
+            raise RuntimeError("thread gone")
+
+    def factory():
+        adapter = BrokenResumeAdapter(
+            FakeProc([_runtime_event(
+                "message.delta", text="fresh"),
+                _runtime_event("turn.completed", elapsed_ms=3)]))
+        adapters.append(adapter)
+        return adapter
+
+    result = backend.run_turn_structured("retry", adapter_factory=factory)
+    assert result.success
+    assert adapters[0].session_calls == 1  # fell back to a fresh session
 
 
 def test_structured_cancel_interrupts_current_adapter_handle(tmp_path):

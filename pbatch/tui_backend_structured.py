@@ -137,10 +137,7 @@ def _invoke_structured(
     consumer = None
     try:
         adapter.initialize({"workspace_id": backend.cwd})
-        adapter.start_session({
-            "session_id": backend.session_id, "workspace_id": backend.cwd,
-            "name": backend.session_name,
-        })
+        _adopt_provider_session(adapter, backend, notify)
         if is_cancelled():
             return _cancelled_result(task)
         handle = adapter.start_turn({
@@ -163,6 +160,47 @@ def _invoke_structured(
             notify("stderr", f"structured adapter close failed: {exc}")
         if consumer is not None:
             consumer.join(timeout=1.0)
+
+
+def _adopt_provider_session(adapter: Any, backend: Any, notify: Notify) -> None:
+    """Resume the previous turn's provider thread when the adapter supports
+    it (CodexExecAdapter persists its thread id in ``session()``); otherwise
+    start a fresh session. The captured thread id is stored back on the
+    backend so the NEXT turn can resume the same conversation — this is
+    what makes multi-turn UI chats carry context (T5/T6 headless semantics,
+    now wired into the TUI path)."""
+    thread_id = str(getattr(backend, "provider_thread_id", "") or "").strip()
+    if thread_id and hasattr(adapter, "resume_session"):
+        try:
+            adapter.resume_session({
+                "provider_session_id": thread_id,
+                "workspace_id": backend.cwd,
+            })
+            notify("status", f"resuming provider thread {thread_id[:12]}…")
+            return
+        except Exception as exc:
+            notify("stderr", f"provider resume failed ({exc}); starting fresh")
+    adapter.start_session({
+        "session_id": backend.session_id, "workspace_id": backend.cwd,
+        "name": backend.session_name,
+    })
+    if hasattr(adapter, "session") and callable(adapter.session):
+        _store_provider_thread(adapter, backend)
+
+
+def _store_provider_thread(adapter: Any, backend: Any) -> None:
+    """Persist the provider thread id observed during this turn so later
+    turns can resume it. Best effort: any failure only logs."""
+    try:
+        session = adapter.session()
+        thread_id = str(getattr(session, "provider_session_id", "") or "")
+        if thread_id:
+            setattr(backend, "provider_thread_id", thread_id)
+    except Exception as exc:
+        try:
+            config.log.warning("provider thread capture skipped: %s", exc)
+        except Exception:
+            pass
 
 
 def _new_adapter(factory: Optional[AdapterFactory], cwd: str) -> Any:
