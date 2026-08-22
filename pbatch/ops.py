@@ -80,6 +80,14 @@ def runs(data_dir: str, agent: str = "", limit: int = 30) -> list[dict]:
 
 # ── log ───────────────────────────────────────────────────────────────
 
+def _recent_log_lines(cwd: str, tail: int = 30) -> tuple[list, str]:
+    target = _default_log_file(cwd) or ""
+    if not target:
+        return [], "no --log-file log found under " + str(Path(cwd) / "logs")
+    lines, error = log_tail(target, tail=tail)
+    return lines, error
+
+
 def _default_log_file(cwd: str) -> Optional[str]:
     logs_dir = Path(cwd) / "logs"
     if not logs_dir.is_dir():
@@ -119,21 +127,28 @@ def message_recent(data_dir: str, limit: int = 5) -> list[dict]:
 
 # ── report（HTML 监控页）──────────────────────────────────────────────
 
+def _runs_table(rows: list, esc, status_class: dict) -> str:
+    return "\n".join(
+        f"<tr class='{status_class.get(row['status'], '')}'><td>{esc(row['time'])}"
+        f"</td><td>{esc(row['agent'])}</td><td>{esc(row['status'])}</td>"
+        f"<td>#{row['attempt']}</td><td>{esc(row['task'])}</td>"
+        f"<td>{esc('; '.join(row['outputs']))}</td></tr>"
+        for row in rows) or "<tr><td colspan=6>no runs yet</td></tr>"
+
+
 def report_html(data_dir: str, cwd: str) -> str:
     summary = overview(data_dir)
     rows = runs(data_dir, limit=50)
+    log_lines, _log_error = _recent_log_lines(cwd, tail=30)
     status_class = {"succeeded": "ok", "failed": "bad", "rejected": "warn",
                     "cancelled": "warn"}
 
     def esc(value: object) -> str:
         return html_mod.escape(str(value), quote=True)
 
-    rows_html = "\n".join(
-        f"<tr class='{status_class.get(row['status'], '')}'><td>{esc(row['time'])}"
-        f"</td><td>{esc(row['agent'])}</td><td>{esc(row['status'])}</td>"
-        f"<td>#{row['attempt']}</td><td>{esc(row['task'])}</td>"
-        f"<td>{esc('; '.join(row['outputs']))}</td></tr>"
-        for row in rows) or "<tr><td colspan=6>no runs yet</td></tr>"
+    rows_html = _runs_table(rows, esc, status_class)
+    log_escaped = esc("\n".join(log_lines) or
+                       _log_error or "(no --log-file log found)")
     statuses = " ".join(
         f"<span class='chip {status_class.get(k, '')}'>{esc(k)}={v}</span>"
         for k, v in summary["status_counts"].items()) or "—"
@@ -153,6 +168,8 @@ td,th{{border:1px solid #ddd;padding:.3rem .5rem;text-align:left;
 overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:340px}}
 tr.ok td:first-child{{}} tr.bad{{background:#fff3f3}} tr.warn{{background:#fff8e8}}
 .meta{{color:#666;font-size:.85rem}}
+pre.log{{background:#f6f6f6;padding:.5rem;overflow-x:auto;font-size:.75rem;
+max-height:24em}}
 </style></head><body>
 <h1>pi-batch · 运营控制台 · {esc(Path(cwd).name)}</h1>
 <p class="meta">生成于 {esc(summary['generated_at'])} · 共 {summary['total']} 条 run
@@ -162,6 +179,8 @@ tr.ok td:first-child{{}} tr.bad{{background:#fff3f3}} tr.warn{{background:#fff8e
 <h2>最近 Runs（含重试 attempt）</h2>
 <table><thead><tr><th>时间</th><th>agent</th><th>状态</th><th>#</th><th>任务</th>
 <th>产物</th></tr></thead><tbody>{rows_html}</tbody></table>
+<h2>运营日志（尾部，ops log / api/log 可过滤）</h2>
+<pre class="log">{log_escaped}</pre>
 <p class="meta">刷新本页即可看到最新状态（静态快照；实时推送为后续路线）。</p>
 </body></html>"""
 

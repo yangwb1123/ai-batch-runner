@@ -126,5 +126,9 @@ def test_ops_report_html_embeds_ledger_summary(tmp_path):
         '{"ts":"2026-08-22T09:00:00Z","agent":"pi","status":"succeeded",'
         '"attempt":1,"task_brief":"t","outputs":[],"elapsed_ms":1,'
         '"exit_code":0}\n', encoding="utf-8")
+    (tmp_path / "logs").mkdir(exist_ok=True)
+    (tmp_path / "logs" / "run.log").write_text(
+        "line-one\nPROVIDER BREAKER: cooldown\nline-three\n", encoding="utf-8")
     page = report_html(str(data_dir), str(tmp_path))
     assert "pi-batch" in page and "succeeded" in page and "运营控制台" in page
+    assert "运营日志" in page and "PROVIDER BREAKER" in page
