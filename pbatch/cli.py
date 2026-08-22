@@ -381,6 +381,7 @@ _SUBCOMMANDS: dict[str, str] = {
     "doctor": "product_cli:doctor_main",
     "capabilities": "capabilities:capabilities_main",
     "reflect": "reflect:reflect_main",
+    "review": "review:review_main",
     "adr": "adr:adr_main",
     "impact": "impact:impact_main",
     "project": "project_memory:project_main",

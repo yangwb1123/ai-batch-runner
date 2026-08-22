@@ -1,0 +1,67 @@
+# Phase 2 (T9) — headless `pi-batch review`：Codex 只读审查子命令
+# 把 `codex exec review --json` 的结构化回合变成项目内一等公民；finding 对接 gate-fix schema。
+tasks:
+  - prompt: |
+      新增 headless 只读审查子命令 `pi-batch review`（设计文档 §8.5/§13 的 run_kind=review
+      语义），驱动 codex 官方 review 命令并输出结构化 finding 报告。允许修改：
+      pbatch/cli.py（仅 _SUBCOMMANDS 注册表加一行）、tests/（新增 test_review.py）；
+      新增 pbatch/review.py（≤500 行，超则拆 support 模块）。其他文件不动。
+
+      ## 实测事实（codex-cli 0.149.0，已人工验证）
+      `codex exec review <scope> [PROMPT]` 支持：
+      --uncommitted（staged/unstaged/untracked）、--base BRANCH、--commit SHA；
+      --json 时 stdout 是 JSONL 事件流（turn/started、item.started|completed 等，
+      含 type=agent_message 的 text 与 type=file_change 的 changes）；scope 与
+      [PROMPT] 在 clap 中互斥（review 子命令严格模式）；stderr 是运营横幅。
+      review 是只读回合（不产生 file_change），但协议不承诺——防御性检测。
+
+      ## 实现要求
+      1. pbatch/review.py：
+         - review_main(argv) -> int，argparse：
+           --uncommitted / --base BRANCH / --commit SHA（互斥，多选 → 用法错误退出 2）；
+           --custom TEXT（自定义审查指令，与 scope 互斥同样校验——若 codex 支持组合
+           则允许 scope+--custom 并存，由你按实测决定并在文档注明）；--json；
+           --output PATH（默认 docs/reviews/review-<UTC时间戳>.md；--json 时同名 .json）；
+           --timeout（默认 600）；--cwd（默认 os.getcwd()）。
+         - 运行器：spawn `codex exec review --json <scope>`（argv 无 shell 拼接；
+           stdin=DEVNULL、stdout/stderr=PIPE、start_new_session=True、进程组超时 SIGKILL）；
+           stdout 按行解析 JSONL：记录 turn/started/completed、item 类型计数、
+           agent_message 正文（有界拼接 ≤256KiB）、file_change 事件（改变 flagged_writes）。
+         - finding 提取：从全部 agent_message 正文中提取 ```json ... ``` 代码块（多个全取）
+           并解析；再扫描裸 JSON 数组兜底；元素必须含 severity+file（缺 → 该元素记
+           invalid 条目不崩溃）；severity 归一化（critical/high/medium/low/info，
+           未知 → 归一为 medium 并在 invalid 条款注明原值）；字段对齐 gate-fix 惯例：
+           severity/file/line/problem/evidence/fix_hint（line 可为空串）。
+         - 报告：md 默认（scope/时长/finding 分类计数/严重度分组表格 file:line …+证据
+           与修复建议/flagged_writes 告警/无 finding 声明）；--json 输出
+           {scope, codex_exit, elapsed_ms, findings: [{severity,file,line,problem,
+           evidence,fix_hint}], invalid_findings: [...], item_counts: {...},
+           flagged_writes: bool, summary, report_path}。
+         - 退出码：critical 或 high finding ≥1 → 1；codex 非零退出/超时/无结构化
+           findings → 2（附有界摘要）；flagged_writes → 3（只读契约被破坏，防御性）；
+           其余 → 0。
+         - 所有读取有界；路径只有 cwd 内写入；不修改任何仓库文件（连报告也是
+           用户显式 --output 才写，默认写 docs/reviews/ 并注明）。
+      2. pbatch/cli.py：_SUBCOMMANDS 增加 "review": "review:review_main"（仅此一行）。
+      3. tests/test_review.py（新增，风格与仓库一致，全部本地无 codex 依赖）：
+         - runner 注入：review_main 接受注入点（monkeypatch 或函数参数）替代 spawn——
+           用事件流 fixture（含 turn/started、两个 agent_message：一个内嵌 ```json
+           数组（3 个 finding：critical/high/low + 缺 evidence 字段）、一个正文无
+           json；file_change 出现在另一条 fixture）验证：
+           finding 解析/severity 归一化/缺字段容错/invalid 计数/flagged_writes；
+         - scope 互斥退出码 2；--json 输出文件结构断言；退出码映射
+           （critical/high→1、无 finding→2、flagged→3、干净→0）；
+         - 超时路径：注入挂起 runner → 进程组被杀、退出码 2；
+         - findings schema 与 gate-fix 字段名一致断言（字段子集相等）。
+      4. 门禁：python -m pytest tests/test_review.py tests/test_pi_batch.py
+         tests/test_entrypoints.py -q 全绿；python quality.py --strict . 不新增违规；
+         python pi-batch.py eval 不回归；python pi-batch.py completion bash 生成的
+         补全含 review（注册表驱动自动同步——若需要手工注册，按仓库已有机制处理并
+         说明）。
+      5. 真实 smoke（尽力而为，不阻塞任务）：若时间允许，跑一次 `pi-batch review
+         --commit <最近提交>`（timeout 300）验证端到端 shape；超时/失败把原始输出
+         摘要记入文档即可，不算任务失败。
+      完成后结论写入 docs/tui-phase0/t9-review.md：命令用法、finding 提取规则与
+      失败模式、退出码表、与 gate-fix/对抗审查的关系、真实 smoke 结果（若有）。
+    output: docs/tui-phase0/t9-review.md
+    validate: pyquality
