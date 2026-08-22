@@ -1,10 +1,4 @@
-"""Product terminal UI for interactive pi-batch sessions.
-
-The UI deliberately talks to the execution layer through one small backend
-adapter.  Importing this module is therefore safe for ``tui --help`` and for
-tests which inject a fake backend; the real :class:`TUIBackend` is imported
-only when the application mounts.
-"""
+"""Product terminal UI for interactive pi-batch sessions."""
 
 from __future__ import annotations
 
@@ -27,7 +21,7 @@ from textual.containers import Horizontal, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Input, Markdown, Static
 
-
+from .tui_timeline import TimelineLog
 _ANSI_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 _SLASH_HELP = """\
 Available commands:
@@ -55,7 +49,6 @@ Describe the work you want to run. Use `/help` for commands or **Ctrl+P** for
 the command palette.
 """
 
-
 @dataclass
 class TuiOptions:
     """Backend options supplied by ``tui_main`` and changed by slash commands."""
@@ -79,7 +72,6 @@ class TuiOptions:
             "session_name": self.session_name,
         }
 
-
 @dataclass(frozen=True)
 class SlashInvocation:
     """A parsed slash command. ``error`` is set for malformed quoting."""
@@ -88,12 +80,10 @@ class SlashInvocation:
     args: tuple[str, ...] = ()
     error: str = ""
 
-
 @dataclass
 class TranscriptEntry:
     role: str
     text: str
-
 
 def parse_slash_command(text: str) -> Optional[SlashInvocation]:
     """Parse a slash command without ever treating malformed input as a prompt."""
@@ -108,17 +98,14 @@ def parse_slash_command(text: str) -> Optional[SlashInvocation]:
         return SlashInvocation("help")
     return SlashInvocation(tokens[0].lower(), tuple(tokens[1:]))
 
-
 def _default_backend_factory(emit: Callable[[str, str], None], **kwargs):
     """Load the execution backend only when an interactive app actually mounts."""
     from .tui_backend import TUIBackend
 
     return TUIBackend(emit, **kwargs)
 
-
 class PiBatchTUI(App[None]):
     """Textual application presenting one interactive pi-batch session."""
-
     TITLE = "pi-batch"
     SUB_TITLE = "agent orchestration"
     COMMAND_PALETTE_BINDING = "ctrl+p"
@@ -127,6 +114,7 @@ class PiBatchTUI(App[None]):
         Binding("ctrl+n", "new_session", "New", priority=True),
         Binding("ctrl+l", "clear", "Clear", priority=True),
         Binding("ctrl+g", "show_diff", "Changes", priority=True),
+        Binding("ctrl+t", "toggle_timeline", "Timeline", priority=True),
         Binding("ctrl+c", "cancel", "Cancel", priority=True),
         Binding("ctrl+q", "quit", "Quit", priority=True),
     ]
@@ -149,6 +137,7 @@ class PiBatchTUI(App[None]):
         width: 100%;
         padding-bottom: 1;
     }
+    #timeline { display: none; width: 100%; padding: 0 1 1 1; border-top: solid $accent; }
     #status-panel {
         width: 34;
         min-width: 24;
@@ -184,6 +173,10 @@ class PiBatchTUI(App[None]):
         self._adapter = None
         self._adapter_session_id = ""
         self._turn_handle = None
+        self._structured_backend = False
+        self._timeline = TimelineLog()
+        self._timeline_mode, self._timeline_summary = "summary", ""
+        self._narrow = False
         self._entries: list[TranscriptEntry] = []
         self._assistant_index: Optional[int] = None
         self._error_index: Optional[int] = None
@@ -202,6 +195,7 @@ class PiBatchTUI(App[None]):
         with Horizontal(id="workspace"):
             with VerticalScroll(id="conversation-scroll"):
                 yield Markdown(_WELCOME, id="conversation", open_links=False)
+                yield Markdown("", id="timeline", open_links=False)
             yield Static("Starting…", id="status-panel", markup=False)
         yield Input(placeholder="Ask pi-batch…", id="composer")
         yield Footer()
@@ -225,13 +219,17 @@ class PiBatchTUI(App[None]):
     def on_resize(self, event) -> None:
         """Keep the composer usable on the small terminals common over SSH."""
         try:
-            self.query_one("#status-panel", Static).display = event.size.width >= 72
+            self._narrow = event.size.width < 72
+            self.query_one("#status-panel", Static).display = not self._narrow
+            if self._timeline.entries:
+                self._refresh_timeline()
         except Exception:
             pass  # resize may arrive while the screen is mounting or closing
 
     def _resolve_backend(self):
         candidate = self._backend
-        if candidate is not None and hasattr(candidate, "run_turn"):
+        if candidate is not None and (hasattr(candidate, "run_turn") or
+                                      hasattr(candidate, "run_turn_structured")):
             setter = getattr(candidate, "set_emit", None)
             if callable(setter):
                 setter(self._emit_from_backend)
@@ -241,9 +239,20 @@ class PiBatchTUI(App[None]):
 
     def _attach_adapter(self) -> None:
         """Prefer typed runtime events when callback ownership is replaceable."""
+        agent = self.options.agent or getattr(self._backend, "agent", "")
+        if (_is_codex_binary(agent) and
+                callable(getattr(self._backend, "run_turn_structured", None))):
+            self._structured_backend = True
+            setter = getattr(self._backend, "set_emit", None)
+            if callable(setter):
+                setter(self._emit_from_backend)
+            return
+        if not callable(getattr(self._backend, "set_emit", None)):
+            self._backend.emit = self._emit_from_backend
+            return
         adapter = None
         try:
-            from .tui_runtime import LegacyAdapter
+            from .tui_adapter_legacy import LegacyAdapter
 
             adapter = LegacyAdapter(self._backend)
             session = adapter._adopt_session({"name": self.options.session_name})
@@ -307,6 +316,7 @@ class PiBatchTUI(App[None]):
             "diff": self._slash_diff,
             "refresh": self._slash_refresh,
             "doctor": self._slash_doctor,
+            "timeline": self._slash_timeline,
             "quit": self._slash_quit,
         }
         handler = handlers.get(command.name)
@@ -330,6 +340,9 @@ class PiBatchTUI(App[None]):
         self._error_index = None
         self._turn_stdout_seen = False
         self._turn_stderr_seen = False
+        self._timeline = TimelineLog()
+        self._timeline_mode, self._timeline_summary = "summary", ""
+        self._refresh_timeline()
         self._set_busy(True)
         self._render_conversation()
         self._worker = self.run_worker(
@@ -370,7 +383,9 @@ class PiBatchTUI(App[None]):
 
     def _run_backend_turn(self, prompt: str) -> tuple[Any, Optional[Exception]]:
         try:
-            return self._backend.run_turn(prompt), None
+            method = (self._backend.run_turn_structured if self._structured_backend
+                      else self._backend.run_turn)
+            return method(prompt), None
         except Exception as exc:  # backend errors are rendered, never crash the UI
             return None, exc
 
@@ -433,6 +448,13 @@ class PiBatchTUI(App[None]):
     def _apply_backend_emit(self, kind: str, text: str) -> None:
         clean = _clean_text(text)
         normalized = str(kind or "status").lower()
+        timeline_kind = normalized in {"command", "command-output", "file", "usage",
+                                       "stdout", "stderr", "status"}
+        if self._structured_backend and timeline_kind:
+            self._timeline.consume(normalized, clean)
+            self._refresh_timeline()
+        if normalized in {"command", "command-output", "file", "usage"}:
+            return
         if normalized == "stdout":
             self._turn_stdout_seen = self._turn_stdout_seen or bool(clean)
             self._append_active("assistant", clean)
@@ -468,6 +490,8 @@ class PiBatchTUI(App[None]):
             if not success and reason:
                 self._append_active("error", reason)
             self._last_status = "Ready" if success else "Failed"
+        if self._structured_backend and self._timeline.entries:
+            self._timeline_summary = self._timeline.to_summary()
         self._append_workspace_change()
         self._assistant_index = None
         self._error_index = None
@@ -505,7 +529,22 @@ class PiBatchTUI(App[None]):
                 lines.append(f"{key[:9]:<9} {_one_line(str(value))[:20]}")
         if self._last_status:
             lines.extend(["", _one_line(self._last_status)[:120]])
+        if self._timeline_summary:
+            lines.append(_one_line(self._timeline_summary)[:120])
         self.query_one("#status-panel", Static).update("\n".join(lines))
+
+    def _refresh_timeline(self) -> None:
+        widget = self.query_one("#timeline", Markdown)
+        visible = bool(self._timeline.entries and not self._narrow and
+                       self._timeline_mode != "hidden")
+        if widget.display != visible:
+            widget.display = visible
+        if not visible:
+            return
+        width = max(20, self.size.width - 42)
+        lines = (self._timeline.render_lines(width) if self._timeline_mode == "expanded"
+                 else [self._timeline.render_summary(width)])
+        widget.update("### Timeline\n\n" + "\n".join(f"    {line}" for line in lines))
 
     def _option_status_lines(self, snapshot: Optional[dict] = None) -> list[str]:
         cwd = self.options.cwd or os.getcwd()
@@ -646,6 +685,10 @@ class PiBatchTUI(App[None]):
         if self._require_no_args("quit", args):
             self.action_quit()
 
+    def _slash_timeline(self, args: tuple[str, ...]) -> None:
+        if self._require_no_args("timeline", args):
+            self.action_toggle_timeline()
+
     def _show_or_set(self, name: str, args: tuple[str, ...]) -> None:
         if len(args) > 1:
             self._usage(name, "[value]")
@@ -702,6 +745,11 @@ class PiBatchTUI(App[None]):
                         severity="warning")
             return
         self._slash_diff(())
+
+    def action_toggle_timeline(self) -> None:
+        self._timeline_mode = ("hidden" if self._timeline_mode == "expanded"
+                               else "expanded")
+        self._refresh_timeline()
 
     def action_cancel(self) -> None:
         if not self._busy or self._backend is None:
@@ -809,26 +857,25 @@ class PiBatchTUI(App[None]):
             f"{head}{suffix} Use `/diff` to review.")
 
 
-# A descriptive alias for embedding code which doesn't want product branding.
 TUIApplication = PiBatchTUI
-
-
 def _clean_text(value: Any) -> str:
     return _ANSI_ESCAPE.sub("", str(value or "")).replace("\r\n", "\n").replace("\r", "\n")
-
-
 def _one_line(value: str) -> str:
     return " ".join(value.split())
-
 
 def _short_path(value: str, width: int) -> str:
     path = str(value)
     return path if len(path) <= width else "…" + path[-(width - 1):]
 
+def _is_codex_binary(value: Any) -> bool:
+    try:
+        binary = shlex.split(str(value or ""))[0]
+    except (IndexError, ValueError):
+        binary = str(value or "")
+    return "codex" in Path(binary).name.lower()
 
 def _inline_label(value: Any) -> str:
     return _one_line(_clean_text(value)).replace("`", "'")
-
 
 def _render_entry(entry: TranscriptEntry, busy: bool) -> str:
     labels = {"user": "You", "assistant": "Assistant", "system": "System", "error": "Error"}
@@ -838,7 +885,6 @@ def _render_entry(entry: TranscriptEntry, busy: bool) -> str:
     if entry.role == "error":
         body = "\n".join(f"> {line}" for line in body.splitlines())
     return f"## {labels.get(entry.role, entry.role.title())}\n\n{body}"
-
 
 def _render_workspace_files(payload: dict[str, Any]) -> str:
     error = _clean_text(payload.get("error", ""))
@@ -867,7 +913,6 @@ def _render_workspace_files(payload: dict[str, Any]) -> str:
         lines.extend(["", "_File list truncated at the display limit._"])
     return "\n".join(lines)
 
-
 def _render_workspace_diff(payload: dict[str, Any]) -> str:
     error = _clean_text(payload.get("error", ""))
     label = _inline_label(payload.get("path", "")) or "workspace"
@@ -881,7 +926,6 @@ def _render_workspace_diff(payload: dict[str, Any]) -> str:
         "truncated") else ""
     return f"## Diff · `{label}`\n\n{fence}diff\n{patch}\n{fence}{note}"
 
-
 def _result_fields(result: Any) -> tuple[bool, str, str, str]:
     if result is None:
         return True, "", "", ""
@@ -893,7 +937,6 @@ def _result_fields(result: Any) -> tuple[bool, str, str, str]:
     return (success, _clean_text(getter("stdout", "")),
             _clean_text(getter("stderr", "")), _clean_text(getter("reason", "")))
 
-
 def _snapshot_scalars(snapshot: dict[str, Any]) -> list[tuple[str, Any]]:
     values = []
     for key, value in snapshot.items():
@@ -902,7 +945,6 @@ def _snapshot_scalars(snapshot: dict[str, Any]) -> list[tuple[str, Any]]:
         if len(values) >= 16:
             break
     return values
-
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -918,7 +960,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--session-name", default="tui", help="stable session display name")
     return parser
 
-
 def _options_from_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> TuiOptions:
     if args.timeout < 0:
         parser.error("--timeout must be non-negative")
@@ -932,12 +973,10 @@ def _options_from_args(parser: argparse.ArgumentParser, args: argparse.Namespace
                       provider=args.provider, memory_mode=args.memory_mode,
                       timeout=args.timeout, session_name=args.session_name)
 
-
 def _interactive_terminal() -> bool:
     capable = os.environ.get("TERM", "").lower() != "dumb"
     return bool(capable and getattr(sys.stdin, "isatty", lambda: False)()
                 and getattr(sys.stdout, "isatty", lambda: False)())
-
 
 def tui_main(
     argv: Optional[list[str]] = None,

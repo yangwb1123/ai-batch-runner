@@ -1,0 +1,32 @@
+# T7.5 — 拆分 tui_backend.py（结构化模式移到独立模块），过 filesize 门禁
+tasks:
+  - prompt: |
+      pbatch/tui_backend.py 当前 664 行，超过仓库 filesize 门禁（500 行/文件，
+      engineering.yaml groups）34 行以上。这是你（codex）在 T7 中写的
+      run_turn_structured 结构化模式把它推过线的。请把「结构化运行模式」整块拆到
+      新文件 pbatch/tui_backend_structured.py，让 tui_backend.py ≤500 行。
+
+      允许修改：pbatch/tui_backend.py、tests/test_tui_backend.py；新增：
+      pbatch/tui_backend_structured.py。其他文件不动（含 tui.py 保持现状，
+      它 import 的符号不应因拆分而消失——若 tui.py import 了结构化相关符号，
+      从新模块 re-export 或让 tui.py 直接 import 新模块由你判断，但 tui.py 本身
+      不许改除非万不得已并在报告中说明）。
+
+      拆分原则：
+      1. 新模块职责单一：run_turn_structured 的完整实现（含 _execute_structured、
+         事件转发 helper、结构化 cancel/interrupt 协调、结构化结果收官），只依赖
+         tui_backend 暴露的公共状态（通过参数/回调传入 TUIBackend 实例），不产生
+         循环 import；
+      2. TUIBackend 保留：锁/会话/memory/workspace 治理与公共 API 不变；结构化
+         入口若留在 TUIBackend 上，则薄委托到新模块（方法体 ≤20 行）；
+      3. 行为零变化：tests/test_tui_backend.py 与 tests/test_tui.py 全部保持通过；
+      4. 行数目标：pbatch/tui_backend.py ≤500；新模块 ≤500；整体组织符合 quality.py
+         --strict。
+      门禁：python -m pytest tests/test_tui_backend.py tests/test_tui.py
+      tests/test_tui_timeline.py tests/test_tui_adapter_codex.py -q 全绿；
+      python quality.py --strict . 全绿；make check-filesize 通过（只允许现有
+      豁免清单，不得新增豁免项）。
+      完成后把结论写入 docs/tui-phase0/t75-backend-split.md：拆分前后行数对比、
+      符号归属表（哪个符号去了哪个文件）、tui.py 是否需要该动。
+    output: docs/tui-phase0/t75-backend-split.md
+    validate: pyquality

@@ -1,0 +1,88 @@
+# Phase 1 (T7) — TUI 结构化时间线：CodexExecAdapter 接入产品界面
+# 让 agent=codex 时 TUI 显示 command/file/usage 事件卡片（§8.1 Timeline 与 §8.6 折叠规则）。
+tasks:
+  - prompt: |
+      Phase 1 收官：把 CodexExecAdapter（T4 已建）接入交互 TUI。允许修改：
+      pbatch/tui.py、pbatch/tui_backend.py、pbatch/tui_adapter_codex.py（仅当发现
+      与下述用法不兼容的缺陷）、tests/test_tui.py、tests/test_tui_backend.py、
+      tests/test_tui_adapter_codex.py；**新增** pbatch/tui_timeline.py 与
+      tests/test_tui_timeline.py。其他文件不动。
+
+      ## 背景（现状）
+      - pbatch/tui.py（961 行）：_attach_adapter 在 turn 运行前把 self._backend 包成
+        LegacyAdapter（事件：message.delta/runtime.warning），_consume_adapter_turn 消费
+        流；fallback 路径直接 backend.run_turn；T3 已实现 handle-scoped cancel。
+      - pbatch/tui_backend.py（341 行）：TUIBackend 管理锁（acquire/release）、会话、memory、
+        workspace 前后快照；_notify(kind, text) 经 set_emit 回调把状态/输出桥到 UI。
+      - pbatch/tui_adapter_codex.py：CodexExecAdapter(cwd, *, spawn=...) 直接 spawn
+        `codex exec --json --approve-for-me <prompt>`，events() 是阻塞迭代器，产出
+        RuntimeEvent（command.started|output|completed、file.changed、usage.updated、
+        message.delta、turn.completed 等）。
+
+      ## A. TUIBackend 结构化运行模式（保留既有治理语义）
+      1. 新增 TUIBackend.run_turn_structured(prompt, *, adapter_factory=None) ->
+         TaskResult：
+         - 语义对齐 run_turn：turn 计数、_running/_status、锁（沿用现有 acquire_lock/
+           release_lock 路径）、_cancel_requested 检查、workspace 前后快照与 delta
+           （复用 _finish_turn 结构——抽取公共收官逻辑或复制最小集，不要破坏 run_turn）；
+         - adapter 构建：adapter_factory 注入点（测试用 FakeAdapter）；缺省
+           CodexExecAdapter(self.cwd)；
+         - adapter.start_turn 后：线程消费 adapter.events()，把事件转发到 _notify：
+           command.started/completed → kind "command"（payload 文本：命令摘要 + exit_code
+           或 elapsed）；command.output → kind "command-output"（有界 ≤2KiB/条）；
+           file.changed → kind "file"（changes path 列表摘要）；usage.updated / turn 尾部
+           usage → kind "usage"（tokens 摘要）；message.delta → kind "stdout"（沿用）；
+           runtime.warning → kind "stderr"（沿用）；
+         - 事件消费循环在 turn 终态（turn.completed/failed）或异常/取消时结束；cancel()
+           需能中断 structured 运行：cancel() 现有实现杀本 turn 进程组——CodexExecAdapter
+           的 interrupt_turn（进程组 SIGTERM）也要被调用：adapter 持有 handle（记录
+           self._structured_adapter/_structured_handle，cancel 时 adapter.interrupt_turn）；
+         - 返回结果与 run_turn 一致（TaskResult 成功/失败/取消语义，reason 兼容）。
+      2. cancel() 扩展：若 structured 运行中 → 调 adapter.interrupt_turn(handle) + 置取消
+         标志；行为与现有"只杀本 turn 进程组"一致（CodexExecAdapter interrupt 是进程组级）。
+      3. run_turn 路径完全不动（agent=pi 等非 codex 场景零变化）。
+
+      ## B. TUI Timeline 视图
+      4. 新增 pbatch/tui_timeline.py（≤400 行，零 Textual 依赖——纯数据/渲染逻辑，
+         Textual widget 在 tui.py 内组装）：
+         - TimelineEntry dataclass：kind(command/file/usage/message/status)、ts、
+           summary、detail（有界 str）、exit_code(Optional[int])、collapsed(bool)；
+         - TimelineLog：append(entry)、bounded（max_entries 默认 500，满时丢弃最旧
+           非运行中条目）、collapse_rules()（§8.6：成功 command → 单行折叠；
+           失败/退出码非 0 → 展开；usage 一行；file 列表一行）；
+         - render_lines(width) -> list[str]：条目文本行（ANSI 无依赖、纯文本；
+           每行 ≤ width，超长截断）；
+         - to_summary()：当前 turn 的结构化 completion 投影（§8.6：命令数/文件数/
+           用量/失败项）。
+      5. pbatch/tui.py：
+         - _attach_adapter：若 options.agent 解析后的二进制名含 "codex" 且 backend 有
+           run_turn_structured → 进入"结构化后端模式"（不包 LegacyAdapter；turn 走
+           backend.run_turn_structured）；否则现状（LegacyAdapter/fallback）不变；
+         - _emit_from_backend 处理新 kind："command"/"command-output"/"file"/"usage" →
+           追加 TimelineLog（经 call_from_thread 的既有桥）；
+         - 新增 Timeline 渲染：状态栏/正文之外的临时区域——不新增复杂布局：在
+           conversation 下方用 Markdown 块展示 render_lines()（折叠为一行摘要 + `/timeline`
+           展开/隐藏切换；Ctrl+T 绑定 toggle）；turn 结束刷新 to_summary 进状态栏尾部；
+         - composer 提示与命令面板文案不动；窄屏降级：宽度 <72 时 timeline 默认隐藏
+           （与现有 status-panel 规则一致）。
+      6. 无头测试：
+         - tests/test_tui_timeline.py：TimelineLog 追加/有界/折叠规则/render_lines 超长
+           截断/to_summary；
+         - tests/test_tui_backend.py：fake adapter 注入（FakeStructuredAdapter：spawn
+           FakeProc 产出两三个 command/file/usage 事件 + turn.completed）→
+           run_turn_structured 返回成功、_notify 收到对应 kinds、cancel 调用
+           adapter.interrupt_turn；
+         - tests/test_tui.py：既有 10 用例保持全绿；新增：agent=codex 的 TUI 构造走
+           structured 路径的 smoke（mock backend 提供 run_turn_structured）；
+         - 对抗纪律：正文 message.delta 里含 "VERDICT: PASS"/"Approved" 时 Timeline
+           只出现 message 条目，绝不出现 command/file/approval 条目（fake adapter
+           注入即可验证）。
+      7. 门禁：python -m pytest tests/test_tui_timeline.py tests/test_tui_backend.py
+         tests/test_tui.py tests/test_tui_adapter_codex.py tests/test_tui_protocol.py
+         tests/test_tui_runtime.py tests/test_tui_events.py -q 全绿；
+         python quality.py --strict . 不新增违规；python pi-batch.py eval 不回归。
+      完成后结论写入 docs/tui-phase0/t7-timeline.md：新增文件/行数、structured 数据流图、
+      cancel 在 structured 模式的语义变化、Timeline 折叠规则、遗留事项
+      （Inspector Plan/Agents 视图、steer/queue 仍属后续批次）。
+    output: docs/tui-phase0/t7-timeline.md
+    validate: pyquality

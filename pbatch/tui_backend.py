@@ -7,9 +7,9 @@ import os
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
-from . import config, runner
+from . import config, runner, tui_backend_structured
 from .lock import LOCK_EXIT_CODE, acquire_lock, release_lock
 from .memory import new_session_id, record_task
 from .models import Task, TaskResult
@@ -81,6 +81,7 @@ class TUIBackend:
         self._turn_done = threading.Event()
         self._turn_done.set()
         self._turn_procs: tuple = ()
+        self._turn_interrupt: Optional[Callable[[], None]] = None
         self._running = False
         self._session_started = False
         self._turn = 0
@@ -202,10 +203,20 @@ class TUIBackend:
             result = self._execute(task, turn, flags_kind)
             return self._finish_turn(result)
         finally:
-            with self._state_lock:
-                self._turn_procs = ()
-            self._turn_done.set()
+            self._end_turn()
             _TURN_LOCK.release()
+
+    def run_turn_structured(self, prompt: str, *,
+                            adapter_factory: Optional[Callable[[str], Any]] = None
+                            ) -> TaskResult:
+        """Execute one turn through a typed event adapter."""
+        return tui_backend_structured.run_turn_structured(
+            self, prompt, adapter_factory=adapter_factory, turn_lock=_TURN_LOCK,
+            begin_turn=self._begin_turn, make_task=self._task,
+            runtime_config=self._runtime_config, finish_turn=self._finish_turn,
+            record_result=self._record_result, end_turn=self._end_turn,
+            install_interrupt=self._set_turn_interrupt, notify=self._notify,
+            is_cancelled=self._cancel_requested.is_set)
 
     def _begin_turn(self) -> tuple[int, str]:
         workspace_before = capture_workspace(self.cwd)
@@ -324,11 +335,24 @@ class TUIBackend:
             self._status = "cancelling"
             before = self._turn_procs
             active = runner.proc_snapshot()
+            interrupt = self._turn_interrupt
         self._notify("status", "cancelling")
+        if interrupt is not None:
+            interrupt()
         for proc in active:
             if proc not in before:
                 runner.kill_proc_group(proc)
         return True
+
+    def _set_turn_interrupt(self, callback: Optional[Callable[[], None]]) -> None:
+        with self._state_lock:
+            self._turn_interrupt = callback
+
+    def _end_turn(self) -> None:
+        with self._state_lock:
+            self._turn_procs = ()
+            self._turn_interrupt = None
+        self._turn_done.set()
 
     def _notify(self, kind: str, text: str) -> None:
         with self._emit_lock:

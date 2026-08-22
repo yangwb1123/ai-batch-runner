@@ -4,12 +4,63 @@ from __future__ import annotations
 
 import os
 import json
+import queue
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 from pbatch import config, runner
 from pbatch.lock import acquire_lock, release_lock
 from pbatch.tui_backend import TUIBackend
+
+
+def _runtime_event(kind, **payload):
+    return SimpleNamespace(kind=kind, payload=payload)
+
+
+class FakeProc:
+    def __init__(self, events=()):
+        self.events = queue.Queue()
+        for event in events:
+            self.events.put(event)
+
+
+class FakeStructuredAdapter:
+    def __init__(self, proc):
+        self.proc = proc
+        self.started = threading.Event()
+        self.interrupt_calls = []
+        self.closed = False
+
+    def initialize(self, request):
+        self.initialize_request = request
+
+    def start_session(self, request):
+        self.session_request = request
+        return SimpleNamespace(session_id=request["session_id"])
+
+    def start_turn(self, request):
+        self.turn_request = request
+        self.handle = SimpleNamespace(turn_id="fake-turn")
+        self.started.set()
+        return self.handle
+
+    def events(self):
+        while True:
+            event = self.proc.events.get(timeout=3)
+            if event is None:
+                return
+            yield event
+            if event.kind in {"turn.completed", "turn.failed", "turn.interrupted"}:
+                return
+
+    def interrupt_turn(self, handle):
+        self.interrupt_calls.append(handle)
+        self.proc.events.put(_runtime_event("turn.interrupted"))
+
+    def close(self):
+        self.closed = True
+        self.proc.events.put(None)
 
 
 def _agent(tmp_path: Path, body: str, name: str = "agent.sh") -> Path:
@@ -235,3 +286,67 @@ def test_cancel_kills_only_processes_added_during_this_turn(tmp_path, monkeypatc
     assert killed == [owned]
     assert results and results[0].reason == "cancelled"
     assert backend._turn_procs == ()
+
+
+def test_structured_turn_projects_typed_events_and_returns_success(tmp_path):
+    events = []
+    proc = FakeProc([
+        _runtime_event("command.started", item_id="cmd-1", command="pytest"),
+        _runtime_event("command.output", item_id="cmd-1",
+                       aggregated_output="\\\x00" * 5000),
+        _runtime_event("command.completed", item_id="cmd-1", command="pytest",
+                       exit_code=0),
+        _runtime_event("file.changed", changes=[{"path": "pbatch/tui.py"}]),
+        _runtime_event("usage.updated", usage={"input_tokens": 10,
+                                                "output_tokens": 4,
+                                                "total_tokens": 14}),
+        _runtime_event("message.delta", text="structured answer"),
+        _runtime_event("turn.completed", elapsed_ms=15,
+                       usage={"input_tokens": 10, "output_tokens": 4}),
+    ])
+    adapter = FakeStructuredAdapter(proc)
+    backend = TUIBackend(
+        lambda kind, text: events.append((kind, text)), cwd=str(tmp_path),
+        agent="codex", memory_mode="off", session_id="structured-session")
+
+    result = backend.run_turn_structured(
+        "implement", adapter_factory=lambda: adapter)
+
+    assert result.success and result.stdout == "structured answer"
+    assert result.session_id == "structured-session"
+    assert adapter.closed
+    kinds = [kind for kind, _text in events]
+    for kind in ("command", "command-output", "file", "usage", "stdout"):
+        assert kind in kinds
+    command = next(json.loads(text) for kind, text in events
+                   if kind == "command" and '"phase":"completed"' in text)
+    assert command["command"] == "pytest" and command["exit_code"] == 0
+    outputs = [text for kind, text in events if kind == "command-output"]
+    assert outputs and all(len(text.encode("utf-8")) <= 2 * 1024 for text in outputs)
+    usages = [json.loads(text) for kind, text in events if kind == "usage"]
+    assert usages[0]["total_tokens"] == 14
+    assert backend.snapshot()["status"] == "succeeded"
+    assert not (tmp_path / ".pi-batch.lock").exists()
+
+
+def test_structured_cancel_interrupts_current_adapter_handle(tmp_path):
+    proc = FakeProc([_runtime_event(
+        "command.started", item_id="cmd-1", command="long command")])
+    adapter = FakeStructuredAdapter(proc)
+    backend = TUIBackend(cwd=str(tmp_path), agent="codex", memory_mode="off",
+                         session_id="structured-cancel")
+    results = []
+    worker = threading.Thread(target=lambda: results.append(
+        backend.run_turn_structured(
+            "wait", adapter_factory=lambda _cwd: adapter)))
+    worker.start()
+    assert adapter.started.wait(2)
+
+    assert backend.cancel() is True
+    worker.join(3)
+
+    assert not worker.is_alive()
+    assert adapter.interrupt_calls == [adapter.handle]
+    assert results and not results[0].success
+    assert results[0].reason == "cancelled"
+    assert backend.snapshot()["status"] == "cancelled"
