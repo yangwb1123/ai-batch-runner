@@ -89,13 +89,13 @@ class BlockingProc(FakeProc):
 class FakeSpawn:
     """记录 argv/cwd 并返回测试预置进程。"""
 
-    def __init__(self, process: FakeProc):
-        self.process = process
+    def __init__(self, process: FakeProc, *later: FakeProc):
+        self.processes = [process, *later]
         self.calls = []
 
     def __call__(self, argv, cwd):
         self.calls.append((tuple(argv), cwd))
-        return self.process
+        return self.processes.pop(0)
 
 
 def _run(lines, *, stderr=(), maxsize=256):
@@ -203,13 +203,13 @@ def test_capabilities_are_truthful_and_unsupported_operations_are_typed():
     assert info.capabilities.usage is True
     assert info.capabilities.message_stream is True
     assert info.capabilities.interrupt is True
-    for capability in ("typed_approvals", "turn_steer", "session_resume",
-                       "session_fork", "review", "subagents", "images"):
+    assert info.capabilities.session_resume is True
+    assert info.capabilities.session_fork is True
+    for capability in ("typed_approvals", "turn_steer", "review",
+                       "subagents", "images"):
         assert info.capabilities.supports(capability) is False
+    assert adapter.start_session(StartSessionRequest()).state == "ACTIVE"
     operations = [
-        lambda: adapter.start_session(StartSessionRequest()),
-        lambda: adapter.resume_session(ResumeSessionRequest("ses_x")),
-        lambda: adapter.fork_session({"session_id": "ses_x"}),
         lambda: adapter.steer_turn(SteerRequest("turn_x", "more")),
         lambda: adapter.resolve_approval(ApprovalDecision("req_x", "allow")),
     ]
@@ -217,6 +217,77 @@ def test_capabilities_are_truthful_and_unsupported_operations_are_typed():
         with pytest.raises(UnsupportedOperation):
             operation()
     adapter.close()
+
+
+def test_captured_thread_id_drives_resume_argv_and_session_event_mode():
+    first = FakeProc([
+        _line({"type": "thread.started", "thread_id": THREAD_ID}),
+        _line({"type": "turn.started"}),
+        _line({"type": "turn.completed", "usage": {}}),
+    ])
+    resumed = FakeProc([
+        _line({"type": "thread.started", "thread_id": THREAD_ID}),
+        _line({"type": "turn.started"}),
+        _line({"type": "turn.completed", "usage": {}}),
+    ])
+    spawn = FakeSpawn(first, resumed)
+    adapter = CodexExecAdapter("/tmp/project", spawn=spawn)
+    adapter.initialize(InitializeRequest(workspace_id="ws_test"))
+    assert adapter.start_turn(StartTurnRequest(
+        "first", run_id="run_session", turn_id="turn_first")).wait(1)
+    assert adapter.session.provider_session_id == THREAD_ID
+    adapter.resume_session(ResumeSessionRequest(adapter.session.session_id))
+    assert adapter.start_turn(StartTurnRequest(
+        "continue", run_id="run_session", turn_id="turn_resume")).wait(1)
+    adapter.close()
+    events = list(adapter.events())
+    assert spawn.calls[1][0] == (
+        "codex", "exec", "resume", THREAD_ID, "continue",
+        "--json", "--approve-for-me")
+    sessions = [event for event in events if event.kind == "session.created"]
+    assert sessions[0].payload["provider_session_id"] == THREAD_ID
+    assert sessions[1].payload["mode"] == "resumed"
+    assert sum(event.kind == "turn.queued" for event in events) == 2
+    assert sum(event.kind == "turn.started" for event in events) == 2
+    assert [event.seq for event in events] == list(range(1, len(events) + 1))
+
+
+def test_fork_argv_records_new_provider_thread_id():
+    child_id = "01a02778-9991-7843-a7a6-f0f60d7b97f4"
+    first = FakeProc([
+        _line({"type": "thread.started", "thread_id": THREAD_ID}),
+        _line({"type": "turn.started"}),
+        _line({"type": "turn.completed", "usage": {}}),
+    ])
+    forked = FakeProc([
+        _line({"type": "thread.started", "thread_id": child_id}),
+        _line({"type": "turn.started"}),
+        _line({"type": "turn.completed", "usage": {}}),
+    ])
+    resumed_child = FakeProc([
+        _line({"type": "thread.started", "thread_id": child_id}),
+        _line({"type": "turn.started"}),
+        _line({"type": "turn.completed", "usage": {}}),
+    ])
+    spawn = FakeSpawn(first, forked, resumed_child)
+    adapter = CodexExecAdapter("/tmp/project", spawn=spawn)
+    adapter.initialize(InitializeRequest())
+    assert adapter.start_turn("parent").wait(1)
+    adapter.fork_session({"provider_session_id": THREAD_ID})
+    assert adapter.start_turn("branch work").wait(1)
+    assert adapter.start_turn("continue branch").wait(1)
+    adapter.close()
+    events = list(adapter.events())
+    assert spawn.calls[1][0] == (
+        "codex", "exec", "fork", THREAD_ID, "branch work",
+        "--json", "--approve-for-me")
+    assert adapter.session.provider_session_id == child_id
+    assert adapter._provider_session_id == child_id
+    assert spawn.calls[2][0] == (
+        "codex", "exec", "resume", child_id, "continue branch",
+        "--json", "--approve-for-me")
+    assert [event for event in events if event.kind == "session.created"][-1].payload[
+        "mode"] == "forked"
 
 
 def test_adversarial_reply_cannot_forge_control_or_command_events():

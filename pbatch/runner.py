@@ -18,7 +18,7 @@ from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .validation_batch import run_file_validators
 from . import config
-from .config import AGENT_BIN, AGENT_DEFAULT_WORKERS, _resolve_validator_specs, _resolve_validators, _session_flags, log
+from .config import _resolve_validator_specs, _resolve_validators, _session_flags, log
 from .cmd_expand import expand_cmd
 from .context_inject import inject_task_context
 from .execution_trace import (annotate_result, attach_session,
@@ -35,7 +35,8 @@ from .memory import (enrich_prompt, memory_enabled, new_session_id,
                      record_task, session_id_from_flags)
 from .parallel_plan import validate_parallel_plan
 from .reuse import capture_worktree_state, preserve_failed_worktree
-from .session import fork_flags, has_compaction, session_size_bytes
+from .session import (capture_codex_thread, fork_flags, has_compaction,
+                      resolve_provider_session, session_size_bytes)
 from .triage import clear_marker, is_retryable, task_key, write_marker
 from .process_exec import ValidationResult, _DrainTimeout, run_bounded
 # registry of live agent subprocesses (parallel mode: a budget cap must be
@@ -98,7 +99,6 @@ def _read_stream(stream, prefix: str, collector: list, cap: int = 0,
         pass
     finally:
         stream.close()
-
 def agent_failure_reason(returncode: int, output: str, bin_name: str = "") -> str:
     """Return a short reason when the agent result must be discarded, or ''
     when the output is a usable result. Non-zero exit, empty output, and
@@ -114,7 +114,6 @@ def agent_failure_reason(returncode: int, output: str, bin_name: str = "") -> st
         if pattern.search(output):
             return f"agent reported provider failure ({pattern.pattern})"
     return ""
-
 def _budget_gate(task: Task, key: str, workdir: str, session_name: str = "",
                  trace_task_id: str = "", attempt: int = 0) -> None:
     """Stop before spawn when the atomic parallel-safe budget is exhausted."""
@@ -125,20 +124,17 @@ def _budget_gate(task: Task, key: str, workdir: str, session_name: str = "",
                      stage_id=str(task.memory.get("stage", "")), attempt=attempt)
         clear_marker(key, workdir)
         raise SystemExit(3)
-
 def session_file_path(cwd: str, session_name: str) -> Optional[str]:
     """Active pi session file for a shared/per-stage session (T10)."""
     from .session import session_file
     f = session_file(cwd, session_name)
     return str(f) if f else None
-
 def _prompt_brief(task: Task, cmd: list) -> str:
     """One-line log summary with the prompt truncated (log-file safe)."""
     brief = " ".join(task.prompt.split())[:80]
     flags = " ".join(config.agent_argument_flags(config.AGENT_BIN)["prompt"])
     elided = "..." if len(brief) == 80 else ""
     return f"{cmd[0]} {flags} {brief}{elided}"
-
 def _kill_group(proc: Optional[subprocess.Popen]) -> None:
     """Kill the whole child process group, tolerating an already-dead
     process, then reap the direct child before returning."""
@@ -166,7 +162,6 @@ def _spawn_agent(cmd: list, workdir: str, env: dict) -> subprocess.Popen:
     return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             stdin=subprocess.DEVNULL, text=True, cwd=workdir,
                             env=env, start_new_session=True)
-
 def _agent_not_found(task: Task) -> TaskResult:
     """The agent binary is missing from PATH: a permanent, non-retryable
     failure (never saved as an artifact)."""
@@ -177,7 +172,6 @@ def _agent_not_found(task: Task) -> TaskResult:
     )
     return TaskResult(task=task, success=False, stderr=f"{config.AGENT_BIN} not found in PATH",
                       reason="agent binary not found")
-
 def _context_rejection(task: Task) -> Optional[TaskResult]:
     try:
         if not isinstance(task.env, dict) or not all(
@@ -190,7 +184,6 @@ def _context_rejection(task: Task) -> Optional[TaskResult]:
         return TaskResult(task=task, success=False, returncode=-1,
                           stderr=str(exc), reason=reason)
     return None
-
 def _task_invocation(task: Task, session_flags: Optional[list],
                      session_name: str):
     try:
@@ -204,14 +197,12 @@ def _task_invocation(task: Task, session_flags: Optional[list],
     if prompt_limit := _prompt_limit_result(task, cmd):
         return attach_session(prompt_limit, session_id, effective_name, workdir)
     return cmd, workdir, session_id, effective_name
-
 def _finish_result(result: TaskResult, task: Task, session_id: str,
                    session_name: str, workdir: str, usage_before: Optional[dict],
                    trace_task_id: str, attempt: int) -> TaskResult:
     """Keep the hot task-execution function within the file budget."""
     return finish_task_result(result, task, session_id, session_name, workdir,
                               usage_before, trace_task_id, attempt)
-
 def _stream_task(proc, prefix: str, start: float, timeout: int, emit: bool,
                  stdout_target=None, stderr_target=None):
     """Forward opt-in display targets without changing legacy mock calls."""
@@ -221,7 +212,6 @@ def _stream_task(proc, prefix: str, start: float, timeout: int, emit: bool,
     if stderr_target is not None:
         targets["stderr_target"] = stderr_target
     return _stream_proc(proc, prefix, start, timeout, emit, **targets)
-
 def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = False,
              session_flags: Optional[list] = None, session_name: str = "", attempt: int = 1,
              trace_task_id: str = "", stdout_target=None, stderr_target=None) -> TaskResult:
@@ -235,9 +225,7 @@ def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = F
         annotate_result(invocation, trace_task_id, stage_id, attempt)
         return invocation
     cmd, workdir, session_id, effective_name = invocation
-    start = time.monotonic()
-    proc = None
-    completed = False
+    start, proc, completed = time.monotonic(), None, False
     prefix, env, key, usage_before = _prepare_task_run(task, cmd, task_index, total, parallel, workdir, effective_name, session_id, trace_task_id, attempt)
     try:
         _rate_gate(task, effective_name)
@@ -254,6 +242,8 @@ def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = F
             return _finish_result(result, task, session_id, effective_name, workdir, usage_before, trace_task_id, attempt)
         result = _result_from_proc(task, proc, stdout_lines, stderr_lines, time.monotonic() - start)
         result.streamed_output = streamed
+        if session_flags is not None: _capture_codex_thread(
+            stdout_lines, effective_name, session_id, workdir)
         return _finish_result(result, task, session_id, effective_name, workdir, usage_before, trace_task_id, attempt)
     except subprocess.TimeoutExpired:
         result = _timeout_result(task, proc, start)
@@ -272,7 +262,6 @@ def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = F
         if proc is not None:
             _unregister_proc(proc)
         clear_marker(key, workdir)
-
 def _prepare_task_run(task: Task, cmd: list, task_index: int, total: int,
                       parallel: bool, workdir: str, session_name: str,
                       session_id: str = "", trace_task_id: str = "",
@@ -303,15 +292,28 @@ def _memory_invocation(task: Task, session_flags: Optional[list],
                        session_name: str) -> tuple[list, str, str, str]:
     workdir = task.workdir()
     flags = session_flags
-    name = session_name or task.memory.get("stage", "") or "batch"
-    session_id = session_id_from_flags(flags)
+    name = session_name or getattr(flags, "session_name", "") or task.memory.get(
+        "stage", "") or "batch"
+    kind = getattr(flags, "kind", "")
+    session_id = getattr(flags, "session_id", "") or session_id_from_flags(flags)
     prompt = task.prompt
     if memory_enabled():
         prompt = enrich_prompt(prompt, workdir, str(task.memory.get("memory_mode", "")))
         if flags is None:
             session_id = new_session_id(name, task.prompt, workdir)
             flags = _session_flags("start", session_id, name)
+            kind = "start"
+    if (kind in ("continue", "fork")
+            and config.agent_session_argv_layout(config.AGENT_BIN) == "led"):
+        provider_session, _ = resolve_provider_session(
+            workdir, name, session_id, kind, config.AGENT_BIN)
+        flags = config.agent_session_flags(
+            kind, session_id, name, config.AGENT_BIN, provider_session=provider_session)
     return replace(task, prompt=prompt).to_cmd(flags), workdir, session_id, name
+
+def _capture_codex_thread(stdout_lines: list, name: str, sid: str, workdir: str) -> None:
+    """Capture Codex's first JSONL thread event for an explicit session."""
+    capture_codex_thread(stdout_lines, name, sid, workdir, config.AGENT_BIN)
 
 def _output_path_is_symlink(task: Task) -> bool:
     """T0.1: probe the UNRESOLVED output path — output_path() resolves
@@ -389,7 +391,6 @@ def _retry_wait(result: TaskResult, attempt: int, retry_delay: float, backoff: f
 def expand_command_placeholders(cmd: str, cwd: str, output: str = "") -> str:
     """Compatibility adapter for the centralized command expander."""
     return expand_cmd(cmd, output, cwd, config.TOOL_ROOT)
-
 
 def run_validation(cmd: str, cwd: str, timeout: float = 600,
                    cap: Optional[int] = None) -> ValidationResult:
@@ -580,7 +581,6 @@ def _json_status(stdout: str) -> str:
 
 _JUDGE_VERDICT_RE = re.compile(r"^\s*\*{0,2}VERDICT\s*:\s*\*{0,2}(PASS|FAIL|REJECT)\b",
                                re.IGNORECASE | re.MULTILINE)
-
 def judge_verdict(text: str) -> Optional[str]:
     """H line (LLM-as-judge protocol): extract a VERDICT: PASS|FAIL|REJECT
     line from a judge validator's stdout. A verdict must carry a reason on

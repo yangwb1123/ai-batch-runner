@@ -45,10 +45,18 @@ agent:
       argument_flags:
         prompt: ["exec"]
         model: "-m"
+      # In session-led Codex argv, {session} means the provider thread_id.
+      # The runner captures it from the first thread.started JSONL event.
+      # --approve-for-me sits INSIDE each template: codex exec resume|fork
+      # rejects trailing --approve-for-me (clap strict layout), so it must
+      # precede the subcommand; the {prompt} placeholder makes these
+      # session-led layouts (prompt emitted where it sits, not after bin).
+      capture_thread_id: true
+      session_flags:
+        start: ["exec", "--approve-for-me", "{prompt}"]
+        continue: ["exec", "--approve-for-me", "resume", "{session}", "{prompt}"]
+        fork: ["exec", "--approve-for-me", "fork", "{session}", "{prompt}"]
       # Invocation-level flags appended after every constructed argv.
-      # --approve-for-me runs inside the workspace-write sandbox with
-      # automatic approval routing (required for non-interactive 24x7 use;
-      # TTY users keep interactive approval via ~/.codex/config.toml).
       # --json is the official non-interactive transcript mode: stdout is
       # structured thread/turn/item JSONL and stderr stays operational
       # (design §9.3); without it codex echoes the full transcript on
@@ -56,8 +64,6 @@ agent:
       # quotes project docs (AGENTS.md §2.2). Phase 1 Structured Exec
       # Adapter consumes the same JSONL.
       extra_args: ["--approve-for-me", "--json"]
-      # Codex session resume/fork (`codex exec resume|fork`) is Phase 1
-      # (TUI protocol design §12); use --session-mode new for now.
       # Prefer precise signatures: codex's stderr transcript ECHOES the
       # user prompt, so broad words like bare `rate limit` would self-match
       # (P0 lesson: keep the anti-misfire discipline from AGENTS.md §2.2).

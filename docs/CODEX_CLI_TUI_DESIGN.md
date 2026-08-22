@@ -1,12 +1,16 @@
 # Codex CLI 核心产品能力分析与 pi-batch TUI 演进设计
 
-> 状态：**Phase 0 已实现（2026-08-21 证据闭环）** · 基线日期：2026-08-21 ·
+> 状态：**Phase 0 已完成 + Phase 1 核心达成（2026-08-21 证据闭环）** · 基线日期：2026-08-21 ·
 > 范围：产品分析、交互模型、运行时协议、分阶段实施与验收。
-> Phase 0（协议地基）已按 §12/§16 完成，证据：`pbatch/tui_protocol.py`（T1）、
-> `pbatch/tui_runtime.py` + `pbatch/tui_events.py`（T2）、TUI 接线与 handle-scoped
-> cancel（T3），交付物见 `docs/tui-phase0/`；`make ci` 1735 测试 + 53 eval 全绿。
-> Phase 1-4（session persistence / Codex App Server / Native 编排可视化 / 多 Agent）
-> 仍为后续实施批次。
+> Phase 0（协议地基）已实现：`pbatch/tui_protocol.py`（T1）、`pbatch/tui_runtime.py` +
+> `pbatch/tui_adapter_legacy.py` + `pbatch/tui_events.py`（T2）、TUI 接线与
+> handle-scoped cancel（T3）；Phase 1 核心：Codex Structured Exec Adapter
+> （`pbatch/tui_adapter_codex.py`，T4）、config session-led argv 与 adapter
+> resume/fork（T5）、headless thread 捕获/映射与 `--session-mode shared` 跨任务
+> codex 会话延续（T6，端到端验证：第二轮真实恢复第一轮记忆）。
+> 交付物见 `docs/tui-phase0/`；`make test` 1754 + 53 eval + quality --strict 全绿。
+> 未完：Phase 1 的 TUI session picker/Inspector 视图与 Phase 2（Codex App Server、
+> typed approval、/review）为后续批次。
 
 ## 1. 结论
 

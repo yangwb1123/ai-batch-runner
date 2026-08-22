@@ -2,26 +2,47 @@
 未知 provider item 发出有界占位；正文不提升为审批、Gate、Review 或命令事件。
 """
 from __future__ import annotations
+
 from collections import deque
-from datetime import datetime, timezone
-import hashlib
 import json
 import os
 import queue
-import signal
-import subprocess
 import threading
 import time
 from typing import Any, Callable, Iterator, Mapping, Sequence
-import uuid
-from .tui_protocol import RUNTIME_PROTOCOL_VERSION, RuntimeCapabilities, RuntimeEvent, TurnState
-from .tui_runtime import RuntimeInfo, RuntimeSession, StartTurnRequest, TurnHandle, UnsupportedOperation
-CODEX_EXEC_RUNTIME_NAME = "codex-exec"
+
+from .tui_codex_support import (
+    CODEX_EXEC_RUNTIME_NAME,
+    _bound,
+    _bounded_changes,
+    _bounded_list,
+    _default_spawn,
+    _id,
+    _now,
+    _number,
+    _option_tail_index,
+    _request_value,
+    _runtime_info,
+    _stop_process,
+    _text,
+    _workspace_id,
+)
+from .tui_protocol import RuntimeEvent, TurnState
+from .tui_runtime import (
+    RuntimeInfo,
+    RuntimeSession,
+    StartTurnRequest,
+    TurnHandle,
+    UnsupportedOperation,
+)
+
 DEFAULT_ARGV_PREFIX = ("codex", "exec", "--json", "--approve-for-me")
-DEFAULT_QUEUE_SIZE, MAX_FIELD_BYTES = 256, 48 * 1024
-TRUNCATION_MARKER, _IGNORED_STDERR = "\n...[truncated]", "Reading additional input from stdin..."
+DEFAULT_QUEUE_SIZE = 256
+_IGNORED_STDERR = "Reading additional input from stdin..."
 _ITEM_TYPES = frozenset({"agent_message", "command_execution", "file_change", "todo_list"})
 Spawn = Callable[[Sequence[str], str], Any]
+
+
 class _EventQueue:
     """有界可关闭队列；压力下只牺牲 warning，重要事件使用背压。"""
     def __init__(self, maxsize: int):
@@ -83,6 +104,8 @@ class CodexExecAdapter:
         self._session = RuntimeSession(
             session_id=_id("ses"), provider_session_id="",
             workspace_id=_workspace_id(self._cwd), started_at=_now(), state="ACTIVE")
+        self._provider_session_id = ""
+        self._session_mode = self._turn_mode = "normal"
         self._active, self._process = None, None
         self._threads: list[threading.Thread] = []
         self._seq_by_run: dict[str, int] = {}
@@ -101,11 +124,46 @@ class CodexExecAdapter:
         self._initialized = True
         return self._info
     def start_session(self, request: Any) -> RuntimeSession:
-        raise UnsupportedOperation("start_session", "session_resume")
+        self._ensure_session_replaceable()
+        session = RuntimeSession(
+            session_id=str(_request_value(request, "session_id", "") or _id("ses")),
+            provider_session_id="",
+            workspace_id=str(_request_value(request, "workspace_id", "") or
+                             self._session.workspace_id),
+            started_at=_now(), state="ACTIVE")
+        with self._lock:
+            self._session = session
+            self._provider_session_id = ""
+            self._session_mode = self._turn_mode = "normal"
+            self._reset_session_announcement()
+        return session
     def resume_session(self, request: Any) -> RuntimeSession:
-        raise UnsupportedOperation("resume_session", "session_resume")
+        return self._continue_session(request, "resumed")
     def fork_session(self, request: Any) -> RuntimeSession:
-        raise UnsupportedOperation("fork_session", "session_fork")
+        return self._continue_session(request, "forked")
+    def _continue_session(self, request: Any, mode: str) -> RuntimeSession:
+        self._ensure_session_replaceable()
+        provider_id = str(_request_value(request, "provider_session_id", "") or
+                          self._provider_session_id)
+        if not provider_id:
+            raise ValueError(f"{mode} session requires provider_session_id")
+        workspace_id = str(_request_value(request, "workspace_id", "") or "")
+        with self._lock:
+            self._provider_session_id = provider_id
+            self._session.provider_session_id = provider_id
+            self._session_mode = mode
+            if workspace_id:
+                self._session.workspace_id = workspace_id
+            self._reset_session_announcement()
+        return self._session
+    def _ensure_session_replaceable(self) -> None:
+        self._ensure_open()
+        with self._lock:
+            if self._active is not None and not self._active.done:
+                raise RuntimeError("cannot replace an active runtime session")
+    def _reset_session_announcement(self) -> None:
+        self._session_announced = False
+        self._session_ready.clear()
     def steer_turn(self, request: Any) -> None:
         raise UnsupportedOperation("steer_turn", "turn_steer")
     def resolve_approval(self, decision: Any) -> None:
@@ -120,8 +178,10 @@ class CodexExecAdapter:
         if not prompt.strip():
             raise ValueError("prompt must not be empty")
         handle = self._new_handle(request)
-        base = self._argv_prefix if argv is None else argv
-        command = tuple(str(part) for part in base) + (prompt,)
+        with self._lock:
+            mode = self._session_mode
+            self._turn_mode = mode
+        command = self._spawn_argv(prompt, mode, argv)
         process = self._spawn(command, self._cwd)
         with self._lock:
             self._active, self._process = handle, process
@@ -129,6 +189,16 @@ class CodexExecAdapter:
             self._usage, self._protocol_errors, self._started_monotonic = {}, 0, time.monotonic()
         self._start_workers(handle, process)
         return handle
+    def _spawn_argv(self, prompt: str, mode: str,
+                    argv: Sequence[str] | None = None) -> tuple[str, ...]:
+        base = tuple(str(part) for part in (self._argv_prefix if argv is None else argv))
+        if mode == "normal":
+            return base + (prompt,)
+        subcommand = "resume" if mode == "resumed" else "fork"
+        tail_index = _option_tail_index(base)
+        return (base[:tail_index] +
+                (subcommand, self._provider_session_id, prompt) +
+                base[tail_index:])
     def _new_handle(self, request: Any) -> TurnHandle:
         with self._lock:
             if self._active is not None and not self._active.done:
@@ -184,7 +254,12 @@ class CodexExecAdapter:
     def _dispatch(self, handle: TurnHandle, value: dict[str, Any], raw: str) -> None:
         provider_type = str(value.get("type", ""))
         if provider_type == "thread.started":
-            self._session.provider_session_id = _bound(value.get("thread_id", ""), 2048)[0]
+            provider_id = _bound(value.get("thread_id", ""), 2048)[0]
+            with self._lock:
+                self._provider_session_id = provider_id
+                self._session.provider_session_id = provider_id
+                if self._turn_mode == "forked":
+                    self._session_mode = "resumed"
             self._ensure_session_event(handle)
             return
         self._ensure_session_event(handle)
@@ -287,11 +362,14 @@ class CodexExecAdapter:
             if self._session_announced:
                 return
             self._session_announced = True
-        self._publish(handle, "session.created", {
+        payload = {
             "workspace_id": self._session.workspace_id,
             "session_id": self._session.session_id,
             "provider_session_id": self._session.provider_session_id,
-            "state": self._session.state})
+            "state": self._session.state}
+        if self._turn_mode != "normal":
+            payload["mode"] = self._turn_mode
+        self._publish(handle, "session.created", payload)
         self._session_ready.set()
     def _monitor(self, handle: TurnHandle, process: Any, stdout: threading.Thread,
                  stderr: threading.Thread) -> None:
@@ -399,102 +477,3 @@ class CodexExecAdapter:
     def _ensure_open(self) -> None:
         if self._closed:
             raise RuntimeError("codex exec runtime is closed")
-def _runtime_info() -> RuntimeInfo:
-    enabled = {
-        "structured_events": True, "usage": True, "message_stream": True,
-        "interrupt": True, "session_resume": False, "session_fork": False,
-        "turn_steer": False, "message_queue": False, "typed_approvals": False,
-        "review": False, "subagents": False, "images": False,
-        "instruction_sources": False}
-    capabilities = RuntimeCapabilities(
-        runtime=CODEX_EXEC_RUNTIME_NAME, capabilities=enabled)
-    return RuntimeInfo(CODEX_EXEC_RUNTIME_NAME, RUNTIME_PROTOCOL_VERSION, capabilities)
-def _default_spawn(argv: Sequence[str], cwd: str) -> subprocess.Popen[str]:
-    return subprocess.Popen(
-        list(argv), cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        stdin=subprocess.DEVNULL, text=True, start_new_session=True)
-def _stop_process(process: Any) -> None:
-    if process is None or _process_done(process):
-        return
-    pid = getattr(process, "pid", None)
-    if isinstance(pid, int) and pid > 0:
-        try:
-            os.killpg(os.getpgid(pid), signal.SIGTERM)
-        except OSError:
-            _call(process, "terminate")
-        if _wait(process):
-            return
-        try:
-            os.killpg(os.getpgid(pid), signal.SIGKILL)
-        except OSError:
-            _call(process, "kill")
-    else:
-        _call(process, "kill")
-    _wait(process)
-def _process_done(process: Any) -> bool:
-    try:
-        return process.poll() is not None
-    except (AttributeError, OSError):
-        return False
-def _wait(process: Any) -> bool:
-    try:
-        process.wait(timeout=0.25)
-        return True
-    except (subprocess.TimeoutExpired, TimeoutError, AttributeError, OSError):
-        return False
-def _call(process: Any, method: str) -> None:
-    try:
-        getattr(process, method)()
-    except (AttributeError, OSError):
-        pass
-def _bound(value: Any, maximum: int = MAX_FIELD_BYTES) -> tuple[str, bool, int]:
-    text = str(value if value is not None else "")
-    encoded, marker = text.encode("utf-8", "replace"), TRUNCATION_MARKER.encode()
-    if len(encoded) <= maximum:
-        return text, False, len(encoded)
-    prefix = encoded[:maximum - len(marker)].decode("utf-8", "ignore")
-    return prefix + TRUNCATION_MARKER, True, len(encoded)
-def _text(name: str, value: Any) -> dict[str, Any]:
-    text, truncated, original = _bound(value)
-    result: dict[str, Any] = {name: text, "truncated": truncated}
-    if truncated:
-        result["original_bytes"] = original
-    return result
-def _bounded_changes(value: Any) -> tuple[list[dict[str, str]], bool]:
-    if not isinstance(value, list):
-        return [], bool(value)
-    result: list[dict[str, str]] = []; truncated = False
-    for change in value:
-        if not isinstance(change, Mapping):
-            continue
-        path, path_cut, _ = _bound(change.get("path", ""), 2048)
-        kind, kind_cut, _ = _bound(change.get("kind", ""), 256)
-        truncated = truncated or path_cut or kind_cut
-        item = {"path": path, "kind": kind}
-        if len(_json_bytes(result + [item])) > MAX_FIELD_BYTES:
-            return result, True
-        result.append(item)
-    return result, truncated or len(result) != len(value)
-def _bounded_list(value: Any) -> tuple[list[Any], bool]:
-    if not isinstance(value, list):
-        return [], bool(value)
-    result: list[Any] = []
-    for item in value:
-        if len(_json_bytes(result + [item])) > MAX_FIELD_BYTES:
-            return result, True
-        result.append(item)
-    return result, False
-def _json_bytes(value: Any) -> bytes:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
-def _number(value: Any) -> bool:
-    return (isinstance(value, (int, float)) and not isinstance(value, bool)
-            and value == value and abs(value) != float("inf"))
-def _request_value(request: Any, name: str, default: Any) -> Any:
-    return request.get(name, default) if isinstance(request, Mapping) else getattr(request, name, default)
-def _workspace_id(cwd: str) -> str:
-    digest = hashlib.sha256(os.path.abspath(cwd).encode()).hexdigest()[:16]
-    return f"ws_{digest}"
-def _id(prefix: str) -> str:
-    return f"{prefix}_{uuid.uuid4().hex}"
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

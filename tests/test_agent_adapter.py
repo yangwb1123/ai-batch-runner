@@ -52,6 +52,47 @@ def test_agent_extra_args_appended_after_session_flags(monkeypatch):
     ) == ["codex", "-p", "do work", "--global"]
 
 
+def test_agent_session_led_argv_renders_prompt_before_routing_flags(monkeypatch):
+    monkeypatch.setattr(config, "_AGENT_CFG", {})
+    monkeypatch.setattr(config, "_AGENTS_CFG", {
+        "codex": {
+            "argument_flags": {"prompt": ["exec"], "model": ["-m"]},
+            "session_flags": {
+                "continue": ["exec", "resume", "{session}", "{prompt}"],
+            },
+            "extra_args": ["--json"],
+        },
+    })
+    session_flags = config.agent_session_flags(
+        "continue", "sid-1", "work", "codex")
+    assert config.agent_session_argv_layout("codex") == "led"
+    assert config.build_agent_argv(
+        "codex", "do work", model="gpt-x", session_flags=session_flags,
+    ) == ["codex", "exec", "resume", "sid-1", "do work",
+          "-m", "gpt-x", "--json"]
+    assert config.agent_prompt_index("codex") == 4
+
+
+def test_agent_session_tail_argv_remains_byte_for_byte_compatible(monkeypatch):
+    monkeypatch.setattr(config, "_AGENT_CFG", {})
+    monkeypatch.setattr(config, "_AGENTS_CFG", {
+        "codex": {
+            "argument_flags": {"prompt": ["exec"], "model": ["-m"]},
+            "session_flags": {
+                "continue": ["resume", "{session}"],
+            },
+            "extra_args": ["--json"],
+        },
+    })
+    session_flags = config.agent_session_flags(
+        "continue", "sid-1", "work", "codex")
+    assert config.agent_session_argv_layout("codex") == "tail"
+    assert config.build_agent_argv(
+        "codex", "do work", model="gpt-x", session_flags=session_flags,
+    ) == ["codex", "exec", "do work", "-m", "gpt-x",
+          "resume", "sid-1", "--json"]
+
+
 def test_agent_extra_args_malformed_ignored(monkeypatch):
     monkeypatch.setattr(config, "_AGENTS_CFG", {
         "codex": {"extra_args": "not-a-list"},
@@ -104,6 +145,17 @@ def test_agent_session_flags_use_selected_binary(monkeypatch):
     assert config.agent_session_flags(
         "start", "sid", "display", "codex",
     ) == ["resume", "sid", "display"]
+
+
+def test_agent_session_flags_accept_provider_session_override(monkeypatch):
+    monkeypatch.setattr(config, "_AGENT_CFG", {})
+    monkeypatch.setattr(config, "_AGENTS_CFG", {"codex": {"session_flags": {
+        "continue": ["exec", "resume", "{session}", "{prompt}"],
+    }}})
+    flags = config.agent_session_flags(
+        "continue", "logical-sid", "work", "codex", provider_session="01abc-123")
+    assert flags == ["exec", "resume", "01abc-123", "{prompt}"]
+    assert flags.session_id == "logical-sid"
 
 
 def test_agent_preflight_checks_selected_executable(monkeypatch):

@@ -1,0 +1,77 @@
+# Phase 1 (T5) — Codex session 延续：argv 布局增强 + adapter resume/fork 闭环
+# 依据：docs/CODEX_CLI_TUI_DESIGN.md §7.1（provider_session_id 与 session_id 分离）与 §9.3。
+tasks:
+  - prompt: |
+      两件紧耦合的工作：A) 让 config 的 session_flags 支持 {prompt} 占位符（session-led
+      argv 布局）；B) 让 CodexExecAdapter 捕获 codex thread id 并实现 resume/fork 闭环。
+      A 允许修改 pbatch/config.py 与 tests/test_agent_adapter.py；B 允许修改
+      pbatch/tui_adapter_codex.py 与 tests/test_tui_adapter_codex.py。其他文件不动。
+
+      ## 背景事实（已实测 codex-cli 0.149.0）
+      - 普通执行：`codex exec --json --approve-for-me "PROMPT"`（--json 可在 prompt 后）；
+      - 恢复：`codex exec resume <THREAD_ID_SID> "PROMPT" --json`（THREAD_ID 是 codex 自己
+        生成的 UUID，形如 01a02778-9991-7843-a7a6-f0f60d7b97f4；--json 在位置参数后可用）；
+      - 分支：`codex exec fork <THREAD_ID_SID> "PROMPT" --json`（语法同 resume）；
+      - `codex exec --json` 首行必是 {"type":"thread.started","thread_id":...}（thread_id
+        即 provider_session_id 的取值来源）。
+
+      ## A. config：session_flags 支持 {prompt} 占位符（向后兼容）
+      1. pbatch/config.py build_agent_argv：当 session_flags 任一 token 含 "{prompt}"
+         时采用 **session-led 布局**：
+         cmd = [bin] + session_flags 渲染（{session}/{name}/{prompt} 全部替换；
+               {prompt} 替换为 prompt 原文、{session} 替换为 session_id、
+               {name} 替换为 session_name）+ model/provider/thinking/tools/exclude_tools
+         各 flag 段（顺序保持）+ extra_args。
+         注意此时 argument_flags["prompt"] 前缀（如 codex 的 "exec"）不再自动注入——
+         调用方（session_flags 定义者）负责把它写进 session_flags 首 token
+         （config 层不猜测）。若 session_flags 未含 {prompt}，保持现有行为完全不变
+         （含 agent_prompt_index 语义）。
+      2. 新增辅助 agent_session_argv_layout(bin_name) -> "led"|"tail"：
+         session-led 时返回 "led"；agent_prompt_index 在 led 布局下返回渲染后 argv 中
+         prompt 首次出现的位置（实现：渲染 session_flags 找 {prompt} 落点），tail
+         布局保持原计算。所有既有测试（不传含 {prompt} 的 session_flags）必须不改而通过。
+      3. tests/test_agent_adapter.py 新增（monkeypatch 风格与既有一致）：
+         - session-led 布局：bin=codex、argument_flags.prompt=["exec"]、
+           session_flags.continue=["exec","resume","{session}","{prompt}"]、
+           extra_args=["--json"]、model="gpt-x" →
+           期望 ["codex","exec","resume","sid-1","do work","-m","gpt-x","--json"]；
+         - 不含 {prompt} 的行为与现在逐字节一致（回归锚点）；
+         - agent_prompt_index 在 led 布局下等于 prompt 在 argv 中的索引。
+
+      ## B. CodexExecAdapter：session 延续闭环
+      4. 运行时捕获：start_turn 读取 thread.started 的 thread_id 存入
+         self._provider_session_id（同时作为首轮 session.created 事件的
+         provider_session_id payload）；该 id 持久于 adapter 生命周期内。
+      5. resume_session(request)：参数含 provider_session_id（缺省用
+         self._provider_session_id）；记录并允许后续 start_turn 以 resume 形态运行：
+         spawn argv = base_argv(不含 prompt) + ["resume", provider_session_id,
+         prompt, 原尾部选项]——组织方式：所有类型参数（resume/fork/普通）都通过
+         self._spawn_argv(prompt, mode) 构造，spawn 注入点不变。
+      6. fork_session(request)：同 resume 但子命令为 fork；fork 后 provider_session_id
+         更新为新 thread_id（thread.started 里读）。
+      7. capabilities 更新（initialize 时）：session_resume=True、session_fork=True
+         （实现支持）；其余能力保持 T4 现状（typed_approvals/turn_steer/...仍 False）；
+         start_session/resume_session/fork_session 不再是 UnsupportedOperation；
+         steer/resolve_approval 仍抛 UnsupportedOperation。
+      8. 每轮 start_turn 发出 turn.queued/started；resume/fork 模式在 session.created
+         事件 payload 标注 resumed/forked 语义（payload 加 "mode": "resumed"|"forked"）。
+      9. 事件纪律不变：kind 白名单、seq 单调、有界、adversarial 不受影响。
+      10. 测试（tests/test_tui_adapter_codex.py 新增/扩展，FakeSpawn 风格）：
+          - 首轮 start_turn 捕获 thread_id，第二轮 resume_session 后 start_turn 的
+            argv 含 ["resume", <captured id>, <prompt>]（断言 spawn 收到的 argv）；
+          - fork_session 后 argv 含 ["fork", ...] 且新 thread_id 被记录；
+          - capabilities 断言 session_resume/session_fork True；
+          - 既有全部测试保持通过（含 adversarial、大输出、interrupt、close）；
+          - 事件序列：resume 模式下仍以 thread.started 开篇解析（fake 供给即可）。
+
+      门禁：python -m pytest tests/test_tui_adapter_codex.py tests/test_agent_adapter.py
+      tests/test_tui_protocol.py tests/test_tui_runtime.py tests/test_tui_events.py
+      tests/test_tui.py -q 全绿；python quality.py --strict . 不新增违规；
+      python pi-batch.py eval 不回归。
+      完成后结论写入 docs/tui-phase0/t5-codex-session.md：改动文件、argv 布局前后对比表、
+      session 生命周期说明、遗留事项（headless runner 的 session 映射尚未接入 —— 说明
+      为什么留给 T6）。
+
+      注意：A 与 B 独立可测；不要改动 pi-batch.yaml（会话级配置留到 T6）。
+    output: docs/tui-phase0/t5-codex-session.md
+    validate: pyquality

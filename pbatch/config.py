@@ -212,7 +212,13 @@ def build_agent_argv(bin_name: str, prompt: str, *, model: str = "",
                      session_flags: Optional[list] = None) -> list[str]:
     """Build an agent argv from the configured adapter, without a shell."""
     flags = agent_argument_flags(bin_name)
-    cmd = [bin_name, *flags["prompt"], prompt]
+    session_led = bool(session_flags) and any(
+        "{prompt}" in token for token in session_flags)
+    if session_led:
+        cmd = [bin_name, *(token.replace("{prompt}", prompt)
+                           for token in session_flags)]
+    else:
+        cmd = [bin_name, *flags["prompt"], prompt]
     for key, value in (("model", model), ("provider", provider),
                        ("thinking", thinking), ("tools", tools),
                        ("exclude_tools", exclude_tools)):
@@ -222,15 +228,44 @@ def build_agent_argv(bin_name: str, prompt: str, *, model: str = "",
             raise ValueError(
                 f"agent adapter for {bin_name!r} does not support {key}")
         cmd.extend([*flags[key], value])
-    if session_flags:
+    if session_flags and not session_led:
         cmd.extend(session_flags)
-    cmd.extend(agent_extra_args(bin_name))
+    # Extra args are appended with dedup against tokens already present:
+    # shared options (e.g. --approve-for-me inside a session-led template)
+    # must not be handed to the CLI twice; leading placement wins.
+    seen = set(cmd)
+    cmd.extend(token for token in agent_extra_args(bin_name)
+               if token not in seen)
     return cmd
 
 
 def agent_prompt_index(bin_name: str = "") -> int:
     """Index of the prompt value in argv built by :func:`build_agent_argv`."""
+    if agent_session_argv_layout(bin_name or AGENT_BIN) == "led":
+        for flags in _configured_session_flag_sets(bin_name or AGENT_BIN):
+            for index, token in enumerate(flags, 1):
+                if "{prompt}" in token:
+                    return index
     return 1 + len(agent_argument_flags(bin_name or AGENT_BIN)["prompt"])
+
+
+def agent_session_argv_layout(bin_name: str) -> str:
+    """Return whether configured session argv leads or trails the prompt."""
+    return ("led" if any("{prompt}" in token
+                         for flags in _configured_session_flag_sets(bin_name)
+                         for token in flags) else "tail")
+
+
+def _configured_session_flag_sets(bin_name: str) -> list[list[str]]:
+    """Return valid configured session flag templates for layout inspection."""
+    configured = _agent_section(bin_name or AGENT_BIN).get("session_flags")
+    if configured is None:
+        configured = _AGENT_CFG.get("session_flags")
+    if not isinstance(configured, dict):
+        return []
+    return [list(flags) for flags in configured.values()
+            if isinstance(flags, (list, tuple)) and flags
+            and all(isinstance(flag, str) for flag in flags)]
 
 
 def agent_preflight_errors(bin_name: str) -> list[str]:
@@ -515,10 +550,30 @@ _DEFAULT_SESSION_FLAGS = {
     "fork": ["--fork", "{session}"],
 }
 
+
+class _SessionFlags(list):
+    """Rendered argv tokens carrying the logical session context."""
+
+    def __init__(self, values: list[str], kind: str, session_id: str,
+                 session_name: str):
+        super().__init__(values)
+        self.kind = kind
+        self.session_id = session_id
+        self.session_name = session_name
+
+
+def agent_capture_thread_id(bin_name: str = "") -> bool:
+    """Whether the selected provider exposes a capturable thread id."""
+    return _bool_setting(
+        _agent_section(bin_name or AGENT_BIN), "capture_thread_id", False)
+
+
 def agent_session_flags(key: str, session_id: str, session_name: str,
-                        bin_name: str = "") -> list:
+                        bin_name: str = "",
+                        provider_session: Optional[str] = None) -> list:
     """Resolve session flags for a call (start/continue/fork), replacing
-    {session} and {name} placeholders. Per-agent override
+    {session} and {name} placeholders. A {prompt} placeholder is retained
+    for :func:`build_agent_argv` to render at the session-led position. Per-agent override
     (agent.agents.<bin>.session_flags) wins over agent.session_flags,
     then pi-style defaults — so a non-pi agent CLI can point these at its
     own continue-session flags without touching shared config (G line)."""
@@ -527,12 +582,15 @@ def agent_session_flags(key: str, session_id: str, session_name: str,
         configured = _AGENT_CFG.get("session_flags")
     cfg = configured if isinstance(configured, dict) else {}
     flags = cfg.get(key)
-    if (not isinstance(flags, (list, tuple)) or not flags
+    if (not isinstance(flags, (list, tuple))
             or not all(isinstance(flag, str) for flag in flags)):
         if flags is not None:
             log.warning("Config session_flags.%s must be a string list; using defaults", key)
         flags = _DEFAULT_SESSION_FLAGS[key]
-    return [f.replace("{session}", session_id).replace("{name}", session_name) for f in flags]
+    rendered_session = session_id if provider_session is None else provider_session
+    values = [f.replace("{session}", rendered_session).replace("{name}", session_name)
+              for f in flags]
+    return _SessionFlags(values, key, session_id, session_name)
 
 def _session_flags(key: str, session_id: str, session_name: str) -> list:
     """Backward-compatible alias resolving flags for the configured bin."""

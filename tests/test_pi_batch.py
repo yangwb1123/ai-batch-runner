@@ -752,6 +752,91 @@ def _recording_agent(tmp_path, args_log):
     return agent
 
 
+def _codex_headless_agent(tmp_path, args_log, thread_id):
+    agent = tmp_path / "codex-headless.sh"
+    agent.write_text(
+        f"#!/bin/sh\nprintf '%s\\n' \"$@\" >> {args_log}\n"
+        f"echo '{{\"type\":\"thread.started\",\"thread_id\":\"{thread_id}\"}}'\n"
+        "echo done\n",
+        encoding="utf-8",
+    )
+    agent.chmod(0o755)
+    return agent
+
+
+def _enable_codex_thread_capture(mod, monkeypatch, agent):
+    monkeypatch.setattr(mod.config, "AGENT_BIN", str(agent))
+    monkeypatch.setattr(mod.config, "_AGENT_CFG", {})
+    monkeypatch.setattr(mod.config, "_AGENTS_CFG", {str(agent): {
+        "argument_flags": {"prompt": ["exec"]},
+        "capture_thread_id": True,
+        "session_flags": {
+            "start": [],
+            "continue": ["exec", "resume", "{session}", "{prompt}"],
+            "fork": ["exec", "fork", "{session}", "{prompt}"],
+        },
+        "extra_args": ["--approve-for-me", "--json"],
+    }})
+
+
+def test_codex_thread_mapping_drives_second_headless_invocation(tmp_path, monkeypatch):
+    from pbatch.session import provider_session_path
+    thread_id = "01a0272d-66ab-74f1-8891-1013ac2cb87a"
+    args_log = tmp_path / "args.log"
+    agent = _codex_headless_agent(tmp_path, args_log, thread_id)
+    mod = load_batch()
+    _enable_codex_thread_capture(mod, monkeypatch, agent)
+    name, sid = "review bad/name", "session-1"
+    first = mod.run_task(
+        mod.Task(prompt="first", cwd=str(tmp_path)),
+        session_flags=mod._session_flags("start", sid, name), session_name=name)
+    mapping = provider_session_path(str(tmp_path), name, sid)
+    assert first.success and mapping.name == "review_bad_name.session-1.codex-thread"
+    assert mapping.read_text(encoding="utf-8") == thread_id
+    second = mod.run_task(
+        mod.Task(prompt="second", cwd=str(tmp_path)),
+        session_flags=mod._session_flags("continue", sid, name), session_name=name)
+    assert second.success
+    assert args_log.read_text(encoding="utf-8").splitlines() == [
+        "exec", "first", "--approve-for-me", "--json",
+        "exec", "resume", thread_id, "second", "--approve-for-me", "--json",
+    ]
+
+
+def test_codex_thread_capture_skips_new_mode(tmp_path, monkeypatch):
+    thread_id = "01a0272d-66ab-74f1-8891-1013ac2cb87a"
+    agent = _codex_headless_agent(tmp_path, tmp_path / "args.log", thread_id)
+    mod = load_batch()
+    _enable_codex_thread_capture(mod, monkeypatch, agent)
+    result = mod.run_task(mod.Task(prompt="fresh", cwd=str(tmp_path)))
+    assert result.success
+    assert not (tmp_path / ".pi-batch" / "sessions").exists()
+
+
+def test_invalid_codex_thread_first_lines_are_silent(tmp_path, monkeypatch, caplog):
+    from pbatch import runner
+    monkeypatch.setattr(runner.config, "AGENT_BIN", "codex-test")
+    monkeypatch.setattr(runner.config, "_AGENTS_CFG", {
+        "codex-test": {"capture_thread_id": True}})
+    caplog.clear()
+    runner._capture_codex_thread(["not-json\n"], "work", "sid-1", str(tmp_path))
+    runner._capture_codex_thread(
+        ['{"type":"thread.started","thread_id":"bad"}\n'],
+        "work", "sid-2", str(tmp_path))
+    assert not (tmp_path / ".pi-batch" / "sessions").exists()
+    assert not caplog.records
+
+
+def test_provider_session_mapping_read_is_bounded(tmp_path, caplog):
+    from pbatch.session import provider_session_path, resolve_provider_session
+    path = provider_session_path(str(tmp_path), "work", "sid")
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"x" * 4097)
+    assert resolve_provider_session(
+        str(tmp_path), "work", "sid", "continue", "codex") == ("sid", False)
+    assert "exceeds 4096 bytes" in caplog.text
+
+
 def test_shared_session_flags_sequence(tmp_path):
     """Shared mode: the first call starts the session (with --name), later
     calls continue it (session id only)."""

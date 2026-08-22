@@ -1,0 +1,65 @@
+# Phase 1 (T6) — headless runner 的 codex thread 捕获与 session 延续
+# 让 --session-mode shared/per-stage 在 codex agent 下真正跨任务延续 provider 会话。
+# 依据：docs/CODEX_CLI_TUI_DESIGN.md §7.1（provider_session_id 与 session_id 分离）。
+tasks:
+  - prompt: |
+      为 headless runner 增加「codex provider thread 映射」：任务运行后用 stdout 首行
+      thread.started 的 thread_id 写映射文件；后续 continue/fork 构建 argv 时用映射值
+      替换 {session}。允许修改：pbatch/runner.py、pbatch/config.py、pbatch/session.py、
+      pi-batch.yaml、tests/test_pi_batch.py、tests/test_agent_adapter.py、
+      tests/test_tui_adapter_codex.py；其他文件不动。
+
+      ## 设计
+      1. 映射文件：data_dir(cwd)/sessions/<safe(name)>.<sid>.codex-thread
+         （config.data_dir 已有函数；safe name = 仅 [A-Za-z0-9._-] 否则替换为 _）。
+         内容为一行 thread_id（无换行噪声）；读取有界（≤4096 字节，超限当作无效并警告）。
+      2. 捕获（runner）：新增模块内函数 _capture_codex_thread(stdout_lines, name, sid,
+         workdir)：
+         - 仅当 config 启用 `agent.agents.<bin>.capture_thread_id: true`（默认 false）
+           且 stdout_lines 非空时执行；
+         - 解析 stdout 首行（忽略空行/前导空白）为 JSON：type == "thread.started" 且
+           thread_id 匹配 ^01[a-z0-9-]+$（codex UUID 形态）→ 原子写映射文件
+           （临时文件 + rename；写失败只告警不失败任务）；
+         - 首行不是有效 JSON 或类型不符 → 不写、不告警（普通 agent 无 thread 语义）。
+      3. 使用（config/session）：新增 resolve_provider_session(cwd, name, sid, kind,
+         bin_name)：
+         - kind=="continue" 或 "fork" 时先查映射文件：存在 → 返回 (thread_id, True)
+           （调用方把 {session} 替换为 thread_id）；否则返回 (sid, False)；
+         - 谁调用：runner._memory_invocation 构造 flags 前，若 AGENT_BIN 的
+           session_flags 含 {prompt} 且 kind 为 continue/fork，把 flags 里的 {session}
+           替换为映射值——实现为 config.agent_session_flags 增加可选参数
+           provider_session: Optional[str] = None：非 None 时替换 {session} 为它
+           （缺省行为不变）。
+      4. runner 接线：
+         - run_task 完成（_result_from_proc 之后、_finish_result 之前）调用
+           _capture_codex_thread(stdout_lines, effective_name, session_id, workdir)；
+           仅当 task 的 session_flags 非 None（即 shared/per-stage 显式会话）时执行，
+           普通 new 模式跳过（避免每任务写文件）；
+         - _memory_invocation：当 config.agent_session_flags 解析出的 flags 用于
+           continue/fork 时，先 resolve_provider_session 拿 thread_id 再渲染 flags。
+           具体：_session_flags(kind, sid, name) 逻辑保持，新增一层“渲染前替换”。
+      5. pi-batch.yaml agents.codex 段新增：
+         capture_thread_id: true
+         session_flags: {start: [], continue: ["exec","resume","{session}","{prompt}"],
+                        fork: ["exec","fork","{session}","{prompt}"]}
+         （注释说明：{session} 语义 = codex thread_id；映射由 runner 捕获；start 空 =
+         新会话无前缀参数）。
+         注意与已有 extra_args=["--approve-for-me","--json"] 组合：session-led 布局下
+         extra_args 仍追加尾部（codex resume 接受尾部 --json/--approve-for-me，已实测）。
+      6. 测试：
+         - tests/test_pi_batch.py 新增（fake agent 风格）：agent 脚本 echo 一行
+           {"type":"thread.started","thread_id":"01a…"} + 其余；--session-mode shared
+           （或直接调 run_task + session_flags）跑两轮：第一轮后映射文件存在且内容正确；
+           第二轮构建的 argv 中 {session} 被替换为捕获的 thread_id（断言 agent 收到的
+           参数或 via monkeypatch config.agent_session_flags 记录）；
+         - 捕获仅在显式会话下发生（new 模式不写文件）；
+         - 非法 thread_id / 非 JSON 首行 → 不写文件不告警；
+         - config.agent_session_flags 的 provider_session 参数单测；
+         - 既有全部测试保持绿色（特别是 test_agent_adapter 的 led/tail 布局回归锚点）。
+      7. 门禁：python -m pytest tests/test_pi_batch.py tests/test_agent_adapter.py
+         tests/test_tui_adapter_codex.py tests/test_tui_protocol.py tests/test_tui.py
+         -q 全绿；python quality.py --strict . 不新增违规；python pi-batch.py eval 不回归。
+      完成后结论写入 docs/tui-phase0/t6-session-map.md：数据流图（首轮捕获→映射文件→
+      次轮 resume）、fallback 语义（映射缺失时的行为）、遗留事项。
+    output: docs/tui-phase0/t6-session-map.md
+    validate: pyquality
