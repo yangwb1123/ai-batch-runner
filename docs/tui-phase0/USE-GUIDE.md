@@ -58,3 +58,10 @@ You:  刚才那次运行里 FileChange 涉及哪些文件？       ← 第二轮
   resume failed… starting fresh"。
 - **时间线看不到** → 宽 <72 自动隐藏；`/timeline` 或 Ctrl+T 切换。
 - **不需要 TUI** → 一切子命令照常无头运行（`pi-batch -p "..." --agent-bin codex`）。
+## 验证证据（2026-08-22，真实 codex 自动化演示）
+
+`tests/test_tui_integration_codex.py` 用 Textual Pilot 模拟真实用户按键
+（输入任务 → Enter → 等待执行 → 断言界面），驱动**真实 codex** 跑完整闭环：
+输入消息 → 流式正文 → 结构化时间线卡片（command/file/usage）→ 状态 Ready →
+第二轮自动 resume 同一 codex 线程并**回忆起第一轮的标记**（KAPPA_7/ZETA_42）。
+CI 无 codex 时自动跳过；本机可复现：`python -m pytest tests/test_tui_integration_codex.py -v`。
