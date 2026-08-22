@@ -239,8 +239,11 @@ def _inject_route_models(tasks) -> None:
             continue
         if plan.model:
             task.model = plan.model
-            log.info("ROUTE: %s -> model '%s' (tier %s%s)", task.prompt[:40],
-                     plan.model, plan.tier,
+        if plan.thinking and not task.thinking:
+            task.thinking = plan.thinking
+        if plan.model or plan.thinking:
+            log.info("ROUTE: %s -> model '%s' thinking '%s' (tier %s%s)",
+                     task.prompt[:40], task.model, task.thinking, plan.tier,
                      ", downgraded" if plan.downgraded else "")
 
 

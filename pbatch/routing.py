@@ -29,10 +29,11 @@ TIER_RANK = {tier: index for index, tier in enumerate(TIER_ORDER)}
 
 @dataclass
 class RoutingPlan:
-    """One routing decision: tier, model, budget state, and reasons."""
+    """One routing decision: tier, model, thinking, budget state, reasons."""
 
     tier: str
     model: str
+    thinking: str = ""  # reasoning effort for the tier ("" = agent default)
     remaining_ratio: Optional[float] = None
     downgraded: bool = False
     reasons: list[str] = field(default_factory=list)
@@ -43,6 +44,7 @@ class RoutingPlan:
         return {
             "tier": self.tier,
             "model": self.model,
+            "thinking": self.thinking,
             "remaining_ratio": self.remaining_ratio,
             "downgraded": self.downgraded,
             "reasons": self.reasons,
@@ -86,12 +88,20 @@ def difficulty_tier(profile: dict, workload: int = 0) -> str:
 
 
 def _tiers() -> dict:
+    """tier -> {model, thinking}; thinking inherits the top-level
+    default_thinking when the tier omits it (cost play: cheap model +
+    max reasoning keeps quality close to a旗舰 model)."""
     raw = _routing_config().get("tiers") or {}
+    default_thinking = str(_routing_config().get("default_thinking", "") or "")
     tiers: dict = {}
     for name in TIER_ORDER:
         entry = raw.get(name)
-        if isinstance(entry, dict) and isinstance(entry.get("model"), str):
-            tiers[name] = str(entry["model"])
+        if not isinstance(entry, dict):
+            continue
+        tiers[name] = {
+            "model": str(entry.get("model", "") or ""),
+            "thinking": str(entry.get("thinking", "") or default_thinking),
+        }
     return tiers
 
 
@@ -112,7 +122,9 @@ def route_task(desc: str, *, profile: Optional[dict] = None,
     reasons.append(f"profile mode={p.get('mode', 0)} "
                    f"workflow={p.get('workflow', {}).get('level', '-')}")
     tiers = _tiers()
-    model = str(tiers.get(tier, ""))
+    tier_entry = tiers.get(tier, {})
+    model = str(tier_entry.get("model", ""))
+    thinking = str(tier_entry.get("thinking", ""))
     if not model:
         model = config.AGENT_DEFAULT_MODEL or ""
     remaining = _remaining_ratio()
@@ -124,12 +136,15 @@ def route_task(desc: str, *, profile: Optional[dict] = None,
         if remaining < threshold and TIER_RANK.get(tier, 0) > TIER_RANK.get(min_tier, 0):
             downgraded = True
             tier = min_tier
-            model = str(tiers.get(tier, "")) or model
+            fallback = tiers.get(tier, {})
+            model = str(fallback.get("model", "")) or model
+            thinking = str(fallback.get("thinking", "")) or thinking
             reasons.append(
                 f"daily quota remaining {remaining:.0%} < {threshold:.0%}: "
                 f"downgraded to '{tier}'")
-    return RoutingPlan(tier=tier, model=model, remaining_ratio=remaining,
-                       downgraded=downgraded, reasons=reasons,
+    return RoutingPlan(tier=tier, model=model, thinking=thinking,
+                       remaining_ratio=remaining, downgraded=downgraded,
+                       reasons=reasons,
                        profile_mode=int(p.get("mode", 0) or 0))
 
 
@@ -154,6 +169,8 @@ def route_main(argv: Optional[list[str]] = None) -> int:
         return 0
     print(f"tier     {plan.tier}" + ("  (DOWNGRADED)" if plan.downgraded else ""))
     print(f"model    {plan.model or '(agent default)'}")
+    if plan.thinking:
+        print(f"thinking {plan.thinking}")
     if plan.remaining_ratio is not None:
         print(f"quota    {plan.remaining_ratio:.0%} remaining today")
     for reason in plan.reasons:

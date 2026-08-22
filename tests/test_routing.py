@@ -102,3 +102,29 @@ def test_inject_only_untouched_models(monkeypatch):
     assert explicit.model == "explicit-model"  # never overridden
     assert blank.model == "routed-model"
     assert calls == ["b"]
+
+def test_plan_carries_thinking_from_tier(monkeypatch):
+    monkeypatch.setattr(routing, "_routing_config", lambda: {
+        "enabled": True, "default_thinking": "max",
+        "tiers": {"low": {"model": "flash"},
+                  "high": {"model": "big", "thinking": "medium"}},
+        "downgrade": {"enabled": True, "remaining_ratio_threshold": 0.25,
+                      "min_tier": "low"},
+    })
+    low = route_task("x", profile=_profile(1, "L1_standard", 0.1))
+    assert low.thinking == "max"  # inherits default_thinking
+    high = route_task("y", profile=_profile(3, "L3_platform"))
+    assert high.thinking == "medium"  # tier-level wins
+
+
+def test_inject_thinking_only_when_unset(monkeypatch):
+    from pbatch import cli_batch
+    from pbatch.models import Task
+    monkeypatch.setattr(routing, "route_task", lambda prompt: routing.RoutingPlan(
+        tier="low", model="flash", thinking="max", reasons=[]))
+    monkeypatch.setattr(routing, "routing_enabled", lambda: True)
+    set_task = Task(prompt="s", thinking="medium")
+    blank = Task(prompt="b")
+    cli_batch._inject_route_models([set_task, blank])
+    assert set_task.thinking == "medium"  # explicit thinking never overridden
+    assert blank.thinking == "max" and blank.model == "flash"
