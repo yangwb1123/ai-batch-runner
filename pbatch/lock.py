@@ -80,28 +80,29 @@ def _redacted_argv(argv: list) -> str:
     return " ".join(out)
 
 
-def _payload(cwd: str) -> dict:
+def _payload(cwd: str, domain: str = "") -> dict:
     return {
         "pid": os.getpid(),
         "start": time.time(),
         "host": os.uname().nodename,
         "argv": _redacted_argv(sys.argv),
         "token": uuid.uuid4().hex,
+        "domain": domain or "default",
     }
 
 
 def acquire_lock(cwd: str = "", no_lock: bool = False,
-                 wait_minutes: int = 0) -> Optional[Path]:
-    """Create the lock file; raises SystemExit(5) when another live
-    instance holds it (or the lock file is unparseable). With
-    wait_minutes > 0 the caller queues: poll every 30s until the holder
-    releases or the budget expires (real-world lesson: collaborators
-    share one machine; refuse-and-exit forces manual retry loops).
-    Returns the lock path (caller must release)."""
+                 wait_minutes: int = 0, domain: str = "") -> Optional[Path]:
+    """Exclusive-per-cwd lock (exit 5 on a live holder; queue with
+    wait_minutes). Multi-instance: a NON-EMPTY --run-domain different
+    from the live holder's non-default domain runs in parallel WITHOUT
+    the lock (outputs/sessions must stay disjoint — caller's duty);
+    same/default domains keep excluding (fail closed). Returns the lock
+    path, or None when running lock-free (--no-lock / parallel domain)."""
     if no_lock:
         return None
     lock_path = Path(cwd or os.getcwd()) / LOCK_NAME
-    payload = _payload(cwd)
+    payload = _payload(cwd, domain)
     # Atomic publication: the payload is fully written to a unique temp
     # file, then hard-linked into place. os.link fails with EEXIST when a
     # lock is already present, so no reader can observe a partial file
@@ -116,8 +117,10 @@ def acquire_lock(cwd: str = "", no_lock: bool = False,
             if wait_minutes > 0:
                 _wait_for_lock(lock_path, wait_minutes)
             else:
+                if _parallel_domain_allowed(lock_path, domain):
+                    return None  # multi-instance: different run domain
                 _reject_or_break(lock_path)
-            return acquire_lock(cwd, no_lock=False)  # stale lock broken; retry
+            return acquire_lock(cwd, no_lock=False, domain=domain)  # stale broken
     finally:
         try:
             os.unlink(tmp_name)
@@ -155,6 +158,27 @@ def _read_holder(lock_path: Path) -> dict:
         return {}
 
 
+def _parallel_domain_allowed(lock_path: Path, domain: str) -> bool:
+    """Multi-instance decision: the holder must be ALIVE and both sides
+    must declare different NON-default run domains. default never runs
+    parallel (historical exclusive contract preserved unlabelled)."""
+    holder = _read_holder(lock_path)
+    pid = int(holder.get("pid", 0) or 0)
+    holder_domain = str(holder.get("domain", "") or "default")
+    request_domain = domain or "default"
+    if not (pid and _alive(pid)):
+        return False  # stale: break the lock instead
+    if (holder_domain == "default" or request_domain == "default"
+            or holder_domain == request_domain):
+        return False
+    log.warning(
+        "Multi-instance mode: holder runs domain '%s', this run declares "
+        "domain '%s' — running in parallel WITHOUT the lock. Keep outputs "
+        "and session files disjoint (your responsibility); overlapping "
+        "writes are not detected.", holder_domain, request_domain)
+    return True
+
+
 def _reject_or_break(lock_path: Path) -> None:
     """Refuse when the holder is alive or the lock is unparseable (fail
     closed: a lock we cannot read is never free to take); otherwise break
@@ -165,7 +189,8 @@ def _reject_or_break(lock_path: Path) -> None:
     if pid and _alive(pid):
         age_h = (time.time() - float(holder.get("start", 0) or 0)) / 3600
         log.error("Another pi-batch instance is running (pid=%s, host=%s, argv=%s, age=%.1fh). "
-                  "Refusing to start (exit %d). Use --no-lock to override.",
+                  "Refusing to start (exit %d). Use --no-lock to override, or a different "
+                  "--run-domain to run multi-instance.",
                   pid, holder.get("host", "?"), holder.get("argv", "?"), age_h, LOCK_EXIT_CODE)
         raise SystemExit(LOCK_EXIT_CODE)
     if not pid:
