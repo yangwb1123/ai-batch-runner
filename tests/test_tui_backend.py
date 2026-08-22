@@ -54,6 +54,10 @@ class FakeStructuredAdapter:
     def start_turn(self, request):
         self.turn_request = request
         self.handle = SimpleNamespace(turn_id="fake-turn")
+        # Real adapters only learn the provider thread id while consuming
+        # events (thread.started); fakes preset it at construction — a trap.
+        if getattr(self, "late_thread", "") and not self._provider_session_id:
+            self._provider_session_id = self.late_thread
         self.started.set()
         return self.handle
 
@@ -369,7 +373,9 @@ def test_structured_turn_resumes_previous_provider_thread(tmp_path):
     second = backend.run_turn_structured("second turn", adapter_factory=factory)
     assert second.success
     assert adapters[1].resume_requests == [{
-        "provider_session_id": "thread-1", "workspace_id": str(tmp_path),
+        "provider_session_id": "thread-1",
+        "session_id": "multi-turn",
+        "workspace_id": str(tmp_path),
     }]
     assert adapters[1].session_calls == 0
 
@@ -395,6 +401,25 @@ def test_structured_resume_failure_falls_back_to_fresh_session(tmp_path):
     result = backend.run_turn_structured("retry", adapter_factory=factory)
     assert result.success
     assert adapters[0].session_calls == 1  # fell back to a fresh session
+
+
+def test_structured_turn_captures_thread_id_after_turn_completes(tmp_path):
+    """The provider thread id appears DURING the turn (thread.started), so
+    the backend must read it after the turn, not at session start — a
+    timing bug the preset-value fake adapter used to hide (real codex e2e
+    showed provider_thread_id staying empty)."""
+    adapter = FakeStructuredAdapter(
+        FakeProc([_runtime_event("message.delta", text="ok"),
+                  _runtime_event("turn.completed", elapsed_ms=5)]))
+    adapter.late_thread = "thread-late"
+    backend = TUIBackend(cwd=str(tmp_path), agent="codex", memory_mode="off",
+                         session_id="late-capture")
+
+    result = backend.run_turn_structured(
+        "work", adapter_factory=lambda _cwd: adapter)
+
+    assert result.success
+    assert backend.provider_thread_id == "thread-late"
 
 
 def test_structured_cancel_interrupts_current_adapter_handle(tmp_path):

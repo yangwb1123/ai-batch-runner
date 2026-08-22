@@ -36,7 +36,11 @@ from .tui_runtime import (
     UnsupportedOperation,
 )
 
-DEFAULT_ARGV_PREFIX = ("codex", "exec", "--json", "--approve-for-me")
+DEFAULT_ARGV_PREFIX = ("codex", "exec", "--approve-for-me", "--json")
+# Order matters: resume/fork insert before the TAIL options (the first
+# "-" token after "exec" stays in the head). `codex exec resume` rejects
+# a trailing --approve-for-me but accepts a trailing --json, so approve
+# must be in the head and --json in the tail (T5 measured contract).
 DEFAULT_QUEUE_SIZE = 256
 _IGNORED_STDERR = "Reading additional input from stdin..."
 _ITEM_TYPES = frozenset({"agent_message", "command_execution", "file_change", "todo_list"})
@@ -148,12 +152,19 @@ class CodexExecAdapter:
         if not provider_id:
             raise ValueError(f"{mode} session requires provider_session_id")
         workspace_id = str(_request_value(request, "workspace_id", "") or "")
+        session_id = str(_request_value(request, "session_id", "") or "")
         with self._lock:
             self._provider_session_id = provider_id
             self._session.provider_session_id = provider_id
             self._session_mode = mode
             if workspace_id:
                 self._session.workspace_id = workspace_id
+            # A freshly constructed adapter owns a random session id; the
+            # coordinator's session id must win so start_turn's session
+            # check accepts the turn (resume via a NEW adapter instance —
+            # the TUI multi-turn path).
+            if session_id:
+                self._session.session_id = session_id
             self._reset_session_announcement()
         return self._session
     def _ensure_session_replaceable(self) -> None:

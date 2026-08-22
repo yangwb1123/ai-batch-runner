@@ -155,7 +155,7 @@ def test_real_jsonl_sample_maps_sequence_payloads_and_terminal_state():
         "command.completed", "file.changed", "file.changed", "message.delta",
         "plan.updated", "usage.updated", "turn.completed",
     ]
-    assert spawn.calls == [(('codex', 'exec', '--json', '--approve-for-me',
+    assert spawn.calls == [(('codex', 'exec', '--approve-for-me', '--json',
                               'PROMPT'), '/tmp/project')]
     assert [event.seq for event in events] == list(range(1, len(events) + 1))
     assert len({event.event_id for event in events}) == len(events)
@@ -219,6 +219,27 @@ def test_capabilities_are_truthful_and_unsupported_operations_are_typed():
     adapter.close()
 
 
+def test_resume_with_coordinator_session_id_accepts_next_turn():
+    """A NEW adapter instance resuming a thread must adopt the
+    coordinator session id, or start_turn's session check rejects the
+    turn (real TUI multi-turn failure; the same-instance fake path missed
+    it)."""
+    resumed = FakeProc([
+        _line({"type": "thread.started", "thread_id": THREAD_ID}),
+        _line({"type": "turn.started"}),
+        _line({"type": "turn.completed", "usage": {}}),
+    ])
+    adapter = CodexExecAdapter("/tmp/project", spawn=FakeSpawn(resumed))
+    adapter.initialize(InitializeRequest(workspace_id="ws_test"))
+    adapter.resume_session({"provider_session_id": THREAD_ID,
+                            "session_id": "coordinator-session-id"})
+    handle = adapter.start_turn(StartTurnRequest(
+        "continue", run_id="run_r", turn_id="turn_r"))
+    assert handle.wait(1)
+    assert handle.session_id == "coordinator-session-id"
+    adapter.close()
+
+
 def test_captured_thread_id_drives_resume_argv_and_session_event_mode():
     first = FakeProc([
         _line({"type": "thread.started", "thread_id": THREAD_ID}),
@@ -242,8 +263,8 @@ def test_captured_thread_id_drives_resume_argv_and_session_event_mode():
     adapter.close()
     events = list(adapter.events())
     assert spawn.calls[1][0] == (
-        "codex", "exec", "resume", THREAD_ID, "continue",
-        "--json", "--approve-for-me")
+        "codex", "exec", "--approve-for-me", "resume", THREAD_ID, "continue",
+        "--json")
     sessions = [event for event in events if event.kind == "session.created"]
     assert sessions[0].payload["provider_session_id"] == THREAD_ID
     assert sessions[1].payload["mode"] == "resumed"
@@ -279,13 +300,13 @@ def test_fork_argv_records_new_provider_thread_id():
     adapter.close()
     events = list(adapter.events())
     assert spawn.calls[1][0] == (
-        "codex", "exec", "fork", THREAD_ID, "branch work",
-        "--json", "--approve-for-me")
+        "codex", "exec", "--approve-for-me", "fork", THREAD_ID,
+        "branch work", "--json")
     assert adapter.session.provider_session_id == child_id
     assert adapter._provider_session_id == child_id
     assert spawn.calls[2][0] == (
-        "codex", "exec", "resume", child_id, "continue branch",
-        "--json", "--approve-for-me")
+        "codex", "exec", "--approve-for-me", "resume", child_id,
+        "continue branch", "--json")
     assert [event for event in events if event.kind == "session.created"][-1].payload[
         "mode"] == "forked"
 

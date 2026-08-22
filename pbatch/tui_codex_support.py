@@ -35,14 +35,21 @@ def _runtime_info() -> RuntimeInfo:
     return RuntimeInfo(CODEX_EXEC_RUNTIME_NAME, RUNTIME_PROTOCOL_VERSION, capabilities)
 
 
+_HEAD_ONLY_OPTIONS = frozenset({"--approve-for-me"})
+
+
 def _option_tail_index(argv: tuple[str, ...]) -> int:
-    """Find Codex exec's trailing option block for resume/fork insertion."""
+    """Find Codex exec's trailing option block for resume/fork insertion.
+    'codex exec resume' rejects a TRAILING --approve-for-me but accepts a
+    trailing --json (measured 0.149 contract), so head-only options are
+    skipped and the tail starts at the first other "-" token."""
     try:
         exec_index = argv.index("exec")
     except ValueError:
         exec_index = 0
     return next((index for index in range(exec_index + 1, len(argv))
-                 if argv[index].startswith("-")), len(argv))
+                 if argv[index].startswith("-")
+                 and argv[index] not in _HEAD_ONLY_OPTIONS), len(argv))
 
 
 def _default_spawn(argv: Sequence[str], cwd: str) -> subprocess.Popen[str]:

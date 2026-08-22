@@ -151,6 +151,11 @@ def _invoke_structured(
         consumer.start()
         timed_out = _await_structured(
             adapter, control, state, started, backend.timeout, is_cancelled)
+        # The provider thread id is only known AFTER the turn: real adapters
+        # capture it from the first thread.started event while consuming
+        # events (fake adapters preset it at construction — a trap). Without
+        # this post-turn read, multi-turn chats never resume.
+        _store_provider_thread(adapter, backend)
         return _structured_result(
             backend, task, state, started, timed_out, is_cancelled)
     finally:
@@ -174,6 +179,7 @@ def _adopt_provider_session(adapter: Any, backend: Any, notify: Notify) -> None:
         try:
             adapter.resume_session({
                 "provider_session_id": thread_id,
+                "session_id": backend.session_id,
                 "workspace_id": backend.cwd,
             })
             notify("status", f"resuming provider thread {thread_id[:12]}…")
@@ -184,15 +190,19 @@ def _adopt_provider_session(adapter: Any, backend: Any, notify: Notify) -> None:
         "session_id": backend.session_id, "workspace_id": backend.cwd,
         "name": backend.session_name,
     })
-    if hasattr(adapter, "session") and callable(adapter.session):
-        _store_provider_thread(adapter, backend)
 
 
 def _store_provider_thread(adapter: Any, backend: Any) -> None:
     """Persist the provider thread id observed during this turn so later
-    turns can resume it. Best effort: any failure only logs."""
+    turns can resume it. ``session`` may be a property (CodexExecAdapter)
+    or a callable (fakes); both are handled. Best effort: any failure
+    only logs."""
     try:
-        session = adapter.session()
+        session = getattr(adapter, "session", None)
+        if callable(session):
+            session = session()
+        if session is None:
+            return
         thread_id = str(getattr(session, "provider_session_id", "") or "")
         if thread_id:
             setattr(backend, "provider_thread_id", thread_id)
