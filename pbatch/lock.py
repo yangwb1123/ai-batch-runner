@@ -80,7 +80,8 @@ def _redacted_argv(argv: list) -> str:
     return " ".join(out)
 
 
-def _payload(cwd: str, domain: str = "") -> dict:
+def _payload(cwd: str, domain: str = "", outputs: tuple = (),
+             session_name: str = "") -> dict:
     return {
         "pid": os.getpid(),
         "start": time.time(),
@@ -88,21 +89,30 @@ def _payload(cwd: str, domain: str = "") -> dict:
         "argv": _redacted_argv(sys.argv),
         "token": uuid.uuid4().hex,
         "domain": domain or "default",
+        "outputs": list(outputs)[:MAX_DECLARED_OUTPUTS],
+        "session_name": session_name or "",
     }
 
 
+MAX_DECLARED_OUTPUTS = 16
+
+
 def acquire_lock(cwd: str = "", no_lock: bool = False,
-                 wait_minutes: int = 0, domain: str = "") -> Optional[Path]:
-    """Exclusive-per-cwd lock (exit 5 on a live holder; queue with
-    wait_minutes). Multi-instance: a NON-EMPTY --run-domain different
-    from the live holder's non-default domain runs in parallel WITHOUT
-    the lock (outputs/sessions must stay disjoint — caller's duty);
-    same/default domains keep excluding (fail closed). Returns the lock
-    path, or None when running lock-free (--no-lock / parallel domain)."""
+                 wait_minutes: int = 0, domain: str = "",
+                 outputs: tuple = (), session_name: str = "") -> Optional[Path]:
+    """Multi-instance-aware lock. An instance that DECLARES its planned
+    outputs/session runs in parallel unless it conflicts with the live
+    holder: same non-empty session name, or overlapping output paths
+    (fail closed with the overlapping paths listed). Instances that
+    declare NOTHING keep the historical exclusive contract (exit 5), so
+    an unlabelled 7x24 loop can never silently double-write shared
+    state. --run-domain forces a separate domain (parallel always);
+    --wait-lock queues; --no-lock bypasses. Returns the lock path, or
+    None when running lock-free (--no-lock / parallel branch)."""
     if no_lock:
         return None
     lock_path = Path(cwd or os.getcwd()) / LOCK_NAME
-    payload = _payload(cwd, domain)
+    payload = _payload(cwd, domain, outputs, session_name)
     # Atomic publication: the payload is fully written to a unique temp
     # file, then hard-linked into place. os.link fails with EEXIST when a
     # lock is already present, so no reader can observe a partial file
@@ -117,8 +127,9 @@ def acquire_lock(cwd: str = "", no_lock: bool = False,
             if wait_minutes > 0:
                 _wait_for_lock(lock_path, wait_minutes)
             else:
-                if _parallel_domain_allowed(lock_path, domain):
-                    return None  # multi-instance: different run domain
+                if _parallel_or_conflict(lock_path, domain, outputs,
+                                         session_name):
+                    return None  # parallel branch (no lock held)
                 _reject_or_break(lock_path)
             return acquire_lock(cwd, no_lock=False, domain=domain)  # stale broken
     finally:
@@ -158,24 +169,54 @@ def _read_holder(lock_path: Path) -> dict:
         return {}
 
 
-def _parallel_domain_allowed(lock_path: Path, domain: str) -> bool:
-    """Multi-instance decision: the holder must be ALIVE and both sides
-    must declare different NON-default run domains. default never runs
-    parallel (historical exclusive contract preserved unlabelled)."""
+def _parallel_or_conflict(lock_path: Path, domain: str,
+                            outputs: tuple, session_name: str) -> bool:
+    """Decide parallel (True → run lock-free) vs conflict (False → exit 5).
+    - a currently DEAD holder is stale: break the lock (False → reject path
+      breaks it)
+    - both sides declare different NON-default domains: always parallel
+    - otherwise inspect declared outputs/sessions:
+      * overlap in output paths → conflict (False; listed by caller)
+      * same non-empty session_name → conflict
+      * request declares nothing → conflict (historical exclusive)
+      * disjoint declarations → parallel
+    """
     holder = _read_holder(lock_path)
     pid = int(holder.get("pid", 0) or 0)
     holder_domain = str(holder.get("domain", "") or "default")
     request_domain = domain or "default"
     if not (pid and _alive(pid)):
-        return False  # stale: break the lock instead
-    if (holder_domain == "default" or request_domain == "default"
-            or holder_domain == request_domain):
-        return False
+        return False  # stale lock: rejected, then broken by _reject_or_break
+    if (holder_domain != "default" and request_domain != "default"
+            and holder_domain != request_domain):
+        log.warning(
+            "Multi-instance mode: holder runs domain '%s', this run "
+            "declares domain '%s' — running in parallel WITHOUT the lock.",
+            holder_domain, request_domain)
+        return True
+    holder_outputs = {str(p) for p in holder.get("outputs", [])}
+    request_outputs = {str(p) for p in outputs}
+    overlap = sorted(holder_outputs & request_outputs)
+    holder_session = str(holder.get("session_name", "") or "")
+    if overlap:
+        log.error(
+            "Another pi-batch instance is running (pid=%s) and this run "
+            "declares OVERLAPPING output path(s): %s. Refusing to start "
+            "(exit %d) — use --run-domain or separate output paths.",
+            pid, ", ".join(overlap)[:400], LOCK_EXIT_CODE)
+        raise SystemExit(LOCK_EXIT_CODE)
+    if session_name and holder_session == session_name:
+        log.error(
+            "Another pi-batch instance is running (pid=%s) with the same "
+            "session name '%s' — parallel runs would interleave session "
+            "state. Refusing (exit %d); use a different --session-name.",
+            pid, session_name, LOCK_EXIT_CODE)
+        raise SystemExit(LOCK_EXIT_CODE)
+    if not request_outputs and not session_name:
+        return False  # unlabelled instance: keep exclusive contract
     log.warning(
-        "Multi-instance mode: holder runs domain '%s', this run declares "
-        "domain '%s' — running in parallel WITHOUT the lock. Keep outputs "
-        "and session files disjoint (your responsibility); overlapping "
-        "writes are not detected.", holder_domain, request_domain)
+        "Multi-instance mode: holder pid=%s declares disjoint outputs — "
+        "running in parallel WITHOUT the lock.", pid)
     return True
 
 

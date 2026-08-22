@@ -206,6 +206,32 @@ def _apply_verbosity(verbosity: int) -> None:
     logging.getLogger("pi-batch").setLevel(level)
 
 
+def _planned_outputs(args) -> list:
+    """Best-effort pre-scan of planned output paths for the multi-instance
+    lock: single-task --output plus task/pipeline YAML top-level
+    tasks[i].output / stages[i].output. Bounded to 16; dynamic/stdin
+    runs declare nothing and keep the exclusive contract."""
+    collected: list[str] = []
+    declared = getattr(args, "output", "") or ""
+    if declared and getattr(args, "prompt", ""):
+        collected.append(declared)
+    source = getattr(args, "source", None)
+    if source and isinstance(source, str) and Path(source).is_file():
+        try:
+            data = yaml.safe_load(Path(source).read_text(
+                encoding="utf-8", errors="replace"))
+        except Exception:
+            data = None
+        if isinstance(data, dict):
+            for task in data.get("tasks") or []:
+                if isinstance(task, dict) and task.get("output"):
+                    collected.append(str(task["output"]))
+            for stage in data.get("stages") or []:
+                if isinstance(stage, dict) and stage.get("output"):
+                    collected.append(str(stage["output"]))
+    return collected[:16]
+
+
 def main() -> None:
     if _dispatch_default_tui():
         return
@@ -235,7 +261,9 @@ def main() -> None:
     try:
         lock_path = acquire_lock(no_lock=args.no_lock or args.dry_run,
                                  wait_minutes=getattr(args, "wait_lock", 0),
-                                 domain=getattr(args, "run_domain", ""))
+                                 domain=getattr(args, "run_domain", ""),
+                                 outputs=tuple(_planned_outputs(args)),
+                                 session_name=getattr(args, "session_name", ""))
         mark_running()
     except SystemExit:
         unregister()
