@@ -5,7 +5,7 @@ from __future__ import annotations
 
 _TOP_LEVEL_FIELDS = frozenset(("stages", "decision_log", "archive_dir", "git_commit"))
 _STAGE_FIELDS = frozenset((
-    "name", "model", "provider", "from_dir", "from_outputs", "suffix",
+    "name", "agent", "model", "provider", "from_dir", "from_outputs", "suffix",
     "output_suffix", "mode", "workers", "aggregate", "validate",
     "validate_cmd", "meta", "meta_prompt", "role_dir", "role_keywords",
     "output_dir", "max_iterations", "max_roles_per_iteration", "meta_timeout",
@@ -17,19 +17,19 @@ _STAGE_FIELDS = frozenset((
     "or_tasks", "verify_experiment",
 ))
 _TASK_FIELDS = frozenset((
-    "prompt", "prompt_template", "output", "model", "provider", "thinking",
+    "prompt", "prompt_template", "output", "agent", "model", "provider", "thinking",
     "tools", "exclude_tools", "cwd", "timeout", "env", "validate",
     # `role` is descriptive metadata used by the shipped pipeline templates.
     # `validate_cmd` is the legacy spelling of the task-level `validate` alias.
     "role", "validate_cmd",
 ))
-_STRING_FIELDS = ("model", "provider", "from_dir", "suffix", "output_suffix",
+_STRING_FIELDS = ("agent", "model", "provider", "from_dir", "suffix", "output_suffix",
                   "meta_prompt", "role_dir", "role_keywords", "output_dir",
                   "from_prompt", "output", "cwd", "commit_message",
                   "gate_fix_prompt")
 _BOOL_FIELDS = ("aggregate", "meta", "relevance_enabled", "gate", "approval",
                 "commands_parallel", "git_commit", "or_tasks")
-_TASK_STRING_FIELDS = ("prompt", "prompt_template", "output", "model", "provider",
+_TASK_STRING_FIELDS = ("prompt", "prompt_template", "output", "agent", "model", "provider",
                        "thinking", "tools", "exclude_tools", "cwd", "role")
 _NULLABLE_TASK_STRINGS = ("model", "provider", "thinking", "tools", "exclude_tools")
 

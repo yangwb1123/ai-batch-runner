@@ -19,6 +19,7 @@ from .text_io import read_text_bounded
 class Stage:
     """One stage in a pipeline."""
     name: str
+    agent: str = ""      # T13: executor for this stage's tasks ("" = global)
     model: str = ""      # T11: model for the stage's orchestrator/role tasks
     provider: str = ""   # T11: provider override for the stage
     from_dir: str = ""
@@ -115,6 +116,7 @@ class Task:
 
     prompt: str
     output: str = ""
+    agent: str = ""  # per-task executor override ("" = config.AGENT_BIN)
     model: str = AGENT_DEFAULT_MODEL
     provider: str = ""
     thinking: str = ""
@@ -128,7 +130,7 @@ class Task:
 
     def to_cmd(self, session_flags: Optional[list] = None) -> list[str]:
         return config.build_agent_argv(
-            config.AGENT_BIN, self.prompt, model=self.model,
+            self.agent or config.AGENT_BIN, self.prompt, model=self.model,
             provider=self.provider, thinking=self.thinking, tools=self.tools,
             exclude_tools=self.exclude_tools, session_flags=session_flags)
 

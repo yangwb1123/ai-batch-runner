@@ -73,6 +73,7 @@ def _parse_stage_def(s: dict, global_git_commit: bool) -> Stage:
     """Map one schema-validated YAML stage definition onto a Stage."""
     return Stage(
         name=s.get("name", ""),
+        agent=s.get("agent", ""),
         model=s.get("model", ""),
         provider=s.get("provider", ""),
         from_dir=s.get("from_dir", ""),
@@ -186,6 +187,7 @@ def _task_from_def(task_def: dict, prompt: str, output_path: str, model_override
     task = Task(
         prompt=prompt,
         output=output_path,
+        agent=task_def.get("agent") or (stage.agent if stage else ""),
         model=task_def.get("model") or (stage.model if stage else ""),
         provider=task_def.get("provider") or (stage.provider if stage else ""),
         thinking=task_def.get("thinking") or "",
@@ -257,7 +259,7 @@ def _stage_from_prompt_tasks(stage: Stage, reuse: bool, model_override: str, tim
         log.error("Stage '%s': from_prompt requires output", stage.name)
         return [], []
     task = Task(prompt=stage.from_prompt.replace("{prompt}", original_prompt),
-                output=stage.output, model=stage.model,
+                output=stage.output, agent=stage.agent, model=stage.model,
                 provider=stage.provider, cwd=stage.cwd)
     # from_prompt supports @file references (same semantics as task files):
     # the pipeline can inject an external requirement without YAML editing.
@@ -312,6 +314,7 @@ def _stage_from_dir_tasks(stage: Stage, reuse: bool, model_override: str, timeou
         prompt = read_text_bounded(fpath, config.INPUT_MAX_BYTES,
                                    "stage input")
         task = Task(prompt=prompt, output=str(out_path), cwd=str(fpath.parent))
+        task.agent = stage.agent or task.agent
         task.model = stage.model or task.model
         task.provider = stage.provider or task.provider
         if model_override:

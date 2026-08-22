@@ -248,7 +248,7 @@ def record_result(result, task, workdir: str) -> bool:
     """Bridge a runner result into the stable ledger record contract."""
     output = task.output_path()
     return record(
-        config.data_dir(workdir), agent=config.AGENT_BIN,
+        config.data_dir(workdir), agent=task.agent or config.AGENT_BIN,
         provider=task.provider, run_id=result.run_id,
         session_id=result.session_id, session_name=result.session_name,
         status=_result_status(result), task_brief=task.prompt,
