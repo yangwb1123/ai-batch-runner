@@ -47,6 +47,12 @@ def overview(data_dir: str) -> dict:
     agents = Counter(str(r.get("agent", "?")) for r in rows)
     rejected = statuses.get("rejected", 0)
     failed = statuses.get("failed", 0)
+    breaker_status: dict = {}
+    try:
+        from .provider_breaker import breaker_state
+        breaker_status = breaker_state()
+    except Exception:
+        pass
     return {
         "generated_at": _utc_now(),
         "total": len(rows),
@@ -54,6 +60,7 @@ def overview(data_dir: str) -> dict:
         "by_agent": dict(agents),
         "rejected_count": rejected,
         "failed_count": failed,
+        "provider_breaker": breaker_status,
         "self_healing": {
             "rejected_artifacts_in": str(Path(data_dir) / "rejected"),
             "note": "被拒产物有界摘录保留在 .pi-batch/rejected/ 供修复诊断；"
@@ -127,6 +134,14 @@ def message_recent(data_dir: str, limit: int = 5) -> list[dict]:
 
 # ── report（HTML 监控页）──────────────────────────────────────────────
 
+def _breaker_label(pb_state: dict) -> str:
+    if pb_state.get("active"):
+        return (f"ACTIVE cooldown {pb_state.get('cooldown_remaining_s', 0)}s "
+                f"(step {pb_state.get('step', 0)})")
+    return (f"ok (streak {pb_state.get('streak', 0)}/"
+            f"{pb_state.get('threshold', '-')})")
+
+
 def _runs_table(rows: list, esc, status_class: dict) -> str:
     return "\n".join(
         f"<tr class='{status_class.get(row['status'], '')}'><td>{esc(row['time'])}"
@@ -149,6 +164,7 @@ def report_html(data_dir: str, cwd: str) -> str:
     rows_html = _runs_table(rows, esc, status_class)
     log_escaped = esc("\n".join(log_lines) or
                        _log_error or "(no --log-file log found)")
+    pb_label = _breaker_label(summary.get("provider_breaker") or {})
     statuses = " ".join(
         f"<span class='chip {status_class.get(k, '')}'>{esc(k)}={v}</span>"
         for k, v in summary["status_counts"].items()) or "—"
@@ -174,6 +190,7 @@ max-height:24em}}
 <h1>pi-batch · 运营控制台 · {esc(Path(cwd).name)}</h1>
 <p class="meta">生成于 {esc(summary['generated_at'])} · 共 {summary['total']} 条 run
 · 被拒 {summary['rejected_count']}（自我修复诊断见 {esc(summary['self_healing']['rejected_artifacts_in'])}）</p>
+<p class="meta">Provider breaker: {pb_label}</p>
 <h2>状态分布</h2><div>{statuses}</div>
 <h2>按 Agent</h2><div>{agents}</div>
 <h2>最近 Runs（含重试 attempt）</h2>
