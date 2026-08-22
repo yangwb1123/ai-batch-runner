@@ -90,3 +90,41 @@ def test_agents_slash_command_renders_ledger_without_agent_turn(tmp_path, monkey
             assert app._backend.prompts == []
 
     _run(scenario())
+
+
+def test_runs_view_renders_shared_ledger(tmp_path):
+    """/runs 面板数据 = 共享账本（与 ops runs 同源），含 attempt 痕迹。"""
+    import json as json_mod
+    from pbatch import config as config_mod
+    from pbatch.tui_agents import RunsView
+    data_dir = config_mod.data_dir(str(tmp_path))
+    (data_dir / "agents").mkdir(parents=True, exist_ok=True)
+    ledger = data_dir / "agents" / "ledger.jsonl"
+    with open(ledger, "a", encoding="utf-8") as f:
+        f.write(json_mod.dumps({
+            "ts": "2026-08-22T09:00:00Z", "agent": "pi", "status": "succeeded",
+            "attempt": 1, "task_brief": "normal task", "outputs": [],
+            "elapsed_ms": 100, "exit_code": 0}) + "\n")
+        f.write(json_mod.dumps({
+            "ts": "2026-08-22T09:01:00Z", "agent": "codex", "status": "rejected",
+            "attempt": 2, "task_brief": "failed once then fixed",
+            "outputs": [], "elapsed_ms": 900, "exit_code": 0}) + "\n")
+    lines = RunsView(limit=10).render_lines(str(data_dir), width=90)
+    assert any("succeeded" in line and "#1" in line for line in lines)
+    assert any("rejected" in line and "#2" in line for line in lines)
+    assert "RUNS" in lines[0]
+
+
+def test_ops_report_html_embeds_ledger_summary(tmp_path):
+    import subprocess, sys
+    from pbatch import config as config_mod
+    from pbatch.ops import report_html
+    from pbatch.tui_agents import RunsView
+    data_dir = config_mod.data_dir(str(tmp_path))
+    (data_dir / "agents").mkdir(parents=True, exist_ok=True)
+    (data_dir / "agents" / "ledger.jsonl").write_text(
+        '{"ts":"2026-08-22T09:00:00Z","agent":"pi","status":"succeeded",'
+        '"attempt":1,"task_brief":"t","outputs":[],"elapsed_ms":1,'
+        '"exit_code":0}\n', encoding="utf-8")
+    page = report_html(str(data_dir), str(tmp_path))
+    assert "pi-batch" in page and "succeeded" in page and "运营控制台" in page

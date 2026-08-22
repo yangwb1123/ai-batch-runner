@@ -1,5 +1,4 @@
 """Product terminal UI for interactive pi-batch sessions."""
-
 from __future__ import annotations
 
 import argparse
@@ -304,6 +303,7 @@ class PiBatchTUI(App[None]):
             "agent": self._slash_agent,
             "memory": self._slash_memory,
             "agents": self._slash_agents,
+            "runs": self._slash_runs,
             "files": self._slash_files,
             "diff": self._slash_diff,
             "refresh": self._slash_refresh,
@@ -636,15 +636,29 @@ class PiBatchTUI(App[None]):
             return
         from . import config
         from .tui_agents import render_agent_lines
-        lines = render_agent_lines(config.data_dir(self.options.cwd), max(20, self.size.width - 4))
+        lines = render_agent_lines(
+            config.data_dir(self.options.cwd), max(20, self.size.width - 4))
         self._append_entry("system", "\n".join(lines))
+
+    def _slash_runs(self, args: tuple[str, ...] = ()) -> None:
+        if not self._require_no_args("runs", args):
+            return
+        from . import config
+        from .tui_agents import RunsView
+        view = RunsView()
+        lines = view.render_lines(
+            config.data_dir(self.options.cwd), max(40, self.size.width - 4))
+        self._append_entry("system", "\n".join(lines))
+        self._last_status = "Runs ledger refreshed"
+        self._refresh_status()
 
     def _slash_files(self, args: tuple[str, ...]) -> None:
         if not self._require_no_args("files", args):
             return
         payload = self._workspace_call("workspace_status")
         if payload is not None:
-            self._append_entry("system", _render_workspace_files(payload))
+            from .tui_agents import render_workspace_files
+            self._append_entry("system", render_workspace_files(payload))
             self._last_status = "Workspace refreshed"
             self._refresh_status()
 
@@ -654,7 +668,8 @@ class PiBatchTUI(App[None]):
             return
         payload = self._workspace_call("workspace_diff", args[0] if args else "")
         if payload is not None:
-            self._append_entry("system", _render_workspace_diff(payload))
+            from .tui_agents import render_workspace_diff
+            self._append_entry("system", render_workspace_diff(payload))
             self._last_status = "Diff refreshed"
             self._refresh_status()
 
@@ -856,12 +871,16 @@ class PiBatchTUI(App[None]):
             "system", f"Workspace changed; {delta.get('dirty_files', 0)} dirty file(s)."
             f"{head}{suffix} Use `/diff` to review.")
 
-
 TUIApplication = PiBatchTUI
 def _clean_text(value: Any) -> str:
     return _ANSI_ESCAPE.sub("", str(value or "")).replace("\r\n", "\n").replace("\r", "\n")
 def _one_line(value: str) -> str:
     return " ".join(value.split())
+
+def _inline_label(value: Any) -> str:
+    label = " ".join(str(value or "").split())
+    return label if label else "<none>"
+
 
 def _short_path(value: str, width: int) -> str:
     path = str(value)
@@ -874,11 +893,9 @@ def _is_codex_binary(value: Any) -> bool:
         binary = str(value or "")
     return "codex" in Path(binary).name.lower()
 
-def _inline_label(value: Any) -> str:
-    return _one_line(_clean_text(value)).replace("`", "'")
-
 def _render_entry(entry: TranscriptEntry, busy: bool) -> str:
-    labels = {"user": "You", "assistant": "Assistant", "system": "System", "error": "Error"}
+    labels = {"user": "You", "assistant": "Assistant",
+              "system": "System", "error": "Error"}
     body = entry.text
     if entry.role == "assistant" and not body:
         body = "_Working…_" if busy else "_No textual response._"
@@ -886,45 +903,6 @@ def _render_entry(entry: TranscriptEntry, busy: bool) -> str:
         body = "\n".join(f"> {line}" for line in body.splitlines())
     return f"## {labels.get(entry.role, entry.role.title())}\n\n{body}"
 
-def _render_workspace_files(payload: dict[str, Any]) -> str:
-    error = _clean_text(payload.get("error", ""))
-    if error:
-        return f"## Workspace files\n\nUnable to inspect workspace: {error}"
-    if not payload.get("available"):
-        return "## Workspace files\n\nGit workspace information is unavailable."
-    files = payload.get("files", [])
-    lines = [
-        "## Workspace files",
-        "",
-        f"Branch: `{_inline_label(payload.get('branch') or 'unknown')}` · "
-        f"Changed: **{payload.get('changed', len(files))}** · "
-        f"Staged: {payload.get('staged', 0)} · "
-        f"Unstaged: {payload.get('unstaged', 0)} · "
-        f"Untracked: {payload.get('untracked', 0)}",
-    ]
-    if not files:
-        lines.extend(["", "Working tree is clean."])
-        return "\n".join(lines)
-    lines.extend(["", "| Status | Path |", "|:--:|---|"])
-    for item in files:
-        path = _inline_label(item.get("path", "")).replace("|", "\\|")
-        lines.append(f"| `{item.get('status', '')}` | `{path}` |")
-    if payload.get("truncated"):
-        lines.extend(["", "_File list truncated at the display limit._"])
-    return "\n".join(lines)
-
-def _render_workspace_diff(payload: dict[str, Any]) -> str:
-    error = _clean_text(payload.get("error", ""))
-    label = _inline_label(payload.get("path", "")) or "workspace"
-    if error:
-        return f"## Diff · `{label}`\n\nUnable to generate diff: {error}"
-    patch = _clean_text(payload.get("patch", ""))
-    fence = "```"
-    while fence in patch:
-        fence += "`"
-    note = "\n\n_Diff truncated at the bounded output limit._" if payload.get(
-        "truncated") else ""
-    return f"## Diff · `{label}`\n\n{fence}diff\n{patch}\n{fence}{note}"
 
 def _result_fields(result: Any) -> tuple[bool, str, str, str]:
     if result is None:
@@ -994,7 +972,6 @@ def tui_main(
     app = PiBatchTUI(options, backend=backend, backend_factory=backend_factory)
     app.run()
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(tui_main())

@@ -423,6 +423,7 @@ _SUBCOMMANDS: dict[str, str] = {
     "review-fix": "review_fix:review_fix_main",
     "handoff": "handoff:handoff_main",
     "route": "routing:route_main",
+    "ops": "ops:ops_main",
     "adr": "adr:adr_main",
     "impact": "impact:impact_main",
     "project": "project_memory:project_main",

@@ -61,7 +61,7 @@ def _output_path(value: object) -> str:
 def _entry(*, agent: str, provider: str, run_id: str, session_id: str,
            session_name: str, status: str, task_brief: str,
            outputs: Iterable[object], elapsed_ms: int, exit_code: int,
-           ts) -> dict:
+           attempt: int = 0, ts=None) -> dict:
     return {
         "ts": _timestamp(ts),
         "agent": str(agent or ""),
@@ -135,7 +135,7 @@ def _rotate(path: Path, incoming: int) -> None:
 
 def record(data_dir, *, agent, provider="", run_id="", session_id="",
            session_name="", status, task_brief, outputs=(), elapsed_ms=0,
-           exit_code=0, ts=None) -> bool:
+           exit_code=0, attempt=0, ts=None) -> bool:
     """Append one atomic JSON line; operational failures only warn."""
     try:
         entry = _entry(
@@ -253,7 +253,8 @@ def record_result(result, task, workdir: str) -> bool:
         session_id=result.session_id, session_name=result.session_name,
         status=_result_status(result), task_brief=task.prompt,
         outputs=([str(output)] if output else ()),
-        elapsed_ms=round(result.elapsed * 1000), exit_code=result.returncode)
+        elapsed_ms=round(result.elapsed * 1000), exit_code=result.returncode,
+        attempt=int(getattr(result, "attempt", 0) or 0))
 
 
 def _positive_limit(value: str) -> int:
