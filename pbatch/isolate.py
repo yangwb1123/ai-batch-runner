@@ -201,12 +201,26 @@ def run_isolated(root: Path, branch: str, workdir: Path, task_args: list,
     return _finish_session(root, branch, workdir, sess, opts)
 
 
+def _operational_path_line(porcelain_line: str) -> bool:
+    """True for porcelain lines that are runtime data, not worktree
+    changes: .pi-batch/ paths (ledger, memory, session maps, rejected
+    excerpts). Matches repo_gates._operational_path semantics."""
+    path = porcelain_line[3:].strip()
+    return path == ".pi-batch" or path.startswith(".pi-batch/")
+
+
 def _finish_session(root: Path, branch: str, workdir: Path, sess: str,
                     opts: SessionOptions) -> int:
-    """worktree 干净检查 → 根仓库锁（合并队列）→ 合并事务。"""
-    porcelain = _git(["status", "--porcelain"], workdir).stdout
-    if porcelain:
-        append_session(root, sess, "DIRTY", reason=porcelain.strip()[:500])
+    """worktree 干净检查 → 根仓库锁（合并队列）→ 合并事务。
+    运行时数据目录（.pi-batch/、账本、memory、会话映射）不属于工作区
+    变更（真实仓库由 .gitignore 覆盖，陌生/测试仓库必须显式排除），
+    否则账本写入会把会话卡在 DIRTY。"""
+    porcelain_lines = [line for line in
+                       _git(["status", "--porcelain"], workdir).stdout.splitlines()
+                       if not _operational_path_line(line)]
+    if porcelain_lines:
+        append_session(root, sess, "DIRTY",
+                       reason="\n".join(porcelain_lines)[:500])
         print("\n[isolate] MERGE BLOCKED: worktree has uncommitted changes "
               "(commit them in the task or pass --git-commit):")
         print(f"  cd {workdir} && git status")

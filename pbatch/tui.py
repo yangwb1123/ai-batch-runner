@@ -34,6 +34,7 @@ Available commands:
 - `/provider [name]` — show or change the provider
 - `/agent [binary]` — show or change the agent CLI
 - `/memory auto|on|off` — show or change memory mode
+- `/agents` — show the latest shared agent runs
 - `/files` — show changed workspace files
 - `/diff [path]` — review the current unified diff
 - `/refresh` — refresh workspace and backend status
@@ -48,11 +49,9 @@ _WELCOME = """\
 Describe the work you want to run. Use `/help` for commands or **Ctrl+P** for
 the command palette.
 """
-
 @dataclass
 class TuiOptions:
     """Backend options supplied by ``tui_main`` and changed by slash commands."""
-
     cwd: str = ""
     agent: str = ""
     model: str = ""
@@ -60,7 +59,6 @@ class TuiOptions:
     memory_mode: str = ""
     timeout: int = 0
     session_name: str = "tui"
-
     def backend_kwargs(self) -> dict[str, Any]:
         return {
             "cwd": self.cwd,
@@ -71,20 +69,16 @@ class TuiOptions:
             "timeout": self.timeout,
             "session_name": self.session_name,
         }
-
 @dataclass(frozen=True)
 class SlashInvocation:
     """A parsed slash command. ``error`` is set for malformed quoting."""
-
     name: str
     args: tuple[str, ...] = ()
     error: str = ""
-
 @dataclass
 class TranscriptEntry:
     role: str
     text: str
-
 def parse_slash_command(text: str) -> Optional[SlashInvocation]:
     """Parse a slash command without ever treating malformed input as a prompt."""
     stripped = text.strip()
@@ -97,13 +91,10 @@ def parse_slash_command(text: str) -> Optional[SlashInvocation]:
     if not tokens:
         return SlashInvocation("help")
     return SlashInvocation(tokens[0].lower(), tuple(tokens[1:]))
-
 def _default_backend_factory(emit: Callable[[str, str], None], **kwargs):
     """Load the execution backend only when an interactive app actually mounts."""
     from .tui_backend import TUIBackend
-
     return TUIBackend(emit, **kwargs)
-
 class PiBatchTUI(App[None]):
     """Textual application presenting one interactive pi-batch session."""
     TITLE = "pi-batch"
@@ -270,12 +261,12 @@ class PiBatchTUI(App[None]):
             return
         self._adapter = adapter
         self._adapter_session_id = str(session.session_id)
-
     def get_system_commands(self, screen: Screen) -> Iterable[SystemCommand]:
         yield from super().get_system_commands(screen)
         yield SystemCommand("New session", "Reset backend session", self.action_new_session)
         yield SystemCommand("Clear conversation", "Clear visible messages", self.action_clear)
         yield SystemCommand("Show status", "Display backend snapshot", self._palette_status)
+        yield SystemCommand("Agent runs", "Show shared agent activity", self._slash_agents)
         yield SystemCommand("Review changes", "Show the current Git diff", self.action_show_diff)
         yield SystemCommand("Changed files", "List dirty workspace files", self._palette_files)
         yield SystemCommand("Refresh workspace", "Refresh Git and backend status",
@@ -312,6 +303,7 @@ class PiBatchTUI(App[None]):
             "provider": self._slash_provider,
             "agent": self._slash_agent,
             "memory": self._slash_memory,
+            "agents": self._slash_agents,
             "files": self._slash_files,
             "diff": self._slash_diff,
             "refresh": self._slash_refresh,
@@ -638,6 +630,14 @@ class PiBatchTUI(App[None]):
             self._usage("memory", "auto|on|off")
             return
         self._set_option("memory_mode", args[0])
+
+    def _slash_agents(self, args: tuple[str, ...] = ()) -> None:
+        if not self._require_no_args("agents", args):
+            return
+        from . import config
+        from .tui_agents import render_agent_lines
+        lines = render_agent_lines(config.data_dir(self.options.cwd), max(20, self.size.width - 4))
+        self._append_entry("system", "\n".join(lines))
 
     def _slash_files(self, args: tuple[str, ...]) -> None:
         if not self._require_no_args("files", args):

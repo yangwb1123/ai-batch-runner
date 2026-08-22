@@ -71,6 +71,35 @@ agent:
         - "insufficient_quota|quota exceeded"
         - "rate.?limit_?error|rate.?limit exceeded"
         - "codex: "
+    claude:
+      # Claude print mode (-p) suits interactive handoff and scripted runs.
+      argument_flags:
+        prompt: "-p"
+        model: "--model"
+      # {session} is pi-batch's session id; when it differs from Claude's
+      # native id, the user/handoff must explicitly supply the native id.
+      session_flags:
+        start: []
+        continue: ["--resume", "{session}"]
+        fork: ["--resume", "{session}", "--fork-session"]
+      extra_args: []
+    gemini:
+      # Gemini uses unattended YOLO approval and skips workspace trust prompts.
+      argument_flags:
+        prompt: "-p"
+        model: "-m"
+      extra_args: ["--approval-mode", "yolo", "--skip-trust"]
+      # Gemini has no explicit session-id argument; every round starts fresh.
+    opencode:
+      # OpenCode's `run` subcommand is the non-interactive positional-prompt path.
+      argument_flags:
+        prompt: ["run"]
+        model: "-m"
+      session_flags:
+        start: []
+        continue: ["-s", "{session}"]
+        fork: ["-s", "{session}", "--fork"]
+      extra_args: []
 
 # Target-project layout. Relative paths resolve against each task cwd and
 # are exposed to validators as {frontend_root}/{backend_root}/{report_root}.
@@ -334,7 +363,6 @@ device_fabric:
   # off < inventory < observe < execute < migrate < federate
   # 启用时按 inventory → observe → execute 逐步升级（AADM-D §4）
   mode: "off"
-
   discovery:
     # 主动扫描默认关闭（安全/隐私）；设备主动注册优于网络扫描。
     lan_active_scan: false
@@ -361,3 +389,10 @@ device_fabric:
       #     zone: trusted-datacenter
       #     max_effect_class: sandboxed
       #     allowed_data_classes: [public, internal]
+
+# 共享 agent run 账本（多 Agent 互见）：默认关（与 device_fabric 同款克制）；
+# 开启后每次 run 写一行结构化记录到 data_dir/agents/ledger.jsonl —— 不同
+# agent（pi/codex/claude/gemini/opencode）的任务/会话/产物互相可见，
+# 产物路径即结果共享基础（T11；handoff 接力为 T12）。
+agent_ledger:
+  enabled: true

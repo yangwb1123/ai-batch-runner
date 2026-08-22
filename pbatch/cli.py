@@ -337,6 +337,7 @@ def _run_configured(args, lock_path) -> None:
 
 _SUBCOMMANDS: dict[str, str] = {
     "tui": "tui:tui_main",
+    "agents": "agent_ledger:agents_main",
     "config": "config_cli:config_main",
     "memory": "memory:main",
     "classify": "classifier:classify_main",
@@ -382,6 +383,7 @@ _SUBCOMMANDS: dict[str, str] = {
     "capabilities": "capabilities:capabilities_main",
     "reflect": "reflect:reflect_main",
     "review": "review:review_main",
+    "review-fix": "review_fix:review_fix_main",
     "adr": "adr:adr_main",
     "impact": "impact:impact_main",
     "project": "project_memory:project_main",

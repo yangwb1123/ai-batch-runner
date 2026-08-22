@@ -24,9 +24,12 @@ def _init_repo(repo: Path) -> Path:
     _git(repo, "init", "-q")
     _git(repo, "config", "user.email", "tests@example.invalid")
     _git(repo, "config", "user.name", "Pipeline Tests")
+    # 运行时数据目录（agent ledger/memory/sessions）不属工作区变更：
+    # 真实项目在 .gitignore 覆盖（T11 账本互见开启后此约定成为硬依赖）。
+    (repo / ".gitignore").write_text(".pi-batch/\n", encoding="utf-8")
     source = repo / "source.py"
     source.write_text("value = 1\n", encoding="utf-8")
-    _git(repo, "add", "source.py")
+    _git(repo, "add", ".gitignore", "source.py")
     _git(repo, "commit", "-qm", "baseline")
     return source
 

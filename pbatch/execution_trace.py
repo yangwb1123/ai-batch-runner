@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from . import metering
+from . import config, metering
 from .models import Task, TaskResult
 from .session import session_file
 
@@ -42,6 +42,9 @@ def finish_task_result(result: TaskResult, task: Task, session_id: str,
         result.reason, workdir, session_id or session_name, usage_before,
         run_id=result.run_id, task_id=result.task_id,
         stage_id=result.stage_id, attempt=result.attempt, phase="execution")
+    if config.AGENT_LEDGER_ENABLED:
+        from .agent_ledger import record_result
+        record_result(result, task, workdir)
     return result
 
 
@@ -54,3 +57,6 @@ def record_validation_event(result: TaskResult, task: Task) -> None:
         task.prompt, result.reason, task.workdir(), result.session_name,
         task_id=result.task_id, stage_id=result.stage_id,
         attempt=result.attempt, phase="validation")
+    if not result.success and config.AGENT_LEDGER_ENABLED:
+        from .agent_ledger import record_result
+        record_result(result, task, task.workdir())

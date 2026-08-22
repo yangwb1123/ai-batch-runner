@@ -518,6 +518,15 @@ DEVICE_FABRIC_MODE = _DEVICE_FABRIC.mode
 DEVICE_FABRIC_LAN_SCAN = _DEVICE_FABRIC.lan_scan
 DEVICE_FABRIC_BENCHMARK = _DEVICE_FABRIC.benchmark
 DEVICE_FABRIC_AUTO_INSTALL = _DEVICE_FABRIC.auto_install
+
+
+# Shared agent-run ledger (multi-agent visibility): off by default, like
+# device_fabric — an unconfigured project must not start writing runtime
+# state into repositories that ignore nothing (ledger writes are runtime
+# data under data_dir/, which unrelated test/consumer repos do not
+# necessarily gitignore).
+AGENT_LEDGER_ENABLED = bool(
+    _section("agent_ledger").get("enabled", False))
 DEVICE_FABRIC_APPROVAL_REQUIRED = _DEVICE_FABRIC.approval_required
 DEVICE_FABRIC_MTLS_REQUIRED = _DEVICE_FABRIC.mtls_required
 DEVICE_FABRIC_SHORT_LIVED_CREDENTIALS = _DEVICE_FABRIC.short_lived_credentials

@@ -22,7 +22,8 @@ _SECRET_KEY = re.compile(
 _EXPECTED_MAPPINGS = {
     "agent", "limits", "memory", "session", "logging", "input", "output",
     "evidence", "prompt", "validation", "commands", "project", "commit",
-    "classifier", "runtime_policy", "device_fabric", "validators",
+    "classifier", "runtime_policy", "device_fabric", "agent_ledger",
+    "validators",
 }
 _EXPECTED_SCALARS = {"config_version", "ui_scan_dir"}
 _EXPECTED_TOP_LEVEL = _EXPECTED_MAPPINGS | _EXPECTED_SCALARS
