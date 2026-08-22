@@ -146,6 +146,11 @@ def _add_lock_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--wait-lock", type=int, default=0, metavar="MINUTES",
                    help="queue behind a held lock: poll every 30s up to MINUTES "
                         "instead of exiting 5 (shared-machine workflows)")
+    p.add_argument("--run-domain", default="", metavar="NAME",
+                   help="multi-instance run domain: a NON-EMPTY name different "
+                        "from the holder's domain runs in parallel without the "
+                        "lock (keep outputs/sessions disjoint — your "
+                        "responsibility); same/default domains keep excluding")
 
 
 def _add_validate_args(p: argparse.ArgumentParser) -> None:
@@ -229,7 +234,8 @@ def main() -> None:
     _register_run(args)
     try:
         lock_path = acquire_lock(no_lock=args.no_lock or args.dry_run,
-                                 wait_minutes=getattr(args, "wait_lock", 0))
+                                 wait_minutes=getattr(args, "wait_lock", 0),
+                                 domain=getattr(args, "run_domain", ""))
         mark_running()
     except SystemExit:
         unregister()
@@ -384,6 +390,7 @@ _SUBCOMMANDS: dict[str, str] = {
     "reflect": "reflect:reflect_main",
     "review": "review:review_main",
     "review-fix": "review_fix:review_fix_main",
+    "handoff": "handoff:handoff_main",
     "adr": "adr:adr_main",
     "impact": "impact:impact_main",
     "project": "project_memory:project_main",

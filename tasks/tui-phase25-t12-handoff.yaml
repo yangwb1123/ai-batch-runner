@@ -1,0 +1,72 @@
+# Phase 2.5 (T12) — handoff 接力：A agent 的产物注入 B agent
+# 用户需求最后一环：“安排几个不同的 agent 来完成任务，要可以共享结果”。
+# 账本（T11）记录 outputs 路径；本任务把源 run 的产物有界摘录注入目标 agent 的 prompt。
+tasks:
+  - prompt: |
+      实现 `pi-batch handoff`：从共享 run 账本（T11 的 pbatch/agent_ledger.py）选择
+      一个源 run，把它记录的产物路径做成有界摘录注入目标 agent 的任务 prompt，执行后
+      结果照常进账本（互见闭环）。允许修改：pbatch/cli.py（仅 _SUBCOMMANDS 加
+      "handoff" 一行）；新增 pbatch/handoff.py（≤450 行）与 tests/test_handoff.py。
+      其他文件不动。
+
+      ## 复用事实
+      - pbatch/evidence.py：combine_outputs(outputs, maximum) —— 多路径公平字节预算
+        （默认 config.EVIDENCE_MAX_BYTES=64KiB、EVIDENCE_MAX_SOURCES=64）、截断标记、
+        文件存在性过滤；source_manifest(outputs) —— 路径清单（含省略标记）。
+      - pbatch/agent_ledger.py：query(data_dir, *, agent, limit, since_ts) →
+        list[dict]（字段 agent/status/task_brief/outputs/run_id/session_id/
+        session_name/ts/elapsed_ms/exit_code）；record_result 由 execution_trace
+        钩子在每次 run 后自动调用（已启用）。
+      - runner.run_task(task, ...) 可直调（tui_backend 同款用法）；Task(prompt=...,
+        output=..., cwd=...)；失败签名/超时/账本钩子自动生效。
+      - pi-batch.yaml agent.bin 为默认执行器；cli.acquire_lock（exit 5）语义可复用。
+
+      ## 实现要求
+      1. pbatch/handoff.py：
+         - handoff_main(argv) -> int，argparse：
+           --agent B（目标执行器；缺省 = 当前配置 agent.bin）；
+           --from-agent A（账本中该 agent 最近一条 succeeded 且 outputs 非空的 run）
+           | --from-run RUN_ID（精确 run_id 前缀匹配亦可，前缀唯一才采用，否则报错）
+           | --from-session NAME（精确 session_name/session_id 匹配最近 succeeded）；
+           三个源选择互斥（多选 → exit 2）；
+           --sources N（默认 8，≤ EVIDENCE_MAX_SOURCES）；--max-bytes（默认
+           EVIDENCE_MAX_BYTES）；--output PATH（目标 run 产物落盘路径，可选）；
+           --timeout（默认 900）；--no-lock（跳过仓库锁）；--validate VALIDATOR
+           （逗号分隔，与单批同语义）。
+         - 流程：
+           a) 解析源 → 账本 query 定位（账本路径 = config.data_dir(cwd)/agents/
+              ledger.jsonl）；找不到/无 succeeded 记录/记录 outputs 为空 →
+              exit 2 并打印原因；
+           b) 校验产物文件存在性与可读性（缺失文件跳过并记 omitted；全部缺失 →
+              exit 2）；
+           c) prompt = 任务提示 + 结构块："承接来自 <agent>/<run_id> 的产物（路径与
+              有界摘录见下）。请阅读产物内容，并在你的回复中引用你实际使用的产物。
+              产物路径：<source_manifest>；产物摘录：<combine_outputs>。不要编造
+              产物中不存在的内容。"
+           d) 执行：构造 Task(prompt, output, cwd) + config.AGENT_BIN 切到 --agent
+              （恢复机制同 tui_backend._runtime_config 或 runner 约定），
+              runner.run_task（--no-lock 时跳过 acquire_lock）；
+           e) 结果：成功 → 打印目标 run 的产物路径（若有 --output）+ 账本已记录提示；
+              失败 → 打印 reason 并返回 1（非预期异常 → 2）。
+         - 安全/边界：产物读取只读；每个源文件大小有界（combine_outputs 已处理）；
+           prompt 总长遵守 prompt.max_bytes（超限 exit 2）；不修改任何源产物；
+           run_id 前缀匹配必须唯一。
+      2. cli.py：_SUBCOMMANDS["handoff"] = "handoff:handoff_main"（仅此一行）。
+      3. tests/test_handoff.py（注入式，无真实 agent 依赖）：
+         - fixture 账本（tmp data_dir 写 2-3 条记录：A 成功带 outputs、A 失败、B 成功
+           无 outputs）：
+           - --from-agent A → prompt 含产物路径与摘录内容（fenced 文本）；run_task
+             的 argv 用 fake agent 脚本捕获（agent.sh 把 $2 写文件 → 断言 prompt 内容）；
+           - --from-run 前缀匹配唯一/歧义行为；--from-session 匹配；
+           - 源缺失/无 outputs/全缺失文件 → exit 2 且原因明确；
+           - 多选源 → exit 2；
+           - --sources/--max-bytes 生效（超预算截断标记存在）；
+           - 执行成功/失败退出码映射（fake agent 退出 1 → handoff 返回 1）。
+      4. 门禁：python -m pytest tests/test_handoff.py tests/test_agent_ledger.py
+         tests/test_pi_batch.py tests/test_entrypoints.py -q 全绿；python quality.py
+         --strict . 不新增违规；python pi-batch.py eval 不回归；
+         python pi-batch.py handoff --help 输出正确。
+      5. 结局文档 docs/tui-phase0/t12-handoff.md：命令用法、源选择优先级、注入格式
+        （证据纪律）、退出码表、端到端演示记录（协调者会补跑真实双 agent 演示）。
+    output: docs/tui-phase0/t12-handoff.md
+    validate: pyquality
