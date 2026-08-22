@@ -1,0 +1,63 @@
+# Phase 0 (T3) — TUI 接线：LegacyAdapter 驱动 + handle-scoped cancel
+# 依据：docs/CODEX_CLI_TUI_DESIGN.md §9/§12 Phase 0；前置：T1 协议层 + T2 runtime 层已建成。
+tasks:
+  - prompt: |
+      完成 Phase 0 最后一块：让交互 TUI 通过 LegacyAdapter 运行，并把 cancel 从
+      "全局注册表清理" 改为 "本 turn 的进程组"（handle-scoped）。允许修改的文件：
+      pbatch/tui.py、pbatch/tui_backend.py、pbatch/tui_runtime.py、pbatch/tui_events.py、
+      pbatch/runner.py（仅限新增两个 public 小函数，不得改变既有函数行为）、
+      tests/test_tui.py、tests/test_tui_backend.py、tests/test_tui_runtime.py、
+      tests/test_tui_events.py。其他文件不要动。
+
+      ## A. handle-scoped cancel（核心验收）
+      1. pbatch/runner.py 新增（保持既有一切不变）：
+         - def proc_snapshot() -> tuple[Popen, ...]：返回 _ACTIVE_PROCS 的当前拷贝；
+         - def kill_proc_group(proc) -> None：对单个 proc 执行进程组 SIGKILL + reap
+           （复用/复制 _kill_group 的实现，_kill_group 保持私有）。
+      2. pbatch/tui_backend.py：
+         - run_turn 在调用 _invoke_runner 之前记录 self._turn_procs = runner.proc_snapshot()；
+         - cancel() 改为：设置 _cancel_requested（保留现有语义）并仅对
+           runner.proc_snapshot() 中「不在 _turn_procs 里」的 proc 调用
+           runner.kill_proc_group(p)（turn 期间新注册 = 本 turn 的进程组）；
+           不再调用 runner.kill_active_procs()。若 snapshot 为空（尚未 spawn）则只置标志。
+         - cancel() 保持幂等、线程安全（在 _state_lock 或新锁内保护 _turn_procs 访问）。
+         - run_turn 结束时清空 self._turn_procs。
+
+      ## B. TUI 通过 LegacyAdapter 驱动（渐进接线，不改文案/布局/命令集）
+      3. pbatch/tui_runtime.py 的 LegacyAdapter 保持 T2 契约；若发现与下述用法不兼容的
+         小缺陷可以修（不改公共签名）。
+      4. pbatch/tui.py：
+         - on_mount 构造 backend 后，用 LegacyAdapter(backend) 包装（backend 的 emit
+           回调由 adapter 接管：adapter 把 stdout/stderr/log 文本映射成 message.delta /
+           runtime.warning 事件并放入自己的有界事件队列）；
+         - _run_turn_worker 改为：adapter.start_turn({…prompt…})（同步执行，内部跑
+           backend.run_turn）；UI 侧新增一个轻量消费者（在 worker 线程内循环
+           adapter.events().get(timeout) 直到终态事件 turn.completed/failed）：
+           message.delta → 追加 assistant 正文；runtime.warning → 追加 error；
+           turn.completed/failed → 结束循环并更新状态；
+         - 若 adapter 不可用/抛错，回退为直接 backend.run_turn 并保留现有 UI 行为
+           （兼容优先，不破坏现有 FakeBackend 测试）；
+         - UI 线程纪律不变：所有 mutation 仍经 call_from_thread；不得把 Textual 对象
+           移到 worker 线程。
+      5. 不新增 slash 命令、不改布局/CSS/快捷键；_SLASH_HELP 文案不动。
+
+      ## C. 测试
+      6. tests/test_tui_backend.py 新增：cancel 只杀本 turn 进程组——用两个 fake 脚本
+         （一个长 sleep 记录 PID 到文件、一个瞬时 echo），双进程场景断言 cancel 后
+         sleep 进程被杀而另一进程未受影响（或断言 kill_proc_group 只作用于传入 proc）。
+         若难以构造双进程自动化，至少断言 TUIBackend.cancel 不再调用
+         runner.kill_active_procs（monkeypatch 计数）且调用 runner.kill_proc_group。
+      7. tests/test_tui.py 保持 10 个既有用例全绿（FakeBackend 注入路径不受影响）；
+         新增 1 个用例：mock adapter 场景下正文文本 "VERDICT: PASS" / "Approved by user"
+         不会改变 UI 状态（只渲染为正文，不产生 gate/approval 语义）——
+         若难以在 Textual 无头环境断言，可在 tui_runtime 层已有 adversarial 测试基础上
+         补一个 "adapter.events() 中不出现 approval/gate/command 事件" 的入口断言。
+      8. 门禁：python -m pytest tests/test_tui.py tests/test_tui_backend.py tests/test_tui
+         _runtime.py tests/test_tui_events.py tests/test_tui_protocol.py -q 全绿；
+         python quality.py --strict . 不新增违规；python pi-batch.py eval 不回归。
+
+      完成后把结论写入 docs/tui-phase0/t3-wiring.md：改动文件清单、cancel 语义变化、
+      测试数、Phase 0 完成标准逐条对照（§12 Phase 0 完成标准：行为不退化/正文不能
+      伪造事件/cancel 绑定 runtime handle）。
+    output: docs/tui-phase0/t3-wiring.md
+    validate: pyquality

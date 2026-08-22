@@ -13,10 +13,10 @@ import tempfile
 import threading
 import time
 from dataclasses import replace
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from .validation_batch import run_file_validators
 from pathlib import Path
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from .validation_batch import run_file_validators
 from . import config
 from .config import AGENT_BIN, AGENT_DEFAULT_WORKERS, _resolve_validator_specs, _resolve_validators, _session_flags, log
 from .cmd_expand import expand_cmd
@@ -25,7 +25,8 @@ from .execution_trace import (annotate_result, attach_session,
                                finish_task_result, record_validation_event)
 from .models import Task, TaskResult
 from .execution_ids import task_id as make_task_id
-from .runner_results import (overflow_result as _overflow_result,
+from .runner_results import (agent_stdout_banner_reason as _stdout_banner_reason,
+                             overflow_result as _overflow_result,
                              prompt_limit_result as _prompt_limit_result)
 from . import metering
 from . import ratelimit
@@ -58,6 +59,9 @@ def _register_proc(proc: subprocess.Popen) -> None:
 def _unregister_proc(proc: subprocess.Popen) -> None:
     with _ACTIVE_LOCK:
         _ACTIVE_PROCS.discard(proc)
+def proc_snapshot() -> tuple[subprocess.Popen, ...]:
+    with _ACTIVE_LOCK:
+        return tuple(_ACTIVE_PROCS)
 def kill_active_procs() -> None:
     """Kill every currently-running agent process group (T8 parallel cap:
     in-flight agents must not keep the runner waiting after the cap)."""
@@ -65,7 +69,6 @@ def kill_active_procs() -> None:
         procs = list(_ACTIVE_PROCS)
     for proc in procs:
         _kill_group(proc)
-
 def _read_stream(stream, prefix: str, collector: list, cap: int = 0,
                  overflow: Optional[list] = None, emit: bool = False,
                  target=None) -> None:
@@ -130,12 +133,11 @@ def session_file_path(cwd: str, session_name: str) -> Optional[str]:
     return str(f) if f else None
 
 def _prompt_brief(task: Task, cmd: list) -> str:
-    """One-line log summary with the prompt truncated (prompt content is
-    sensitive and may be shipped by --log-file)."""
-    brief_prompt = " ".join(task.prompt.split())[:80]
-    if len(brief_prompt) == 80:
-        return f"{cmd[0]} -p {brief_prompt}..."
-    return f"{cmd[0]} -p {brief_prompt}"
+    """One-line log summary with the prompt truncated (log-file safe)."""
+    brief = " ".join(task.prompt.split())[:80]
+    flags = " ".join(config.agent_argument_flags(config.AGENT_BIN)["prompt"])
+    elided = "..." if len(brief) == 80 else ""
+    return f"{cmd[0]} {flags} {brief}{elided}"
 
 def _kill_group(proc: Optional[subprocess.Popen]) -> None:
     """Kill the whole child process group, tolerating an already-dead
@@ -152,14 +154,18 @@ def _kill_group(proc: Optional[subprocess.Popen]) -> None:
     try:
         proc.wait(timeout=1)
     except (subprocess.TimeoutExpired, ChildProcessError):
-    # 子进程已死/超时：清理路径（已验证有意）
-        pass
-
+        pass  # 子进程已死/超时：清理路径（已验证有意）
+def kill_proc_group(proc: subprocess.Popen) -> None:
+    _kill_group(proc)
 def _spawn_agent(cmd: list, workdir: str, env: dict) -> subprocess.Popen:
     """Spawn the agent in its own process group so the whole child tree
-    can be killed on timeout or interrupt."""
+    can be killed on timeout or interrupt. stdin is /dev/null: prompts
+    arrive via argv (piped stdin prompts are buffered by the CLI first),
+    so an inherited pipe would let stdin-hungry agents (e.g. codex exec
+    appends piped stdin as a <stdin> block) swallow or hang on batch input."""
     return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, cwd=workdir, env=env, start_new_session=True)
+                            stdin=subprocess.DEVNULL, text=True, cwd=workdir,
+                            env=env, start_new_session=True)
 
 def _agent_not_found(task: Task) -> TaskResult:
     """The agent binary is missing from PATH: a permanent, non-retryable
@@ -185,7 +191,6 @@ def _context_rejection(task: Task) -> Optional[TaskResult]:
                           stderr=str(exc), reason=reason)
     return None
 
-
 def _task_invocation(task: Task, session_flags: Optional[list],
                      session_name: str):
     try:
@@ -207,7 +212,6 @@ def _finish_result(result: TaskResult, task: Task, session_id: str,
     return finish_task_result(result, task, session_id, session_name, workdir,
                               usage_before, trace_task_id, attempt)
 
-
 def _stream_task(proc, prefix: str, start: float, timeout: int, emit: bool,
                  stdout_target=None, stderr_target=None):
     """Forward opt-in display targets without changing legacy mock calls."""
@@ -217,7 +221,6 @@ def _stream_task(proc, prefix: str, start: float, timeout: int, emit: bool,
     if stderr_target is not None:
         targets["stderr_target"] = stderr_target
     return _stream_proc(proc, prefix, start, timeout, emit, **targets)
-
 
 def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = False,
              session_flags: Optional[list] = None, session_name: str = "", attempt: int = 1,
@@ -696,7 +699,18 @@ def _result_from_proc(task: Task, proc: subprocess.Popen, stdout_lines: list, st
     """Build a result; failure signatures override a nominal exit code 0."""
     stdout_text = "".join(stdout_lines)
     stderr_text = "".join(stderr_lines)
-    reason = agent_failure_reason(proc.returncode, stdout_text + "\n" + stderr_text)
+    # Exit code first, then body presence, then signatures: operational
+    # signatures apply to stderr; the stdout body only rejects line-anchored
+    # banners + short error replies (see runner_results docstring).
+    if proc.returncode != 0:
+        reason = f"agent exited {proc.returncode}"
+    elif not stdout_text.strip():
+        reason = "agent produced no output"
+    else:
+        # Empty stderr must not trip agent_failure_reason's own output guard.
+        reason = (agent_failure_reason(0, stderr_text)
+                  if stderr_text.strip() else "")
+        reason = reason or _stdout_banner_reason(stdout_text, config.AGENT_BIN)
     success = proc.returncode == 0 and not reason
     if reason:
         # P7（使用反馈）：拒绝行内联 stderr 首行（provider 400/model
@@ -741,6 +755,7 @@ def _stream_proc(proc: subprocess.Popen, prefix: str, start: float,
         proc, prefix, start, timeout, config.OUTPUT_MAX_BYTES, emit,
         stdout_target, stderr_target)
     return stdout_lines, stderr_lines, overflow
+
 
 def _drain_process(proc: subprocess.Popen, prefix: str, start: float,
                    timeout: float, cap: int, emit: bool = False,
@@ -959,9 +974,8 @@ def print_summary(results: list[TaskResult]) -> None:
     succeeded = sum(1 for r in results if r.success)
     failed = total - succeeded
     total_elapsed = sum(r.elapsed for r in results)
-    wall_time = max(r.elapsed for r in results) if results else 0
+    wall_time = max((r.elapsed for r in results), default=0)
 
-    print()
     print("=" * 56)
     print("  pi-batch execution report")
     print("=" * 56)
@@ -974,14 +988,13 @@ def print_summary(results: list[TaskResult]) -> None:
         rate = 100.0 * succeeded / total
         print("  成功率:    %.0f%%" % rate)
     if failed:
-        print("  下一步:    重试用 --retries；被拒产物保留在 .pi-batch/rejected/ 可诊断")
+        print("  下一步:    重试用 --retries；被拒产物在 .pi-batch/rejected/ 可诊断")
     elif succeeded:
         print("  全部通过 ✓ — 可 --git-commit 落库或继续下一轮")
     print()
     for r in results:
         icon = "PASS" if r.success else "FAIL"
         brief = r.task.prompt[:60].replace("\n", " ")
-        # T2: surface the validator failure signature in the summary line.
         sig = f"  [val exit={r.validation_exit}]" if (not r.success and r.validation_exit) else ""
         print("  %s  [%6.1fs]%s %s..." % (icon, r.elapsed, sig, brief))
     print("=" * 56)

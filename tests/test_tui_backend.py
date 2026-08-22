@@ -7,7 +7,7 @@ import json
 import threading
 from pathlib import Path
 
-from pbatch import config
+from pbatch import config, runner
 from pbatch.lock import acquire_lock, release_lock
 from pbatch.tui_backend import TUIBackend
 
@@ -190,3 +190,48 @@ def test_cancel_stops_active_turn(tmp_path):
     except ProcessLookupError:
         return
     raise AssertionError(f"cancelled agent still alive: {child_pid}")
+
+
+def test_cancel_kills_only_processes_added_during_this_turn(tmp_path, monkeypatch):
+    existing = object()
+    owned = object()
+    invoked = threading.Event()
+    released = threading.Event()
+    killed = []
+
+    def snapshot():
+        return (existing, owned) if invoked.is_set() else (existing,)
+
+    def kill_one(proc):
+        killed.append(proc)
+        released.set()
+
+    def reject_global_cancel():
+        raise AssertionError("TUI cancel must not use the global process cleanup")
+
+    monkeypatch.setattr(runner, "proc_snapshot", snapshot)
+    monkeypatch.setattr(runner, "kill_proc_group", kill_one)
+    monkeypatch.setattr(runner, "kill_active_procs", reject_global_cancel)
+    backend = TUIBackend(cwd=str(tmp_path), agent="fake-agent",
+                         memory_mode="off", session_id="scoped-cancel")
+
+    def invoke(task, _turn, _flags_kind):
+        invoked.set()
+        released.wait(3)
+        return backend._cancelled_result(task)
+
+    monkeypatch.setattr(backend, "_invoke_runner", invoke)
+    results = []
+    worker = threading.Thread(target=lambda: results.append(
+        backend.run_turn("wait")))
+    worker.start()
+    assert invoked.wait(1)
+
+    assert backend.cancel() is True
+    assert backend.cancel() is False
+    worker.join(3)
+
+    assert not worker.is_alive()
+    assert killed == [owned]
+    assert results and results[0].reason == "cancelled"
+    assert backend._turn_procs == ()

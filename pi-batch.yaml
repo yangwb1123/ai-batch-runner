@@ -37,15 +37,34 @@ agent:
   #   - "^(?i)error:"
   # Per-agent overrides (win over the global agent.* keys): claude/codex/
   # gemini have different session-flag syntax and failure signatures.
-  # agents:
-  #   claude:
-  #     argument_flags: {prompt: "-p"}
-  #     session_flags:
-  #       start: ["--continue", "--session-id", "{session}"]
-  #       continue: ["--session-id", "{session}"]
-  #     error_patterns:
-  #       - "anthropic.*rate limit"
-  #       - "context window exceeded"
+  agents:
+    codex:
+      # Codex non-interactive mode is a subcommand: `codex exec <prompt>`.
+      # The prompt flag is positional (empty = positional); "exec" is the
+      # leading subcommand token that precedes the positional prompt.
+      argument_flags:
+        prompt: ["exec"]
+        model: "-m"
+      # Invocation-level flags appended after every constructed argv.
+      # --approve-for-me runs inside the workspace-write sandbox with
+      # automatic approval routing (required for non-interactive 24x7 use;
+      # TTY users keep interactive approval via ~/.codex/config.toml).
+      # --json is the official non-interactive transcript mode: stdout is
+      # structured thread/turn/item JSONL and stderr stays operational
+      # (design §9.3); without it codex echoes the full transcript on
+      # stderr, which false-matches failure signatures when the model
+      # quotes project docs (AGENTS.md §2.2). Phase 1 Structured Exec
+      # Adapter consumes the same JSONL.
+      extra_args: ["--approve-for-me", "--json"]
+      # Codex session resume/fork (`codex exec resume|fork`) is Phase 1
+      # (TUI protocol design §12); use --session-mode new for now.
+      # Prefer precise signatures: codex's stderr transcript ECHOES the
+      # user prompt, so broad words like bare `rate limit` would self-match
+      # (P0 lesson: keep the anti-misfire discipline from AGENTS.md §2.2).
+      error_patterns:
+        - "insufficient_quota|quota exceeded"
+        - "rate.?limit_?error|rate.?limit exceeded"
+        - "codex: "
 
 # Target-project layout. Relative paths resolve against each task cwd and
 # are exposed to validators as {frontend_root}/{backend_root}/{report_root}.

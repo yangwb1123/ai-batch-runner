@@ -13,6 +13,7 @@ from . import config, runner
 from .lock import LOCK_EXIT_CODE, acquire_lock, release_lock
 from .memory import new_session_id, record_task
 from .models import Task, TaskResult
+from .tui_workspace import capture_workspace, workspace_delta, workspace_diff
 
 
 Emit = Callable[[str, str], None]
@@ -79,6 +80,7 @@ class TUIBackend:
         self._cancel_requested = threading.Event()
         self._turn_done = threading.Event()
         self._turn_done.set()
+        self._turn_procs: tuple = ()
         self._running = False
         self._session_started = False
         self._turn = 0
@@ -86,6 +88,11 @@ class TUIBackend:
         self._last_result: Optional[TaskResult] = None
         self._preflight_agent = ""
         self._preflight_errors: list[str] = []
+        self._workspace = capture_workspace(self.cwd)
+        self._turn_workspace_before = self._workspace
+        self._last_workspace_delta: dict = {
+            "changed": False, "paths": [], "head_changed": False,
+        }
         self._configure_sinks()
 
     def set_emit(self, emit: Emit) -> None:
@@ -131,7 +138,21 @@ class TUIBackend:
                 "agent_error": "; ".join(agent_errors),
                 "timeout": self.timeout, "cwd": self.cwd,
                 "last_result": self._result_snapshot(result),
+                "workspace": self._workspace.summary(),
+                "last_turn_workspace": dict(self._last_workspace_delta),
             }
+
+    def workspace_status(self, refresh: bool = True) -> dict:
+        """Return bounded file-level Git status for the review UI."""
+        if refresh:
+            self._workspace = capture_workspace(self.cwd)
+        return self._workspace.details()
+
+    def workspace_diff(self, path: str = "") -> dict:
+        """Return a bounded, read-only unified diff for the workspace."""
+        result = workspace_diff(self.cwd, path)
+        self._workspace = capture_workspace(self.cwd)
+        return result
 
     def _agent_errors(self) -> list[str]:
         """Cache executable/adapter checks until the selected agent changes."""
@@ -163,6 +184,9 @@ class TUIBackend:
             self._status = "idle"
             self._last_result = None
             self._cancel_requested.clear()
+            self._last_workspace_delta = {
+                "changed": False, "paths": [], "head_changed": False,
+            }
         self._notify("status", "new_session")
         return self.snapshot()
 
@@ -178,10 +202,14 @@ class TUIBackend:
             result = self._execute(task, turn, flags_kind)
             return self._finish_turn(result)
         finally:
+            with self._state_lock:
+                self._turn_procs = ()
             self._turn_done.set()
             _TURN_LOCK.release()
 
     def _begin_turn(self) -> tuple[int, str]:
+        workspace_before = capture_workspace(self.cwd)
+        turn_procs = runner.proc_snapshot()
         with self._state_lock:
             if self._running:
                 raise RuntimeError("a turn is already running")
@@ -192,6 +220,9 @@ class TUIBackend:
             turn = self._turn + 1
             flags_kind = "continue" if self._session_started else "start"
             self._session_started = True
+            self._turn_workspace_before = workspace_before
+            self._workspace = workspace_before
+            self._turn_procs = turn_procs
         self._notify("status", "running")
         return turn, flags_kind
 
@@ -272,30 +303,32 @@ class TUIBackend:
             result.reason = "cancelled"
         status = "cancelled" if cancelled else (
             "succeeded" if result.success else "failed")
+        workspace_after = capture_workspace(self.cwd)
+        delta = workspace_delta(self._turn_workspace_before, workspace_after)
         with self._state_lock:
             self._turn += 1
             self._running = False
             self._status = status
             self._last_result = result
+            self._workspace = workspace_after
+            self._last_workspace_delta = delta
         self._notify("status", status)
         return result
 
     def cancel(self) -> bool:
-        """Request cancellation and repeatedly catch the spawn race."""
+        """Request cancellation of processes registered during this turn."""
         with self._state_lock:
             if not self._running or self._cancel_requested.is_set():
                 return False
             self._cancel_requested.set()
             self._status = "cancelling"
+            before = self._turn_procs
+            active = runner.proc_snapshot()
         self._notify("status", "cancelling")
-        threading.Thread(target=self._cancel_until_done, daemon=True).start()
+        for proc in active:
+            if proc not in before:
+                runner.kill_proc_group(proc)
         return True
-
-    def _cancel_until_done(self) -> None:
-        while not self._turn_done.is_set():
-            runner.kill_active_procs()
-            if self._turn_done.wait(0.02):
-                break
 
     def _notify(self, kind: str, text: str) -> None:
         with self._emit_lock:

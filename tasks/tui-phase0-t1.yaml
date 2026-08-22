@@ -1,0 +1,60 @@
+# Phase 0 (T1) — 协议地基：RuntimeEvent / Capabilities / Turn 状态机
+# 驱动方式：python pi-batch.py tasks/tui-phase0-t1.yaml --agent-bin codex
+# 依据：docs/CODEX_CLI_TUI_DESIGN.md §7（统一领域模型）与 §12 Phase 0。
+tasks:
+  - prompt: |
+      在本仓库实现 docs/CODEX_CLI_TUI_DESIGN.md 第 7 节（统一领域模型）+ 第 12 节 Phase 0
+      的纯数据协议层：新文件 pbatch/tui_protocol.py，并为其新增 tests/test_tui_protocol.py。
+
+      ## 验收范围（只做协议层，不碰 TUI 接线）
+      1. RuntimeEvent：dataclass，字段含 schema_version(默认1)/event_id/seq/occurred_at/
+         workspace_id/session_id/run_id/turn_id/actor_id/kind/payload(dict)/extensions(dict)。
+         kind 必须来自固定枚举（首版事件类型见设计 §7.3：session.*/turn.queued|started|steered|
+         interrupting|completed|failed|interrupted/message.started|delta|completed/plan.updated/
+         command.started|output|completed/tool.started|completed|failed/file.changed/
+         workspace.snapshot/validation.started|completed/gate.verdict/
+         approval.requested|resolved|expired/actor.spawned|status|completed/
+         review.finding/artifact.created/usage.updated/runtime.warning|error|capabilities_changed）。
+         未知 kind 构造即抛 ValueError（fail closed）；extensions 有界（默认 ≤16KiB 拒绝）。
+      2. to_jsonl()/from_jsonl()：单行 JSON round-trip；from_jsonl 对未知字段保持宽容
+         （忽略并保留到 extensions？不——未知顶层字段应保留原文以便 schema 演进，见 §13.1
+         "未知字段"契约测试），但对 json 语法错误/超长单行/非 dict 抛 ValueError。
+      3. RuntimeCapabilities：protocol_version/runtime/能力集合（structured_events、
+         session_resume/session_fork/turn_steer/message_queue/typed_approvals/review/
+         subagents/images/usage/instruction_sources，全部 bool 默认 False，
+         message_stream 和 interrupt 是 Legacy 至少为 True 的两个键）。
+      4. TurnState 状态机（§7.2）：QUEUED/RUNNING/SUCCEEDED/FAILED/INTERRUPTING/
+         INTERRUPTED/WAITING_APPROVAL/DENIED/DISCONNECTED/RECONCILING/UNKNOWN。
+         合法迁移表：
+         QUEUED->RUNNING；RUNNING->SUCCEEDED|FAILED|INTERRUPTING|WAITING_APPROVAL|
+         DISCONNECTED|UNKNOWN；INTERRUPTING->INTERRUPTED|FAILED（超时强制终态）；
+         WAITING_APPROVAL->RUNNING|DENIED|INTERRUPTING|DISCONNECTED|UNKNOWN；
+         DENIED->FAILED|INTERRUPTED|终态；DISCONNECTED->RECONCILING；
+         RECONCILING->RUNNING|UNKNOWN|SUCCEEDED|FAILED。
+         终态（SUCCEEDED/FAILED/INTERRUPTED/UNKNOWN）不可再迁移，任何迁移尝试抛
+         ValueError；不在表中的迁移抛 ValueError。
+      5. 事件排序与去重辅助（§7.3/§13.1）：单调 seq 校验（同 run 内后到事件 seq 必须
+         递增，否则抛 ValueError；允许 event_id 已存在的重复——重复投递应被跳过而非报错，
+         提供 is_duplicate() 幂等去重辅助）。
+      6. 大小上限：单事件 payload 序列化后 ≤64KiB 拒绝；event_id 必须匹配 ^evt_[A-Za-z0-9_-]+$。
+      7. 模块零第三方依赖（只用标准库 dataclasses/json/re/typing），无 IO 副作用；
+         文件 ≤500 行、函数 ≤50 行、圈复杂度 ≤15（python quality.py 门禁）。
+      8. from __future__ import annotations；docstring 中文；遵循仓库现有风格
+         （参考 pbatch/waves.py 或 pbatch/contracts.py 的纯数据模块写法）。
+
+      ## 测试要求（tests/test_tui_protocol.py，pytest 风格与仓库一致）
+      - schema round-trip（to_jsonl→from_jsonl 等值，未知顶层字段保留原文）；
+      - 未知 kind 拒绝；乱序 seq 拒绝；重复 event_id 判定为重复；
+      - 终态后迁移拒绝；全部非法迁移表逐一覆盖；
+      - 超大 payload 拒绝；extensions 超限拒绝；坏 JSON/超长单行拒绝；
+      - RuntimeCapabilities 默认值断言（Legacy 至少 message_stream/interrupt=True）。
+      测试命名 test_*、模块内函数 ≤50 行；不要修改其他文件。
+
+      ## 门禁（必须全部通过后才算完成）
+      a) python -m pytest tests/test_tui_protocol.py -q 全绿；
+      b) python quality.py --strict . 不新增违规（运行前先记录基线：python quality.py . 的输出）；
+      c) 不修改 pbatch/tui.py、pbatch/tui_backend.py、pbatch/runner.py 等既有文件。
+      完成后在回复中列出：新增文件、测试数、quality 基线对比、以及你判断的设计文档
+      §7 与实现之间的任何偏差（如果有，说明为什么）。
+    output: docs/tui-phase0/t1-protocol.md
+    validate: pyquality

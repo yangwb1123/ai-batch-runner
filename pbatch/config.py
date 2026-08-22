@@ -170,6 +170,24 @@ def _argument_tokens(value, default: tuple, label: str) -> tuple:
     return default
 
 
+def agent_extra_args(bin_name: str = "") -> tuple[str, ...]:
+    """Per-agent trailing args (agent.agents.<bin>.extra_args, falling back
+    to the global agent.extra_args). Used by CLIs that need invocation-level
+    flags outside the six argument_flags slots — e.g. Codex's sandbox mode
+    (``codex exec --approve-for-me``). Empty tuple when absent/malformed.
+    """
+    section = _agent_section(bin_name or AGENT_BIN)
+    value = section.get("extra_args", _AGENT_CFG.get("extra_args"))
+    if isinstance(value, (list, tuple)) and all(
+            isinstance(token, str) and token for token in value):
+        return tuple(value)
+    if value not in (None, []):
+        log.warning(
+            "agent extra_args must be a list of non-empty strings; ignored: %r",
+            value)
+    return ()
+
+
 def agent_argument_flags(bin_name: str = "") -> dict[str, tuple]:
     """Resolve the argv adapter for an agent binary.
 
@@ -206,6 +224,7 @@ def build_agent_argv(bin_name: str, prompt: str, *, model: str = "",
         cmd.extend([*flags[key], value])
     if session_flags:
         cmd.extend(session_flags)
+    cmd.extend(agent_extra_args(bin_name))
     return cmd
 
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import re
 import shlex
 import sys
@@ -19,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
+from textual import events
 from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
@@ -38,6 +40,9 @@ Available commands:
 - `/provider [name]` — show or change the provider
 - `/agent [binary]` — show or change the agent CLI
 - `/memory auto|on|off` — show or change memory mode
+- `/files` — show changed workspace files
+- `/diff [path]` — review the current unified diff
+- `/refresh` — refresh workspace and backend status
 - `/doctor` — run local environment diagnostics
 - `/quit` — cancel active work and leave the TUI
 
@@ -121,6 +126,7 @@ class PiBatchTUI(App[None]):
         Binding("ctrl+p", "command_palette", "Palette", priority=True),
         Binding("ctrl+n", "new_session", "New", priority=True),
         Binding("ctrl+l", "clear", "Clear", priority=True),
+        Binding("ctrl+g", "show_diff", "Changes", priority=True),
         Binding("ctrl+c", "cancel", "Cancel", priority=True),
         Binding("ctrl+q", "quit", "Quit", priority=True),
     ]
@@ -175,6 +181,9 @@ class PiBatchTUI(App[None]):
         self.options = options or TuiOptions()
         self._backend = backend
         self._backend_factory = backend_factory or _default_backend_factory
+        self._adapter = None
+        self._adapter_session_id = ""
+        self._turn_handle = None
         self._entries: list[TranscriptEntry] = []
         self._assistant_index: Optional[int] = None
         self._error_index: Optional[int] = None
@@ -184,6 +193,9 @@ class PiBatchTUI(App[None]):
         self._turn_stderr_seen = False
         self._last_status = "Starting"
         self._ui_thread_id = threading.get_ident()
+        self._prompt_history: list[str] = []
+        self._history_index = 0
+        self._history_draft = ""
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -198,6 +210,7 @@ class PiBatchTUI(App[None]):
         self._ui_thread_id = threading.get_ident()
         try:
             self._backend = self._resolve_backend()
+            self._attach_adapter()
             snapshot = self._backend_snapshot()
             self._last_status = (
                 snapshot.get("agent_error") or "Ready"
@@ -226,11 +239,38 @@ class PiBatchTUI(App[None]):
         factory = candidate if callable(candidate) else self._backend_factory
         return factory(self._emit_from_backend, **self.options.backend_kwargs())
 
+    def _attach_adapter(self) -> None:
+        """Prefer typed runtime events when callback ownership is replaceable."""
+        adapter = None
+        try:
+            from .tui_runtime import LegacyAdapter
+
+            adapter = LegacyAdapter(self._backend)
+            session = adapter._adopt_session({"name": self.options.session_name})
+        except Exception:
+            if adapter is not None:
+                adapter.close()
+            setter = getattr(self._backend, "set_emit", None)
+            if callable(setter):
+                setter(self._emit_from_backend)
+            else:
+                try:
+                    self._backend.emit = self._emit_from_backend
+                except (AttributeError, TypeError):
+                    pass
+            return
+        self._adapter = adapter
+        self._adapter_session_id = str(session.session_id)
+
     def get_system_commands(self, screen: Screen) -> Iterable[SystemCommand]:
         yield from super().get_system_commands(screen)
         yield SystemCommand("New session", "Reset backend session", self.action_new_session)
         yield SystemCommand("Clear conversation", "Clear visible messages", self.action_clear)
         yield SystemCommand("Show status", "Display backend snapshot", self._palette_status)
+        yield SystemCommand("Review changes", "Show the current Git diff", self.action_show_diff)
+        yield SystemCommand("Changed files", "List dirty workspace files", self._palette_files)
+        yield SystemCommand("Refresh workspace", "Refresh Git and backend status",
+                            self._palette_refresh)
         yield SystemCommand("Run doctor", "Check local environment", self._palette_doctor)
         yield SystemCommand("Slash command help", "List TUI commands", self._palette_help)
 
@@ -239,6 +279,7 @@ class PiBatchTUI(App[None]):
         event.input.value = ""
         if not value:
             return
+        self._remember_input(value)
         if self._busy:
             self.notify("A turn is already running; cancel it before submitting again.",
                         severity="warning")
@@ -262,6 +303,9 @@ class PiBatchTUI(App[None]):
             "provider": self._slash_provider,
             "agent": self._slash_agent,
             "memory": self._slash_memory,
+            "files": self._slash_files,
+            "diff": self._slash_diff,
+            "refresh": self._slash_refresh,
             "doctor": self._slash_doctor,
             "quit": self._slash_quit,
         }
@@ -299,14 +343,81 @@ class PiBatchTUI(App[None]):
 
     def _run_turn_worker(self, prompt: str) -> None:
         result, error = None, None
-        try:
-            result = self._backend.run_turn(prompt)
-        except Exception as exc:  # backend errors are rendered, never crash the UI
-            error = exc
+        adapter = self._adapter
+        if adapter is None:
+            result, error = self._run_backend_turn(prompt)
+        else:
+            try:
+                stream = adapter.events()
+                handle = adapter.start_turn({
+                    "prompt": prompt, "session_id": self._adapter_session_id,
+                })
+                self._turn_handle = handle
+            except Exception:
+                self._disable_adapter(adapter)
+                result, error = self._run_backend_turn(prompt)
+            else:
+                try:
+                    result = self._consume_adapter_turn(stream, handle)
+                except Exception as exc:
+                    error = exc
+                finally:
+                    self._turn_handle = None
         try:
             self.call_from_thread(self._finish_turn, result, error)
         except RuntimeError:
             pass  # application closed while the backend was unwinding
+
+    def _run_backend_turn(self, prompt: str) -> tuple[Any, Optional[Exception]]:
+        try:
+            return self._backend.run_turn(prompt), None
+        except Exception as exc:  # backend errors are rendered, never crash the UI
+            return None, exc
+
+    def _consume_adapter_turn(self, stream: Any, handle: Any) -> dict[str, Any]:
+        while True:
+            try:
+                event = stream.get(timeout=0.1)
+            except queue.Empty:
+                if getattr(handle, "done", False):
+                    raise RuntimeError("runtime turn ended without a terminal event")
+                continue
+            if event is None:
+                raise RuntimeError("runtime event stream closed during a turn")
+            kind = str(getattr(event, "kind", ""))
+            payload = getattr(event, "payload", {})
+            payload = payload if isinstance(payload, dict) else {}
+            if kind == "message.delta":
+                self._runtime_text("stdout", payload.get("text", ""))
+            elif kind == "runtime.warning":
+                self._runtime_text("stderr", payload.get("text", ""))
+            elif kind in {"turn.completed", "turn.failed"}:
+                return {
+                    "success": kind == "turn.completed", "stdout": "", "stderr": "",
+                    "reason": payload.get("reason", ""),
+                    "returncode": payload.get("returncode", 0),
+                }
+
+    def _runtime_text(self, kind: str, text: Any) -> None:
+        try:
+            self.call_from_thread(self._apply_backend_emit, kind, str(text))
+        except RuntimeError:
+            pass
+
+    def _disable_adapter(self, adapter: Any) -> None:
+        try:
+            adapter.close()
+        finally:
+            self._adapter = None
+            self._adapter_session_id = ""
+            setter = getattr(self._backend, "set_emit", None)
+            if callable(setter):
+                setter(self._emit_from_backend)
+            else:
+                try:
+                    self._backend.emit = self._emit_from_backend
+                except (AttributeError, TypeError):
+                    pass
 
     def _emit_from_backend(self, kind: str, text: str) -> None:
         """Backend callback; all worker-thread UI mutation crosses this bridge."""
@@ -357,6 +468,7 @@ class PiBatchTUI(App[None]):
             if not success and reason:
                 self._append_active("error", reason)
             self._last_status = "Ready" if success else "Failed"
+        self._append_workspace_change()
         self._assistant_index = None
         self._error_index = None
         self._worker = None
@@ -387,7 +499,7 @@ class PiBatchTUI(App[None]):
     def _refresh_status(self) -> None:
         snapshot = self._backend_snapshot()
         lines = ["STATUS", "", f"state     {'busy' if self._busy else 'ready'}"]
-        lines.extend(self._option_status_lines())
+        lines.extend(self._option_status_lines(snapshot))
         for key, value in _snapshot_scalars(snapshot):
             if key not in {"state", "agent", "model", "provider", "memory_mode", "cwd"}:
                 lines.append(f"{key[:9]:<9} {_one_line(str(value))[:20]}")
@@ -395,15 +507,22 @@ class PiBatchTUI(App[None]):
             lines.extend(["", _one_line(self._last_status)[:120]])
         self.query_one("#status-panel", Static).update("\n".join(lines))
 
-    def _option_status_lines(self) -> list[str]:
+    def _option_status_lines(self, snapshot: Optional[dict] = None) -> list[str]:
         cwd = self.options.cwd or os.getcwd()
-        return [
+        lines = [
             f"workspace {_short_path(cwd, 20)}",
             f"agent     {self._option_value('agent') or 'default'}",
             f"model     {self._option_value('model') or 'default'}",
             f"provider  {self._option_value('provider') or 'default'}",
             f"memory    {self._option_value('memory_mode') or 'auto'}",
         ]
+        workspace = (snapshot or {}).get("workspace", {})
+        if isinstance(workspace, dict) and workspace.get("available"):
+            lines.extend([
+                f"branch    {_one_line(str(workspace.get('branch', '')))[:20]}",
+                f"changes   {workspace.get('changed', 0)}",
+            ])
+        return lines
 
     def _backend_snapshot(self) -> dict[str, Any]:
         if self._backend is None:
@@ -481,6 +600,35 @@ class PiBatchTUI(App[None]):
             return
         self._set_option("memory_mode", args[0])
 
+    def _slash_files(self, args: tuple[str, ...]) -> None:
+        if not self._require_no_args("files", args):
+            return
+        payload = self._workspace_call("workspace_status")
+        if payload is not None:
+            self._append_entry("system", _render_workspace_files(payload))
+            self._last_status = "Workspace refreshed"
+            self._refresh_status()
+
+    def _slash_diff(self, args: tuple[str, ...]) -> None:
+        if len(args) > 1:
+            self._usage("diff", "[path]")
+            return
+        payload = self._workspace_call("workspace_diff", args[0] if args else "")
+        if payload is not None:
+            self._append_entry("system", _render_workspace_diff(payload))
+            self._last_status = "Diff refreshed"
+            self._refresh_status()
+
+    def _slash_refresh(self, args: tuple[str, ...]) -> None:
+        if not self._require_no_args("refresh", args):
+            return
+        payload = self._workspace_call("workspace_status")
+        if payload is not None:
+            changed = payload.get("changed", 0) if isinstance(payload, dict) else 0
+            self._last_status = f"Workspace refreshed ({changed} changed)"
+            self._refresh_status()
+            self.notify(self._last_status)
+
     def _slash_doctor(self, args: tuple[str, ...]) -> None:
         if not self._require_no_args("doctor", args):
             return
@@ -522,7 +670,12 @@ class PiBatchTUI(App[None]):
                         severity="warning")
             return
         try:
-            snapshot = self._backend.new_session(name)
+            if self._adapter is None:
+                snapshot = self._backend.new_session(name)
+            else:
+                session = self._adapter.start_session({"name": name})
+                self._adapter_session_id = str(session.session_id)
+                snapshot = self._backend_snapshot()
         except Exception as exc:
             self._append_entry("error", f"Unable to start a new session: {exc}")
             return
@@ -543,12 +696,24 @@ class PiBatchTUI(App[None]):
         self._last_status = "Conversation cleared"
         self._refresh_status()
 
+    def action_show_diff(self) -> None:
+        if self._busy:
+            self.notify("Wait for the active turn before reviewing changes.",
+                        severity="warning")
+            return
+        self._slash_diff(())
+
     def action_cancel(self) -> None:
         if not self._busy or self._backend is None:
             self.notify("No active turn to cancel.")
             return
         try:
-            accepted = bool(self._backend.cancel())
+            handle = self._turn_handle
+            if self._adapter is not None and handle is not None:
+                self._adapter.interrupt_turn({"turn_id": handle.turn_id})
+                accepted = True
+            else:
+                accepted = bool(self._backend.cancel())
         except Exception as exc:
             self._append_entry("error", f"Cancel failed: {exc}")
             return
@@ -560,7 +725,11 @@ class PiBatchTUI(App[None]):
     def action_quit(self) -> None:
         if self._busy and self._backend is not None:
             try:
-                self._backend.cancel()
+                handle = self._turn_handle
+                if self._adapter is not None and handle is not None:
+                    self._adapter.interrupt_turn({"turn_id": handle.turn_id})
+                else:
+                    self._backend.cancel()
             except Exception:
                 pass
         if self._worker is not None:
@@ -573,8 +742,71 @@ class PiBatchTUI(App[None]):
     def _palette_status(self) -> None:
         self._slash_status(())
 
+    def _palette_files(self) -> None:
+        self._slash_files(())
+
+    def _palette_refresh(self) -> None:
+        self._slash_refresh(())
+
     def _palette_doctor(self) -> None:
         self._slash_doctor(())
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key not in {"up", "down"} or self._busy:
+            return
+        composer = self.query_one("#composer", Input)
+        if self.focused is not composer or not self._prompt_history:
+            return
+        self._navigate_history(-1 if event.key == "up" else 1, composer)
+        event.prevent_default()
+        event.stop()
+
+    def _remember_input(self, value: str) -> None:
+        if not self._prompt_history or self._prompt_history[-1] != value:
+            self._prompt_history.append(value)
+            del self._prompt_history[:-100]
+        self._history_index = len(self._prompt_history)
+        self._history_draft = ""
+
+    def _navigate_history(self, direction: int, composer: Input) -> None:
+        end = len(self._prompt_history)
+        if self._history_index == end and direction < 0:
+            self._history_draft = composer.value
+        self._history_index = max(0, min(end, self._history_index + direction))
+        composer.value = (self._history_draft if self._history_index == end
+                          else self._prompt_history[self._history_index])
+        composer.cursor_position = len(composer.value)
+
+    def _workspace_call(self, method_name: str, *args: str) -> Optional[dict]:
+        if self._busy:
+            self.notify("Wait for the active turn before reviewing changes.",
+                        severity="warning")
+            return None
+        method = getattr(self._backend, method_name, None)
+        if not callable(method):
+            self._append_entry("error", "Workspace review is unavailable for this backend.")
+            return None
+        try:
+            payload = method(*args)
+        except Exception as exc:
+            self._append_entry("error", f"Workspace review failed: {exc}")
+            return None
+        return payload if isinstance(payload, dict) else {"error": str(payload)}
+
+    def _append_workspace_change(self) -> None:
+        snapshot = self._backend_snapshot()
+        delta = snapshot.get("last_turn_workspace", {})
+        if not isinstance(delta, dict) or not delta.get("changed"):
+            return
+        paths = [str(path) for path in delta.get("paths", [])]
+        details = ", ".join(f"`{_inline_label(path)}`" for path in paths[:6])
+        if delta.get("paths_truncated") or len(paths) > 6:
+            details += ", …"
+        suffix = f" Files: {details}." if details else ""
+        head = " HEAD changed." if delta.get("head_changed") else ""
+        self._append_entry(
+            "system", f"Workspace changed; {delta.get('dirty_files', 0)} dirty file(s)."
+            f"{head}{suffix} Use `/diff` to review.")
 
 
 # A descriptive alias for embedding code which doesn't want product branding.
@@ -594,6 +826,10 @@ def _short_path(value: str, width: int) -> str:
     return path if len(path) <= width else "…" + path[-(width - 1):]
 
 
+def _inline_label(value: Any) -> str:
+    return _one_line(_clean_text(value)).replace("`", "'")
+
+
 def _render_entry(entry: TranscriptEntry, busy: bool) -> str:
     labels = {"user": "You", "assistant": "Assistant", "system": "System", "error": "Error"}
     body = entry.text
@@ -602,6 +838,48 @@ def _render_entry(entry: TranscriptEntry, busy: bool) -> str:
     if entry.role == "error":
         body = "\n".join(f"> {line}" for line in body.splitlines())
     return f"## {labels.get(entry.role, entry.role.title())}\n\n{body}"
+
+
+def _render_workspace_files(payload: dict[str, Any]) -> str:
+    error = _clean_text(payload.get("error", ""))
+    if error:
+        return f"## Workspace files\n\nUnable to inspect workspace: {error}"
+    if not payload.get("available"):
+        return "## Workspace files\n\nGit workspace information is unavailable."
+    files = payload.get("files", [])
+    lines = [
+        "## Workspace files",
+        "",
+        f"Branch: `{_inline_label(payload.get('branch') or 'unknown')}` · "
+        f"Changed: **{payload.get('changed', len(files))}** · "
+        f"Staged: {payload.get('staged', 0)} · "
+        f"Unstaged: {payload.get('unstaged', 0)} · "
+        f"Untracked: {payload.get('untracked', 0)}",
+    ]
+    if not files:
+        lines.extend(["", "Working tree is clean."])
+        return "\n".join(lines)
+    lines.extend(["", "| Status | Path |", "|:--:|---|"])
+    for item in files:
+        path = _inline_label(item.get("path", "")).replace("|", "\\|")
+        lines.append(f"| `{item.get('status', '')}` | `{path}` |")
+    if payload.get("truncated"):
+        lines.extend(["", "_File list truncated at the display limit._"])
+    return "\n".join(lines)
+
+
+def _render_workspace_diff(payload: dict[str, Any]) -> str:
+    error = _clean_text(payload.get("error", ""))
+    label = _inline_label(payload.get("path", "")) or "workspace"
+    if error:
+        return f"## Diff · `{label}`\n\nUnable to generate diff: {error}"
+    patch = _clean_text(payload.get("patch", ""))
+    fence = "```"
+    while fence in patch:
+        fence += "`"
+    note = "\n\n_Diff truncated at the bounded output limit._" if payload.get(
+        "truncated") else ""
+    return f"## Diff · `{label}`\n\n{fence}diff\n{patch}\n{fence}{note}"
 
 
 def _result_fields(result: Any) -> tuple[bool, str, str, str]:
