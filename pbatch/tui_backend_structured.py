@@ -110,7 +110,9 @@ def _execute_locked(
         notify: Notify, is_cancelled: Callable[[], bool]) -> TaskResult:
     lock_path = None
     try:
-        lock_path = acquire_lock(backend.cwd)
+        lock_path = acquire_lock(
+            backend.cwd,
+            session_name=getattr(backend, "session_name", "") or "")
     except SystemExit as exc:
         reason = f"workspace is locked (exit {exc.code or LOCK_EXIT_CODE})"
         return TaskResult(task, False, returncode=LOCK_EXIT_CODE,

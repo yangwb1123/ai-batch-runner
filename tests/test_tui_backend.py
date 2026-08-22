@@ -170,15 +170,34 @@ def test_snapshot_reports_missing_agent_without_blocking_startup(tmp_path):
 
 
 def test_turn_respects_workspace_lock(tmp_path):
+    """Legacy lock contract v1: any live lock refused the TUI turn. The
+    conflict-aware lock (v2) refuses only REAL conflicts: the same
+    non-empty session name (parallel TUI would interleave session
+    state), or overlapping outputs. A different session name runs
+    parallel — which is what lets a TUI chat work while a 7x24 batch
+    holds the root lock."""
     agent = _agent(tmp_path, "echo should-not-run\n")
-    held = acquire_lock(str(tmp_path))
+    # v1: same-session TUI is refused while that session holds the lock
+    held = acquire_lock(str(tmp_path), session_name="chat-main")
     try:
         backend = TUIBackend(cwd=str(tmp_path), agent=str(agent),
-                             memory_mode="off", session_id="locked-session")
+                             memory_mode="off", session_id="locked-session",
+                             session_name="chat-main")
         result = backend.run_turn("do not start")
         assert not result.success and result.returncode == 5
         assert result.reason == "workspace is locked (exit 5)"
         assert (tmp_path / ".pi-batch.lock").exists()
+    finally:
+        release_lock(held)
+    # v2: a different session name runs parallel (TUI usable next to a
+    # long-running batch on the same repo root)
+    held = acquire_lock(str(tmp_path), session_name="batch-x")
+    try:
+        backend = TUIBackend(cwd=str(tmp_path), agent=str(agent),
+                             memory_mode="off", session_id="tui-session",
+                             session_name="chat-other")
+        result = backend.run_turn("run now")
+        assert result.success  # parallel: no conflict with batch-x
     finally:
         release_lock(held)
 

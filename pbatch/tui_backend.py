@@ -252,7 +252,8 @@ class TUIBackend:
                         flags_kind: str) -> TaskResult:
         lock_path = None
         try:
-            lock_path = acquire_lock(self.cwd)
+            lock_path = acquire_lock(self.cwd,
+                                       session_name=self.session_name or self.session_id)
         except SystemExit as exc:
             reason = f"workspace is locked (exit {exc.code or LOCK_EXIT_CODE})"
             return TaskResult(task, False, returncode=LOCK_EXIT_CODE,
