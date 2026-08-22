@@ -232,8 +232,9 @@ def _kill_group(process: subprocess.Popen[str]) -> None:
         pass
 
 
-def _run_codex(argv: Sequence[str], cwd: str, timeout: float,
-               capture: ReviewCapture) -> RunOutcome:
+def run_review_process(argv: Sequence[str], cwd: str, timeout: float,
+                       capture: ReviewCapture) -> RunOutcome:
+    """Run the bounded Codex review process; reused by ``review_fix`` tests."""
     started = time.monotonic()
     stderr_chunks: list[str] = []
     try:
@@ -255,6 +256,9 @@ def _run_codex(argv: Sequence[str], cwd: str, timeout: float,
     exit_code = -1 if timed_out else int(process.returncode or 0)
     return RunOutcome(exit_code, _elapsed_ms(started), timed_out,
                       "".join(stderr_chunks))
+
+
+_run_codex = run_review_process  # backward-compatible private injection name
 
 
 def _elapsed_ms(started: float) -> int:
@@ -451,20 +455,33 @@ def _exit_code(payload: Mapping[str, Any], outcome: RunOutcome) -> int:
 Runner = Callable[[Sequence[str], str, float, ReviewCapture], RunOutcome]
 
 
+def run_review(scope: str, scope_argv: Sequence[str], cwd: Path, timeout: float,
+               output: Path, *, runner: Optional[Runner] = None
+               ) -> tuple[dict[str, Any], RunOutcome]:
+    """Execute and parse one review without rendering it.
+
+    ``review_fix`` reuses this runner and :func:`extract_findings` contract so
+    both commands consume exactly the same bounded JSONL projection.
+    """
+    capture = ReviewCapture()
+    execute = runner or _run_codex
+    try:
+        outcome = execute(
+            ["codex", "exec", "review", "--json", *scope_argv],
+            str(cwd), timeout, capture)
+    except Exception as exc:
+        outcome = RunOutcome(-1, 0, stderr=f"review runner failed: {_bounded_text(exc)}")
+    return _payload(scope, output, capture, outcome), outcome
+
+
 def review_main(argv: Optional[list[str]] = None, *, runner: Optional[Runner] = None) -> int:
-    """Run Codex review; ``runner`` is the local-test injection boundary."""
+    """Render one review; :func:`run_review` is the reusable execution entry."""
     parser = _build_parser()
     args = parser.parse_args(argv)
     scope, scope_argv = _scope_args(args, parser)
     cwd, output = _paths(args, parser)
-    command = ["codex", "exec", "review", "--json", *scope_argv]
-    capture = ReviewCapture()
-    execute = runner or _run_codex
-    try:
-        outcome = execute(command, str(cwd), args.timeout, capture)
-    except Exception as exc:
-        outcome = RunOutcome(-1, 0, stderr=f"review runner failed: {_bounded_text(exc)}")
-    payload = _payload(scope, output, capture, outcome)
+    payload, outcome = run_review(
+        scope, scope_argv, cwd, args.timeout, output, runner=runner)
     if args.json:
         report = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
         _write_report(output, report)
