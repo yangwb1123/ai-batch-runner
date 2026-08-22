@@ -170,6 +170,9 @@ def _add_batch_args(p: argparse.ArgumentParser) -> None:
                         "set agent.bin in pi-batch.yaml to change the default)")
     p.add_argument("--model", default="",
                    help="default model override for all tasks")
+    p.add_argument("--route-model", action="store_true",
+                   help="T14: 按任务难度自动路由 model（模型路由表 + 每日配额降级；"
+                        "仅补未显式指定 model 的任务）")
     p.add_argument("--provider", default="",
                    help="default provider override for all tasks (CLI > task > stage > config)")
     p.add_argument("--timeout", type=int, default=0,
@@ -419,6 +422,7 @@ _SUBCOMMANDS: dict[str, str] = {
     "review": "review:review_main",
     "review-fix": "review_fix:review_fix_main",
     "handoff": "handoff:handoff_main",
+    "route": "routing:route_main",
     "adr": "adr:adr_main",
     "impact": "impact:impact_main",
     "project": "project_memory:project_main",

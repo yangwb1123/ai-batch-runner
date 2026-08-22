@@ -396,3 +396,19 @@ device_fabric:
 # 产物路径即结果共享基础（T11；handoff 接力为 T12）。
 agent_ledger:
   enabled: true
+
+# 难度感知模型路由（T14）：默认关；开启后按任务画像选 model 档位，
+# 每日配额（limits/daily_budget）剩余比例低于阈值时自动降档。
+# 显式指定的 model（--model / 任务 / 阶段）永不覆盖。tiers 的 model
+# 按你的 provider 能力填写（示例为 pi/gpt 系列占位）。
+model_routing:
+  enabled: false
+  tiers:
+    low:      {model: ""}        # 琐碎/机械任务：留空 = agent 默认（最省）
+    medium:   {model: "gpt-5.1-mini"}
+    high:     {model: "gpt-5.6"}
+    critical: {model: "gpt-5.6-sol"}   # 支付/生产事故/高风险
+  downgrade:
+    enabled: true                # 配额见底时降级（保护性成本控制）
+    remaining_ratio_threshold: 0.25    # 剩余 < 25% 时最高可用档降一级
+    min_tier: low

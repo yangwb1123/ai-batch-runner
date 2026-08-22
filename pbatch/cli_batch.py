@@ -215,12 +215,34 @@ def _apply_task_overrides(args, tasks) -> None:
     if args.model:
         for t in tasks:
             t.model = args.model
+    elif getattr(args, "route_model", False) and routing_enabled():
+        _inject_route_models(tasks)
     if args.provider:
         for t in tasks:
             t.provider = args.provider
     if args.timeout:
         for t in tasks:
             t.timeout = args.timeout
+
+def _inject_route_models(tasks) -> None:
+    """难度路由（T14）：只补未显式指定 model 的任务；显式 model 永不覆盖。"""
+    from .routing import route_task, routing_enabled
+    if not routing_enabled():
+        return
+    for task in tasks:
+        if task.model and task.model != config.AGENT_DEFAULT_MODEL:
+            continue
+        try:
+            plan = route_task(task.prompt)
+        except Exception as exc:
+            log.warning("route model injection skipped: %s", exc)
+            continue
+        if plan.model:
+            task.model = plan.model
+            log.info("ROUTE: %s -> model '%s' (tier %s%s)", task.prompt[:40],
+                     plan.model, plan.tier,
+                     ", downgraded" if plan.downgraded else "")
+
 
 def _run_pipeline_round(args, pipeline: Pipeline, session_name: str, cli_validate: str,
                         timeout_override: int, reuse_outputs: bool) -> tuple[bool, set]:

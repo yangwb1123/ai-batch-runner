@@ -23,6 +23,7 @@ _EXPECTED_MAPPINGS = {
     "agent", "limits", "memory", "session", "logging", "input", "output",
     "evidence", "prompt", "validation", "commands", "project", "commit",
     "classifier", "runtime_policy", "device_fabric", "agent_ledger",
+    "model_routing",
     "validators",
 }
 _EXPECTED_SCALARS = {"config_version", "ui_scan_dir"}
