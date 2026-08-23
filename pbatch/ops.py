@@ -260,6 +260,49 @@ def _cmd_messages(args, cwd: str) -> int:
     return 0
 
 
+def _breaker_provider(provider: str) -> tuple[str, bool]:
+    value = str(provider or "").strip()
+    if not value:
+        return "", True
+    from . import provider_breaker
+    identity = getattr(provider_breaker, "breaker_identity", None)
+    if not callable(identity):
+        return value, False
+    return identity(value, ""), True
+
+
+def _cmd_breaker(args, cwd: str) -> int:
+    from . import provider_breaker
+    data_dir = _data_dir(cwd)
+    provider, supports_partition = _breaker_provider(args.provider)
+    if args.provider and not supports_partition:
+        print("provider-specific breaker control is unavailable in this version")
+        return 2
+    if args.reset:
+        try:
+            provider_breaker.register_success(data_dir, provider=provider)
+        except TypeError:  # legacy aggregate API
+            provider_breaker.register_success(data_dir)
+        try:
+            from .metering import record_event
+            record_event("provider_breaker_manual_reset", provider or "*",
+                         "operator requested breaker reset", data_dir)
+        except Exception:
+            pass
+        config.log.warning("PROVIDER BREAKER MANUAL RESET [%s]", provider or "all")
+    try:
+        state = (provider_breaker.breaker_state(data_dir, provider=provider)
+                 if provider else provider_breaker.breaker_state(data_dir))
+    except TypeError:  # legacy aggregate API
+        state = provider_breaker.breaker_state(data_dir)
+    if args.json:
+        print(json.dumps(state, ensure_ascii=False, indent=2))
+    else:
+        scope = f" [{provider}]" if provider else ""
+        print(f"provider breaker{scope}: {_breaker_label(state)}")
+    return 0
+
+
 def _cmd_report(args, cwd: str) -> int:
     out = Path(args.html)
     if not out.is_absolute():
@@ -292,6 +335,11 @@ def ops_main(argv: Optional[list[str]] = None) -> int:
     p = sub.add_parser("report", help="生成自包含 HTML 监控页")
     p.add_argument("--html", default=OPS_REPORT_NAME,
                    help="输出路径（默认 ./ops-report.html，须在 cwd 内）")
+    p = sub.add_parser("breaker", help="查看或显式复位 provider 熔断")
+    p.add_argument("--provider", default="", help="provider 名称（不传则全部）")
+    p.add_argument("--reset", action="store_true",
+                   help="人工确认 provider 已恢复后清除熔断状态")
+    p.add_argument("--json", action="store_true")
     p = sub.add_parser("serve", help="只读 HTTP 监控服务（web/app 实时查看）")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8731)
@@ -308,5 +356,6 @@ def ops_main(argv: Optional[list[str]] = None) -> int:
         "log": _cmd_log,
         "messages": _cmd_messages,
         "report": _cmd_report,
+        "breaker": _cmd_breaker,
     }
     return handlers[args.command](args, cwd)
