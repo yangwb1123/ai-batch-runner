@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -42,6 +43,28 @@ def test_direction_score_id_and_implementation_contract():
     assert direction.score == pytest.approx(6.5)
     assert direction.direction_id.startswith("device-trust-state-machine-")
     assert direction.implementable is True
+
+
+def test_campaign_runtime_shares_breaker_with_isolated_worktrees(monkeypatch, tmp_path):
+    from pbatch import campaign_exec, metering, ratelimit
+    args = SimpleNamespace(
+        agent_bin="pi", memory_mode="off", stream_output="none",
+        events_file="", webhook="", budget_max=0, daily_budget=0,
+        daily_state="", rate_limit=0, rate_burst=0)
+    monkeypatch.setattr(config, "data_dir", lambda _cwd="": tmp_path)
+    monkeypatch.delenv("PBATCH_RATE_LIMIT_FILE", raising=False)
+    monkeypatch.delenv("PBATCH_PROVIDER_BREAKER_FILE", raising=False)
+    for module, name in ((config, "AGENT_BIN"), (config, "MEMORY_MODE"),
+                         (config, "STREAM_OUTPUT"), (metering, "EVENTS_FILE"),
+                         (metering, "WEBHOOK_URL"), (metering, "BUDGET_MAX"),
+                         (metering, "DAILY_BUDGET"), (metering, "_DAILY_STATE")):
+        monkeypatch.setattr(module, name, getattr(module, name))
+    monkeypatch.setattr(ratelimit, "configure", lambda *args: None)
+
+    campaign_exec._wire_runtime(args)
+
+    assert os.environ["PBATCH_PROVIDER_BREAKER_FILE"] == str(
+        tmp_path / "provider-breaker.json")
 
 
 def test_settings_mapping_and_positive_validation(tmp_path):

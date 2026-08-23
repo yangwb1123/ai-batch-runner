@@ -58,6 +58,14 @@ def test_disabled_when_threshold_zero(monkeypatch):
     assert breaker.wait_or_fail(0.0) is None
 
 
+def test_corrupt_shared_state_is_recovered_fail_closed(tmp_path):
+    state_file = tmp_path / "provider-breaker.json"
+    state_file.write_text('{not-json', encoding="utf-8")
+    assert not breaker.register_provider_failure("quota")
+    state = breaker.breaker_state()
+    assert state["streak"] == 1 and state["cooldown_remaining_s"] == 0
+
+
 def test_runner_wires_breaker_into_result_path(monkeypatch, tmp_path):
     """A provider-failure rejection registers; success resets; the next
     task in cooldown fails with an explicit reason."""

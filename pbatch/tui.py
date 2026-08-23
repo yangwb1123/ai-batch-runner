@@ -34,6 +34,7 @@ Available commands:
 - `/agent [binary]` — show or change the agent CLI
 - `/memory auto|on|off` — show or change memory mode
 - `/agents` — show the latest shared agent runs
+- `/breaker` — show shared provider breaker state
 - `/files` — show changed workspace files
 - `/diff [path]` — review the current unified diff
 - `/refresh` — refresh workspace and backend status
@@ -266,6 +267,7 @@ class PiBatchTUI(App[None]):
         yield SystemCommand("Clear conversation", "Clear visible messages", self.action_clear)
         yield SystemCommand("Show status", "Display backend snapshot", self._palette_status)
         yield SystemCommand("Agent runs", "Show shared agent activity", self._slash_agents)
+        yield SystemCommand("Provider breaker", "Show provider cooldown state", self._slash_breaker)
         yield SystemCommand("Review changes", "Show the current Git diff", self.action_show_diff)
         yield SystemCommand("Changed files", "List dirty workspace files", self._palette_files)
         yield SystemCommand("Refresh workspace", "Refresh Git and backend status",
@@ -303,6 +305,7 @@ class PiBatchTUI(App[None]):
             "agent": self._slash_agent,
             "memory": self._slash_memory,
             "agents": self._slash_agents,
+            "breaker": self._slash_breaker,
             "runs": self._slash_runs,
             "files": self._slash_files,
             "diff": self._slash_diff,
@@ -638,6 +641,15 @@ class PiBatchTUI(App[None]):
         from .tui_agents import render_agent_lines
         lines = render_agent_lines(
             config.data_dir(self.options.cwd), max(20, self.size.width - 4))
+        self._append_entry("system", "\n".join(lines))
+
+    def _slash_breaker(self, args: tuple[str, ...] = ()) -> None:
+        if not self._require_no_args("breaker", args):
+            return
+        from . import config
+        from .tui_agents import render_breaker_lines
+        lines = render_breaker_lines(
+            config.data_dir(self.options.cwd), max(40, self.size.width - 4))
         self._append_entry("system", "\n".join(lines))
 
     def _slash_runs(self, args: tuple[str, ...] = ()) -> None:

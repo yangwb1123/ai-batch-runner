@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 
 from textual.widgets import Input, Markdown
 
 from pbatch import config
 from pbatch.agent_ledger import record
 from pbatch.tui import PiBatchTUI, TuiOptions
-from pbatch.tui_agents import AgentLedgerView
+from pbatch.tui_agents import AgentLedgerView, render_breaker_lines
 
 
 class FakeBackend:
@@ -92,6 +94,32 @@ def test_agents_slash_command_renders_ledger_without_agent_turn(tmp_path, monkey
     _run(scenario())
 
 
+def test_breaker_view_and_slash_command_use_project_state(tmp_path, monkeypatch):
+    state_file = tmp_path / "provider-breaker.json"
+    state_file.write_text(json.dumps({
+        "streak": 0, "step": 2,
+        "cooldown_until": time.monotonic() + 30,
+    }), encoding="utf-8")
+    monkeypatch.setattr(config, "data_dir", lambda _cwd="": tmp_path)
+
+    lines = render_breaker_lines(tmp_path, width=100)
+    assert lines[0] == "PROVIDER BREAKER"
+    assert "ACTIVE" in lines[1] and "step 2" in lines[1]
+
+    async def scenario():
+        app = PiBatchTUI(TuiOptions(cwd=str(tmp_path)), backend_factory=FakeBackend)
+        async with app.run_test(size=(100, 30)) as pilot:
+            composer = app.query_one("#composer", Input)
+            composer.value = "/breaker"
+            await pilot.press("enter")
+            await pilot.pause()
+            source = app.query_one("#conversation", Markdown).source
+            assert "PROVIDER BREAKER" in source and "ACTIVE" in source
+            assert app._backend.prompts == []
+
+    _run(scenario())
+
+
 def test_runs_view_renders_shared_ledger(tmp_path):
     """/runs 面板数据 = 共享账本（与 ops runs 同源），含 attempt 痕迹。"""
     import json as json_mod
@@ -116,12 +144,15 @@ def test_runs_view_renders_shared_ledger(tmp_path):
 
 
 def test_ops_report_html_embeds_ledger_summary(tmp_path):
+    import json as json_mod
     import subprocess, sys
     from pbatch import config as config_mod
     from pbatch.ops import report_html
     from pbatch.tui_agents import RunsView
     data_dir = config_mod.data_dir(str(tmp_path))
     (data_dir / "agents").mkdir(parents=True, exist_ok=True)
+    (data_dir / "provider-breaker.json").write_text(json_mod.dumps({
+        "streak": 0, "step": 1, "cooldown_until": 0}), encoding="utf-8")
     (data_dir / "agents" / "ledger.jsonl").write_text(
         '{"ts":"2026-08-22T09:00:00Z","agent":"pi","status":"succeeded",'
         '"attempt":1,"task_brief":"t","outputs":[],"elapsed_ms":1,'
@@ -132,3 +163,4 @@ def test_ops_report_html_embeds_ledger_summary(tmp_path):
     page = report_html(str(data_dir), str(tmp_path))
     assert "pi-batch" in page and "succeeded" in page and "运营控制台" in page
     assert "运营日志" in page and "PROVIDER BREAKER" in page
+    assert "Provider breaker: ok (streak 0/" in page

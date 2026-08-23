@@ -263,6 +263,8 @@ def _wire_runtime(args: argparse.Namespace) -> None:
         config.data_dir() / "daily-budget.json")
     shared_rate_file = str(config.data_dir() / "rate-limit.json")
     os.environ.setdefault("PBATCH_RATE_LIMIT_FILE", shared_rate_file)
+    shared_breaker_file = str(config.data_dir() / "provider-breaker.json")
+    os.environ.setdefault("PBATCH_PROVIDER_BREAKER_FILE", shared_breaker_file)
     per_second = getattr(args, "rate_limit", 0) or config.RATE_LIMIT_PER_SECOND
     burst = getattr(args, "rate_burst", 0) or config.RATE_LIMIT_BURST
     ratelimit.configure(per_second, burst, config.RATE_LIMIT_PROVIDERS,

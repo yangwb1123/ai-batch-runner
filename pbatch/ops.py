@@ -50,7 +50,7 @@ def overview(data_dir: str) -> dict:
     breaker_status: dict = {}
     try:
         from .provider_breaker import breaker_state
-        breaker_status = breaker_state()
+        breaker_status = breaker_state(data_dir)
     except Exception:
         pass
     return {

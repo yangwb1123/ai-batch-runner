@@ -57,6 +57,22 @@ def render_agent_lines(data_dir, width: int, limit: int = 30) -> list[str]:
     return view.render_lines(width)
 
 
+def render_breaker_lines(data_dir, width: int = 80) -> list[str]:
+    """Project the shared provider breaker without exposing mutable state."""
+    width = max(1, int(width))
+    try:
+        from .provider_breaker import breaker_state
+        state = breaker_state(data_dir)
+        status = (f"ACTIVE · {state['cooldown_remaining_s']}s remaining · "
+                  f"step {state['step']}" if state["active"] else "ready")
+        lines = ["PROVIDER BREAKER", f"state     {status}",
+                 f"streak    {state['streak']}/{state['threshold']}",
+                 f"shared    {state['shared_state_file']}"]
+    except Exception as exc:
+        lines = ["PROVIDER BREAKER", f"state     unavailable: {exc}"]
+    return [_truncate(line, width) for line in lines]
+
+
 class RunsView:
     """最近 run 明细投影（跨进程共享账本）：agent/状态/重试/任务摘要。
 
