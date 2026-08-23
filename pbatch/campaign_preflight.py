@@ -13,6 +13,33 @@ from .config import log, validator_applies
 from .runner import run_validation
 
 
+def _provider_breaker_admission(provider: str = "", agent: str = "") -> tuple[str, list[str]]:
+    """Return a pause reason/evidence for this campaign's provider only."""
+    try:
+        from . import provider_breaker
+        if not provider_breaker.enabled():
+            return "", []
+        identity_fn = getattr(provider_breaker, "breaker_identity", None)
+        identity = identity_fn(provider, agent) if callable(identity_fn) else ""
+        try:
+            state = (provider_breaker.breaker_state(provider=identity)
+                     if identity else provider_breaker.breaker_state())
+        except TypeError:  # compatibility with the pre-partition API
+            state = provider_breaker.breaker_state()
+        if not state.get("active"):
+            return "", []
+        remaining = state.get("cooldown_remaining_s", 0)
+        scope = f" for {identity}" if identity else ""
+        reason = (f"provider breaker active{scope}; cooldown {remaining}s "
+                  f"(step {state.get('step', 0)})")
+        evidence = [str(state["shared_state_file"])]
+        return reason, evidence
+    except Exception as exc:
+        # Admission is safety-critical: an unreadable breaker cannot silently
+        # degrade into spawning more provider work.
+        return f"provider breaker state unavailable: {exc}", []
+
+
 def _preflight_collect_specs(pipeline) -> list:
     """Return unique repo-scoped, deterministic validator specs."""
     from .config import _resolve_validator_specs

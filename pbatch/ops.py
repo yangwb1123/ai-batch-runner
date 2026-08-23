@@ -135,11 +135,16 @@ def message_recent(data_dir: str, limit: int = 5) -> list[dict]:
 # ── report（HTML 监控页）──────────────────────────────────────────────
 
 def _breaker_label(pb_state: dict) -> str:
+    active = [str(item)[:48] for item in
+              (pb_state.get("active_providers") or [])[:4]]
+    scope = f" providers={','.join(active)}" if active else ""
     if pb_state.get("active"):
         return (f"ACTIVE cooldown {pb_state.get('cooldown_remaining_s', 0)}s "
-                f"(step {pb_state.get('step', 0)})")
+                f"(step {pb_state.get('step', 0)}){scope}")
+    count = pb_state.get("provider_count", 0)
+    count_label = f" providers={count}" if count > 1 else ""
     return (f"ok (streak {pb_state.get('streak', 0)}/"
-            f"{pb_state.get('threshold', '-')})")
+            f"{pb_state.get('threshold', '-')}){count_label}")
 
 
 def _runs_table(rows: list, esc, status_class: dict) -> str:

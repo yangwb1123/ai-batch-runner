@@ -22,6 +22,7 @@ from pbatch.campaign_pipeline import (classify_pipeline, materialize_pipeline,
                                       run_directions_isolated)
 from pbatch.campaign_state import StateStore, git_snapshot, write_summary
 from pbatch.models import Stage, Task, TaskResult
+from pbatch.pipeline_status import PipelineStatus
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -65,6 +66,53 @@ def test_campaign_runtime_shares_breaker_with_isolated_worktrees(monkeypatch, tm
 
     assert os.environ["PBATCH_PROVIDER_BREAKER_FILE"] == str(
         tmp_path / "provider-breaker.json")
+
+
+def test_campaign_admission_pauses_before_analysis(monkeypatch, tmp_path):
+    from pbatch import campaign_exec as campaign
+    settings = CampaignSettings(summary_file="summary.md")
+    context = SimpleNamespace(
+        root=tmp_path, settings=settings,
+        args=SimpleNamespace(dry_run=False, modules=""),
+        store=StateStore(tmp_path / "state.jsonl"), snapshot={})
+    events = []
+    summaries = []
+    monkeypatch.setattr(campaign, "_start_heartbeat", lambda: None)
+    monkeypatch.setattr(campaign, "discover_modules", lambda *_args: ["src"])
+    monkeypatch.setattr(campaign, "_provider_breaker_admission",
+                        lambda *_args: (
+                            "provider breaker active; cooldown 30.0s (step 1)",
+                            ["/tmp/provider-breaker.json"]))
+    monkeypatch.setattr(campaign, "_analyze_modules",
+                        lambda *_args: pytest.fail("analysis must not start"))
+    monkeypatch.setattr(campaign, "_event",
+                        lambda *args, **kwargs: events.append((args, kwargs)))
+    monkeypatch.setattr(campaign, "write_summary",
+                        lambda *args: summaries.append(args))
+
+    assert campaign.run_campaign(context) == 1
+    assert events[0][0][4] == PipelineStatus.PROVIDER_BREAKER_PAUSED
+    assert "cooldown 30.0s" in events[0][1]["reason"]
+    assert summaries
+
+
+def test_implementation_admission_does_not_create_pipeline(monkeypatch, tmp_path):
+    from pbatch import campaign_exec as campaign
+    direction = Direction(module="src", title="Harden provider admission")
+    context = SimpleNamespace(
+        root=tmp_path,
+        settings=SimpleNamespace(pipeline_concurrency=4),
+        args=SimpleNamespace(provider="cloud-a", agent_bin="pi"))
+    monkeypatch.setattr(campaign, "_provider_breaker_admission",
+                        lambda *_args: ("provider breaker active", ["state.json"]))
+    monkeypatch.setattr(campaign, "run_directions_isolated",
+                        lambda *_args: pytest.fail("pipeline must not start"))
+
+    outcomes = campaign._implement(
+        context, [(direction, tmp_path / "analysis.json", "fingerprint")])
+
+    assert outcomes[0].status == PipelineStatus.PROVIDER_BREAKER_PAUSED
+    assert outcomes[0].evidence[-1] == "state.json"
 
 
 def test_settings_mapping_and_positive_validation(tmp_path):

@@ -30,7 +30,8 @@ def _print_plan(context: CampaignContext, modules: list[str]) -> None:
         ("ANALYZED",), context.settings.analysis_minutes * 60)
     pipeline_sec = context.store.median_elapsed(
         (PipelineStatus.PASSED, PipelineStatus.GATE_REJECTED,
-         PipelineStatus.PIPELINE_FAILED, PipelineStatus.VALIDATION_FAILED),
+         PipelineStatus.PIPELINE_FAILED, PipelineStatus.VALIDATION_FAILED,
+         PipelineStatus.PROVIDER_BREAKER_PAUSED),
         context.settings.pipeline_minutes * 60)
     analysis_wall = len(modules) * analysis_sec / context.settings.analysis_jobs
     pipeline_wall = (len(modules) * context.settings.max_directions * pipeline_sec /

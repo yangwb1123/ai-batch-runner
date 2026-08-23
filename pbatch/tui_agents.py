@@ -66,8 +66,13 @@ def render_breaker_lines(data_dir, width: int = 80) -> list[str]:
         status = (f"ACTIVE · {state['cooldown_remaining_s']}s remaining · "
                   f"step {state['step']}" if state["active"] else "ready")
         lines = ["PROVIDER BREAKER", f"state     {status}",
-                 f"streak    {state['streak']}/{state['threshold']}",
-                 f"shared    {state['shared_state_file']}"]
+                 f"streak    {state['streak']}/{state['threshold']}"]
+        active = state.get("active_providers") or []
+        if active:
+            lines.append(f"active    {', '.join(str(item) for item in active[:4])}")
+        elif state.get("provider_count", 0) > 1:
+            lines.append(f"providers {state['provider_count']}")
+        lines.append(f"shared    {state['shared_state_file']}")
     except Exception as exc:
         lines = ["PROVIDER BREAKER", f"state     unavailable: {exc}"]
     return [_truncate(line, width) for line in lines]

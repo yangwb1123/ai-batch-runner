@@ -24,10 +24,12 @@ from .campaign_analysis import (analysis_fingerprint, build_analysis_task,
 from .campaign_models import CampaignSettings, Direction
 from .campaign_preflight import (_preflight_collect_specs,
                                  _preflight_run_one, _preflight_validators,
+                                 _provider_breaker_admission,
                                  _report_working_tree_residue,
                                  _start_heartbeat)
-from .campaign_pipeline import (direction_fingerprint, parallel_ready,
-                                run_direction, run_directions_isolated)
+from .campaign_pipeline import (PipelineOutcome, direction_fingerprint,
+                                parallel_ready, run_direction,
+                                run_directions_isolated)
 from .campaign_state import (StateStore, _git_output, git_snapshot,
                              git_worktree_evidence, tool_digest, tool_head,
                              write_summary)
@@ -67,6 +69,18 @@ def run_campaign(context: CampaignContext) -> int:
     if context.args.dry_run:
         _print_plan(context, modules)
         return 0
+    pause_reason, pause_evidence = _provider_breaker_admission(
+        getattr(context.args, "provider", ""),
+        getattr(context.args, "agent_bin", ""))
+    if pause_reason:
+        _event(context, "__provider__", "__provider__", "",
+               PipelineStatus.PROVIDER_BREAKER_PAUSED, "", pause_evidence,
+               reason=pause_reason)
+        write_summary(context.store,
+                      context.settings.path(context.root, context.settings.summary_file),
+                      context.settings.name)
+        log.error("CAMPAIGN paused before analysis: %s", pause_reason)
+        return 1
     _event(context, "__tool__", "__tool__", "", "TOOL_VERSION",
            tool_digest(), [tool_head()],
            reason="tool code digest (pbatch + pi-batch.py + pi-batch.yaml); "
@@ -162,6 +176,16 @@ def _analysis_path(context: CampaignContext, module: str) -> Path:
 def _implement(context: CampaignContext, items: list[tuple[Direction, Path, str]]):
     if not items:
         return []
+    pause_reason, pause_evidence = _provider_breaker_admission(
+        getattr(context.args, "provider", ""),
+        getattr(context.args, "agent_bin", ""))
+    if pause_reason:
+        log.error("CAMPAIGN: refusing %d pipeline admission(s): %s",
+                  len(items), pause_reason)
+        return [PipelineOutcome(
+            direction, PipelineStatus.PROVIDER_BREAKER_PAUSED, pause_reason, 0,
+            [str(analysis), *pause_evidence])
+            for direction, analysis, _ in items]
     for direction, analysis, fp in items:
         _direction_event(context, direction, "RUNNING", fp, analysis)
     if context.settings.pipeline_concurrency > 1:
@@ -236,7 +260,8 @@ def _print_plan(context: CampaignContext, modules: list[str]) -> None:
     analysis_sec = context.store.median_elapsed(("ANALYZED",), context.settings.analysis_minutes * 60)
     pipeline_sec = context.store.median_elapsed(
         (PipelineStatus.PASSED, PipelineStatus.GATE_REJECTED,
-                 PipelineStatus.PIPELINE_FAILED, PipelineStatus.VALIDATION_FAILED),
+                 PipelineStatus.PIPELINE_FAILED, PipelineStatus.VALIDATION_FAILED,
+                 PipelineStatus.PROVIDER_BREAKER_PAUSED),
         context.settings.pipeline_minutes * 60)
     analysis_wall = len(modules) * analysis_sec / context.settings.analysis_jobs
     pipeline_wall = (len(modules) * context.settings.max_directions * pipeline_sec /

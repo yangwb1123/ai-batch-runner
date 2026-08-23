@@ -120,6 +120,19 @@ def test_breaker_view_and_slash_command_use_project_state(tmp_path, monkeypatch)
     _run(scenario())
 
 
+def test_breaker_view_lists_active_provider_partitions(tmp_path, monkeypatch):
+    from pbatch import provider_breaker
+    monkeypatch.setattr(provider_breaker, "breaker_state", lambda _data_dir=None: {
+        "active": True, "cooldown_remaining_s": 30.0, "streak": 0,
+        "step": 1, "threshold": 5, "shared_state_file": str(
+            tmp_path / "provider-breaker.json"),
+        "active_providers": ["provider:deepseek"], "provider_count": 2,
+    })
+    lines = render_breaker_lines(tmp_path, width=120)
+    assert any("provider:deepseek" in line for line in lines)
+    assert not any("agent:codex" in line for line in lines)
+
+
 def test_runs_view_renders_shared_ledger(tmp_path):
     """/runs 面板数据 = 共享账本（与 ops runs 同源），含 attempt 痕迹。"""
     import json as json_mod
@@ -164,3 +177,20 @@ def test_ops_report_html_embeds_ledger_summary(tmp_path):
     assert "pi-batch" in page and "succeeded" in page and "运营控制台" in page
     assert "运营日志" in page and "PROVIDER BREAKER" in page
     assert "Provider breaker: ok (streak 0/" in page
+
+
+def test_ops_report_names_active_provider_partition(tmp_path, monkeypatch):
+    from pbatch import config as config_mod
+    from pbatch import provider_breaker
+    from pbatch.ops import report_html
+    data_dir = config_mod.data_dir(str(tmp_path))
+    data_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(provider_breaker, "breaker_state", lambda _data_dir=None: {
+        "active": True, "cooldown_remaining_s": 30.0, "streak": 0,
+        "step": 1, "threshold": 5, "shared_state_file": str(
+            data_dir / "provider-breaker.json"),
+        "active_providers": ["provider:deepseek"], "provider_count": 1,
+    })
+    page = report_html(str(data_dir), str(tmp_path))
+    assert "Provider breaker: ACTIVE" in page
+    assert "provider:deepseek" in page
