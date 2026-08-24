@@ -39,8 +39,11 @@ python /home/dwp/ai-batch-runner/pi-batch.py \
   -p "NavMenu 在 x 场景下交互异常…" --retries 3 --log-file logs/iris-fix.log
 
 # 4) 发布循环（gate PASS 后；--dry-run 先预览）
+#    脚本自动：把 workspace:* 依赖固定为具体版本 → build → publish →
+#    npm view 校验 → 还原源码 → sverpweb 升级 → 全门禁
 bash scripts/sverp/iris-publish.sh --dry-run
 bash scripts/sverp/iris-publish.sh
+bash scripts/sverp/iris-publish.sh --package=core --dry-run   # 任意包
 
 # 5) 门禁单独运行
 bash scripts/sverp/check-iris-vue.sh ~/workspace/job/iris-ui
