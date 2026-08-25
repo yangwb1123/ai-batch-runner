@@ -159,15 +159,29 @@ fi
 if [ "$DRY_RUN" != "1" ]; then
   step "5.1 发布校验 npm view @iris-ui-kit/$PACKAGE@$VERSION"
   sleep 15
-  LEAKED="$(npm view "@iris-ui-kit/$PACKAGE@$VERSION" dependencies --json 2>/dev/null | grep -c "workspace:" || true)"
-  LEAKED="${LEAKED:-0}"
-  if [ "$LEAKED" != "0" ]; then
-    echo "FAIL: 已发布包 dependencies 含 workspace:*（$LEAKED 处）——发布流程缺陷！" >&2
+  LEAKED="$(npm view "@iris-ui-kit/$PACKAGE@$VERSION" --json 2>/dev/null | node -e '
+    let input = "";
+    process.stdin.on("data", (chunk) => { input += chunk; });
+    process.stdin.on("end", () => {
+      const manifest = JSON.parse(input);
+      const leaks = [];
+      for (const section of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]) {
+        for (const [name, spec] of Object.entries(manifest[section] ?? {})) {
+          if (String(spec).startsWith("workspace:")) leaks.push(section + ":" + name + "@" + spec);
+        }
+      }
+      process.stdout.write(leaks.join(" "));
+    });
+  ')"
+  if [ -n "$LEAKED" ]; then
+    echo "FAIL: 已发布包仍含 workspace:*（$LEAKED）——发布流程缺陷！" >&2
     # 不自动回滚版本（npm 不可覆盖）；提示下一版修正
     echo "注意：npm 不允许覆盖已发布版本，请修复后发下一版本。" >&2
     exit 4
   fi
-  npm view "@iris-ui-kit/$PACKAGE@$VERSION" dependencies --json | head -10
+  npm view "@iris-ui-kit/$PACKAGE@$VERSION" --json \
+    | node -e 'let s=""; process.stdin.on("data", (c) => { s += c; }); process.stdin.on("end", () => { const j=JSON.parse(s); for (const k of ["dependencies","devDependencies","optionalDependencies","peerDependencies"]) for (const [n,v] of Object.entries(j[k] ?? {})) console.log(`${k}: ${n}@${v}`); });' \
+    | head -20
 fi
 
 # ── 5.2 还原源码依赖（保持 workspace:* 本地语义）──────────────
