@@ -38,7 +38,9 @@ stages:
         反馈闭环/批量报告、错误恢复与权限、缺陷模式库）
 
       Produce a classified remediation plan:
-      A. 间距违规：每处 → 最近 token（4/8/12/16/20/24/32/40/48/64），不改布局意图
+      A. 间距违规：每处 → 最近 token（4/8/12/16/20/24/32/40/48/64），不改布局意图；同时把
+         `var(--iris-space-1..6)` 这类未定义的数字 Iris CSS 变量视为间距违规，
+         按 spacing.md 映射到 `--iris-space-xxs/xs/sm/md/lg/xl`，禁止数字别名桥
       B. 颜色/样式违规：→ token 变量（--iris-*），禁止新增硬编码色
       C. 几何违规：圆角/线宽家族合规
       D. 工程违规：god-file 拆分方案（保持导出面）、unsafe HTML → 白名单渲染
@@ -63,7 +65,9 @@ stages:
       - prompt: |
           You are the UI specification refactorer. Read {input_content}
           (the plan) and implement the A-C items:
-          - replace spacing violations with the nearest approved spacing token
+          - replace spacing violations with the nearest approved spacing token;
+            replace undefined numeric Iris CSS variables such as
+            var(--iris-space-4) with the matching named --iris-space-md token
           - replace hard-coded colors and inline styles with existing --iris-*
             tokens or component classes
           - bring radius and border-width values into the approved geometry
@@ -126,7 +130,8 @@ stages:
           You are the UI/UX gatekeeper. Read {input_content} (plan,
           refactor report, reviews). Verify:
           - every A-C violation and every hard D violation in the scoped
-            engineering task fixed (the configured gates report 0)
+            engineering task fixed (the configured gates report 0), including
+            undefined numeric Iris spacing variables detected by uicheck
           - deferred god-file splits and strict complexity findings are
             bounded, evidenced, and recorded as follow-up work rather than
             misreported as complete

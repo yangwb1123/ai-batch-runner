@@ -116,6 +116,40 @@ def test_spacing_gate_checks_tailwind_utility_classes(tmp_path):
     assert _run("--mode", "spacing", str(good)).returncode == 0
 
 
+def test_spacing_gate_rejects_numeric_iris_spacing_variables(tmp_path):
+    bad = tmp_path / "numeric-iris-space.css"
+    bad.write_text(
+        ".editor { gap: var(--iris-space-4); "
+        "padding: var(--iris-space-6, 24px); }\n",
+        encoding="utf-8",
+    )
+    result = _run("--mode", "spacing", str(bad))
+    assert result.returncode == 1
+    assert "undefined numeric Iris spacing variable" in result.stderr
+    assert "--iris-space-md" in result.stderr
+
+    good = tmp_path / "named-iris-space.css"
+    good.write_text(
+        ".editor { gap: var(--iris-space-md); "
+        "padding: var(--iris-space-xl, 24px); }\n",
+        encoding="utf-8",
+    )
+    assert _run("--mode", "spacing", str(good)).returncode == 0
+
+
+def test_project_scan_includes_css_for_numeric_iris_spacing(tmp_path):
+    _make_project(
+        tmp_path,
+        {"src/styles/app.css": ".editor { gap: var(--iris-space-4); }\n"},
+    )
+    result = _run("--dir", str(tmp_path), "--mode", "spacing", "--json")
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["files_scanned"] == 1
+    assert payload["total"] == 1
+    assert "app.css" in payload["violations"][0]["file"]
+
+
 def test_unknown_mode_exits_2():
     result = _run("--mode", "bogus", "x.tsx")
     assert result.returncode == 2

@@ -70,6 +70,18 @@ SizedBox(height: 24)
 - compact 模式 ≠ 没有间距：密度差异通过 token 档位表达（如 tableRow
   48→40），**不得**出现 5/9/14/17/19/21/26 等非 token 值。
 
+### Iris CSS 命名间距变量
+
+Iris CSS 消费端使用命名变量：`--iris-space-xxs`、`xs`、`sm`、`md`、
+`lg`、`xl`、`2xl`、`3xl`、`4xl`、`5xl`。数字本身属于 8pt 刻度并不代表
+CSS 变量存在；`var(--iris-space-4)` 仍是未定义变量，会在浏览器计算阶段使
+`gap`/`padding` 等声明失效。必须按以下映射改为命名变量：
+
+`1→xxs`、`2→xs`、`3→sm`、`4→md`、`5→lg`、`6→xl`。
+
+`check-ui-spec.py --mode spacing` 会把这类 numeric Iris spacing 引用作为
+间距违规拦截；不要通过声明数字别名来绕过门禁。
+
 Tailwind-like `className` utilities are checked too: numeric scales use the
 default `0.25rem` scale (`p-2` → 8px, `p-4` → 16px), while arbitrary values
 such as `p-[13px]` must resolve to the same token set. Use `uifont` for

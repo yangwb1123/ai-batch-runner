@@ -15,7 +15,9 @@ agent's next attempt:
     python scripts/check-ui-spec.py --dir src --all --json -o report.json
 
 Modes:
-  spacing  reject spacing values outside the 8pt token set
+  spacing  reject spacing values outside the 8pt token set and reject
+           numeric Iris CSS variables (var(--iris-space-4)); use named
+           --iris-space-xxs/... tokens instead
            (SizedBox(height:3), EdgeInsets.only(left:13), margin:11 ...)
   font     reject font sizes outside the typography token set
            (fontSize: 15, font-size: 15px, text-[15px])
@@ -24,7 +26,9 @@ Modes:
   all      run spacing + color + style
 
 Project scan (--dir) walks the directory recursively, skipping build/vendor
-directories by default (node_modules, dist, build, .git, ...). No frontend
+directories by default (node_modules, dist, build, .git, ...). In spacing/all
+mode, CSS files are additionally checked for named Iris spacing variables;
+source-oriented heuristics remain unchanged for other file types. No frontend
 files found -> exit 0, so the gate is safe for repos without frontend code
 (a gofmt -l style project gate).
 
@@ -74,6 +78,22 @@ _COLOR_PATTERNS = [
 # Token-definition files are the single source of color constants — the
 # literals they define are the tokens, not violations.
 _TOKEN_FILE_MARKERS = ("app_colors", "/theme/", "/tokens", "design_tokens")
+# Iris exposes named spacing variables only. Numeric-looking variables such
+# as var(--iris-space-4) are undefined at computed-value time even though the
+# number itself belongs to the 8pt scale, so they need a dedicated check rather
+# than the numeric spacing-value check above.
+_IRIS_NUMERIC_SPACE_VAR = re.compile(
+    r"var\(\s*--iris-space-(\d+)(?:\s*,|\s*\))"
+)
+_IRIS_SPACE_NAME_BY_NUMBER = {
+    1: "xxs",
+    2: "xs",
+    3: "sm",
+    4: "md",
+    5: "lg",
+    6: "xl",
+}
+
 _STYLE_PATTERNS = [
     re.compile(r"style=\{\{"),
     re.compile(r"style=\"[^\"]*(?:margin|padding|font|color|width|height):"),
@@ -84,6 +104,8 @@ _FONT_PATTERNS = [
     re.compile(r"\btext-\[(\d+)px\]"),
 ]
 
+# CSS is scanned separately in project spacing/all mode so the existing
+# --ext css contract (full source-oriented checks) remains unchanged.
 DEFAULT_EXTS = (".tsx", ".jsx", ".ts", ".js", ".dart", ".vue")
 DEFAULT_EXCLUDES = {
     "node_modules", "dist", "build", "out", ".git", ".dart_tool",
@@ -128,12 +150,27 @@ def _find_matches(text: str, patterns: list, label: str, check_number=None,
     return sorted(set(found))
 
 
+def check_iris_spacing(text: str) -> list:
+    """Reject numeric Iris CSS spacing variables and suggest their names."""
+    violations = []
+    for match in _IRIS_NUMERIC_SPACE_VAR.finditer(text):
+        number = int(match.group(1))
+        name = _IRIS_SPACE_NAME_BY_NUMBER.get(number)
+        suggestion = f"--iris-space-{name}" if name else "a named --iris-space-* token"
+        violations.append(
+            f"spacing: --iris-space-{number} is an undefined numeric Iris "
+            f"spacing variable (use {suggestion})"
+        )
+    return violations
+
+
 def check_spacing(text: str) -> list:
     violations = _find_matches(text, _SPACING_PATTERNS, "spacing", SPACING_TOKENS)
     violations.extend(_find_matches(text, [_TAILWIND_SCALE], "spacing", SPACING_TOKENS,
                                     number_transform=lambda value, _match: value * 4))
     violations.extend(_find_matches(text, [_TAILWIND_ARBITRARY], "spacing", SPACING_TOKENS))
-    return violations
+    violations.extend(check_iris_spacing(text))
+    return sorted(set(violations))
 
 
 def check_color(text: str) -> list:
@@ -169,10 +206,11 @@ def scan_directory(directory: Path, exts: tuple, excludes: set) -> list:
     return files
 
 
-def check_file(path: Path, checkers: list) -> list:
+def check_file(path: Path, checkers: list, iris_spacing_only: bool = False) -> list:
     """Violation strings for one file across the active checkers; token
     definition files (app_colors/theme/tokens) are exempt from the color
-    check — they are the single source of the tokens."""
+    check — they are the single source of the tokens. Project-added CSS paths
+    can opt into the named Iris spacing-variable check only."""
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
@@ -183,7 +221,13 @@ def check_file(path: Path, checkers: list) -> list:
     for label, check in checkers:
         if is_token_file and label == "color":
             continue
-        for item in check(text):
+        if iris_spacing_only:
+            if label != "spacing":
+                continue
+            items = check_iris_spacing(text)
+        else:
+            items = check(text)
+        for item in items:
             violations.append(f"{path}: {item}")
     return violations
 
@@ -307,13 +351,14 @@ def _apply_baseline(violations, baseline_path, update_path):
     return remaining, len(remaining)
 
 
-def _scan_paths(paths, checkers):
+def _scan_paths(paths, checkers, iris_spacing_paths=None):
     violations = []
+    iris_spacing_paths = iris_spacing_paths or set()
     for path in paths:
         if not path.exists():
             violations.append(f"{path}: missing target")
             continue
-        violations.extend(check_file(path, checkers))
+        violations.extend(check_file(path, checkers, path in iris_spacing_paths))
     return violations
 
 
@@ -368,8 +413,12 @@ def main(argv: list) -> int:
     mode, targets, directory, exts, excludes = parsed[:5]
     want_json, report_path, baseline_path, update_path = parsed[5:]
     paths = collect_targets(targets, directory, exts, excludes)
+    iris_spacing_paths = set()
+    if directory is not None and mode in ("spacing", "all") and ".css" not in exts:
+        iris_spacing_paths = set(scan_directory(directory, (".css",), excludes))
+        paths.extend(sorted(iris_spacing_paths))
     _warn_zero_scan(directory, paths)
-    violations = _scan_paths(paths, resolve_checkers(mode))
+    violations = _scan_paths(paths, resolve_checkers(mode), iris_spacing_paths)
     remaining, new_count = _apply_baseline(violations, baseline_path, update_path)
     report = _report_data(
         mode, directory, paths, violations, baseline_path, remaining, new_count,

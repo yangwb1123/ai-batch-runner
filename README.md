@@ -475,13 +475,15 @@ tasks:
   pipeline runs this check before writing code.
 - **UI generation gates**: `uispacing`/`uicolor`/`uistyle`/`uifont` validators
   (`scripts/check-ui-spec.py`, pure stdlib) mechanically reject magic spacing
-  values outside the 8pt token set, typography values outside the token family,
+  values outside the 8pt token set, undefined numeric Iris spacing variables
+  such as `var(--iris-space-4)`, typography values outside the token family,
   hardcoded colors and inline styles —
   spacing quality becomes a hard gate (fail closed, validator stderr feeds the
   retry prompt) instead of a prompt wish. The same script is a **project-wide
   gate** (gofmt -l style): `--dir src --all` scans an existing frontend tree
-  (`uicheck` validator, JSON report, vendor/build dirs skipped, no frontend
-  files → pass), and `examples/ui-refactor-pipeline.yaml` drives an automatic
+  (`uicheck` validator, JSON report, vendor/build dirs skipped, CSS Iris
+  spacing refs included in spacing/all mode, no frontend files → pass), and
+  `examples/ui-refactor-pipeline.yaml` drives an automatic
   refactor loop — agent fixes violations, the scan re-verifies, stderr feeds
   the retry prompt until 0 violations, then meta review + verdict gate.
   Spec assets live in `ui-specs/`
