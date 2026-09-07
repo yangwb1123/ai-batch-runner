@@ -16,7 +16,8 @@ from typing import Optional
 from . import config
 from .config import AGENT_DEFAULT_TIMEOUT, log
 from .context_inject import add_task_context_paths
-from .gate_contract import extract_findings
+from .gate_contract import (extract_findings, parse_gate_text,
+                            unwrap_gate_transcript)
 from .models import Stage, Task, TaskResult
 from .text_io import read_text_bounded
 
@@ -26,21 +27,29 @@ def extract_gate_findings(text: str) -> Optional[list]:
 
 
 def gate_fail_reason(output_paths: list) -> str:
-    """Plain-text reason of a rejected gate: the trailing block of each
-    rejected artifact (bounded), joined."""
+    """Reasons from rejecting or invalid artifacts, never valid PASS output."""
     reasons: list[str] = []
     for p in output_paths:
         path = Path(p)
-        if not path.exists():
+        if path.is_symlink():
+            reasons.append(f"{path}: invalid Gate artifact: symlinks are not allowed")
+            continue
+        if not path.is_file():
+            reasons.append(f"{path}: Gate artifact is missing")
             continue
         try:
             text = read_text_bounded(path, config.OUTPUT_MAX_BYTES, "gate artifact")
         except ValueError as exc:
-            log.error("GATE: %s; failing closed", exc)
+            reasons.append(f"{path}: invalid Gate artifact: {exc}")
             continue
-        tail = text[-12000:].strip()
-        if tail:
-            reasons.append(tail)
+        decision = parse_gate_text(text)
+        if decision.verdict in ("FAIL", "REJECT"):
+            reasons.append(
+                f"{path}: VERDICT: {decision.verdict} {decision.reason}")
+        elif not decision.valid or not decision.verdict:
+            reasons.append(
+                f"{path}: invalid Gate artifact: "
+                f"{decision.reason or 'no usable verdict'}")
     return "\n---\n".join(reasons)[-16000:]
 
 
@@ -78,18 +87,42 @@ def _bounded_prompt(prompt: str) -> str:
 
 
 def _first_findings(gate_outputs: list) -> Optional[list]:
+    selected: list[dict] = []
     for p in gate_outputs:
         path = Path(p)
-        if not path.exists():
+        if path.is_symlink() or not path.is_file():
             continue
         try:
-            findings = extract_gate_findings(
-                read_text_bounded(path, config.OUTPUT_MAX_BYTES, "gate artifact"))
+            text = read_text_bounded(
+                path, config.OUTPUT_MAX_BYTES, "gate artifact")
         except ValueError:
             continue
-        if findings:
-            return findings
-    return None
+        decision = parse_gate_text(text)
+        if decision.verdict not in ("FAIL", "REJECT"):
+            continue
+        findings = decision.findings or extract_gate_findings(text) or []
+        selected.extend(findings[:50 - len(selected)])
+        if len(selected) >= 50:
+            break
+    return selected or None
+
+
+def _normalize_fix_report(result: TaskResult) -> None:
+    """Persist the final assistant report, not JSONL transport events.
+
+    Codex command events can exceed the evidence budget before the final
+    remediation summary appears. A recognized but malformed transcript is
+    rejected instead of being folded into the next Gate prompt.
+    """
+    if not result.success:
+        return
+    payload, error = unwrap_gate_transcript(result.stdout)
+    if error:
+        result.success = False
+        result.reason = f"invalid gate-fix transcript: {error}"
+        return
+    if payload != result.stdout:
+        result.stdout = payload.rstrip() + "\n"
 
 
 def run_gate_fix(stage: Stage, gate_outputs: list, fix_round: int,
@@ -102,8 +135,9 @@ def run_gate_fix(stage: Stage, gate_outputs: list, fix_round: int,
     gate_dir.mkdir(parents=True, exist_ok=True)
     report = gate_dir / f"{stage.name}-fix-{fix_round}.md"
     task = Task(prompt=gate_fix_prompt(stage, reason, findings),
-                output=str(report), model=stage.model, provider=stage.provider,
-                cwd=stage.cwd, timeout=max(AGENT_DEFAULT_TIMEOUT, 1800))
+                output=str(report), agent=stage.agent, model=stage.model,
+                provider=stage.provider, cwd=stage.cwd,
+                timeout=max(AGENT_DEFAULT_TIMEOUT, 1800))
     task.memory = {"stage": f"{stage.name}-fix", "memory_mode": "execute"}
     add_task_context_paths(task, gate_outputs, strict=False)
     fix_validate = stage.gate_fix_validate if stage.gate_fix_validate is not None else validate_cmd
@@ -113,6 +147,7 @@ def run_gate_fix(stage: Stage, gate_outputs: list, fix_round: int,
     from .memory import record_task
     from .runner import _save_validated, run_task
     result = run_task(task, session_name=session_name)
+    _normalize_fix_report(result)
     if not result.success:
         log.error("GATE-FIX round %d failed: %s", fix_round, result.reason)
     elif not _save_validated(task, result, fix_validate):

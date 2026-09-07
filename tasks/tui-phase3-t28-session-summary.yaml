@@ -1,0 +1,14 @@
+# Phase 3 (T28) — Session 索引摘要与 Codex App Server thread/list advisory
+tasks:
+  - prompt: |
+      对照 OpenAI Codex App Server 官方 thread/list 历史 UI 合同：
+      1. 补 typed session list/page 与 truthful session_list capability，保留 nextCursor。
+      2. 固定当前 cwd、updated_at desc、顶层 sourceKinds 与有界 page；严格校验所有字段。
+      3. 为本地 journal 增加 projection-commit 后写入、journal byte + tail CAS 绑定的小型摘要 sidecar；多 writer 不连续与 Projection 拒绝后缀均 fail closed。
+      4. sidecar 缺失/陈旧/损坏时只降级展示；绝不作为 resume/fork 的执行证据。
+      5. thread/list 只做 exact provider-handle advisory join；remote-only thread 不进入 picker。
+      6. provider IO 放入 Textual worker；以 canonical cwd/data root/memory scope/runtime/capability/adapter token 丢弃迟到结果，transcript 不受污染。
+      7. resume 仍重新恢复 journal 并以 thread/read 动作时状态裁决，覆盖双向竞态反例。
+      8. 更新设计、产品、使用文档、feature matrix 与 changelog。
+    validate: pyquality
+    output: docs/tui-phase0/t28-session-summary.md

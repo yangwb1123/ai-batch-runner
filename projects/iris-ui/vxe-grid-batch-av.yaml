@@ -1,0 +1,148 @@
+# iris-ui grid 批 AV：电子表格键盘完整化（Tab/Home/End/PageUp/PageDown/Enter）
+#
+# 目标：keyboardNavigation 开启时补全电子表格键盘——
+# Tab/Shift+Tab 单元格移动（编辑外）、Home/End 行首/行尾、
+# PageUp/PageDown 滚动翻页、Enter 下移一格（编辑外）。
+# 范围：react only；additive（keyboardNavigation 已有 prop 内增强）。
+#
+# 执行：python pi-batch.py projects/iris-ui/vxe-grid-batch-av.yaml \
+#   --log-file logs/iris-ui-batch-av.log --retries 2
+
+git_commit: false
+decision_log: /home/u1/iris-ui/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      You are preparing the baseline for iris-ui grid batch AV (spreadsheet
+      keyboard). Monorepo: /home/u1/iris-ui.
+
+      Read:
+      1. /home/u1/iris-ui/packages/react/src/primitives/table/Table.tsx —
+         the keyboardNavigation machinery (focusedCell state, the
+         data-grid-row/data-grid-col tabIndex + onFocus, the existing
+         onKeyDown handling — where arrow keys move the focus; the editing
+         Tab behavior), the virtual scroll ref (scrollTop manipulation for
+         PageUp/Down), and how many columns/rows are visible (for PageUp/
+         Down math — use a fixed step of 10 rows, document).
+      2. /home/u1/iris-ui/packages/react/src/primitives/table/types.ts —
+         keyboardNavigation prop shape.
+
+      Write a markdown baseline to the output path:
+      - proposed design (all inside keyboardNavigation, no new props):
+        a) Tab/Shift+Tab (not editing): move the focus to the next/prev
+           cell in row-major order (wrap? NO — stop at the table bounds,
+           document); preventDefault (the table owns Tab when keyboard
+           navigation is on); the focused cell gets focus (the cells carry
+           tabIndex 0/-1 — set tabIndex 0 on the target + focus())
+        b) Home/End: first/last cell of the CURRENT row
+        c) PageUp/PageDown: move the focus 10 rows up/down (clamped) AND
+           scroll the virtual body by 10 rows (if virtual — root
+           scrollTop += / -= 10 * itemHeight; document the fixed step)
+        d) Enter (not editing): move DOWN one row (same column; clamped)
+           — ArrowDown already exists? check — if yes, Enter is an alias
+           (document)
+        e) the existing arrow keys keep working; the keyboard handler
+           lives where the current arrow handling is
+      - file map + tests
+      Do NOT modify files.
+    output: /home/u1/iris-ui/docs/vxe-grid/batch-av-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Implement iris-ui grid batch AV (spreadsheet keyboard) in
+          /home/u1/iris-ui, per
+          /home/u1/iris-ui/docs/vxe-grid/batch-av-baseline.md. Read it
+          first, then AGENTS.md.
+
+          HARD CONSTRAINTS:
+          - Core framework-free; react only; additive (keyboardNavigation
+            enhancement, no new props unless truly needed).
+          - No dist/tgz/node_modules/manifest.json edits.
+          - Test files ≤500 lines; ≤3 changed files + tests.
+          - MANIFEST SCANNER HYGIENE: single-line function props.
+          - TIME BUDGET: light-medium — finish all.
+
+          IMPLEMENT:
+          1. keyboard (Table.tsx):
+             - find the existing keyboard handler (the one handling arrow
+               keys when keyboardNavigation is on) and extend:
+               - Tab/Shift+Tab (when NOT editing): move focus to the
+                 next/prev cell row-major; preventDefault; clamp at the
+                 bounds (no wrap, document); the target cell focus() —
+                 mirror how the current arrow move focuses
+               - Home/End: first/last cell of the current row
+               - PageUp/PageDown: 10 rows up/down (clamped) + scroll the
+                 root by 10 * itemHeight when virtual (or the row height)
+               - Enter (not editing): alias of ArrowDown
+             - the editing Tab path is UNCHANGED (batch J: Tab commits +
+               moves to the next editable column)
+          2. tests (keyboard-extra.test.tsx):
+             - Tab moves the focus right; Shift+Tab left; clamped at the
+               edges
+             - Home/End jump within the row
+             - PageDown moves 10 rows + scrolls (stub scrollTop)
+             - Enter moves down; no keyboardNavigation → all inert
+          3. Docs: keyboard section update
+
+          VERIFY:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm --filter @iris-ui-kit/react typecheck`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react lint` (0 errors)
+          - `python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json` → 0 violations
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm gen:manifest`
+            (regenerate + commit — ALWAYS)
+          Report: files changed, tests added, counts, what is left.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-av-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are the adversarial reviewer for iris-ui batch AV. Read
+          batch-av-baseline.md and batch-av-adapt.md, inspect.
+
+          Check:
+          1. Tab/Shift+Tab: row-major next/prev; clamp; focus; not while
+             editing; the editing Tab path untouched
+          2. Home/End row bounds; PageUp/Down clamp + scroll; Enter alias
+          3. no keyboardNavigation → inert; additive only; CSS tokens
+          Run verification commands (react test/typecheck/lint, audit,
+          check:manifest). Write verdict markdown: PASS or FAIL with numbered
+          findings (severity, file:line, fix). Do NOT modify files.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-av-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Gate stage for iris-ui batch AV. Read the review verdict
+          /home/u1/iris-ui/docs/vxe-grid/batch-av-review.md.
+
+          If PASS: run the full repo gate:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm turbo run test typecheck lint build --concurrency=2`
+          - audit → 0; gen:manifest + check:manifest
+          - Commit: `git add -A -- . ':!apps/ssr-solidstart/.vinxi' && git
+            commit -m "feat(table): grid 批 AV——电子表格键盘完整化（Tab/Home/End/PageUp/PageDown/Enter）"`
+          Report commit hash and final test counts.
+
+          If FAIL with concrete fixes: apply fixes, rerun, full gate, commit.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-av-gate.md

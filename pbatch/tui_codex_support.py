@@ -109,6 +109,22 @@ def _bound(value: Any, maximum: int = MAX_FIELD_BYTES) -> tuple[str, bool, int]:
     return prefix + TRUNCATION_MARKER, True, len(encoded)
 
 
+def _bounded_id(value: Any, maximum: int = 2048) -> str:
+    """Bound an identity field without allowing equal prefixes to collide."""
+    if isinstance(maximum, bool) or not isinstance(maximum, int) or maximum < 80:
+        raise ValueError("maximum must be an integer of at least 80")
+    text = str(value if value is not None else "")
+    encoded = text.encode("utf-8", "replace")
+    if not encoded:
+        return ""
+    raw_tag = "raw:"
+    if len(encoded) + len(raw_tag) <= maximum:
+        return raw_tag + text
+    header = f"sha256:{hashlib.sha256(encoded).hexdigest()}:"
+    prefix = encoded[:maximum - len(header)].decode("utf-8", "ignore")
+    return header + prefix
+
+
 def _text(name: str, value: Any) -> dict[str, Any]:
     text, truncated, original = _bound(value)
     result: dict[str, Any] = {name: text, "truncated": truncated}

@@ -84,6 +84,30 @@ def test_main_dispatches_default_tui_before_subcommands(monkeypatch):
     assert calls == [[]]
 
 
+def test_tui_pipeline_option_is_owned_by_the_interactive_parser(tmp_path):
+    from pbatch.tui import _build_parser, _options_from_args
+
+    parser = _build_parser()
+    args = parser.parse_args(["--cwd", str(tmp_path), "--pipeline", "demo.yaml"])
+    options = _options_from_args(parser, args)
+
+    assert options.cwd == str(tmp_path.resolve())
+    assert options.pipeline == "demo.yaml"
+
+
+def test_tui_native_session_option_is_exact_and_exclusive(tmp_path):
+    from pbatch.tui import _build_parser, _options_from_args
+
+    parser = _build_parser()
+    args = parser.parse_args(["--cwd", str(tmp_path), "--native-session", "native-1"])
+    options = _options_from_args(parser, args)
+    assert options.native_session == "native-1"
+    with pytest.raises(SystemExit):
+        _options_from_args(
+            parser, parser.parse_args(["--pipeline", "demo.yaml",
+                                       "--native-session", "native-1"]))
+
+
 def test_explicit_tui_help_is_a_registered_subcommand():
     result = subprocess.run(
         [sys.executable, "-m", "pbatch", "tui", "--help"],
@@ -93,6 +117,8 @@ def test_explicit_tui_help_is_a_registered_subcommand():
     assert result.returncode == 0, result.stderr
     assert "usage:" in result.stdout.lower()
     assert "tui" in result.stdout.lower()
+    assert "--runtime" in result.stdout
+    assert "app-server" in result.stdout
 
 
 def test_tui_capability_requires_execution_trust():

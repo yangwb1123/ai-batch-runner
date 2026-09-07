@@ -74,9 +74,10 @@ def test_tui_core_loop_with_real_codex_two_turns(tmp_path: Path):
             await _wait_until(lambda: not app._busy, pilot)
             source = app.query_one("#conversation", Markdown).source
             assert "GOT_IT" in source, f"turn1 reply missing; source={source[-400:]}"
-            # structured path engaged: the app-level timeline log holds
+            # structured path engaged: the immutable runtime snapshot holds
             # typed command/file/usage cards from the real codex run
-            timeline_kinds = [entry.kind for entry in app._timeline.entries]
+            timeline_kinds = [
+                entry.kind for entry in app._runtime_view.timeline.entries]
             assert any(kind in timeline_kinds
                        for kind in ("command", "file", "usage")), \
                 f"no structured timeline cards from the codex run: {timeline_kinds}"

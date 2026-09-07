@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Optional
 
 from . import config
-from .config import (AGENT_DEFAULT_MODEL, AGENT_DEFAULT_TIMEOUT,
-                     AGENT_DEFAULT_WORKERS, COMMAND_OUTPUT_MAX_BYTES,
+from .config import (AGENT_DEFAULT_TIMEOUT, AGENT_DEFAULT_WORKERS,
+                     COMMAND_OUTPUT_MAX_BYTES,
                      COMMAND_TIMEOUT, log)
 from .text_io import read_text_bounded
 
@@ -117,7 +117,8 @@ class Task:
     prompt: str
     output: str = ""
     agent: str = ""  # per-task executor override ("" = config.AGENT_BIN)
-    model: str = AGENT_DEFAULT_MODEL
+    model: str = field(default_factory=lambda: str(
+        config.AGENT_DEFAULT_MODEL or ""))
     provider: str = ""
     thinking: str = ""
     tools: str = ""
@@ -128,9 +129,13 @@ class Task:
     validate: Optional[str] = None  # per-task engineering gate; None = inherit, "" = disabled
     memory: dict = field(default_factory=dict)  # stage/role/task metadata for the memory index
 
+    def effective_agent(self) -> str:
+        """Executor selected for this task after applying the global default."""
+        return self.agent or config.AGENT_BIN
+
     def to_cmd(self, session_flags: Optional[list] = None) -> list[str]:
         return config.build_agent_argv(
-            self.agent or config.AGENT_BIN, self.prompt, model=self.model,
+            self.effective_agent(), self.prompt, model=self.model,
             provider=self.provider,
             thinking=config.AGENT_THINKING_OVERRIDE or self.thinking,
             tools=self.tools,
@@ -153,6 +158,19 @@ class Task:
         if not p.is_absolute():
             p = Path(self.cwd or os.getcwd()) / p
         return p.resolve()
+
+    def output_path_unresolved(self) -> Optional[Path]:
+        """Return an absolute output path without following symlinks.
+
+        Trust-boundary checks (reuse and sidecar handling) must inspect the
+        path the user supplied, not the target of a planted output symlink.
+        """
+        if not self.output:
+            return None
+        path = Path(self.output)
+        if not path.is_absolute():
+            path = Path(self.cwd or os.getcwd()) / path
+        return Path(os.path.abspath(path))
 
     def resolve_prompt(self, base_dir: str = "") -> str:
         """Resolve @file references in the prompt to file contents.
@@ -198,8 +216,17 @@ class TaskResult:
     # True when stdout/stderr were already shown live. This prevents the
     # stdout-only shortcut from printing a successful answer a second time.
     streamed_output: bool = False
+    # None preserves the historical coupling to ``streamed_output``. Codex
+    # JSONL suppresses raw stdout while still allowing operational stderr to
+    # stream, so that adapter records the two channels independently.
+    streamed_stderr: Optional[bool] = None
     session_name: str = ""
     raw_session: str = ""
+    # True once a shared/per-stage invocation has created or resumed a
+    # provider session.  Unlike ``success``, this survives agent/validator
+    # failures so retries and following stages continue the same context;
+    # failures before process spawn leave it false.
+    session_established: bool = False
     # Execution trace fields.  They are additive and remain empty for
     # synthetic/reused results that did not invoke the runner.
     run_id: str = ""

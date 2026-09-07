@@ -232,13 +232,17 @@ def _reliability_warnings(text: str, rel: str) -> list:
     paths (warning)."""
     findings = []
     if re.search(r"catch\s*\([^)]*\)\s*\{\s*\}", text):
-        findings.append(("error", f"{rel}: swallowed exception (empty catch) — failure path invisible"))
+        msg = (f"{rel}: swallowed exception (empty catch) — "
+               f"failure path invisible")
+        findings.append(("error", msg))
     non_os = len(_EXCEPT_PASS_RE.findall(text)) - len(_OS_EXCEPT_PASS_RE.findall(text))
     if non_os > 0:
         findings.append(("error", f"{rel}: {non_os} except-pass swallowing "
                                   f"non-OSError exceptions — failure path hidden"))
     elif len(_OS_EXCEPT_PASS_RE.findall(text)) > 0:
-        findings.append(("warning", f"{rel}: except-pass on OSError cleanup paths — verify it is intentional"))
+        msg = (f"{rel}: except-pass on OSError cleanup paths — "
+               f"verify it is intentional")
+        findings.append(("warning", msg))
     clients = (len(re.findall(r"axios\.create\(|new\s+HttpClient\(|http\.Client\{", text))
                + len(re.findall(r"Dio\(", text)))
     if clients >= 2:

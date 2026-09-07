@@ -20,11 +20,12 @@ def annotate_result(result: TaskResult, task_id: str, stage_id: str,
 
 
 def attach_session(result: TaskResult, session_id: str, session_name: str,
-                   workdir: str) -> TaskResult:
+                   workdir: str, agent_bin: str = "") -> TaskResult:
     """Attach session metadata without changing the task outcome."""
     result.session_id = session_id
     result.session_name = session_name
-    if session_id:
+    from .memory import memory_enabled
+    if session_id and memory_enabled(agent_bin):
         path = session_file(workdir, session_id)
         result.raw_session = str(path) if path else ""
     return result
@@ -35,7 +36,8 @@ def finish_task_result(result: TaskResult, task: Task, session_id: str,
                        usage_before: Optional[dict], task_id: str,
                        attempt: int) -> TaskResult:
     """Finalize a task result and emit its execution event."""
-    attach_session(result, session_id, session_name, workdir)
+    attach_session(result, session_id, session_name, workdir,
+                   task.effective_agent())
     annotate_result(result, task_id, str(task.memory.get("stage", "")), attempt)
     metering.record_event(
         "task_finish" if result.success else "task_fail", task.prompt,

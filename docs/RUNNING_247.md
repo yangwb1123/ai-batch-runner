@@ -256,7 +256,8 @@ sessions) applies to meta stages too.
 Meta reuse is role-granular: the orchestrator still runs so history cannot
 freeze the plan, but a role it selects again reuses its artifact only after
 the current validator passes and, under `--reuse-fingerprint`, its prompt,
-output, validator, model, and provider fingerprint still matches.
+output, validator, agent, model, provider, and accepted artifact digest still
+match. A role that succeeds only after a retry writes the same sidecar.
 
 Before each orchestrator call, available role templates are scored against
 the current evidence using the bilingual keyword map. The prompt shows scores
@@ -607,11 +608,12 @@ CLI > task > stage > config default (D6).
 ## Reuse fingerprints, session rotation, governance (T9, T10, T12)
 
 - **Fingerprint reuse 2.0** (T9): `--reuse-fingerprint` adds a sidecar
-  (`<output>.meta.json`, format v1) with sha256(inputs + gate spec +
-  routing). Reuse requires exists AND non-empty AND non-symlink AND sidecar
-  fingerprint match AND validators still passing; input change -> stale
-  artifact + sidecar deleted and regenerated. Old `--reuse` semantics
-  unchanged.
+  (`<output>.meta.json`, format v2) with sha256(inputs + gate spec + agent +
+  routing), plus the accepted artifact SHA-256 and size. Reuse requires a
+  bounded regular non-symlink artifact, a matching sidecar and artifact
+  digest, and validators still passing; any input, executor, or artifact
+  change deletes stale state and regenerates it. Old `--reuse` semantics
+  remain available without this opt-in mode.
 - **Session rotation** (T10): past `--session-max-bytes` (default 2MB), a
   shared/per-stage session is forked via `--fork <session-file>` instead of
   growing an unbounded context; pi compaction entries are warned about.

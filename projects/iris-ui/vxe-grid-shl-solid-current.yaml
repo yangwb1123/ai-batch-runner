@@ -1,0 +1,138 @@
+# Iris Grid Core continuation: solid searchHighlight parity (React batch CK) on current HEAD
+git_commit: false
+decision_log: /tmp/iris-grid-shl-solid-1787894483/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      Prepare a factual baseline only for a narrow solid-only Iris UI Grid
+      parity batch in /tmp/iris-grid-shl-solid-1787894483, based on current HEAD 50368bcc. Scope: React
+      batch CK `searchHighlight` ported to solid with identical semantics.
+      Read AGENTS.md, docs/grid-core-refactor.md batch CK entry,
+      docs/vxe-grid-comparison.md batch CK row, React
+      props/query.ts searchHighlight JSDoc, React
+      clipboard-display-helpers.tsx applySearchHighlight, React Table.tsx
+      wiring (display chain tail: mask → formatter ?? raw → highlight wrap),
+      React styles.ts SEARCH_HIT_STYLE (token-only:
+      --iris-surface-selected / --iris-radius-sm / --iris-space-xxs), React
+      search-highlight.test.tsx as the contract reference, and core
+      search-highlight.ts (splitSearchHits — ALREADY in core, do NOT modify
+      core). Do not modify source. Specify the smallest safe additive scope:
+      public `searchHighlight?: string` (the literal query; default
+      off/empty, fail-closed, display-only — no bar, no match state, no
+      write-back). Every text cell's display chain appends one wrap step:
+      non-string formatter outputs and render/html/link/autoLink/sparkline
+      cells are untouched (documented fiats); empty query or no match returns
+      the original string byte-identical (splitSearchHits null contract).
+      Occurrences render inline `<mark data-iris-search-hit>` with the same
+      token-only style. No core changes, no i18n, no new events, no arch
+      baseline changes. Other frameworks out of scope.
+    output: /tmp/iris-grid-shl-solid-1787894483/docs/vxe-grid/batch-shl-solid-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /tmp/iris-grid-shl-solid-1787894483
+        prompt: |
+          Implement the solid-only searchHighlight parity batch in this
+          isolated worktree according to
+          /tmp/iris-grid-shl-solid-1787894483/docs/vxe-grid/batch-shl-solid-baseline.md. Read it first and
+          then AGENTS.md. Mirror React batch CK semantics exactly; reuse the
+          adapter's existing display chain (the same mask/formatter path
+          contextCellText and cellTooltip consume) — do not fork a second
+          display pipeline.
+
+          HARD CONSTRAINTS:
+          - solid adapter source, focused tests, generator-produced manifest
+            outputs if the public API changes, and concise grid docs only. Do
+            not modify React/Solid/Svelte (other than your own framework),
+            core, plugin/app source, pnpm-lock, dist/tgz/node_modules, or
+            scripts/arch-baseline.json.
+          - Additive public API only: `searchHighlight?: string` (default
+            off; off/empty path byte-identical — no mark DOM, no behavior
+            change anywhere).
+          - Display chain tail: mask → formatter ?? raw → String coercion →
+            splitSearchHits wrap. Case-insensitive LITERAL substring (core
+            fn already handles); mark odd segments with
+            `<mark data-iris-search-hit>` styled token-only (background
+            var(--iris-surface-selected, rgba(99,102,241,0.12)), color
+            inherit, radius/padding tokens). Non-string formatter outputs
+            pass through untouched; render/html/link/autoLink/sparkline cells
+            untouched. SSR must produce identical markup deterministically.
+          - No state, no i18n, no events, no write-back, no core edits. Do
+            not hand-edit manifest files — regenerate via the manifest
+            generator. Test files <=500 lines; no weakened/skipped tests. No
+            hard-coded colors, Tailwind, CSS-in-JS, innerHTML, or
+            arch-baseline edits.
+          - Do not commit.
+
+          VERIFY in the worktree:
+          - env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/solid test
+          - env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/solid typecheck
+          - env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/solid lint
+          - env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/solid build
+          - python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json
+          - git diff --check
+          Note: the bundled test command may hit the shared node_modules
+          symlink resolveFsAllow limit in this worktree; if so, use a
+          throwaway config re-exporting the worktree's vitest config from
+          the main checkout (identical semantics), then delete it and report
+          that workaround.
+
+          Report exact files and focused/full/SSR counts. Do not commit.
+        output: /tmp/iris-grid-shl-solid-1787894483/docs/vxe-grid/batch-shl-solid-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /tmp/iris-grid-shl-solid-1787894483
+        prompt: |
+          Adversarially review the solid searchHighlight parity batch. Read
+          the baseline and adapt report under /tmp/iris-grid-shl-solid-1787894483/docs/vxe-grid/, inspect
+          the actual diff against current HEAD, and compare with React's
+          batch CK semantics (query prop, display chain tail position,
+          fiats, null fast-path, token-only mark style). Do not modify
+          source.
+
+          Check: off/empty path byte-identical; literal case-insensitive
+          matching via core splitSearchHits only; odd-segment marking
+          correct (adjacent hits, leading/trailing hits, empty segments
+          render nothing); non-string formatter outputs untouched; render/
+          html/link/autoLink/sparkline untouched; mask runs before formatter;
+          no state/events/write-back; SSR deterministic; no source mutation
+          outside solid; manifest regenerated not hand-edited; <=500-line
+          tests; no baseline changes. Run focused/full tests, typecheck,
+          lint, build, manifest check, spec audit, and diff check. Write
+          PASS or FAIL with numbered severity/file:line findings and
+          concrete fixes; do not modify source.
+        output: /tmp/iris-grid-shl-solid-1787894483/docs/vxe-grid/batch-shl-solid-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    tasks:
+      - cwd: /tmp/iris-grid-shl-solid-1787894483
+        prompt: |
+          Gate the solid searchHighlight parity batch. Read
+          /tmp/iris-grid-shl-solid-1787894483/docs/vxe-grid/batch-shl-solid-review.md. If PASS, rerun full
+          solid test/typecheck/lint/build (SSR config included if present),
+          spec audit, `pnpm check:manifest`, and `git diff --check`;
+          confirm scripts/arch-baseline.json is unchanged. Update
+          docs/grid-core-refactor.md with one concise factual entry if
+          accepted. Do not modify other frameworks/core/apps, weaken tests,
+          or commit. If FAIL has concrete fixes, apply only those in this
+          isolated worktree, rerun all gates, and report final PASS/FAIL,
+          exact files, counts, manifest status, and pre-existing ratchet
+          limitations (arch-check may stay red on the grandfathered
+          oversized files — record it, do not fix baselines).
+        output: /tmp/iris-grid-shl-solid-1787894483/docs/vxe-grid/batch-shl-solid-gate.md

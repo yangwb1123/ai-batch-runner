@@ -8,7 +8,8 @@ import sys
 
 import pytest
 
-from pbatch.assessor import (assess_dimensions, assess_main, format_assessment,
+from pbatch.assessor import (assess_dimensions, assess_main,
+                             format_assessment, format_execution_prompt,
                              prescription, scale_signal)
 
 
@@ -108,6 +109,48 @@ def test_under_specified_requirement_gets_suggestions():
     assert assessment["suggestions"]  # every missing dimension has advice
 
 
+def test_assessment_carries_product_direction_proposal():
+    assessment = prescription("做一个多租户审批平台，支持登录和审批流程")
+    direction = assessment["product_direction"]
+    assert direction["schema_version"] == "product-brief/v1"
+    assert direction["state_machine"]["status"] == "候选，待确认"
+    assert direction["decomposition"]["features"]
+
+
+def test_execution_prompt_includes_product_direction_guardrails():
+    prompt = format_execution_prompt(
+        prescription("做一个商业化 SaaS 审批平台，订阅计费"))
+    assert "PRODUCT_DIRECTION" in prompt
+    assert "TO-CONFIRM" in prompt
+    assert "失败（可恢复）" in prompt
+    assert "状态机（候选）" in prompt
+
+
+def test_assess_product_brief_mode_bypasses_unrelated_assessment(
+        capsys, monkeypatch):
+    def unexpected_registry(*_args, **_kwargs):
+        raise AssertionError("product brief mode must not load assess registry")
+
+    monkeypatch.setattr("pbatch.assessor._assess_registry", unexpected_registry)
+    assess_main(["--product-brief", "做一个多租户审批平台"])
+    out = capsys.readouterr().out
+    assert "# 产品方向简报" in out
+    assert "## 功能分解（提案）" in out
+
+
+@pytest.mark.parametrize("conflict", ["--json", "--prompt", "--llm-json",
+                                      "--registry"])
+def test_assess_product_brief_rejects_unrelated_modes(conflict, capsys):
+    value = '{"apply":[],"skip":[]}' if conflict == "--llm-json" else "rules.yaml"
+    argv = ["--product-brief", "做一个产品", conflict]
+    if conflict in ("--llm-json", "--registry"):
+        argv.append(value)
+    with pytest.raises(SystemExit) as exc:
+        assess_main(argv)
+    assert exc.value.code == 2
+    assert "cannot be combined" in capsys.readouterr().err
+
+
 def test_assess_cli_human(capsys):
     sys.argv = ["pi-batch.py", "assess", "做一个登录页面"]
     assess_main(sys.argv[2:])
@@ -126,6 +169,7 @@ def test_assess_cli_json(capsys):
     assert "not_selected" in payload
     assert "completeness" in payload
     assert payload["classification"]["system_type"] == "state-machine"
+    assert payload["product_direction"]["schema_version"] == "product-brief/v1"
 
 
 def test_assessment_system_type_drives_focus_advice():

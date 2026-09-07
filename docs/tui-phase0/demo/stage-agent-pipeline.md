@@ -1,45 +1,42 @@
-# 阶段级 Agent 流水线演示（T13，2026-08-22 实证）
+# 阶段级 Agent 流水线示例
 
-> 一个 pipeline 内编排多个真实 agent：`agent:` 是每阶段的执行器选择（per-task，并行安全）。
-
-## 演示（全部真实执行）
+一个 pipeline 可以为每个阶段选择独立执行器，并通过有界证据链把上游产物交给下游。
 
 ```yaml
 stages:
-  - name: analyze      # ① pi 产品架构分析
+  - name: analyze
     agent: pi
-    from_prompt: "离线优先同步层的冲突消解策略，5 条要点"
+    from_prompt: "给出离线同步冲突消解的设计要点"
     output: docs/architecture.md
-  - name: implement    # ② codex 消费上游产物继续实现清单
+
+  - name: implement
     agent: codex
-    from_outputs: analyze        # 证据有界注入：<evidence source="architecture">
-    tasks: [{prompt: "…{input_content}… End with: IMPL_DONE",
-             output: docs/implementation.md}]
-  - name: gate         # ③ codex 独立裁决（对抗视角）
+    from_outputs: analyze
+    tasks:
+      - prompt: "依据 {input_content} 实现并提供验证证据"
+        output: docs/implementation.md
+
+  - name: gate
     agent: codex
     from_outputs: implement
-    tasks: [{prompt: "若连贯完整回复 VERDICT: PASS，否则 VERDICT: FAIL …",
-             output: docs/gate.md}]
+    gate: true
+    tasks:
+      - prompt: "按证据裁决，并输出 VERDICT: PASS - <reason> 或 VERDICT: FAIL - <reason>"
+        output: docs/gate.md
 ```
 
-## 结果
+## 正向流程
 
+```text
+analyze
+  → 产出 architecture
+  → from_outputs 有界注入 implement
+  → 产出 implementation + verification evidence
+  → 独立 gate 裁决
 ```
-analyze   (pi)    7.8s  PASS → 架构要点（LWW 基线/CRDT/重试幂等…）
-implement (codex) 15.3s PASS → 9 条实现清单 + IMPL_DONE（产物为结构化 JSONL 转录）
-gate      (codex) 14.3s PASS → VERDICT: FAIL - only a high-level design checklist
-                              is provided; no implementation or verification
-                              evidence is included.
-```
 
-**亮点**：
-- `from_outputs` 证据链：codex 的 prompt 里真实出现
-  `Upstream analysis: <evidence source="architecture">…`
-- gate 独立裁决 **诚实 FAIL** 并阻断后续（fiend closed）——尽管每阶段 PASS，
-  gate 认为"只有设计清单、无实现/验证证据"——AI 产出是提案的纪律原样生效
-- `--reuse` 断点续跑：analyze 阶段复用上轮产物（REUSED+VALIDATED）
-
-## 特性组合（本轮用到的全部为项目原生能力）
-阶段级 agent（T13）· from_outputs 有界证据注入（evidence）· gate 裁决
-（VERDICT fail closed）· --reuse 标志校验复用 · 多实例锁（--no-lock 场景）
-· 账本互见（每 run 记录各自的 agent）
+- `agent` 只选择该阶段的执行器，不改变 pipeline 的锁、超时、验证和失败签名合同。
+- `from_outputs` 使用来源清单与公平字节预算，不复制无界上下文。
+- Codex `--json` 事件流属于运行证据；阶段产物只保存最终 assistant 报告。
+- gate 只接受带理由的结构化 verdict；FAIL 会阻断后续阶段。
+- `--reuse` 会用当前 validator 复验已有产物，通过后才复用。

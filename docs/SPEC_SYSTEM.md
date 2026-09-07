@@ -37,7 +37,7 @@ required_when_risk / profiles`。`pi-batch rules --check` 校验 schema；
  ├─ rules         算法匹配规则 manifest（scale×page_type×risk）+ LLM 双向校验
  │                 （REQUIRED 规则不可被 LLM 跳过；增补带 provenance）
  ├─ assess        需求评估：8 维完整性 / 规模 S-M-L / 产品化 L0-L3 /
- │                 工作流 L0-L3（建议可执行流水线文件）
+ │                 工作流 L0-L3（`--product-brief` 同步输出产品方向提案）
  ├─ context       项目文档路由（路径 glob + 关键词 → ADR/契约）
  ├─ 流水线        plan（含强制设计关卡）→ implement（机器门禁+证据报告）
  │                 → meta 对抗审查（34+ 角色）→ VERDICT 裁决
@@ -112,6 +112,7 @@ pi-batch learn ... --registry evolution  # 实战事故→规律（强制 sample
 ```bash
 pi-batch check                      # 一键自检（quality+registry+eval）
 pi-batch assess "需求文本"          # 需求评估（处方+产品化+工作流）
+pi-batch assess "需求文本" --product-brief  # 用户故事/旅程/状态机/功能分解提案
 pi-batch rules "需求" --llm-json ...  # 规则匹配+双向校验
 pi-batch context "任务" --paths ...   # 项目文档路由（宪法关键词自动带 constitution.yaml）
 pi-batch eval                       # 规则回归套件

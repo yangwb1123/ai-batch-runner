@@ -310,6 +310,7 @@ def _cmd_report(args, cwd: str) -> int:
     if Path(cwd).resolve() not in out.resolve().parents:
         print(f"report path must stay inside cwd: {out}")
         return 2
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(report_html(_data_dir(cwd), cwd), encoding="utf-8")
     print(f"report written: {out} (open in a browser / phone)")
     return 0
@@ -333,8 +334,9 @@ def ops_main(argv: Optional[list[str]] = None) -> int:
     p = sub.add_parser("messages", help="session message 索引最近记录")
     p.add_argument("--limit", type=int, default=5)
     p = sub.add_parser("report", help="生成自包含 HTML 监控页")
-    p.add_argument("--html", default=OPS_REPORT_NAME,
-                   help="输出路径（默认 ./ops-report.html，须在 cwd 内）")
+    p.add_argument("--html",
+                   default=str(Path("logs") / OPS_REPORT_NAME),
+                   help="输出路径（默认 ./logs/ops-report.html，须在 cwd 内）")
     p = sub.add_parser("breaker", help="查看或显式复位 provider 熔断")
     p.add_argument("--provider", default="", help="provider 名称（不传则全部）")
     p.add_argument("--reset", action="store_true",

@@ -1,0 +1,171 @@
+# iris-ui grid 批 AL：内置编辑撤销（Ctrl+Z/Y）+ 批量编辑面板
+#
+# 目标：
+# 1. 内置撤销/重做：Table 内置编辑撤销栈（编辑提交自动入栈；Ctrl+Z 撤销 /
+#    Ctrl+Y 重做；工具栏 undo/redo 按钮）——从 useTableUndo（批 2 独立 hook）
+#    提升为内置能力（additive：undo?: boolean 开启，默认关）
+# 2. 批量编辑面板：多选行 + toolbar.batch 联动——"批量修改"打开面板
+#    （选字段 + 输入值 → 应用到所有选中行，单次提交）
+# 范围：react only；additive；core 复用 createUndoStack（批 2 已下沉）。
+#
+# 执行：python pi-batch.py projects/iris-ui/vxe-grid-batch-al.yaml \
+#   --log-file logs/iris-ui-batch-al.log --retries 2
+
+git_commit: false
+decision_log: /home/u1/iris-ui/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      You are preparing the baseline for iris-ui grid batch AL (built-in
+      undo + batch edit panel). Monorepo: /home/u1/iris-ui.
+
+      Read:
+      1. /home/u1/iris-ui/packages/core/src/undo.ts — createUndoStack (the
+         batch-2 core controller: snapshot/push/undo/redo/canUndo/canRedo/
+         subscribe).
+      2. /home/u1/iris-ui/packages/react/src/primitives/table/useTableUndo.ts
+         — the existing hook (how it snapshots + replays).
+      3. /home/u1/iris-ui/packages/react/src/primitives/table/Table.tsx —
+         the edit write-back (commitRowList), the toolbar render (where the
+         undo/redo buttons + batch edit trigger go), the selection state
+         (displaySelection), the toolbar.batch prop.
+      4. /home/u1/iris-ui/packages/react/src/primitives/table/props.ts —
+         toolbar shape.
+
+      Write a markdown baseline to the output path:
+      - proposed design (react only, additive):
+        a) undo?: boolean — when true: an internal createUndoStack over the
+           row list (push on every edit write-back + row op + paste + batch
+           edit — every commitRowList call, and ALSO on insert/remove/remove-
+           rows; the snapshot is the row list BEFORE the change); Ctrl+Z →
+           undo (restore the previous list through commitRowList + a flag to
+           avoid re-pushing); Ctrl+Y → redo; toolbar renders undo/redo
+           buttons (data-iris-table-undo / data-iris-table-redo, disabled
+           when canUndo/canRedo false, i18n table.undo/table.redo); the
+           selection is pruned/adjusted on undo when keys vanish (document);
+           undo?: false/absent → no-op (no keyboard handling, no buttons)
+        b) batch edit panel: toolbar.batch gains an optional
+           `edit?: boolean` — when true, the batch button (when selection ≥
+           1) opens a small panel (data-iris-batch-edit-panel): a column
+           select (editable columns only) + a value input + 应用 button
+           (data-iris-batch-edit-apply); applying writes the value to every
+           selected row's column via commitRowList (one commit) + fires
+           onDataChange; the selection stays; Esc/outside closes; i18n
+           table.batchEdit.apply
+      - file map + tests
+      Do NOT modify files.
+    output: /home/u1/iris-ui/docs/vxe-grid/batch-al-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Implement iris-ui grid batch AL (built-in undo + batch edit panel)
+          in /home/u1/iris-ui, per
+          /home/u1/iris-ui/docs/vxe-grid/batch-al-baseline.md. Read it
+          first, then AGENTS.md.
+
+          HARD CONSTRAINTS:
+          - Core framework-free; react only; additive only.
+          - No dist/tgz/node_modules/manifest.json edits.
+          - Test files ≤500 lines; ≤4 changed files + tests.
+          - MANIFEST SCANNER HYGIENE: single-line function props; named
+            exported interfaces.
+          - CSS uses --iris-* tokens only.
+          - TIME BUDGET: (1) undo (medium); (2) batch edit panel (light).
+            Finish both; if low, undo first.
+
+          IMPLEMENT:
+          1. undo (Table.tsx + props.ts + styles.ts + i18n):
+             - undo?: boolean prop (single line)
+             - internal: createUndoStack in a ref (create once); push the
+               PRE-change row list before every commitRowList mutation
+               (wrap commitRowList: if undo enabled, push current →
+               apply); undo/redo apply through a dedicated path that does
+               NOT re-push (a flag ref or a direct setLiveData call)
+             - keyboard: keydown listener on the root (Ctrl+Z / Ctrl+Y,
+               not while editing — check the edit session active)
+             - toolbar: undo/redo buttons after the title (disabled state
+               from canUndo/canRedo — subscribe via useStore or a tick
+               state; the core controller is observable — check its API)
+             - selection: on undo/redo, prune displaySelection keys that no
+               longer exist (document; simple filter)
+             - i18n table.undo/table.redo (en + zh)
+             - tests: edit → Ctrl+Z reverts; Ctrl+Y reapplies; buttons
+               disabled states; no undo prop → Ctrl+Z inert
+          2. batch edit (Table.tsx + props.ts + i18n):
+             - toolbar.batch.edit?: boolean (single line in the toolbar
+               type)
+             - panel: column select (editable columns with labels) + value
+               input + 应用 (data-iris-batch-edit-apply); applying → one
+               commitRowList with every selected row's column set;
+               selection unchanged; Esc/outside close; i18n
+               table.batchEdit.apply
+             - tests: multi-select → panel opens; apply writes all rows;
+               onDataChange once
+          3. Docs: iris 独有 section
+
+          VERIFY:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm --filter @iris-ui-kit/react typecheck`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react lint` (0 errors)
+          - `python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json` → 0 violations
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm gen:manifest`
+            (regenerate + commit — ALWAYS)
+          Report: files changed, tests added, counts, what is left.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-al-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are the adversarial reviewer for iris-ui batch AL (undo +
+          batch edit). Read batch-al-baseline.md and batch-al-adapt.md,
+          inspect.
+
+          Check:
+          1. undo: push before every mutation (edit/row ops/paste/batch);
+             undo/redo do not re-push; keyboard gating (not while editing);
+             buttons disabled states; selection prune; no prop → inert
+          2. batch edit: panel opens with selection; editable columns only;
+             apply writes all selected rows once; selection kept; dismiss
+          3. additive only; manifest hygiene; core framework-free; CSS
+             tokens; i18n both languages
+          Run verification commands (react test/typecheck/lint, audit,
+          check:manifest). Write verdict markdown: PASS or FAIL with numbered
+          findings (severity, file:line, fix). Do NOT modify files.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-al-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Gate stage for iris-ui batch AL. Read the review verdict
+          /home/u1/iris-ui/docs/vxe-grid/batch-al-review.md.
+
+          If PASS: run the full repo gate:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm turbo run test typecheck lint build --concurrency=2`
+          - audit → 0; gen:manifest + check:manifest
+          - Commit: `git add -A -- . ':!apps/ssr-solidstart/.vinxi' && git
+            commit -m "feat(table): grid 批 AL——内置编辑撤销 Ctrl+Z/Y + 批量编辑面板（iris 独有）"`
+          Report commit hash and final test counts.
+
+          If FAIL with concrete fixes: apply fixes, rerun, full gate, commit.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-al-gate.md

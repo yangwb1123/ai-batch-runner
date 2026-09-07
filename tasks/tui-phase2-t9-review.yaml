@@ -7,7 +7,7 @@ tasks:
       pbatch/cli.py（仅 _SUBCOMMANDS 注册表加一行）、tests/（新增 test_review.py）；
       新增 pbatch/review.py（≤500 行，超则拆 support 模块）。其他文件不动。
 
-      ## 实测事实（codex-cli 0.149.0，已人工验证）
+      ## Provider review 契约
       `codex exec review <scope> [PROMPT]` 支持：
       --uncommitted（staged/unstaged/untracked）、--base BRANCH、--commit SHA；
       --json 时 stdout 是 JSONL 事件流（turn/started、item.started|completed 等，
@@ -19,8 +19,7 @@ tasks:
       1. pbatch/review.py：
          - review_main(argv) -> int，argparse：
            --uncommitted / --base BRANCH / --commit SHA（互斥，多选 → 用法错误退出 2）；
-           --custom TEXT（自定义审查指令，与 scope 互斥同样校验——若 codex 支持组合
-           则允许 scope+--custom 并存，由你按实测决定并在文档注明）；--json；
+           --custom TEXT（自定义审查指令，与其他 scope 选项互斥）；--json；
            --output PATH（默认 docs/reviews/review-<UTC时间戳>.md；--json 时同名 .json）；
            --timeout（默认 600）；--cwd（默认 os.getcwd()）。
          - 运行器：spawn `codex exec review --json <scope>`（argv 无 shell 拼接；
@@ -40,8 +39,8 @@ tasks:
          - 退出码：critical 或 high finding ≥1 → 1；codex 非零退出/超时/无结构化
            findings → 2（附有界摘要）；flagged_writes → 3（只读契约被破坏，防御性）；
            其余 → 0。
-         - 所有读取有界；路径只有 cwd 内写入；不修改任何仓库文件（连报告也是
-           用户显式 --output 才写，默认写 docs/reviews/ 并注明）。
+         - 所有读取有界；除报告外不修改审查目标；报告路径必须位于 cwd 内，默认写入
+           docs/reviews/，显式 --output 时写入指定路径。
       2. pbatch/cli.py：_SUBCOMMANDS 增加 "review": "review:review_main"（仅此一行）。
       3. tests/test_review.py（新增，风格与仓库一致，全部本地无 codex 依赖）：
          - runner 注入：review_main 接受注入点（monkeypatch 或函数参数）替代 spawn——
@@ -58,10 +57,9 @@ tasks:
          python pi-batch.py eval 不回归；python pi-batch.py completion bash 生成的
          补全含 review（注册表驱动自动同步——若需要手工注册，按仓库已有机制处理并
          说明）。
-      5. 真实 smoke（尽力而为，不阻塞任务）：若时间允许，跑一次 `pi-batch review
-         --commit <最近提交>`（timeout 300）验证端到端 shape；超时/失败把原始输出
-         摘要记入文档即可，不算任务失败。
-      完成后结论写入 docs/tui-phase0/t9-review.md：命令用法、finding 提取规则与
-      失败模式、退出码表、与 gate-fix/对抗审查的关系、真实 smoke 结果（若有）。
+      5. 可选端到端 smoke：在安全、可公开的测试仓库上验证命令 shape；交付文档
+         固定记录最终支持状态与有界结论。
+      最终回复直接给出完整 Markdown 交付报告，由 runner 写入 output；不要自行写
+      output 路径。报告固定包含用法、finding 契约、退出码、gate-fix 关系、验证入口和边界。
     output: docs/tui-phase0/t9-review.md
     validate: pyquality

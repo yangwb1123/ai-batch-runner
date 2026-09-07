@@ -9,8 +9,11 @@ or configure `agent.argument_flags` for another argv contract. The built-in adap
 
 ## 快速开始（产品 CLI）
 
+首次公开发行仍受许可证确认门禁阻断；当前请在源码 checkout 根目录安装：
+
 ```bash
-pip install -e .          # 或 pipx install . / uv tool install .
+pipx install .                     # 推荐：隔离安装当前源码
+# 首次公开发行后：pipx install ai-batch-runner
 pi-batch                  # 默认产品入口：交互式 TUI（真实终端）
 pi-batch doctor           # 环境诊断：安装/目录/配置/agent/密钥/锁
 pi-batch init             # 创建用户级工作目录骨架
@@ -18,6 +21,9 @@ pi-batch version          # 版本 + 环境
 pi-batch -p "写一个订单接口，含支付审批，生产，go" --classify   # 一句话 → 全流程
 pi-batch completion bash >> ~/.bashrc    # shell 补全（zsh 同理）
 ```
+
+从源码开发安装使用 `pip install -e ".[dev]"`。维护者发布流程见
+[`docs/RELEASING.md`](docs/RELEASING.md)。
 
 构建 wheel 安装时会同时携带规则注册表、验证脚本、默认流水线、角色模板和
 评估集；`pi-batch health --json` 会检查分发资产是否完整。
@@ -154,8 +160,9 @@ exponential-backoff retries, and optional auto git-commit after each stage.
 >
 > **Local fixes** (governance close-out, T9/T10/T12 per plan):
 > - T9 fingerprint reuse 2.0: `--reuse-fingerprint` + sidecar
->   (`<output>.meta.json`, sha256 of inputs/gate/routing); input change
->   regenerates; wired through all six reuse sites + single-batch
+>   (`<output>.meta.json`, sha256 of inputs/gate/agent/routing plus the
+>   accepted artifact bytes); input, executor, or artifact change regenerates;
+>   wired through all six reuse sites + single-batch
 > - T10 session rotation: `--session-max-bytes` watermark forks the shared
 >   session via pi's `--fork`; compaction warnings (`pbatch/session.py`)
 > - T12 governance: validator JSON status (pass/warn/fail), bare
@@ -194,7 +201,7 @@ The agent binary is a config value, not a hardcoded dependency — edit `agent.b
 # pi-batch.yaml
 agent:
   bin: pi              # or: claude, codex, gemini, opencode, ...
-  default_model: ""
+  default_model: "gpt-5.6-luna:max"
   default_timeout: 300
   default_workers: 4
   argument_flags:          # per-agent overrides are also supported
@@ -226,12 +233,20 @@ python pi-batch.py tasks.yaml --agent-bin codex  --mode serial
 
 ```bash
 # Install as a global CLI command (like pi/codex), then use it anywhere:
-pip install -e .            # or: pipx install . / uv tool install .
+pipx install .             # from the current source checkout
+# After the first public release: pipx install ai-batch-runner
 pi-batch                    # interactive TUI on a real terminal
 pi-batch tui                # explicit TUI entry
 pi-batch -p "analyze this project" -o output.md
 python -m pbatch ...        # same entry, no install needed
 python pi-batch.py ...      # zero-install fallback from the repo root
+
+# Canonical earendil-works/pi namespace (arguments are forwarded verbatim)
+pi-batch pi                         # official Pi interactive mode
+pi-batch pi --print "summarize this repo" # official Pi one-shot text mode
+pi-batch pi --mode json "review"    # official Pi JSON event stream
+pi-batch pi --mode rpc              # official Pi LF-delimited JSONL RPC
+pi-batch pi -c                      # official Pi session continuation
 
 # Task type classifier: decide BEFORE execution whether a task is frontend UI
 pi-batch classify "用 Flutter 实现 ERP 排程列表页"
@@ -242,6 +257,13 @@ pi-batch assess "企业订单管理：新建订单表单，含支付审批流程
 pi-batch assess --file requirements.md     # from a document
 pi-batch assess "..." --prompt             # compiled instruction block for the agent
 pi-batch assess "..." --json
+pi-batch assess "..." --product-brief     # structured product direction proposal
+
+# Product direction: deterministic brief for review (no silent business decisions)
+pi-batch product "做一个多租户审批平台，支持登录和审批流程"
+pi-batch product --file requirements.md --json -o docs/product-brief.json
+# TUI 中也可用：/product [requirement]（省略时使用当前会话最近一条任务）
+# 退出重开后：/sessions 打开 scope 内 picker；Enter 恢复，f fork，a archive/restore
 
 # Rule matching (scale × page_type × risk) + two-sided LLM check
 pi-batch rules "生成一个登录页 demo"
@@ -278,19 +300,146 @@ pi-batch campaign --max-directions 2 --reuse --retry-failed
 # and max reasoning (implementation remains worktree/commit governed)
 pi-batch campaign --rounds 0 --round-delay 120 --jobs 4 --max-directions 1 \
   --model gpt-5.6-luna --provider openai-codex --thinking max --reuse --retry-failed
+
+# Parallel module collaboration from a dirty baseline (one external worktree per agent)
+pi-batch collab --root /path/to/project --plan /path/to/collab.yaml --dry-run
 ```
+
+The canonical Pi contract is
+[`earendil-works/pi`](https://github.com/earendil-works/pi). `pi-batch pi`
+does not reinterpret Pi options, so its interactive, print, JSON, RPC, auth,
+package, export, resource, and session calls remain owned by upstream Pi.
+The invocation boundaries are:
+
+| Need | Entry | Owner and behavior |
+|---|---|---|
+| Pi's own terminal, one-shot text, JSON events, raw RPC, auth or package commands | `pi-batch pi [PI_ARGS...]` | Upstream Pi CLI; argv and process streams pass through, with no pi-batch gate, retry, journal, or result rewriting |
+| Governed batch or pipeline | `pi-batch -p PROMPT` / `pi-batch tasks.yaml` | pi-batch runner; validators, retries, gates and `--mode serial\|parallel` apply |
+| Product workbench backed by Pi | `pi-batch tui --runtime pi-rpc` | pi-batch TUI/journal/inspectors over a managed local `pi --mode rpc` subprocess |
+| Python embedding | `pbatch.create_agent_session(...)` | Synchronous, provider-neutral pi-batch facade; Pi selection uses RPC and is not a Python port of Pi's SDK |
+| Node/TypeScript embedding | `@earendil-works/pi-coding-agent` | Official in-process SDK; use upstream `createAgentSession()` or, for session replacement, `createAgentSessionRuntime()` directly |
+
+The namespaces are intentional. In the governed CLI, `-p` consumes the prompt
+value and `--mode` means `serial|parallel`. After `pi`, `-p/--print` is Pi's
+boolean one-shot flag, messages remain positional, and Pi owns its parser-level
+`--mode text|json|rpc` values (`json` is an event stream; `rpc` consumes protocol
+commands on stdin). The Pi executable is selected from non-empty
+`PBATCH_PI_BIN`, then a configured agent whose basename is exactly `pi`, then
+`pi` on `PATH`; a configured Codex/Claude binary never receives Pi arguments.
+The Python facade also exposes normalized `runtime_state()`, `stats()`, model
+and thinking catalogs, and long-running `compact()` controls. It probes the
+exact Pi executable once: stable Pi 0.84.3+ automatically enables session-only
+model/thinking mutation; older, prerelease, or unverified versions remain
+fail-closed. Python callers may explicitly set `allow_persistent_settings=True`
+only when they knowingly accept an older Pi's global-settings side effect.
+See
+[`T29 · Pi canonical 调用面与 RPC Runtime`](docs/tui-phase0/t29-pi-rpc.md).
 
 ### Interactive terminal UI
 
 Running `pi-batch` without arguments opens the Textual workbench when both
 stdin and stdout are interactive terminals. Use **Ctrl+P** for the command
 palette, **Ctrl+N** for a new task, **Ctrl+L** to clear the transcript,
+**Ctrl+G** for the Changes inspector, **Ctrl+T** for Timeline,
 **Ctrl+C** to cancel the active run, and **Ctrl+Q** to quit.
 
-Slash commands are available from the prompt: `/help`, `/status`, `/new`,
-`/clear`, `/model`, `/provider`, `/agent`, `/memory`, `/doctor`, and `/quit`.
+Slash commands are available from the prompt: `/help`, `/status`, `/session`,
+`/compact`, `/new`,
+`/sessions`, `/resume`, `/fork`, `/archive`, `/unarchive`, `/clear`, `/model`,
+`/thinking`, `/provider`, `/agent`, `/runtime`, `/memory`, `/queue`, `/steer`, `/approvals`,
+`/agents`, `/runs`, `/files`,
+`/diff`, `/plan`, `/completion`, `/artifacts`, `/changes`, `/product`, `/review`, `/doctor`,
+and `/quit`.
 `/help` shows the current syntax and state-dependent behavior.
-The full startup, trust-boundary, and release contract is documented in
+Slash help, dispatch, the command palette, and busy-state policy share one
+immutable command registry. Type a command-name prefix and press **Tab** or
+**Right** to complete it; Enter completes a partial name before submission,
+while an exact name submits normally. This static completion path is local: it
+does not call RPC, rebind a runtime, or execute a command. Typing into an exact
+`/model QUERY` or `/thinking QUERY` argument context loads at most one bounded,
+read-only active-session snapshot and opens the local fuzzy picker; **Tab** can
+explicitly start completion for a pasted context. Edits within that same
+adapter/session/kind context filter the frozen snapshot without per-keystroke
+RPC. Model ranking uses Pi's model search fields and fuzzy score; thinking
+completion searches only the provider-returned level strings. **Tab** or
+**Enter** in the open picker only fills the canonical command text. It does not
+submit or call a setter; press **Enter** again to enter the normal slash handler,
+which revalidates the current catalog, Pi version, settings scope, and busy
+state before any mutation. An older Pi or `settings_scope=global` runtime may
+therefore still provide read-only completion choices, but cannot reach a
+setter. The palette also exposes typed session, model, and thinking controls
+under the same gates.
+
+Pi's interactive completion prefers `session.scopedModels` when configured,
+whereas RPC `get_available_models` returns all configured models
+([upstream implementation](https://github.com/earendil-works/pi/blob/e86823096c5bad39e1ca282ec24bc5eb9bec745b/packages/coding-agent/src/modes/interactive/interactive-mode.ts#L646-L683),
+[RPC contract](https://github.com/earendil-works/pi/blob/e86823096c5bad39e1ca282ec24bc5eb9bec745b/packages/coding-agent/docs/rpc.md#L255-L327)).
+The latter is suitable for suggestions, but is not evidence of scoped-model
+membership or cycle order. Pi's `/scoped-models` remains unexposed because
+JSONL RPC has no authoritative scoped-list read/write contract.
+With a capable managed runtime, `/session` reads typed active-session state and
+statistics without loading the message history or exposing the provider session
+file. `/compact [instructions]` performs Pi's lossy older-context compaction in
+the background. It is allowed only while the session is idle and holds a
+separate logical session lock; Pi RPC has no `abort_compaction`, so Ctrl+C does
+not pretend to cancel it.
+While an agent turn is running, plain text enters a bounded process-local
+follow-up queue; use `/queue` to inspect or edit it. A successful turn starts
+the next item automatically, while failure or cancellation preserves and
+pauses the queue. `/steer TEXT` is available only when the active runtime
+declares `turn_steer` and exposes the matching live turn handle.
+Use `pi-batch tui --runtime app-server` (or idle `/runtime app-server`) for the
+bidirectional Codex App Server path. Trusted server approval requests open a
+typed modal; `a` allows once, `s` allows for the session when offered, `d` or
+Enter denies, `i` interrupts, and `/approvals` reopens a pending card. Decisions
+are scoped to the exact live turn and request id; transcript text cannot create
+an approval.
+`/sessions` opens only locally scoped journals. It reads a byte-bound local
+summary cache and, in App Server mode, enriches exact provider-handle matches
+with one bounded `thread/list` page off the UI thread. Provider names, previews,
+and statuses are advisory: remote-only threads are not added, pagination is
+shown, and Enter still replays the journal and performs `thread/read` before
+any resume.
+`/agents [agent]` opens a bounded, read-only Agents inspector (with `/runs` as
+an alias): it combines the current coordinator operation, the trusted active-turn
+Actor Tree, retained typed actor-history groups, and recent terminal records from
+the scoped shared ledger. Press `h` to cycle retained historical trees. It supports
+agent/status filters and manual refresh, and never copies inspection output into
+the conversation transcript. Child lineage is accepted only from typed events;
+without an explicit actor-control capability and matching actor identity, no
+single-actor stop/steer action is offered.
+`/findings` opens structured review findings and Enter safely jumps to the matching
+workspace-relative file/line in the read-only Changes inspector. Press `f` on a finding
+to start a normal, bounded agent turn that treats review text as untrusted data and
+follows the ordinary permission/validation path; it is not an automatic fixer and
+never marks the finding resolved. After the turn, a bounded `docs/reviews/review-fix-<id>.md`
+report records only exact terminal RuntimeEvent associations and typed validation/gate/workspace
+facts; missing identity stays unavailable. `/completion` opens the current-turn evidence report
+and updates it in place:
+outcome, commands, authoritative Git changes, unfinished structured plan steps,
+validation/gate facts, tools, artifacts, risks, and usage remain separate from
+Assistant prose. Missing validator or gate events are shown as unavailable,
+never inferred as passing.
+`/artifacts [N]` (or `/artifact [N]`) opens only explicit current-turn
+`artifact.created` references. UTF-8 regular files inside the current workspace,
+or inside the locally resolved data directory when the typed reference explicitly
+uses `scope=data`, receive a 64 KiB no-follow preview. Remote URIs, outside paths,
+symlinks, directories, and binary files remain metadata-only or blocked. The
+inspector does not scan Assistant prose for paths, fetch URLs, launch external
+viewers, or add its content to the transcript. From Completion, press `a` to open it.
+Codex Structured Exec and App Server automatically promote command output beyond
+the event preview budget to a private data-dir ArtifactRef. Defaults cap one file
+at 2 MiB and each workspace/session ring at 64 MiB or 256 files.
+The Changes inspector supports `all`, `unstaged`, `staged`, `untracked`, and
+`last-turn` scopes plus validated `base REF` / `commit REF` comparisons. Its
+file list and `n`/`p` hunk navigation remain bounded and read-only.
+The native pipeline observer can emit bounded Pipeline/Stage/Task/validation/gate
+facts through `run_pipeline(..., event_sink=...)`. In the TUI, `/pipeline FILE [--reuse]`
+or `pi-batch tui --pipeline FILE` starts an explicit workspace Pipeline and projects
+its typed lifecycle read-only; approval decisions use an opt-in, run-scoped
+native IPC channel; Ctrl+C cancels the active local task and stops later
+stages cooperatively, without sending provider stop/cancel. The
+full startup, trust-boundary, and release contract is documented in
 [`docs/TUI_PRODUCT.md`](docs/TUI_PRODUCT.md).
 
 The automatic TUI never activates when either stdin or stdout is redirected,
@@ -443,11 +592,14 @@ tasks:
   change that breaks behavior fails the gate. Dangerous DDL
   (DROP TABLE/COLUMN/TRUNCATE outside migrations) added to the
   backendquality errors.
-- **Product thinking** (`pbatch/product.py` + `product-specs/`): the agent
+- **Product thinking** (`pbatch/product.py` + `pbatch/product_direction.py` + `product-specs/`): the agent
   must think as a product owner, not a code generator — but depth is decided
   by the productization level (L0 local_feature → L3 product_feature),
   never by keyword greed. `pi-batch assess` reports the level with
-  evidence; L0 gets an explicit "no product structure" restraint, L2/L3
+  evidence; `pi-batch product` turns L1-L3 requirements into a bounded,
+  reviewable product-direction brief (direction/user story/journey/state
+  machine/Epic→Feature→Story→Task/business-rule questions); unknown decisions stay
+  `待确认`; L0 gets an explicit "no product structure" restraint, while L2/L3
   trigger implicit-requirement scenario chains (login/upload/approval/
   chat/ERP/search) that produce QUESTIONS to confirm (never features to
   implement silently), low-cost reservations (tenant_id in queries/indexes/
@@ -516,11 +668,15 @@ tasks:
   `--dry-run`. Parallel execution performs a fail-closed preflight for duplicate or
   nested outputs and output paths contained by another task's distinct `cwd`; callers
   that provide `run_parallel(waves=...)` get non-conflicting wave barriers. `auto` keeps
-  model bodies out of non-interactive operational streams;
-  artifacts and agent-native message sessions still retain the complete response.
+  model bodies out of non-interactive operational streams. Plain-text adapters write their
+  response body to the artifact. Adapters declaring `output_protocol: codex-jsonl` parse
+  every event fail-closed and write only the final completed assistant message; the raw
+  transport remains in the agent-native session rather than the artifact or terminal stream.
 - **Failure detection**: provider/CLI error signatures (quota, rate limit, auth, billing,
-  network/DNS/TLS) are matched against agent output — a non-zero exit, empty output, or such a
-  reply marks the task failed and **never saves** the artifact.
+  network/DNS/TLS) are matched against operational output — a non-zero exit, empty output,
+  or such a reply marks the task failed and **never saves** the artifact. Structured Codex
+  stdout contributes only typed `turn.failed`/`error` payloads to provider-health matching;
+  command output and assistant prose are never interpreted as provider failures.
 - **Retries**: `--retries N` with exponential backoff (`--retry-delay`, `--retry-backoff`);
   rate-limit/network failures wait at least 30s so quota windows clear.
 - **Rounds (24x7)**: `--max-rounds N` reruns the batch each round (0 = loop forever until all
@@ -592,6 +748,11 @@ tasks:
   direction has a configurable wall-clock deadline (`implementation.timeout`, 14400s default)
   that kills its process group on expiry. State lookup caches only the latest event per
   direction and streams bounded JSONL records for long-running use.
+- **Dirty-baseline collaboration** (`pi-batch.py collab`): an explicit module plan runs
+  protected `isolate` children concurrently. `--seed-dirty` copies only selected current
+  changes into an external worktree, `--write-scope` rejects out-of-scope writes, and
+  `--patch-file` leaves review artifacts outside the source tree. The source worktree is
+  checked for drift; commits/merges are forbidden and failed worktrees are retained.
 - **Gate stages** (`gate: true`): prefer the structured contract in
   `docs/GATE_CONTRACT.md` (`schema_version`, verdict, reason, evidence and
   validator results). Structured PASS requires evidence and validators; malformed
@@ -606,7 +767,9 @@ tasks:
 - **Per-agent failure signatures** (G line): `agent.error_patterns` overrides the built-in
   provider/network/CLI signature table for all agents, `agent.agents.<bin>.error_patterns`
   for one binary (claude/codex/... have different failure replies); `agent.agents.<bin>.session_flags`
-  likewise overrides session continuation flags per binary.
+  likewise overrides session continuation flags per binary. Set
+  `agent.agents.<bin>.output_protocol: codex-jsonl` for Codex `--json` adapters: malformed or
+  incomplete transcripts fail closed, and raw JSONL never becomes a task artifact.
 - **Orphan detection** (`--kill-orphans`): start markers now carry the agent pid; a residue
   scan after a SIGKILLed runner warns when the orphaned agent is still running (double-
   billing risk) and can kill its process group.

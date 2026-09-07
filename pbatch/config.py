@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import shutil
@@ -138,10 +139,13 @@ if not isinstance(_AGENTS_CFG, dict):
 
 def _agent_section(bin_name: str) -> dict:
     """Per-agent config section for a binary name (agent.agents.<bin>),
-    or {} when the section is absent/malformed."""
+    or {} when the section is absent/malformed. Exact path keys win;
+    otherwise an executable path inherits its basename adapter."""
     if not bin_name:
         return {}
     section = _AGENTS_CFG.get(bin_name)
+    if not isinstance(section, dict):
+        section = _AGENTS_CFG.get(Path(str(bin_name)).name)
     return section if isinstance(section, dict) else {}
 
 _DEFAULT_ARGUMENT_FLAGS = {
@@ -186,6 +190,33 @@ def agent_extra_args(bin_name: str = "") -> tuple[str, ...]:
             "agent extra_args must be a list of non-empty strings; ignored: %r",
             value)
     return ()
+
+
+def agent_output_protocol(bin_name: str = "") -> str:
+    """Return the stdout protocol declared by an agent adapter.
+
+    ``codex-jsonl`` is an explicit trust-boundary contract: every stdout
+    record is parsed as a Codex ``--json`` event and only the final assistant
+    message may become a task artifact.  Unconfigured adapters remain plain
+    text.  The basename/legacy-capture inference keeps existing Codex adapter
+    overrides working while configurations migrate to ``output_protocol``.
+    """
+    name = bin_name or AGENT_BIN
+    section = _agent_section(name)
+    value = section.get("output_protocol", _AGENT_CFG.get("output_protocol"))
+    if isinstance(value, str) and value.strip():
+        normalized = value.strip().lower().replace("_", "-")
+        if normalized in {"plain", "codex-jsonl"}:
+            return normalized
+        log.warning("Unknown agent output_protocol %r; treating stdout as plain text",
+                    value)
+        return "plain"
+    extra_args = agent_extra_args(name)
+    if "--json" not in extra_args:
+        return "plain"
+    if Path(str(name)).name == "codex" or agent_capture_thread_id(name):
+        return "codex-jsonl"
+    return "plain"
 
 
 def agent_argument_flags(bin_name: str = "") -> dict[str, tuple]:
@@ -285,7 +316,7 @@ def agent_preflight_errors(bin_name: str) -> list[str]:
 #   agent.error_patterns: [...]      (all agents)
 #   agent.agents.<bin>.error_patterns: [...]   (one binary)
 # Empty list disables signature rejection for that agent.
-_DEFAULT_ERROR_PATTERNS = (
+_DEFAULT_PROVIDER_ERROR_PATTERNS = (
     # provider error codes (quota, rate limit, billing, auth)
     r"rate_?limit_?error",
     r"insufficient_?quota",
@@ -296,7 +327,6 @@ _DEFAULT_ERROR_PATTERNS = (
     r"payment_?required",
     r"invalid_?api_?key",
     r"authentication_?error",
-    r"context_?length_?exceeded",
     r"overloaded_?error",
     r"429 too many requests",
     # network connectivity failures (offline, DNS, TLS, proxy)
@@ -325,10 +355,21 @@ _DEFAULT_ERROR_PATTERNS = (
     r"failed to connect",
     r"unable to connect",
     r"could not connect",
-    # CLI-level failure banners (inline (?im) adds MULTILINE to IGNORECASE)
+)
+
+_DEFAULT_ERROR_PATTERNS = (
+    *_DEFAULT_PROVIDER_ERROR_PATTERNS,
+    # Task-specific request rejection is not provider health.
+    r"context_?length_?exceeded",
+    # CLI-level failure banners (inline (?im) adds MULTILINE to IGNORECASE).
     r"(?im)^\[?error\]?:",
     r"(?im)^fatal:",
 )
+_ARTIFACT_ONLY_ERROR_PATTERNS = frozenset({
+    r"context_?length_?exceeded",
+    r"(?im)^\[?error\]?:",
+    r"(?im)^fatal:",
+})
 
 @lru_cache(maxsize=16)
 def _compile_patterns(patterns: tuple) -> tuple:
@@ -363,6 +404,43 @@ def agent_error_patterns(bin_name: str = "") -> tuple:
         log.warning("Invalid agent error pattern for %s (%s); using defaults",
                     name, exc)
         return _compile_patterns(_DEFAULT_ERROR_PATTERNS)
+
+
+def agent_provider_error_patterns(bin_name: str = "") -> tuple:
+    """Operational failures that count against provider health.
+
+    This is deliberately narrower than ``agent_error_patterns``: malformed
+    task requests and generic CLI banners still reject an artifact, but do
+    not trip a shared provider circuit unless explicitly configured here.
+    """
+    name = bin_name or AGENT_BIN
+    section = _agent_section(name)
+    raw = section.get("provider_error_patterns")
+    if raw is None:
+        raw = _AGENT_CFG.get("provider_error_patterns")
+    legacy = False
+    if raw is None:
+        raw = section.get("error_patterns")
+        if raw is None:
+            raw = _AGENT_CFG.get("error_patterns")
+        legacy = raw is not None
+    if raw is None:
+        raw = _DEFAULT_PROVIDER_ERROR_PATTERNS
+    if isinstance(raw, str):
+        raw = (raw,)
+    if not isinstance(raw, (list, tuple)):
+        log.warning("provider_error_patterns must be a string list; using defaults")
+        raw = _DEFAULT_PROVIDER_ERROR_PATTERNS
+    patterns = tuple(str(value) for value in raw if str(value).strip())
+    if legacy:
+        patterns = tuple(value for value in patterns
+                         if value not in _ARTIFACT_ONLY_ERROR_PATTERNS)
+    try:
+        return _compile_patterns(patterns) if patterns else ()
+    except re.error as exc:
+        log.warning("Invalid provider error pattern for %s (%s); using defaults",
+                    name, exc)
+        return _compile_patterns(_DEFAULT_PROVIDER_ERROR_PATTERNS)
 _COMMIT_CFG = _section("commit")
 _PROJECT_CFG = _section("project")
 _LOGGING_CFG = _section("logging")
@@ -374,6 +452,7 @@ _PROMPT_CFG = _section("prompt")
 _VALIDATION_CFG = _section("validation")
 _COMMAND_CFG = _section("commands")
 _MEMORY_CFG = _section("memory")
+_TUI_CFG = _section("tui")
 _CLASSIFIER_CFG = _section("classifier")
 _LIMITS_CFG = _section("limits")
 
@@ -457,6 +536,17 @@ MEMORY_TENANT = _string_setting(_MEMORY_CFG, "tenant", "default", allow_empty=Fa
 MEMORY_SENSITIVITY = _choice_setting(
     _MEMORY_CFG, "sensitivity", "internal",
     ("public", "internal", "confidential", "secret", "regulated"))
+TUI_JOURNAL_ENABLED = _bool_setting(_TUI_CFG, "journal_enabled", True)
+TUI_JOURNAL_MAX_BYTES = _int_setting(
+    _TUI_CFG, "journal_max_bytes", 16 * 1024 * 1024, 1)
+TUI_COMMAND_ARTIFACT_MAX_BYTES = _int_setting(
+    _TUI_CFG, "command_artifact_max_bytes", 2 * 1024 * 1024, 64 * 1024)
+TUI_COMMAND_ARTIFACT_STORE_MAX_BYTES = _int_setting(
+    _TUI_CFG, "command_artifact_store_max_bytes",
+    max(64 * 1024 * 1024, TUI_COMMAND_ARTIFACT_MAX_BYTES),
+    TUI_COMMAND_ARTIFACT_MAX_BYTES)
+TUI_COMMAND_ARTIFACT_MAX_FILES = _int_setting(
+    _TUI_CFG, "command_artifact_max_files", 256, 1)
 _MEMORY_AGENT_VALUE = _MEMORY_CFG.get("agent_names", ("pi",))
 if isinstance(_MEMORY_AGENT_VALUE, str):
     _MEMORY_AGENT_VALUE = (_MEMORY_AGENT_VALUE,)
@@ -504,13 +594,31 @@ MEMORY_INDEX_MAX_BYTES = _int_setting(
 # --min-interval only throttles successful SERIAL tasks. 0 = unlimited.
 RATE_LIMIT_PER_SECOND = _float_setting(_LIMITS_CFG, "per_second", 0.0, 0.0)
 RATE_LIMIT_BURST = _float_setting(_LIMITS_CFG, "burst", 1.0, 0.0)
+if not math.isfinite(RATE_LIMIT_PER_SECOND):
+    RATE_LIMIT_PER_SECOND = 0.0
+if not math.isfinite(RATE_LIMIT_BURST) or RATE_LIMIT_BURST <= 0:
+    RATE_LIMIT_BURST = 1.0
 _LIMIT_PROVIDERS = _LIMITS_CFG.get("providers")
-if not isinstance(_LIMIT_PROVIDERS, dict):
-    _LIMIT_PROVIDERS = {}
-RATE_LIMIT_PROVIDERS = {
-    str(key): value for key, value in _LIMIT_PROVIDERS.items()
-    if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
-}
+
+
+def _rate_provider_overrides(values) -> dict[str, float]:
+    """Normalize provider rates; an explicit zero disables that provider."""
+    if not isinstance(values, dict):
+        return {}
+    overrides: dict[str, float] = {}
+    for key, value in values.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        try:
+            number = float(value)
+        except OverflowError:
+            continue
+        if math.isfinite(number) and number >= 0:
+            overrides[str(key)] = number
+    return overrides
+
+
+RATE_LIMIT_PROVIDERS = _rate_provider_overrides(_LIMIT_PROVIDERS)
 
 
 # Each fabric capability remains independently off by default. Loading the

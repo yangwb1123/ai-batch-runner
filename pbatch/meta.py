@@ -15,7 +15,6 @@ array).
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -31,10 +30,12 @@ from .relevance import (constrain_role_plan, format_suggestions,
                         load_role_keywords, score_roles)
 from .reuse import fingerprint as reuse_fp
 from .reuse import reuse_decision, write_sidecar
-from .runner import _save_validated, run_task
+from .runner import _cancel_requested, _save_validated, run_task
 from .memory import record_task
+from .meta_plan import _extract_json_array, _parse_role_plan
 from .text_io import read_text_bounded
 from .triage import is_retryable
+from .tui_native import current_native_observer
 
 
 _DEFAULT_META_PROMPT = """Analyze the deliverables below and decide which expert review roles are still needed to harden them.
@@ -103,69 +104,12 @@ def _load_role_template(role_dir: str, role: str) -> Optional[str]:
         return None
 
 
-def _extract_json_array(text: str) -> str:
-    """Return the first JSON array literal in *text* (from its '[' to the
-    MATCHING ']'), tolerating prose before it. The scan is bracket- and
-    string-aware: a ']' inside a quoted string does not close the array —
-    the old regex truncated ad-hoc role task text at the first ']'
-    (round-4 finding M5/META1)."""
-    start = (text or "").find("[")
-    if start == -1:
-        return ""
-    depth = 0
-    in_str = False
-    esc = False
-    for i in range(start, len(text)):
-        c = text[i]
-        if in_str:
-            if esc:
-                esc = False
-            elif c == "\\":
-                esc = True
-            elif c == '"':
-                in_str = False
-            continue
-        if c == '"':
-            in_str = True
-        elif c == "[":
-            depth += 1
-        elif c == "]":
-            depth -= 1
-            if depth == 0:
-                return text[start:i + 1]
-    return ""
-
-
-def _parse_role_plan(stdout: str) -> list:
-    """Parse the orchestrator plan from its JSON output, tolerating prose and
-    markdown fences. Each plan item is either a role name (string, resolved
-    against role_dir) or an ad-hoc role {"role": ..., "task": ...}. Unparseable
-    output -> [] (treat as 'no more roles needed')."""
-    arr = _extract_json_array(stdout)
-    plan = []
-    if arr:
-        try:
-            data = json.loads(arr)
-            if isinstance(data, list):
-                for item in data:
-                    if isinstance(item, str) and item.strip():
-                        plan.append({"role": item.strip(), "task": ""})
-                    elif isinstance(item, dict) and str(item.get("role", "")).strip():
-                        plan.append({"role": str(item["role"]).strip(),
-                                     "task": str(item.get("task", "")).strip()})
-                return plan
-        except json.JSONDecodeError:
-            plan = []
-    if not plan:
-        log.warning("META orchestrator output did not contain a JSON role plan; treating as complete")
-    return []
-
 
 def _run_meta_stage(stage: Stage, stage_outputs: dict, model_override: str = "", timeout_override: int = 0,
                     validate_cmd: str = "", session_name: str = "", reuse: bool = False,
                     reuse_legacy: bool = False,
                     fingerprint_mode: bool = False,
-                    original_prompt: str = "") -> tuple[list[TaskResult], bool]:
+                    original_prompt: str = "", cancel_event=None) -> tuple[list[TaskResult], bool]:
     """Dynamic role orchestration: orchestrator picks roles per iteration,
     role outputs fold back into evidence until no more roles or
     max_iterations (self-optimizing role set)."""
@@ -198,7 +142,7 @@ def _run_meta_stage(stage: Stage, stage_outputs: dict, model_override: str = "",
             stage, combined, role_names, model_override, timeout_override,
             validate_cmd, iteration, all_results, role_outputs,
             evidence_outputs, session_name, reuse, reuse_legacy,
-            fingerprint_mode, original_prompt)
+            fingerprint_mode, original_prompt, cancel_event)
         if done or not ok:
             break
 
@@ -217,7 +161,7 @@ def _run_meta_iteration(stage: Stage, combined: str, role_names: list, model_ove
                         evidence_outputs: list, session_name: str = "", reuse: bool = False,
                         reuse_legacy: bool = False,
                         fingerprint_mode: bool = False,
-                        original_prompt: str = "") -> tuple[bool, bool, str]:
+                        original_prompt: str = "", cancel_event=None) -> tuple[bool, bool, str]:
     """Run one orchestrator/role round and fold its evidence into context.
     Returns (done, ok, combined); done stops the expansion loop."""
     log.info("META iteration %d/%d for stage '%s' (roles available: %s)",
@@ -225,7 +169,8 @@ def _run_meta_iteration(stage: Stage, combined: str, role_names: list, model_ove
     meta_task = _build_meta_prompt_task(stage, role_names, combined, model_override, timeout_override,
                                         original_prompt)
     add_task_context_paths(meta_task, evidence_outputs, strict=False)
-    meta_result = run_task(meta_task, session_name=session_name)
+    meta_result = run_task(meta_task, session_name=session_name,
+                            cancel_event=cancel_event)
     record_task(meta_result)
     if not meta_result.success:
         log.warning("META orchestrator call failed: %s; stopping role expansion", meta_result.reason)
@@ -239,16 +184,11 @@ def _run_meta_iteration(stage: Stage, combined: str, role_names: list, model_ove
     role_tasks, _ = _build_role_tasks(
         stage, roles, combined, model_override, timeout_override,
         evidence_outputs)
-    failed = _run_role_batch(stage, role_tasks, validate_cmd, session_name,
-                             reuse, reuse_legacy, fingerprint_mode,
-                             all_results, role_outputs, evidence_outputs)
+    failed = _run_observed_role_batch(
+        stage, role_tasks, validate_cmd, session_name, reuse, reuse_legacy,
+        fingerprint_mode, all_results, role_outputs, evidence_outputs,
+        iteration, cancel_event)
     combined = combine_outputs(evidence_outputs)
-    # Each configured retry is an additional real attempt (G2 lesson).
-    if failed and stage.meta_role_retries > 0:
-        failed = _retry_failed_roles(
-            stage, failed, role_outputs, evidence_outputs, validate_cmd,
-            session_name, stage.meta_role_retries)
-        combined = combine_outputs(evidence_outputs)
     if failed and stage.meta_max_failed_roles <= 0:
         log.warning("META stage '%s': some role tasks failed in iteration %d", stage.name, iteration)
         return True, False, combined
@@ -259,16 +199,67 @@ def _run_meta_iteration(stage: Stage, combined: str, role_names: list, model_ove
     return False, True, combined
 
 
+def _run_observed_role_batch(stage: Stage, role_tasks: list,
+                              validate_cmd: str, session_name: str,
+                              reuse: bool, reuse_legacy: bool,
+                              fingerprint_mode: bool, all_results: list,
+                              role_outputs: list, evidence_outputs: list,
+                              iteration: int, cancel_event=None) -> list:
+    observer = current_native_observer()
+    actor_ids = _spawn_meta_roles(observer, stage, role_tasks, iteration)
+    try:
+        failed = _run_role_batch(
+            stage, role_tasks, validate_cmd, session_name, reuse,
+            reuse_legacy, fingerprint_mode, all_results, role_outputs,
+            evidence_outputs, cancel_event)
+    except Exception:
+        _complete_meta_roles(observer, stage, role_tasks, actor_ids, all_results)
+        raise
+    if failed and stage.meta_role_retries > 0:
+        failed = _retry_failed_roles(
+            stage, failed, role_outputs, evidence_outputs, validate_cmd,
+            session_name, stage.meta_role_retries, fingerprint_mode,
+            cancel_event)
+    _complete_meta_roles(observer, stage, role_tasks, actor_ids, all_results)
+    return failed
+
+
+def _spawn_meta_roles(observer, stage: Stage, role_tasks: list,
+                      iteration: int) -> dict[int, str]:
+    if observer is None:
+        return {}
+    return {
+        id(task): observer.meta_role_started(
+            stage.name, iteration, role, index, task.effective_agent())
+        for index, (role, task) in enumerate(role_tasks, 1)
+    }
+
+
+def _complete_meta_roles(observer, stage: Stage, role_tasks: list,
+                         actor_ids: dict[int, str], all_results: list) -> None:
+    if observer is None:
+        return
+    for _role, task in role_tasks:
+        actor_id = actor_ids.get(id(task))
+        result = next((item for item in reversed(all_results)
+                       if getattr(item, "task", None) is task), None)
+        if actor_id:
+            reason = str(getattr(result, "reason", "") or "").lower()
+            observer.meta_role_completed(
+                actor_id, stage.name, bool(result and result.success),
+                cancelled=reason == "cancelled" or reason.startswith("cancelled;"))
+
+
 def _run_role_batch(stage: Stage, role_tasks: list, validate_cmd: str, session_name: str,
                     reuse: bool, reuse_legacy: bool, fingerprint_mode: bool,
                     all_results: list, role_outputs: list,
-                    evidence_outputs: list) -> list:
+                    evidence_outputs: list, cancel_event=None) -> list:
     """Execute one iteration and return only its failed results."""
     failed = []
     with ThreadPoolExecutor(max_workers=max(1, stage.workers or AGENT_DEFAULT_WORKERS)) as pool:
         futures = [pool.submit(
             _run_role_task, item, validate_cmd, session_name, reuse,
-            reuse_legacy, fingerprint_mode) for item in role_tasks]
+            reuse_legacy, fingerprint_mode, cancel_event) for item in role_tasks]
         for fut in as_completed(futures):
             _, result = fut.result()
             all_results.append(result)
@@ -283,7 +274,9 @@ def _run_role_batch(stage: Stage, role_tasks: list, validate_cmd: str, session_n
 
 def _retry_failed_roles(stage: Stage, failed_results: list, role_outputs: list,
                         evidence_outputs: list, validate_cmd: str,
-                        session_name: str, retries: int) -> list:
+                        session_name: str, retries: int,
+                        fingerprint_mode: bool = False,
+                        cancel_event=None) -> list:
     """Retry this iteration's failures up to the configured attempt count."""
     still_failed = []
     for result in failed_results:
@@ -296,11 +289,18 @@ def _retry_failed_roles(stage: Stage, failed_results: list, role_outputs: list,
                 break
             log.info("META retry %d/%d role '%s' after %s", attempt,
                      retries, task.output_path(), retry.reason)
-            retry = run_task(task, parallel=True, session_name=session_name)
+            retry = run_task(task, parallel=True, session_name=session_name,
+                             cancel_event=cancel_event)
             if retry.success:
-                retry.success = _save_validated(task, retry, validate_cmd)
+                retry.success = _save_validated(
+                    task, retry, validate_cmd, cancel_event)
                 if not retry.success:
                     retry.reason = "validation failed"
+                elif fingerprint_mode:
+                    write_sidecar(str(task.output_path_unresolved()), task.prompt,
+                                  validate_cmd, task.model, task.provider,
+                                  task.workdir(), task.effective_agent(),
+                                  task.thinking)
             record_task(retry)
             if retry.success:
                 break
@@ -322,9 +322,14 @@ def _retry_failed_roles(stage: Stage, failed_results: list, role_outputs: list,
 
 
 def _run_role_task(item, validate_cmd: str, session_name: str, reuse: bool,
-                   reuse_legacy: bool, fingerprint_mode: bool):
+                   reuse_legacy: bool, fingerprint_mode: bool,
+                   cancel_event=None):
     """Execute or freshness-reuse one role selected by the orchestrator."""
     role, task = item
+    if _cancel_requested(cancel_event):
+        result = TaskResult(task, False, returncode=-1, reason="cancelled")
+        record_task(result)
+        return role, result
     try:
         prepare_task_context(task)
     except ValueError as exc:
@@ -332,23 +337,27 @@ def _run_role_task(item, validate_cmd: str, session_name: str, reuse: bool,
                             reason=f"context injection rejected: {exc}")
         record_task(result)
         return role, result
-    output = str(task.output_path())
+    output = str(task.output_path_unresolved())
     expected = (reuse_fp(task.prompt, output, validate_cmd, task.model,
-                         task.provider, task.workdir(), task.thinking)
+                         task.provider, task.workdir(),
+                         task.effective_agent(), task.thinking)
                 if fingerprint_mode else None)
     if reuse and reuse_decision(
             output, validate_cmd, task.workdir(), reuse_legacy, expected):
         result = TaskResult(task=task, success=True, returncode=0, reason="reused")
         record_task(result)
         return role, result
-    result = run_task(task, parallel=True, session_name=session_name)
+    result = run_task(task, parallel=True, session_name=session_name,
+                      cancel_event=cancel_event)
     if result.success:
-        result.success = _save_validated(task, result, validate_cmd)
+        result.success = _save_validated(
+            task, result, validate_cmd, cancel_event)
         if not result.success:
             result.reason = "validation failed"
         elif fingerprint_mode:
             write_sidecar(output, task.prompt, validate_cmd, task.model,
-                          task.provider, task.workdir(), task.thinking)
+                          task.provider, task.workdir(),
+                          task.effective_agent(), task.thinking)
     record_task(result)
     return role, result
 
@@ -383,7 +392,7 @@ def _build_meta_prompt_task(stage: Stage, role_names: list, combined: str, model
     meta_prompt = meta_prompt.replace("{max_roles}", str(max(1, stage.max_roles_per_iteration)))
     meta_prompt = meta_prompt.replace("{input_content}", combined)
     meta_prompt = meta_prompt.replace("{prompt}", original_prompt)
-    task = Task(prompt=meta_prompt, cwd=stage.cwd)
+    task = Task(prompt=meta_prompt, agent=stage.agent, cwd=stage.cwd)
     task.memory = {"stage": stage.name, "role": "orchestrator"}
     task.model = stage.model or task.model
     task.provider = stage.provider or task.provider
@@ -428,7 +437,8 @@ def _build_role_tasks(stage: Stage, roles: list, combined: str,
             safe_name = f"{safe_name}-{suffix}"
         used_names.add(safe_name)
         out_path = Path(stage.output_dir) / f"{safe_name}.md"
-        task = Task(prompt=prompt, output=str(out_path), cwd=stage.cwd)
+        task = Task(prompt=prompt, output=str(out_path), agent=stage.agent,
+                    cwd=stage.cwd)
         task.memory = {"stage": stage.name, "role": role}
         add_task_context_paths(task, evidence_outputs, strict=False)
         task.model = stage.model or task.model
@@ -448,8 +458,9 @@ def run_meta_stage(stage: Stage, stage_outputs: dict, model_override: str = "", 
                    validate_cmd: str = "", session_name: str = "", reuse: bool = False,
                    reuse_legacy: bool = False,
                    fingerprint_mode: bool = False,
-                   original_prompt: str = "") -> tuple[list, bool]:
+                   original_prompt: str = "", cancel_event=None) -> tuple[list, bool]:
     """Public entry: dynamic role orchestration (see module docstring)."""
     return _run_meta_stage(
         stage, stage_outputs, model_override, timeout_override, validate_cmd,
-        session_name, reuse, reuse_legacy, fingerprint_mode, original_prompt)
+        session_name, reuse, reuse_legacy, fingerprint_mode, original_prompt,
+        cancel_event)

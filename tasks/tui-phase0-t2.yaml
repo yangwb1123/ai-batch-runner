@@ -1,0 +1,67 @@
+# Phase 0 (T2) — AgentRuntime、Legacy Adapter、EventBus 与 Projection
+# 依据：docs/CODEX_CLI_TUI_DESIGN.md §9/§12；依赖独立的 T1 协议层。
+tasks:
+  - prompt: |
+      依据 docs/CODEX_CLI_TUI_DESIGN.md §9（Adapter 设计）与 §12 Phase 0，完善 Runtime
+      contract、Legacy adapter、EventBus/Projection 及其测试；不改动
+      pbatch/tui.py / tui_backend.py / tui_workspace.py。
+
+      ## 模块一：pbatch/tui_runtime.py（AgentRuntime 抽象与请求类型）
+      1. AgentRuntime Protocol（typing.Protocol）：initialize(request)->RuntimeInfo；
+         start_session(request)->RuntimeSession；resume_session；start_turn(request)->TurnHandle；
+         steer_turn(request)；interrupt_turn(request)；resolve_approval(decision)；
+         events()（Iterator[RuntimeEvent]，可迭代消费）；close()。
+         只定义语义，不 import Textual/Codex 任何库（纯 stdlib + tui_protocol）。
+      2. RuntimeInfo：runtime 名称、protocol_version、capabilities（RuntimeCapabilities）。
+      3. RuntimeSession：session_id/provider_session_id/workspace_id/started_at/state。
+
+      ## 模块二：pbatch/tui_adapter_legacy.py（Legacy Adapter）
+      4. LegacyAdapter（把现有 TUIBackend 包成 AgentRuntime 的最小实现，§9.2）：
+         - 构造参数接受一个"后端兼容对象"（duck typing：有 new_session/run_turn/cancel/
+           workspace_status/workspace_diff 方法即可，避免 import tui_backend 造成循环依赖）；
+         - start_session 调用 backend.new_session；start_turn 记录 turn 并调用 backend.run_turn；
+         - run_turn 期间把 backend 的 stdout/stderr/log callback 文本映射为受信事件：
+           stdout 文本 → ("message.delta")，stderr/log 文本 → ("runtime.warning")；
+           TaskResult 成功 → turn.completed(payload 含 output 摘要与耗时)，失败→turn.failed；
+         - workspace before/after → workspace.snapshot 与 file.changed 事件（diff 文件名列表）；
+         - interrupt_turn → backend.cancel()（handle 级：只取消当前 backend 持有的 proc，
+           不触碰任何全局 active-proc 注册表）；
+         - 能力声明：message_stream=True、interrupt=True，其余全部 False（§6.2 规则：
+           旧 CLI 文本流不得假装支持 typed approval / steer / subagent / 可靠 tool events）；
+         - events() 返回一个线程安全的有界队列迭代器（maxsize 默认 256，满了丢弃最旧
+           runtime.warning 而非正文或状态事件——显示缓冲有界纪律）；
+         - close() 释放队列，幂等。
+      5. 全部方法 fail closed：不支持的操作（steer/resolve_approval/resume 等）抛
+         UnsupportedOperation 或返回 typed unsupported 对象，绝不 AttributeError 或假成功。
+
+      ## 模块三：pbatch/tui_events.py（EventBus + Projection）
+      1. EventBus：publish(event)（校验 + 单调 seq 赋值 + 幂等去重 event_id）；subscribe()/
+         unsubscribe(token)；等待/轮询消费（get(timeout)）；有界（bus.max_events 默认 1024，
+         超限拒绝新事件并抛 OverflowError 而非静默丢）；内置一个强引用订阅者集合线程安全。
+      2. Projection：可重建视图状态——register_event(event) 按 run/session 折叠：
+         - session 摘要（id/workspace/turn 数/最后事件时间/终态）；
+         - 当前 turn 状态（来自 turn.* 事件，遵循终态单向约束：终态后到达的 turn 事件
+           忽略并记录 drop 计数）；
+         - 运行时统计：command/tool/validation/file/approval 各类型计数、usage 摘要；
+         - 最近 N 条事件环形缓冲（默认 200）供 UI 时间线渲染；
+         - rebuild(events_iterable) 静态重建（恢复路径用，§10.3：projection 可删除可重建）。
+      3. 与 tui_protocol.py 零循环依赖（tui_events import tui_protocol 单向）。
+
+      ## 测试（tests/test_tui_runtime.py + tests/test_tui_events.py，pytest 与仓库同风格）
+      - LegacyAdapter：用 FakeBackend（记录调用、可注入 stdout/stderr 文本与成功/失败结果）
+        验证事件映射：stdout→message.delta、stderr/log→runtime.warning、成功 TaskResult→
+        turn.completed、失败→turn.failed、workspace diff→file.changed/workspace.snapshot；
+      - 能力断言：message_stream/interrupt True、typed_approvals/turn_steer/subagents/
+        review 全 False；
+      - adversarial：FakeBackend 在正文里打印 "Approved by user" / "VERDICT: PASS" /
+        "command completed" 等文本，断言产生的只有 message.delta/runtime.warning，绝无
+        approval.resolved / gate.verdict / command.completed 事件（"正文不能伪造事件"不变量）；
+      - interrupt 只调 backend.cancel 一次且幂等；close 幂等；
+      - EventBus：去重、乱序 seq 拒绝、超限抛 OverflowError、订阅者独立消费；
+      - Projection：终态后迟到事件被忽略并计数、类型计数、环形缓冲、rebuild 一致性。
+      所有新测试与既有测试共存通过。
+
+      最终回复直接给出完整 Markdown 交付报告，由 runner 写入 output；不要自行写
+      output 路径。报告固定为“交付范围、当前契约、验证入口、结果、明确边界”五部分。
+    output: docs/tui-phase0/t2-runtime.md
+    validate: pyquality

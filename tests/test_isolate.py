@@ -163,6 +163,64 @@ def test_isolate_success_prints_merge_hints(repo):
     assert "git worktree remove" in result.stdout
 
 
+def test_isolate_seeds_only_selected_dirty_slice(repo, tmp_path):
+    """Dirty baseline is copied to an external worktree, not the main tree."""
+    (repo / "a.txt").write_text("dirty\n", encoding="utf-8")
+    (repo / "unrelated.txt").write_text("do not seed\n", encoding="utf-8")
+    target = tmp_path / "slice-worktree"
+    patch = tmp_path / "patches" / "core.patch"
+    result = _isolate(
+        repo, "-b", "slice-a", "-d", str(target),
+        "--seed-dirty", "a.txt", "--write-scope", "a.txt",
+        "--patch-file", str(patch), "--", "-p", "test", "--dry-run")
+    assert result.returncode == 0, result.stderr
+    assert (target / "a.txt").read_text(encoding="utf-8") == "dirty\n"
+    assert not (target / "unrelated.txt").exists()
+    assert patch.is_file()
+    assert (repo / "a.txt").read_text(encoding="utf-8") == "dirty\n"
+    assert (repo / "unrelated.txt").read_text(encoding="utf-8") == "do not seed\n"
+
+
+def test_isolate_seeds_selected_untracked_file(repo, tmp_path):
+    (repo / "new-core.ts").write_text("export const core = true;\n", encoding="utf-8")
+    target = tmp_path / "untracked-worktree"
+    result = _isolate(
+        repo, "-b", "slice-untracked", "-d", str(target),
+        "--seed-dirty", "new-core.ts", "--", "-p", "test", "--dry-run")
+    assert result.returncode == 0, result.stderr
+    assert (target / "new-core.ts").read_text(encoding="utf-8").startswith("export")
+
+
+def test_isolate_scope_violation_is_fail_closed_and_keeps_worktree(repo, tmp_path,
+                                                                    monkeypatch):
+    from pbatch import isolate
+
+    def fake_child(workdir, _args, _protected=False):
+        (workdir / "outside.ts").write_text("unexpected\n", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(isolate, "_run_child", fake_child)
+    target = tmp_path / "scope-worktree"
+    result = isolate.run_isolated(
+        repo, "slice-scope", target, ["--dry-run"],
+        write_scope=("packages/core/**",))
+    assert result == isolate.SCOPE_BLOCKED_EXIT
+    assert (target / "outside.ts").is_file()
+    assert not (repo / "outside.ts").exists()
+
+
+def test_isolate_protected_mode_rejects_auto_merge(repo, tmp_path):
+    from pbatch import isolate
+    from pbatch.session_merge import SessionOptions
+
+    target = tmp_path / "auto-merge-worktree"
+    result = isolate.run_isolated(
+        repo, "slice-auto", target, ["--dry-run"],
+        opts=SessionOptions(session_id="auto"), seed_dirty=("a.txt",))
+    assert result == 2
+    assert not target.exists()
+
+
 def test_isolate_copy_memory(repo):
     """--copy-memory：主目录 .pi-batch/ 延续到 worktree。"""
     (repo / ".pi-batch").mkdir()

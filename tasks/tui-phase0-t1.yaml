@@ -1,5 +1,4 @@
 # Phase 0 (T1) — 协议地基：RuntimeEvent / Capabilities / Turn 状态机
-# 驱动方式：python pi-batch.py tasks/tui-phase0-t1.yaml --agent-bin codex
 # 依据：docs/CODEX_CLI_TUI_DESIGN.md §7（统一领域模型）与 §12 Phase 0。
 tasks:
   - prompt: |
@@ -9,27 +8,28 @@ tasks:
       ## 验收范围（只做协议层，不碰 TUI 接线）
       1. RuntimeEvent：dataclass，字段含 schema_version(默认1)/event_id/seq/occurred_at/
          workspace_id/session_id/run_id/turn_id/actor_id/kind/payload(dict)/extensions(dict)。
-         kind 必须来自固定枚举（首版事件类型见设计 §7.3：session.*/turn.queued|started|steered|
+         kind 必须来自固定枚举（设计 §7.3：session.*/turn.queued|started|steered|
          interrupting|completed|failed|interrupted/message.started|delta|completed/plan.updated/
          command.started|output|completed/tool.started|completed|failed/file.changed/
          workspace.snapshot/validation.started|completed/gate.verdict/
          approval.requested|resolved|expired/actor.spawned|status|completed/
-         review.finding/artifact.created/usage.updated/runtime.warning|error|capabilities_changed）。
+         review.finding/artifact.created/usage.updated/runtime.warning|error|unknown_item|
+         capabilities_changed）。
          未知 kind 构造即抛 ValueError（fail closed）；extensions 有界（默认 ≤16KiB 拒绝）。
-      2. to_jsonl()/from_jsonl()：单行 JSON round-trip；from_jsonl 对未知字段保持宽容
-         （忽略并保留到 extensions？不——未知顶层字段应保留原文以便 schema 演进，见 §13.1
-         "未知字段"契约测试），但对 json 语法错误/超长单行/非 dict 抛 ValueError。
+      2. to_jsonl()/from_jsonl()：单行 JSON round-trip；from_jsonl 对未知字段保持宽容，
+         保留未知顶层字段原文以便 schema 演进（见 §13.1“未知字段”契约测试）；对
+         JSON 语法错误、超长单行或非 dict 输入抛 ValueError。
       3. RuntimeCapabilities：protocol_version/runtime/能力集合（structured_events、
-         session_resume/session_fork/turn_steer/message_queue/typed_approvals/review/
+         session_resume/session_read/session_fork/turn_steer/message_queue/typed_approvals/review/
          subagents/images/usage/instruction_sources，全部 bool 默认 False，
          message_stream 和 interrupt 是 Legacy 至少为 True 的两个键）。
       4. TurnState 状态机（§7.2）：QUEUED/RUNNING/SUCCEEDED/FAILED/INTERRUPTING/
          INTERRUPTED/WAITING_APPROVAL/DENIED/DISCONNECTED/RECONCILING/UNKNOWN。
          合法迁移表：
-         QUEUED->RUNNING；RUNNING->SUCCEEDED|FAILED|INTERRUPTING|WAITING_APPROVAL|
+         QUEUED->RUNNING|INTERRUPTING|FAILED；RUNNING->SUCCEEDED|FAILED|INTERRUPTING|WAITING_APPROVAL|
          DISCONNECTED|UNKNOWN；INTERRUPTING->INTERRUPTED|FAILED（超时强制终态）；
          WAITING_APPROVAL->RUNNING|DENIED|INTERRUPTING|DISCONNECTED|UNKNOWN；
-         DENIED->FAILED|INTERRUPTED|终态；DISCONNECTED->RECONCILING；
+         DENIED->FAILED|INTERRUPTED；DISCONNECTED->RECONCILING；
          RECONCILING->RUNNING|UNKNOWN|SUCCEEDED|FAILED。
          终态（SUCCEEDED/FAILED/INTERRUPTED/UNKNOWN）不可再迁移，任何迁移尝试抛
          ValueError；不在表中的迁移抛 ValueError。
@@ -54,7 +54,7 @@ tasks:
       a) python -m pytest tests/test_tui_protocol.py -q 全绿；
       b) python quality.py --strict . 不新增违规（运行前先记录基线：python quality.py . 的输出）；
       c) 不修改 pbatch/tui.py、pbatch/tui_backend.py、pbatch/runner.py 等既有文件。
-      完成后在回复中列出：新增文件、测试数、quality 基线对比、以及你判断的设计文档
-      §7 与实现之间的任何偏差（如果有，说明为什么）。
+      最终回复直接给出完整 Markdown 交付报告，由 runner 写入 output；不要自行写
+      output 路径。报告固定为“交付范围、当前契约、验证入口、结果、明确边界”五部分。
     output: docs/tui-phase0/t1-protocol.md
     validate: pyquality

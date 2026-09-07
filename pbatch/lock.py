@@ -25,6 +25,14 @@ Contract (hardened after the round-4 adversarial reviews):
   the lock is still ours between rounds; a lock that vanished (unlinked
   by a concurrent breaker) stops the instance with exit 5 instead of
   continuing in split-brain.
+- A Git worktree with any tracked, staged, or non-ignored untracked change
+  is never treated as parallel-safe: declared output disjointness cannot
+  prove that two agents will not edit the same dirty source. Such a holder
+  remains exclusive until the dirty worktree is isolated or the operator
+  explicitly handles it.
+- `PBATCH_LOCK_FILE` may point to an external lock path when the project
+  must not receive even the tool's runtime lock file; the guarded workspace
+  is still the `cwd`, not the lock-file directory.
 - The file is 0o600 and the `-p`/`--prompt` value is redacted from the
   recorded argv (prompt content is sensitive and the file can survive a
   SIGKILL).
@@ -37,6 +45,8 @@ from __future__ import annotations
 
 import json
 import os
+import select
+import subprocess
 import sys
 import tempfile
 import time
@@ -86,6 +96,7 @@ def _payload(cwd: str, domain: str = "", outputs: tuple = (),
         "pid": os.getpid(),
         "start": time.time(),
         "host": os.uname().nodename,
+        "workspace": str(Path(cwd or os.getcwd()).resolve()),
         "argv": _redacted_argv(sys.argv),
         "token": uuid.uuid4().hex,
         "domain": domain or "default",
@@ -95,6 +106,92 @@ def _payload(cwd: str, domain: str = "", outputs: tuple = (),
 
 
 MAX_DECLARED_OUTPUTS = 16
+_WORKTREE_PROBE_TIMEOUT = 5
+
+
+def _worktree_dirty(cwd: str) -> bool:
+    """Return a conservative dirty/unknown bit for one Git worktree."""
+    root = str(Path(cwd or os.getcwd()).resolve())
+    try:
+        probe = subprocess.run(
+            ["git", "-C", root, "rev-parse", "--is-inside-work-tree"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, timeout=_WORKTREE_PROBE_TIMEOUT)
+    except (OSError, subprocess.SubprocessError):
+        return True
+    if probe.returncode != 0:
+        return False
+    return _status_has_output(root)
+
+
+def _status_has_output(root: str) -> bool:
+    """Bound the Git status probe to one byte and a hard wait."""
+    try:
+        process = subprocess.Popen(
+            ["git", "-C", root, "status", "--porcelain=v1",
+             "--untracked-files=normal", "--", ".",
+             ":(exclude).pi-batch.lock*"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except OSError:
+        return True
+    try:
+        stream = process.stdout
+        if stream is None:
+            return True
+        ready, _, _ = select.select([stream], [], [], _WORKTREE_PROBE_TIMEOUT)
+        if not ready:
+            return True
+        data = os.read(stream.fileno(), 1)
+        if not data:
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                return True
+            return process.returncode != 0
+        if process.poll() is None:
+            process.kill()
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            return True
+        return True
+    except (OSError, ValueError, select.error):
+        return True
+    finally:
+        if process.poll() is None:
+            process.kill()
+        try:
+            process.wait(timeout=1)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        if process.stdout is not None:
+            process.stdout.close()
+
+
+def _lock_path(cwd: str) -> Path:
+    """Resolve the coordination file without changing the guarded cwd."""
+    configured = os.environ.get("PBATCH_LOCK_FILE", "").strip()
+    if not configured:
+        return Path(cwd or os.getcwd()) / LOCK_NAME
+    path = Path(configured).expanduser()
+    if not path.is_absolute():
+        path = Path(cwd or os.getcwd()) / path
+    return path.resolve()
+
+
+def _prepare_lock(cwd: str, domain: str, outputs: tuple,
+                  session_name: str) -> tuple[Path, dict]:
+    """Prepare external/runtime coordination state before publication."""
+    lock_path = _lock_path(cwd)
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        log.error("Cannot prepare lock directory %s: %s", lock_path.parent, exc)
+        raise SystemExit(LOCK_EXIT_CODE) from exc
+    payload = _payload(cwd, domain, outputs, session_name)
+    payload["worktree_dirty"] = _worktree_dirty(cwd)
+    return lock_path, payload
 
 
 def acquire_lock(cwd: str = "", no_lock: bool = False,
@@ -111,8 +208,7 @@ def acquire_lock(cwd: str = "", no_lock: bool = False,
     None when running lock-free (--no-lock / parallel branch)."""
     if no_lock:
         return None
-    lock_path = Path(cwd or os.getcwd()) / LOCK_NAME
-    payload = _payload(cwd, domain, outputs, session_name)
+    lock_path, payload = _prepare_lock(cwd, domain, outputs, session_name)
     # Atomic publication: the payload is fully written to a unique temp
     # file, then hard-linked into place. os.link fails with EEXIST when a
     # lock is already present, so no reader can observe a partial file
@@ -128,10 +224,12 @@ def acquire_lock(cwd: str = "", no_lock: bool = False,
                 _wait_for_lock(lock_path, wait_minutes)
             else:
                 if _parallel_or_conflict(lock_path, domain, outputs,
-                                         session_name):
+                                         session_name, cwd):
                     return None  # parallel branch (no lock held)
                 _reject_or_break(lock_path)
-            return acquire_lock(cwd, no_lock=False, domain=domain)  # stale broken
+            return acquire_lock(
+                cwd, no_lock=False, domain=domain, outputs=outputs,
+                session_name=session_name)  # stale broken
     finally:
         try:
             os.unlink(tmp_name)
@@ -170,23 +268,17 @@ def _read_holder(lock_path: Path) -> dict:
 
 
 def _parallel_or_conflict(lock_path: Path, domain: str,
-                            outputs: tuple, session_name: str) -> bool:
-    """Decide parallel (True → run lock-free) vs conflict (False → exit 5).
-    - a currently DEAD holder is stale: break the lock (False → reject path
-      breaks it)
-    - both sides declare different NON-default domains: always parallel
-    - otherwise inspect declared outputs/sessions:
-      * overlap in output paths → conflict (False; listed by caller)
-      * same non-empty session_name → conflict
-      * request declares nothing → conflict (historical exclusive)
-      * disjoint declarations → parallel
-    """
+                            outputs: tuple, session_name: str,
+                            cwd: str = "") -> bool:
+    """Decide whether a live lock permits a lock-free parallel instance."""
     holder = _read_holder(lock_path)
     pid = int(holder.get("pid", 0) or 0)
-    holder_domain = str(holder.get("domain", "") or "default")
-    request_domain = domain or "default"
     if not (pid and _alive(pid)):
         return False  # stale lock: rejected, then broken by _reject_or_break
+    if _parallel_worktree_blocked(lock_path, holder, cwd):
+        return False
+    holder_domain = str(holder.get("domain", "") or "default")
+    request_domain = domain or "default"
     if (holder_domain != "default" and request_domain != "default"
             and holder_domain != request_domain):
         log.warning(
@@ -194,6 +286,12 @@ def _parallel_or_conflict(lock_path: Path, domain: str,
             "declares domain '%s' — running in parallel WITHOUT the lock.",
             holder_domain, request_domain)
         return True
+    return _parallel_declarations(holder, pid, outputs, session_name)
+
+
+def _parallel_declarations(holder: dict, pid: int, outputs: tuple,
+                           session_name: str) -> bool:
+    """Apply output/session conflict rules after the worktree safety gate."""
     holder_outputs = {str(p) for p in holder.get("outputs", [])}
     request_outputs = {str(p) for p in outputs}
     overlap = sorted(holder_outputs & request_outputs)
@@ -217,6 +315,22 @@ def _parallel_or_conflict(lock_path: Path, domain: str,
     log.warning(
         "Multi-instance mode: holder pid=%s declares disjoint outputs — "
         "running in parallel WITHOUT the lock.", pid)
+    return True
+
+
+def _parallel_worktree_blocked(lock_path: Path, holder: dict,
+                               cwd: str = "") -> bool:
+    """Dirty or unknown Git state vetoes all output-based parallelism."""
+    workspace = str(Path(cwd or holder.get("workspace")
+                         or lock_path.parent).resolve())
+    if not (_worktree_dirty(workspace)
+            or holder.get("worktree_dirty") is not False):
+        return False
+    log.error(
+        "Git worktree %s is dirty or its state is unknown; refusing "
+        "parallel pi-batch instances (exit %d). Use isolate/worktree "
+        "separation instead of sharing a dirty source tree.",
+        lock_path.parent, LOCK_EXIT_CODE)
     return True
 
 

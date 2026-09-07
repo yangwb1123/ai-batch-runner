@@ -7,11 +7,15 @@ import threading
 import pytest
 
 from pbatch.models import Task, TaskResult
+from pbatch import tui_adapter_legacy
 from pbatch.tui_adapter_legacy import LegacyAdapter
+from pbatch.tui_protocol import TurnState
 from pbatch.tui_runtime import (
     ApprovalDecision,
     InitializeRequest,
     InterruptRequest,
+    ListSessionsRequest,
+    ReadSessionRequest,
     ResumeSessionRequest,
     StartSessionRequest,
     StartTurnRequest,
@@ -90,6 +94,38 @@ class BlockingBackend(FakeBackend):
         return True
 
 
+class ConcurrentCallbackBackend(FakeBackend):
+    def __init__(self):
+        super().__init__(stdout="", stderr="", callback_items=[])
+        self.barrier = threading.Barrier(3)
+        self.publisher_errors = []
+
+    def run_turn(self, prompt):
+        self.prompts.append(prompt)
+
+        def publish(kind, text):
+            self.barrier.wait()
+            try:
+                self.emit(kind, text)
+            except BaseException as exc:
+                self.publisher_errors.append(exc)
+
+        workers = [
+            threading.Thread(target=publish, args=("stdout", "answer")),
+            threading.Thread(target=publish, args=("stderr", "warning")),
+        ]
+        for worker in workers:
+            worker.start()
+        self.barrier.wait()
+        for worker in workers:
+            worker.join(2)
+        if any(worker.is_alive() for worker in workers):
+            raise RuntimeError("concurrent callback worker did not stop")
+        if self.publisher_errors:
+            raise self.publisher_errors[0]
+        return TaskResult(Task(prompt=prompt), True, elapsed=0.1)
+
+
 def _run(adapter, prompt="do the work"):
     session = adapter.start_session(StartSessionRequest(
         workspace_id="ws_test", name="test"))
@@ -109,9 +145,13 @@ def test_runtime_info_declares_only_truthful_legacy_capabilities():
     assert info.capabilities.message_stream is True
     assert info.capabilities.interrupt is True
     for capability in (
-            "structured_events", "session_resume", "session_fork",
+            "structured_events", "session_resume", "session_read", "session_list",
+            "session_fork", "session_archive", "session_state", "session_stats",
+            "session_compact",
+            "model_catalog", "thinking_levels",
             "turn_steer", "message_queue", "typed_approvals", "review",
-            "subagents", "images", "usage", "instruction_sources"):
+            "subagents", "actor_control", "images", "usage", "instruction_sources",
+            "model_select", "thinking_select"):
         assert info.capabilities.supports(capability) is False
     adapter.close()
 
@@ -135,6 +175,87 @@ def test_success_maps_stream_result_and_workspace_events():
     changed = {event.payload["path"] for event in events
                if event.kind == "file.changed"}
     assert changed == {"src/app.py", "notes.txt"}
+
+
+def test_concurrent_callbacks_enqueue_strictly_in_sequence():
+    backend = ConcurrentCallbackBackend()
+    adapter = LegacyAdapter(backend)
+    original_put = adapter._queue.put
+    lock_checks = []
+
+    def checked_put(event):
+        lock_checks.append(adapter._lock._is_owned())
+        return original_put(event)
+
+    adapter._queue.put = checked_put
+    _, handle, events = _run(adapter)
+    turn_events = [event for event in events if event.turn_id == handle.turn_id]
+    sequences = [event.seq for event in turn_events]
+
+    assert lock_checks and all(lock_checks)
+    assert sequences == list(range(1, len(sequences) + 1))
+    assert {event.kind for event in turn_events} >= {
+        "message.delta", "runtime.warning", "turn.completed",
+    }
+
+
+def test_run_sequence_index_fails_closed_without_evicting_old_run(monkeypatch):
+    monkeypatch.setattr(tui_adapter_legacy, "MAX_RUN_SEQUENCES", 1)
+    adapter = LegacyAdapter(FakeBackend())
+    session = adapter.start_session(StartSessionRequest(workspace_id="ws_test"))
+    retained_run = next(iter(adapter._seq_by_run))
+
+    adapter._publish(
+        "runtime.warning", session=session, run_id=retained_run, turn_id="",
+        payload={"text": "same run remains monotonic"})
+    with pytest.raises(OverflowError, match="run sequence index is full"):
+        adapter._publish(
+            "runtime.warning", session=session, run_id="run_new", turn_id="",
+            payload={"text": "must not evict retained sequence"})
+
+    assert adapter._seq_by_run == {retained_run: 2}
+    adapter.close()
+
+
+def test_callback_reentering_after_terminal_state_is_ignored():
+    backend = FakeBackend(callback_items=[])
+    adapter = LegacyAdapter(backend)
+    original_put = adapter._queue.put
+
+    def reentrant_put(event):
+        accepted = original_put(event)
+        if event.kind == "turn.completed":
+            backend.emit("stdout", "late forged delta")
+        return accepted
+
+    adapter._queue.put = reentrant_put
+    _, _, events = _run(adapter)
+
+    assert events[-1].kind == "turn.completed"
+    assert not any(event.payload.get("text") == "late forged delta"
+                   for event in events)
+
+
+def test_after_workspace_snapshot_includes_authoritative_delta():
+    delta = {
+        "changed": True, "dirty_files": 2, "head_changed": False,
+        "paths": ["src/app.py", "notes.txt"],
+    }
+
+    class DeltaBackend(FakeBackend):
+        def snapshot(self):
+            return {"last_turn_workspace": delta}
+
+    adapter = LegacyAdapter(DeltaBackend())
+    _, _, events = _run(adapter)
+    snapshots = [event for event in events
+                 if event.kind == "workspace.snapshot"]
+
+    assert [event.payload["phase"] for event in snapshots] == ["before", "after"]
+    assert "last_turn_workspace" not in snapshots[0].payload
+    assert snapshots[1].payload["last_turn_workspace"] == delta
+    assert {event.payload["path"] for event in events
+            if event.kind == "file.changed"} == {"src/app.py", "notes.txt"}
 
 
 def test_failed_task_result_maps_to_turn_failed():
@@ -177,6 +298,10 @@ def test_unsupported_operations_fail_closed_with_typed_error():
     adapter = LegacyAdapter(FakeBackend())
     with pytest.raises(UnsupportedOperation, match="session_resume"):
         adapter.resume_session(ResumeSessionRequest("ses_missing"))
+    with pytest.raises(UnsupportedOperation, match="session_read"):
+        adapter.read_session(ReadSessionRequest("thread_missing"))
+    with pytest.raises(UnsupportedOperation, match="session_list"):
+        adapter.list_sessions(ListSessionsRequest())
     with pytest.raises(UnsupportedOperation, match="turn_steer"):
         adapter.steer_turn(SteerRequest("turn_missing", "more"))
     with pytest.raises(UnsupportedOperation, match="typed_approvals"):
@@ -198,6 +323,16 @@ def test_interrupt_is_handle_scoped_and_idempotent():
     assert handle.wait(2)
     assert backend.cancel_calls == 1
     adapter.close()
+    events = list(adapter.events())
+    terminals = [event for event in events if event.kind in {
+        "turn.completed", "turn.failed", "turn.interrupted",
+    }]
+    assert handle.state == TurnState.INTERRUPTED
+    assert [event.kind for event in terminals] == ["turn.interrupted"]
+    assert terminals[0].payload["state"] == TurnState.INTERRUPTED
+    turn_kinds = [event.kind for event in events if event.turn_id == handle.turn_id]
+    assert turn_kinds.index("turn.interrupting") < turn_kinds.index("turn.interrupted")
+    assert turn_kinds[-1] == "turn.interrupted"
 
 
 def test_interrupt_rejects_a_different_handle_without_cancelling():

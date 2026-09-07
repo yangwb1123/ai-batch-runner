@@ -19,18 +19,40 @@ def _record(root, agent: str, ts: str, task: str = "task", **extra) -> bool:
 
 
 def test_record_query_round_trip_filters_limits_and_since(tmp_path):
-    assert _record(tmp_path, "codex", "2026-08-22T01:00:00Z", "first")
+    assert _record(tmp_path, "codex", "2026-08-22T01:00:00Z", "first",
+                   attempt=2)
     assert _record(tmp_path, "claude", "2026-08-22T02:00:00Z", "second")
     assert _record(tmp_path, "codex", "2026-08-22T03:00:00Z", "third")
 
     rows = agent_ledger.query(tmp_path)
     assert [row["task_brief"] for row in rows] == ["first", "second", "third"]
+    assert rows[0]["attempt"] == 2
     assert [row["task_brief"] for row in
             agent_ledger.query(tmp_path, agent="codex")] == ["first", "third"]
     assert [row["task_brief"] for row in
             agent_ledger.query(tmp_path, limit=2)] == ["second", "third"]
     assert [row["task_brief"] for row in agent_ledger.query(
         tmp_path, since_ts="2026-08-22T02:00:00Z")] == ["second", "third"]
+
+
+def test_query_snapshot_reports_corruption_and_result_truncation(tmp_path):
+    for index in range(3):
+        assert _record(tmp_path, "codex", f"0{index}", f"task-{index}")
+    path = agent_ledger.ledger_path(tmp_path)
+    with path.open("ab") as handle:
+        handle.write(b"{not-json}\n")
+        handle.write(b"x" * (agent_ledger.LEDGER_READ_LINE_MAX_BYTES + 1) + b"\n")
+
+    snapshot = agent_ledger.query_snapshot(tmp_path, limit=2)
+
+    assert [row["task_brief"] for row in snapshot.records] == [
+        "task-1", "task-2"]
+    assert snapshot.skipped_records == 2
+    assert snapshot.truncated is True
+    assert snapshot.error == ""
+    assert snapshot.path == str(path)
+    assert snapshot.bytes_read == path.stat().st_size
+    assert agent_ledger.query(tmp_path, limit=2) == list(snapshot.records)
 
 
 def test_record_bounds_task_outputs_and_rejects_oversized_line(tmp_path, monkeypatch):

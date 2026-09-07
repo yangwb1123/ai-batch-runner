@@ -1,0 +1,140 @@
+# iris-ui advance 批 3：CLDR 级国际化（数字/日期/货币/复数本地化）
+#
+# 执行（隔离 worktree，勿在主工作区跑）：
+#   cd /home/u1/iris-ui/.pi-batch/worktrees/advance
+#   python3 /home/u1/ai-batch-runner/pi-batch.py \
+#     /home/u1/ai-batch-runner/projects/iris-ui/advance-cldr-i18n.yaml \
+#     --log-file /home/u1/iris-ui/logs/advance-cldr-i18n.log --retries 2
+
+git_commit: false
+decision_log: /home/u1/iris-ui/.pi-batch/worktrees/advance/docs/advance/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      You are preparing the baseline for iris-ui advance 批 3：CLDR 级国际化. Isolated
+      worktree: /home/u1/iris-ui/.pi-batch/worktrees/advance (branch
+      feat/advance-directions, already contains batches 1-2 commits).
+      Monorepo facts (verify before designing):
+      - packages/core/src/i18n.ts: DEFAULT_LOCALE = 'en-US'; locale message
+        registry + useI18n().t('key') consumer pattern (defaults = English).
+      - packages/core/src/locale.ts: existing locale-related material.
+      - packages/plugin-locale-zh/src/core/index.ts: zh-CN message pack via
+        registerMessages. Only en-US + zh-CN exist today.
+      - packages/core/src/date.ts: formatLocalISO (timezone-safe), date
+        helpers. No number/currency/plural/relative-time formatters exist.
+      - Components consume i18n via useI18n().t() (Pagination/Select/Table…).
+      Read i18n.ts, locale.ts, date.ts, plugin-locale-zh core, and 2-3
+      consumers (IrisPagination, IrisSelect). Write the baseline to the
+      output path: exact additive design for CLDR-level localization, with
+      file map + test plan. Design constraints:
+      (a) core framework-free pure functions + locale-data registration
+      (extend the existing registry idiom — registerMessages today,
+      register locale data/formatting packs additively).
+      (b) Scope: number (grouping/decimals/sign), currency, date (locale
+      patterns, timezone-safe), relative time, plural rules. Wrap
+      Intl.NumberFormat/DateTimeFormat/PluralRules with explicit
+      fallbacks for limited-ICU environments; never throw on unknown
+      locale; document browser ICU variance.
+      (c) Deliver zh-CN + en-US locale packs; i18n.ts gains locale-aware
+      format helpers (e.g. t() + formatNumber/formatDate/formatRelative
+      on the same store), components can consume them without new deps.
+      (d) One concrete consumer wiring example (e.g. IrisPagination total
+      count with grouping, or Select option count) to prove the path —
+      additive prop-free (derive from active locale).
+      (e) SSR-safe (Intl available in Node; no DOM/window use).
+      Defer: non-Gregorian calendars, timezone pickers, full CLDR data
+      generation — document as follow-ups.
+      Do NOT modify files; report exact file paths to create/change.
+    output: /home/u1/iris-ui/.pi-batch/worktrees/advance/docs/advance/batch-3-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui/.pi-batch/worktrees/advance
+        prompt: |
+          VERIFY-ONLY task: iris-ui advance 批 3：CLDR 级国际化 has ALREADY been
+          implemented and committed as ca08dbd8 on feat/advance-directions in
+          this worktree (do NOT re-implement; the earlier full-implementation
+          attempts timed out at 1500s, so this stage exists to run the
+          verification suite and report). Per the baseline
+          /home/u1/iris-ui/.pi-batch/worktrees/advance/docs/advance/batch-3-baseline.md.
+          Read it and AGENTS.md first.
+
+          HARD CONSTRAINTS:
+          - Additive only; core framework-free (grep -rE "from
+            '(vue|react|solid|svelte)'" packages/core/src must stay empty).
+          - Pure functions + registry extension in packages/core/src; locale
+            packs in packages/plugin-locale-zh (or core locale data if the
+            baseline decides en-US belongs in core); thin/no adapter changes
+            unless a consumer wiring requires it (keep it minimal — the
+            baseline names exactly one consumer example).
+          - Intl-based with explicit fallbacks; never throw on unknown
+            locale/bad input; SSR-safe (no DOM).
+          - No dist/tgz/node_modules/manifest.json/llms.txt edits (unless
+            barrel exports change — then regenerate via gen:manifest and
+            keep check:manifest green).
+          - CSS untouched; TIME BUDGET: medium — finish completely.
+
+          VERIFY (run in the worktree):
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/core test && ... typecheck && ... lint`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/plugin-locale-zh test`
+          - consumer package tests for all four frameworks (react/vue/
+            solid/svelte select + provider + i18n tests)
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm
+            gen:manifest && pnpm check:manifest` (barrels changed?)
+          - `python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json` → 0 violations
+          If any verification fails with a concrete fix, apply the fix and
+          commit it as a follow-up (separate commit, message prefixed
+          `fix(i18n): batch 3 verify`).
+          Report: verification matrix (per package test/typecheck/lint),
+          fallback/edge coverage (plural, ICU variance, unknown locale),
+          any fixes applied, test counts, what is left. Do not re-implement.
+        output: /home/u1/iris-ui/.pi-batch/worktrees/advance/docs/advance/batch-3-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /home/u1/iris-ui/.pi-batch/worktrees/advance
+        prompt: |
+          You are the adversarial reviewer for iris-ui advance 批 3：CLDR 级国际化.
+          Read batch-3-baseline.md and batch-3-adapt.md in
+          /home/u1/iris-ui/.pi-batch/worktrees/advance/docs/advance/, inspect
+          the implementation. Check: core framework-free; fallbacks actually
+          cover limited-ICU environments (run a test with a restricted
+          Intl if feasible); unknown-locale/bad-input fail closed not throw;
+          plural rules correct for zh (no plural) and en (2 forms); date
+          formatting timezone-safe (no toISOString().slice pattern); SSR
+          safety; additive only. Run verification commands. Write verdict
+          markdown: PASS or FAIL with numbered findings (severity,
+          file:line, fix). Do NOT modify files.
+        output: /home/u1/iris-ui/.pi-batch/worktrees/advance/docs/advance/batch-3-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui/.pi-batch/worktrees/advance
+        prompt: |
+          Gate stage for iris-ui advance 批 3：CLDR 级国际化. Read the review verdict
+          /home/u1/iris-ui/.pi-batch/worktrees/advance/docs/advance/batch-3-review.md.
+          If PASS: run the full repo gate in the worktree
+          (`env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm turbo run
+          test typecheck lint build --concurrency=2`), gen:manifest +
+          check:manifest if barrels changed, update docs/advance/SUMMARY.md,
+          and commit on branch feat/advance-directions:
+          `git add -A -- . ':!node_modules' && git commit -m
+          "feat(i18n): advance 批 3——CLDR 级国际化"`
+          Report commit hash and final test counts.
+          If FAIL with concrete fixes: apply fixes, rerun, full gate, commit.
+        output: /home/u1/iris-ui/.pi-batch/worktrees/advance/docs/advance/batch-3-gate.md

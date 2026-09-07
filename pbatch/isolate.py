@@ -21,7 +21,17 @@
     # session 模式：验证通过后自动合并；Makefile 有 ci target 时默认门禁为 make ci
     pi-batch isolate -b session/20260821-091300 --auto-merge -- tasks.yaml
     pi-batch isolate -b fix-x --auto-merge --gate "npm run lint && npm test" -- tasks.yaml
+    pi-batch isolate -b core-a -d /tmp/iris-core-a \
+        --seed-dirty packages/core/src \
+        --write-scope packages/core/src \
+        --patch-file /tmp/iris-core-a.patch -- core-task.yaml
     pi-batch isolate sessions [--limit 20] [--json]   # session 状态账本
+
+`--seed-dirty` is the protected dirty-slice mode: it copies only the
+selected current dirty paths into an external worktree, forbids commits, and
+rejects any later write outside `--write-scope` (which defaults to the seed
+paths). Run one such command per module to get real parallel agents; the
+source worktree remains a read-only baseline and the patch is for review only.
 
 fail closed：非 git 仓库 / 分支已存在 / 目标目录非空 / 目标在仓库内 /
 无任务参数 → 一律拒绝启动（exit 2），绝不静默降级。
@@ -47,8 +57,12 @@ from .config import data_dir, log
 from .lock import acquire_lock, release_lock
 from .session_merge import (MERGE_BLOCKED_EXIT, SessionOptions, append_session,
                       merge_session_block, read_sessions, session_id)
+from .worktree_slice import (git_head, normalize_patterns, scope_snapshot,
+                             scope_violations, seed_dirty_slice, worktree_digest,
+                             write_patch)
 
 _LOCK_EXIT = 5
+SCOPE_BLOCKED_EXIT = 6
 
 
 def _git(args: list, wd: Path) -> subprocess.CompletedProcess:
@@ -107,7 +121,8 @@ def _child_env(workdir: Path) -> dict:
 
 
 def _preflight(root: Path, branch: str, workdir: Path, task_args: list,
-               sess: str) -> Optional[int]:
+               sess: str, protected: bool = False,
+               patch_file: str = "") -> Optional[int]:
     """fail-closed 前置检查；违规时记录 ABORTED 并返回退出码，通过返回 None。"""
     if _branch_exists(root, branch):
         append_session(root, sess, "ABORTED",
@@ -130,12 +145,27 @@ def _preflight(root: Path, branch: str, workdir: Path, task_args: list,
         log.error("ISOLATE: no task arguments after '--' "
                   "(e.g. -- tasks.yaml --git-commit)")
         return 2
+    if protected and any(flag in task_args for flag in (
+            "--git-commit", "--round-commit")):
+        append_session(root, sess, "ABORTED",
+                       reason="protected dirty-slice mode forbids commits")
+        log.error("ISOLATE: dirty-slice mode forbids --git-commit/--round-commit")
+        return 2
+    if patch_file and _inside(root, Path(patch_file)):
+        append_session(root, sess, "ABORTED",
+                       reason=f"patch target inside repository: {patch_file}")
+        log.error("ISOLATE: patch target must be outside repository: %s", patch_file)
+        return 2
     return None
 
 
-def _run_child(workdir: Path, task_args: list) -> int:
+def _run_child(workdir: Path, task_args: list,
+               protected: bool = False) -> int:
     """在 worktree 里跑 pi-batch 子进程（锁按 cwd 天然隔离）。"""
-    cmd = [sys.executable, "-m", "pbatch", *task_args]
+    args = list(task_args)
+    if protected and "--no-git-commit" not in args:
+        args.append("--no-git-commit")
+    cmd = [sys.executable, "-m", "pbatch", *args]
     log.info("ISOLATE: running: %s (cwd=%s)", " ".join(cmd), workdir)
     return subprocess.run(cmd, cwd=str(workdir),
                           env=_child_env(workdir)).returncode
@@ -152,7 +182,9 @@ def _report_task_failure(workdir: Path, exit_code: int) -> None:
 
 def run_isolated(root: Path, branch: str, workdir: Path, task_args: list,
                  copy_memory: bool = False,
-                 opts: Optional[SessionOptions] = None) -> int:
+                 opts: Optional[SessionOptions] = None,
+                 seed_dirty: tuple = (), write_scope: tuple = (),
+                 patch_file: str = "") -> int:
     """建 worktree → 执行任务 → manual 提示 / 自动合并（账本全程记录）。"""
     requested_root = root.resolve()
     root = _repo_root(requested_root)
@@ -163,32 +195,29 @@ def run_isolated(root: Path, branch: str, workdir: Path, task_args: list,
     if opts:
         opts.session_id = sess  # 单一事实源：账本全程同 id
     workdir = workdir.expanduser().resolve()
-    blocked = _preflight(root, branch, workdir, task_args, sess)
+    options = _slice_options(root, seed_dirty, write_scope, sess)
+    if options is None:
+        return 2
+    seed_paths, scope_paths, source_digest = options
+    protected = bool(seed_paths or scope_paths)
+    if protected and opts is not None:
+        return _reject_protected_merge(root, sess)
+    blocked = _preflight(root, branch, workdir, task_args, sess,
+                         protected, patch_file)
     if blocked is not None:
         return blocked
-
     base = _current_branch(root) or "HEAD"
-    proc = _git(["worktree", "add", str(workdir), "-b", branch, base], root)
-    if proc.returncode != 0:
-        append_session(root, sess, "ABORTED",
-                       reason=f"worktree add failed: {proc.stderr.strip()}")
-        log.error("ISOLATE: git worktree add failed: %s", proc.stderr.strip())
+    if not _create_worktree(root, branch, workdir, base, opts, sess, seed_paths):
         return 2
-    log.info("ISOLATE: worktree %s (branch %s, from %s)", workdir, branch, base)
-    append_session(root, sess, "CREATED", branch=branch,
-                   worktree=str(workdir),
-                   base=opts.base if opts else base,
-                   commit=_git(["rev-parse", "--short", "HEAD"],
-                               root).stdout.strip())
     if copy_memory:
         _copy_memory(root, workdir)
-
-    append_session(root, sess, "RUNNING")
-    exit_code = _run_child(workdir, task_args)
-    log.info("ISOLATE: task exit=%d", exit_code)
+    scope_baseline = _protected_scope_baseline(root, workdir, sess, protected)
+    if scope_baseline is None:
+        return SCOPE_BLOCKED_EXIT
+    exit_code = _run_isolated_task(
+        root, workdir, task_args, protected, source_digest,
+        scope_paths, scope_baseline, sess, patch_file)
     if exit_code != 0:
-        append_session(root, sess, "ABORTED", exit_code=exit_code)
-        _report_task_failure(workdir, exit_code)
         return exit_code
     if opts is None:
         append_session(root, sess, "READY")
@@ -199,6 +228,126 @@ def run_isolated(root: Path, branch: str, workdir: Path, task_args: list,
 
     # session 模式：任务通过 → 验证后自动合并（Merge Controller 事务）。
     return _finish_session(root, branch, workdir, sess, opts)
+
+
+def _slice_options(root: Path, seed_dirty: tuple, write_scope: tuple,
+                   sess: str) -> Optional[tuple]:
+    """Normalize protected-slice options and capture the source baseline."""
+    try:
+        seed_paths = normalize_patterns(seed_dirty) if seed_dirty else ()
+        scope_paths = normalize_patterns(write_scope or seed_paths) if (
+            write_scope or seed_paths) else ()
+        source_digest = worktree_digest(root) if (seed_paths or scope_paths) else ""
+    except (OSError, ValueError) as exc:
+        append_session(root, sess, "ABORTED", reason=str(exc))
+        log.error("ISOLATE: dirty-slice preflight failed: %s", exc)
+        return None
+    return seed_paths, scope_paths, source_digest
+
+
+def _create_worktree(root: Path, branch: str, workdir: Path, base: str,
+                     opts: Optional[SessionOptions], sess: str,
+                     seed_paths: tuple) -> bool:
+    """Create an external worktree and materialize the selected dirty slice."""
+    proc = _git(["worktree", "add", str(workdir), "-b", branch, base], root)
+    if proc.returncode != 0:
+        append_session(root, sess, "ABORTED",
+                       reason=f"worktree add failed: {proc.stderr.strip()}")
+        log.error("ISOLATE: git worktree add failed: %s", proc.stderr.strip())
+        return False
+    log.info("ISOLATE: worktree %s (branch %s, from %s)", workdir, branch, base)
+    try:
+        seeded = seed_dirty_slice(root, workdir, seed_paths) if seed_paths else ()
+    except (OSError, ValueError) as exc:
+        append_session(root, sess, "ABORTED",
+                       reason=f"dirty slice seed failed: {exc}",
+                       worktree=str(workdir))
+        log.error("ISOLATE: dirty slice seed failed: %s", exc)
+        return False
+    if seeded:
+        log.info("ISOLATE: seeded %d dirty path(s): %s", len(seeded),
+                 ", ".join(seeded[:8]))
+    append_session(root, sess, "CREATED", branch=branch,
+                   worktree=str(workdir), base=opts.base if opts else base,
+                   commit=_git(["rev-parse", "--short", "HEAD"], root).stdout.strip())
+    return True
+
+
+def _run_isolated_task(root: Path, workdir: Path, task_args: list,
+                       protected: bool, source_digest: str, scope_paths: tuple,
+                       scope_baseline: dict, sess: str, patch_file: str) -> int:
+    """Run one child and apply protected-slice postconditions."""
+    append_session(root, sess, "RUNNING")
+    exit_code = _run_child(workdir, task_args, protected)
+    log.info("ISOLATE: task exit=%d", exit_code)
+    if protected:
+        blocked = _check_protected_result(
+            root, workdir, source_digest, scope_paths, scope_baseline,
+            sess, patch_file)
+        if blocked is not None:
+            return blocked
+    if exit_code != 0:
+        append_session(root, sess, "ABORTED", exit_code=exit_code)
+        _report_task_failure(workdir, exit_code)
+    return exit_code
+
+
+def _inside(root: Path, candidate: Path) -> bool:
+    """True when a resolved candidate is inside the source repository."""
+    try:
+        candidate.expanduser().resolve().relative_to(root.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _reject_protected_merge(root: Path, sess: str) -> int:
+    append_session(root, sess, "ABORTED",
+                   reason="dirty-slice protection cannot auto-merge")
+    log.error("ISOLATE: dirty-slice protection cannot auto-merge")
+    return 2
+
+
+def _protected_scope_baseline(root: Path, workdir: Path, sess: str,
+                              protected: bool) -> Optional[dict]:
+    """Capture seeded dirty paths before the child is allowed to write."""
+    if not protected:
+        return {}
+    try:
+        return scope_snapshot(workdir)
+    except (OSError, ValueError) as exc:
+        _scope_abort(root, workdir, sess, f"scope baseline failed: {exc}")
+        return None
+
+
+def _check_protected_result(root: Path, workdir: Path, source_digest: str,
+                            scope_paths: tuple, scope_baseline: dict,
+                            sess: str, patch_file: str) -> Optional[int]:
+    """Reject commits, out-of-scope writes, or source-tree drift."""
+    try:
+        if git_head(workdir) != git_head(root):
+            reason = "protected dirty-slice worktree HEAD changed"
+            return _scope_abort(root, workdir, sess, reason)
+        violations = scope_violations(workdir, scope_paths, scope_baseline)
+        if violations:
+            reason = "out-of-scope paths: " + ", ".join(violations[:16])
+            return _scope_abort(root, workdir, sess, reason)
+        if worktree_digest(root) != source_digest:
+            reason = "source worktree changed while isolated task ran"
+            return _scope_abort(root, workdir, sess, reason)
+        if patch_file:
+            write_patch(workdir, scope_paths, Path(patch_file))
+    except (OSError, ValueError) as exc:
+        return _scope_abort(root, workdir, sess, f"scope verification failed: {exc}")
+    return None
+
+
+def _scope_abort(root: Path, workdir: Path, sess: str, reason: str) -> int:
+    append_session(root, sess, "ABORTED", reason=reason, worktree=str(workdir))
+    log.error("ISOLATE: protected dirty-slice rejected: %s", reason)
+    print(f"\n[isolate] SCOPE BLOCKED (exit={SCOPE_BLOCKED_EXIT}): {reason}")
+    print(f"  worktree kept for review: {workdir}")
+    return SCOPE_BLOCKED_EXIT
 
 
 def _operational_path_line(porcelain_line: str) -> bool:
@@ -255,6 +404,15 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--copy-memory", action="store_true",
                         help="copy .pi-batch/ (sessions/memory) from the main "
                              "worktree to continue context")
+    parser.add_argument("--seed-dirty", action="append", default=[], metavar="PATH",
+                        help="seed this workspace-relative dirty path/pattern into "
+                             "the external worktree; repeat per path")
+    parser.add_argument("--write-scope", action="append", default=[], metavar="PATH",
+                        help="allow only this workspace-relative path/pattern to "
+                             "change in dirty-slice mode; defaults to --seed-dirty")
+    parser.add_argument("--patch-file", default="", metavar="FILE",
+                        help="write the successful scoped tracked patch outside "
+                             "the repository (untracked paths get a sidecar)")
     parser.add_argument("--auto-merge", action="store_true",
                         help="session mode: after the task passes, fetch + "
                              "rebase latest main, run the validation gate, "
@@ -321,10 +479,13 @@ def isolate_main(argv: list) -> None:
     workdir = _worktree_dir(root, args.branch, args.dir)
     opts = None
     if args.auto_merge:
+        if args.seed_dirty or args.write_scope or args.patch_file:
+            parser.error("dirty-slice protection cannot be combined with --auto-merge")
         opts = SessionOptions(
             session_id=session_id(), base=args.base, gate=args.gate,
             squash=args.squash, no_cleanup=args.no_cleanup,
             wait_minutes=args.wait_minutes)
-    code = run_isolated(root, args.branch, workdir, task_args,
-                        args.copy_memory, opts)
+    code = run_isolated(
+        root, args.branch, workdir, task_args, args.copy_memory, opts,
+        tuple(args.seed_dirty), tuple(args.write_scope), args.patch_file)
     sys.exit(code)

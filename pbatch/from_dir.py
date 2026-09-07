@@ -1,4 +1,5 @@
 """from_dir 阶段任务构建（每文件一任务 / aggregate 合并单任务）。"""
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -34,8 +35,10 @@ def _stage_from_dir_aggregate(
     prompt = "\n\n".join(parts)
     if truncated:
         prompt += f"\n\n[截断提示] {truncated} 个文件超出合并预算，可按需读取其完整路径。"
-    out_path = (dir_path / ("aggregate" + stage.output_suffix)).resolve()
+    out_path = Path(os.path.abspath(
+        dir_path / ("aggregate" + stage.output_suffix)))
     task = Task(prompt=prompt, output=str(out_path), cwd=str(dir_path.resolve()))
+    task.agent = stage.agent or task.agent
     task.model = stage.model or task.model
     task.provider = stage.provider or task.provider
     if model_override:
@@ -44,7 +47,8 @@ def _stage_from_dir_aggregate(
         task.timeout = timeout_override
     prepare_task_context(task, [path.resolve() for path in files], strict=False)
     fp = _expected_fp(task.prompt, str(out_path), validate_cmd, task.model,
-                      task.provider, fingerprint_mode, task.workdir())
+                      task.provider, fingerprint_mode, task.workdir(),
+                      task.effective_agent())
     if reuse and reuse_decision(str(out_path), validate_cmd, str(dir_path.resolve()), reuse_legacy, fp):
         log.info("REUSE: %s (reused+validated)", out_path.name)
         return [], [str(out_path)]

@@ -1,0 +1,120 @@
+# Iris Grid Core continuation: Solid column order channel on current HEAD
+git_commit: false
+decision_log: /tmp/iris-grid-column-order-solid-1787902000/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      Prepare a factual baseline only for a narrow Solid-only Iris UI Grid
+      continuation in /tmp/iris-grid-column-order-solid-1787902000, based on
+      current HEAD 61c97ee3. Core/grid already owns the order channel and
+      Solid's useGridColumns bridge already exposes order methods, but Solid
+      IrisTable currently has no public columnOrder projection. Vue just
+      accepted the equivalent additive channel; React is the behavioral
+      reference. Read AGENTS.md, docs/grid-core-refactor.md, current Solid
+      grid bridge/Table/props/types/helpers and columnDrag tests, React
+      useTableColumns/order tests, Vue's accepted implementation, and manifest.
+
+      Do not modify source. Specify the smallest safe scope: public
+      `columnOrder?: string[]`, Solid `onColumnOrderChange` callback, one
+      per-table Grid Core columns model, known order keys first, unknown and
+      duplicate keys ignored, omitted keys retain source-relative order, and
+      undefined/empty restores source order. Preserve parent-owned ordinary
+      columnDrag/no-op semantics; if controlled flat drag can safely emit the
+      order proposal through the same model, define exact rejection behavior.
+      Preserve grouped/visibility/filter/sort/formula/summary/responsive/
+      virtual/SSR behavior. No pinning, no core changes, no architecture
+      baseline changes.
+    output: /tmp/iris-grid-column-order-solid-1787902000/docs/vxe-grid/batch-order-solid-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /tmp/iris-grid-column-order-solid-1787902000
+        prompt: |
+          Implement the Solid-only columnOrder continuation in this isolated
+          worktree according to
+          /tmp/iris-grid-column-order-solid-1787902000/docs/vxe-grid/batch-order-solid-baseline.md.
+          Read it first and then AGENTS.md. Reuse the existing Solid
+          useGridCore/useGridColumns feature instance; do not invent a second
+          controller or mutate the caller's columns array.
+
+          HARD CONSTRAINTS:
+          - Solid adapter source, focused tests/config, generator-produced
+            manifest outputs if the public API changes, and concise grid docs
+            only. Do not modify React/Vue/Svelte, core, plugin/app source,
+            pnpm-lock, dist/tgz/node_modules, or scripts/arch-baseline.json.
+          - Additive API only. Controlled `columnOrder` is authoritative,
+            inbound replacement is silent, and removal/empty order restores
+            source order. Preserve unknown/duplicate/order-relative semantics,
+            grouped top-level behavior, all downstream table projections,
+            SSR, and existing columnDrag callback/no-movement behavior.
+          - Any local drag proposal must not mutate Core or emit an order event
+            when no explicit order owner exists; controlled rejection remains
+            non-optimistic. Keep tests <=500 lines and do not weaken/skip them.
+          - No hard-coded colors, Tailwind, CSS-in-JS, innerHTML, core edits, or
+            architecture baseline edits. Do not manually edit manifest files.
+          - Do not commit.
+
+          VERIFY in the worktree:
+          - env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/solid test
+          - env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/solid typecheck
+          - env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/solid lint
+          - env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/solid build
+          - python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json
+          - git diff --check
+
+          Report exact files and focused/full/SSR counts. Do not commit.
+        output: /tmp/iris-grid-column-order-solid-1787902000/docs/vxe-grid/batch-order-solid-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /tmp/iris-grid-column-order-solid-1787902000
+        prompt: |
+          Adversarially review the Solid columnOrder continuation. Read the
+          baseline and adapt report under
+          /tmp/iris-grid-column-order-solid-1787902000/docs/vxe-grid/, inspect
+          the actual diff against current HEAD and compare with React and the
+          accepted Vue order bridge. Do not modify source.
+
+          Check one Core/model identity, controlled authority/silent sync,
+          source-order restoration, known/unknown/duplicate keys, grouped
+          top-level projection, columnDrag parent ownership/no-op and
+          controlled rejection, visibility and all render/summary/responsive/
+          virtual paths, no source mutation, Solid reactivity/SSR, manifest
+          hygiene, test-size and no baseline changes. Run focused/full tests,
+          typecheck, lint, build, manifest/spec audit and diff check. Write
+          PASS or FAIL with numbered severity/file:line findings and concrete
+          fixes; do not modify source.
+        output: /tmp/iris-grid-column-order-solid-1787902000/docs/vxe-grid/batch-order-solid-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /tmp/iris-grid-column-order-solid-1787902000
+        prompt: |
+          Gate the Solid columnOrder continuation. Read
+          /tmp/iris-grid-column-order-solid-1787902000/docs/vxe-grid/batch-order-solid-review.md.
+          If PASS, rerun the full Solid test/typecheck/lint/build gates,
+          spec audit, `pnpm check:manifest`, and `git diff --check`; confirm
+          scripts/arch-baseline.json is unchanged. Update
+          docs/grid-core-refactor.md with one concise factual entry if
+          accepted. Do not modify other frameworks/core/apps, weaken tests, or
+          commit. If FAIL has concrete fixes, apply only those in this isolated
+          worktree, rerun all gates, and report final PASS/FAIL, exact files,
+          counts, manifest status, and ratchet limitations.
+        output: /tmp/iris-grid-column-order-solid-1787902000/docs/vxe-grid/batch-order-solid-gate.md

@@ -1,0 +1,156 @@
+# iris-ui grid 批 AU：表格比较视图（数据 diff——行/单元格级差异高亮）
+#
+# 目标：compareWith?: Row[]——与当前数据对比：新增/删除/修改行高亮 +
+# 单元格级修改高亮（tooltip 显示旧值）；core diffRows 纯函数。
+# 范围：react only；additive；core 纯函数。
+#
+# 执行：python pi-batch.py projects/iris-ui/vxe-grid-batch-au.yaml \
+#   --log-file logs/iris-ui-batch-au.log --retries 2
+
+git_commit: false
+decision_log: /home/u1/iris-ui/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      You are preparing the baseline for iris-ui grid batch AU (compare
+      view). Monorepo: /home/u1/iris-ui.
+
+      Read:
+      1. /home/u1/iris-ui/packages/react/src/primitives/table/Table.tsx —
+         the row render (data attrs), the cell render (tooltipConfig —
+         where a change tooltip could reuse the title), the rowKey
+         machinery.
+      2. /home/u1/iris-ui/packages/core/src/ — pure function conventions.
+
+      Write a markdown baseline to the output path:
+      - proposed design:
+        a) core diffRows(before: readonly Record<string, unknown>[],
+           after: readonly Record<string, unknown>[], rowKeyField: string):
+           { added: Array<string | number>; removed: Array<string |
+           number>; changed: Array<{ key: string | number; changes:
+           Array<{ column: string; oldValue: unknown; newValue: unknown
+           }> }> } — keyed by rowKeyField; added = keys in after not in
+           before; removed = keys in before not in after; changed = keys in
+           both with differing cells (Object.is per column; column order =
+           after's column order); tests (added/removed/changed, same rows,
+           empty, value type changes)
+        b) react compareWith?: Row[] (single line) — when provided: a memo
+           computes diffRows(currentData, compareWith, rowKey); the row
+           render adds data-iris-row-added / data-iris-row-removed /
+           data-iris-row-changed; changed cells get
+           data-iris-cell-changed + a title tooltip "旧值: X → 新值: Y"
+           (reuse the tooltipConfig title path — a local title override);
+           added/removed rows render with muted/emphasized backgrounds
+           (--iris-* tokens: added → var(--iris-success-muted, rgba(..))?
+           use existing tokens — document which; simplest: added rows get a
+           green-tinted bg via var(--iris-success) with opacity? keep
+           token-only: use --iris-surface-hover for changed, and a
+           data-attr + CSS in TABLE_ROW_CSS with --iris-primary-tint? —
+           check the available tokens and pick two distinct ones)
+        c) summary: a toolbar-ish count when compareWith is set? — keep it
+           simple: no toolbar change; document
+      - file map + tests
+      Do NOT modify files.
+    output: /home/u1/iris-ui/docs/vxe-grid/batch-au-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Implement iris-ui grid batch AU (compare view) in /home/u1/iris-ui,
+          per /home/u1/iris-ui/docs/vxe-grid/batch-au-baseline.md. Read it
+          first, then AGENTS.md.
+
+          HARD CONSTRAINTS:
+          - Core framework-free; react only; additive only.
+          - No dist/tgz/node_modules/manifest.json edits.
+          - Test files ≤500 lines; ≤4 changed files + tests.
+          - MANIFEST SCANNER HYGIENE: single-line function props.
+          - CSS uses --iris-* tokens only.
+          - TIME BUDGET: light-medium — finish both.
+
+          IMPLEMENT:
+          1. core (packages/core/src/diff-rows.ts NEW + tests):
+             - diffRows per the baseline; export from index.ts; tests
+          2. react (props.ts + Table.tsx + styles.ts):
+             - compareWith?: Row[] (single line)
+             - diff memo (currentData vs compareWith by rowKey); the row
+               render: data-iris-row-added/removed/changed; changed cells:
+               data-iris-cell-changed + title tooltip (old → new) when no
+               tooltipConfig title is present (the cellTooltip helper —
+               override: compare tooltip wins, document)
+             - styles: added/removed/changed row backgrounds via tokens
+               (check the token set — pick --iris-surface-selected for
+               changed, and a tinted approach for added/removed: use
+               var(--iris-success) with low opacity via color-mix? — keep
+               simple: added → var(--iris-success-fg? check available) —
+               the baseline says token-only; choose two distinct available
+               tokens and document)
+             - tests: added/removed/changed attrs; changed cell tooltip;
+               no compareWith → no attrs
+          3. Docs: iris 独有 section
+
+          VERIFY:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm --filter @iris-ui-kit/core test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react typecheck`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react lint` (0 errors)
+          - `python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json` → 0 violations
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm gen:manifest`
+            (regenerate + commit — ALWAYS)
+          Report: files changed, tests added, counts, what is left.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-au-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are the adversarial reviewer for iris-ui batch AU. Read
+          batch-au-baseline.md and batch-au-adapt.md, inspect.
+
+          Check:
+          1. diffRows: added/removed/changed keyed correctly; cell diff per
+             column; type changes detected; same rows → empty
+          2. react: attrs on the right rows/cells; tooltip precedence;
+             token-only backgrounds distinct; no compareWith → inert
+          3. additive only; manifest hygiene; core framework-free; CSS
+             tokens
+          Run verification commands (core test, react test/typecheck/lint,
+          audit, check:manifest). Write verdict markdown: PASS or FAIL with
+          numbered findings (severity, file:line, fix). Do NOT modify files.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-au-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Gate stage for iris-ui batch AU. Read the review verdict
+          /home/u1/iris-ui/docs/vxe-grid/batch-au-review.md.
+
+          If PASS: run the full repo gate:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm turbo run test typecheck lint build --concurrency=2`
+          - audit → 0; gen:manifest + check:manifest
+          - Commit: `git add -A -- . ':!apps/ssr-solidstart/.vinxi' && git
+            commit -m "feat(table): grid 批 AU——表格比较视图（行/单元格级数据 diff）"`
+          Report commit hash and final test counts.
+
+          If FAIL with concrete fixes: apply fixes, rerun, full gate, commit.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-au-gate.md

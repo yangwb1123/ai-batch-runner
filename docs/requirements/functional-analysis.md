@@ -66,6 +66,7 @@ OpenCode）的治理化批处理/流水线运行时 + 交互式终端工作台**
 | 编号 | 需求点 | 证据 | 状态 |
 |---|---|---|---|
 | FR-5.1 | productization 分级 L0-L3 推演链（登录/上传/审批/聊天/ERP/搜索场景）、开源/商业要素、完成证据报告（禁止伪造验证） | `pbatch/product.py`、`product-specs/` | ✅ |
+| FR-5.1a | 产品方向简报：方向摘要、用户故事、用户旅程、含异常恢复的候选状态机、Epic→Feature→Story→Task 分解、待确认业务规则；L0 克制不生成结构 | `pbatch/product_direction.py`、`pi-batch product`、`tests/test_product.py` | ✅ |
 | FR-5.2 | 后端强制关卡：persistence-modeling 编码前 Persistence Design 报告、production-readiness 11 项、架构宪法 15 问 | `backend-specs/` | ✅ |
 | FR-5.3 | 前端确定性门禁：8pt token/魔法间距/硬编码颜色/inline style 机械拦截（uispacing/uicolor/uistyle/uifont/uicheck） | `scripts/check-ui-spec.py` | ✅ |
 | FR-5.4 | 前端工程启发式门禁：console.log/any/空 catch/测试 skip 恒失败，strict 下上帝文件/复杂度/useEffect 泄漏/N+1 | `scripts/check-frontend-quality.py` | ✅ |

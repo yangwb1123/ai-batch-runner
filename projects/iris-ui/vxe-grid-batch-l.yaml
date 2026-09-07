@@ -1,0 +1,162 @@
+# iris-ui vxe-grid 批 L：proxy 累计序号 + toolbar 导出按钮 + 单元格链接
+#
+# 目标（收尾批——小而全）：
+# 1. proxyConfig.seq：分页模式累计序号 (page-1)*pageSize + index（vxe proxyConfig.seq parity）
+# 2. toolbar.onExport：导出按钮（与 onImport 对称，vxe toolbar export parity）
+# 3. 列 link：单元格渲染为链接（vxe cell-link parity，render 便捷封装）
+# 范围：react only；additive。
+#
+# 执行：python pi-batch.py projects/iris-ui/vxe-grid-batch-l.yaml \
+#   --log-file logs/iris-ui-batch-l.log --retries 2
+
+git_commit: false
+decision_log: /home/u1/iris-ui/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      You are preparing the baseline for iris-ui vxe-grid batch L (proxy seq +
+      toolbar export + cell link). Monorepo: /home/u1/iris-ui.
+
+      Read:
+      1. /home/u1/iris-ui/packages/react/src/primitives/table/Table.tsx —
+         the seq column render (data-iris-table-cell="__seq"), the toolbar
+         render block (import button area), the body cell render chain.
+      2. /home/u1/iris-ui/packages/react/src/primitives/table/props.ts —
+         IrisTableProps (toolbar, proxyConfig, seq/seqStartIndex).
+      3. /home/u1/iris-ui/packages/react/src/primitives/table/types.ts —
+         IrisTableColumn (render/html/formatter).
+
+      Write a markdown baseline to the output path:
+      - proposed iris design (react only, additive):
+        a) IrisTableProxyConfig gains `seq?: boolean` — when true AND the
+           table has `seq`, the sequence cell renders
+           (page - 1) * pageSize + idx + 1 instead of idx + seqStartIndex
+           (vxe proxyConfig.seq cumulative numbering)
+        b) toolbar gains `onExport?: () => void` — renders an export button
+           (data-iris-table-toolbar-export, symmetric to the import button,
+           i18n label table.export) after refresh/import
+        c) IrisTableColumn gains `link?: (value: unknown, row: Row) => {
+           href: string; label?: string; target?: string } | string | null`
+           (single line) — when present, the cell renders an <a
+           data-iris-table-link href=...> (label = returned label or the
+           formatted/raw text; new-tab when target); formatter/render keep
+           their precedence (render > link > formatter > raw? — decide:
+           link above formatter so a linked formatted cell still links, or
+           below? pick: render > html > link > formatter > raw — link wraps
+           the formatted text)
+      - file map + tests
+      Do NOT modify source files.
+    output: /home/u1/iris-ui/docs/vxe-grid/batch-l-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Implement iris-ui vxe-grid batch L (proxy seq + toolbar export +
+          cell link) in /home/u1/iris-ui, per
+          /home/u1/iris-ui/docs/vxe-grid/batch-l-baseline.md. Read it first,
+          then AGENTS.md.
+
+          HARD CONSTRAINTS:
+          - Core framework-free; React only; additive only.
+          - No dist/tgz/node_modules/manifest.json edits.
+          - Test files ≤500 lines; ≤3 changed files + tests (small batch).
+          - MANIFEST SCANNER HYGIENE: function-type props on ONE line; inline
+            object params use named exported interfaces; export new types
+            from index.ts.
+          - CSS uses --iris-* tokens only.
+
+          IMPLEMENT:
+          1. proxy seq (types.ts + Table.tsx):
+             - IrisTableProxyConfig.seq?: boolean (single line)
+             - seq cell: when proxy && proxyConfig.seq && seq, render
+               (proxyState.params.page - 1) * proxyState.params.pageSize +
+               idx + 1
+          2. toolbar export (props.ts + Table.tsx):
+             - toolbar.onExport?: () => void (in the existing toolbar type)
+             - render a button data-iris-table-toolbar-export after the
+               import button (same styling family), aria-label/title via i18n
+               table.export; onClick fires onExport
+             - i18n: table.export in packages/core/src/i18n.ts + zh plugin
+          3. cell link (types.ts + Table.tsx):
+             - IrisTableColumn.link?: (value: unknown, row: Row) => { href:
+               string; label?: string; target?: string } | string | null
+               (single line)
+             - cell render: after html, before formatter — if link returns a
+               truthy value: render <a data-iris-table-link href={href}
+               target={target} rel={target === '_blank' ? 'noreferrer' :
+               undefined}>{label ?? formatted-or-raw text}</a>; null/undefined
+               → fall through to formatter/raw
+          4. Tests (new proxy-seq-export-link.test.tsx):
+             - proxy seq: page 2 with pageSize 5 → seq cell shows 6..10;
+               non-proxy seq unchanged
+             - toolbar export button renders + fires onClick
+             - link renders an anchor with href; label from the callback or
+               the cell text; string return works; null falls through to
+               formatter; _blank adds rel
+
+          VERIFY:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm --filter @iris-ui-kit/react typecheck`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react lint` (0 errors)
+          - `python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json` → 0 violations
+          Report: files changed, tests added, counts, unfinished items.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-l-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are the adversarial reviewer for iris-ui batch L (proxy seq +
+          export button + cell link). Read batch-l-baseline.md and
+          batch-l-adapt.md, inspect the implementation.
+
+          Check:
+          1. proxy seq: cumulative numbering correct across pages; non-proxy
+             seq unchanged; seqStartIndex still applies when proxyConfig.seq
+             is off
+          2. export button: renders after import, fires onClick, i18n label
+          3. link: anchor renders with href/label/target/rel; precedence
+             (render > html > link > formatter > raw); null fall-through;
+             editing/tooltip unaffected
+          4. additive only; manifest hygiene; core framework-free; CSS tokens
+          Run verification commands (react test/typecheck/lint, audit). Write
+          verdict markdown: PASS or FAIL with numbered findings (severity,
+          file:line, fix). Do NOT modify files.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-l-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Gate stage for iris-ui batch L. Read the review verdict
+          /home/u1/iris-ui/docs/vxe-grid/batch-l-review.md.
+
+          If PASS: run the full repo gate:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm turbo run test typecheck lint build --concurrency=2`
+          - audit → 0; `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm gen:manifest`
+          - Update /home/u1/iris-ui/docs/vxe-grid-comparison.md: mark batch L
+            rows (proxy seq / export button / cell link) done (react).
+          - Commit: `git add -A -- . ':!apps/ssr-solidstart/.vinxi' && git
+            commit -m "feat(table): vxe-grid 批 L——proxy 累计序号/导出按钮/单元格链接（react only）"`
+          Report commit hash and final test counts.
+
+          If FAIL with concrete fixes: apply fixes, rerun, full gate, commit.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-l-gate.md

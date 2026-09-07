@@ -1,15 +1,16 @@
 # Codex CLI 核心产品能力分析与 pi-batch TUI 演进设计
 
-> 状态：**Phase 0-1 完成 + Phase 2 协议层达成（2026-08-21/22 证据闭环）** · 基线日期：2026-08-21 ·
-> 范围：产品分析、交互模型、运行时协议、分阶段实施与验收。
-> Phase 0（协议地基）已实现（T1-T3）；Phase 1 完成 Structured Exec Adapter（T4）、
-> session 延续（T5/T6）、TUI 结构化时间线（T7/T7.5）；Phase 2 协议层（T8）：
-> Codex App Server 双向 JSON-RPC Adapter（`pbatch/tui_adapter_appserver.py` + support），
-> 含 initialize 握手、thread/turn/steer/interrupt、审批 request/decision 生命周期
-> （TTL/断线 fail closed）、通知→RuntimeEvent 映射与 FakeDaemon 契约测试。
-> 交付物见 `docs/tui-phase0/`；`make test` 1779 + 53 eval + quality --strict 全绿。
-> 待办：TUI 层接入 AppServer（typed approval 弹窗/sandbox 常驻显示）、真实 daemon
-> 落地集成测试（本环境 daemon 组件缺失，协议层以官方 schema fixture 固定契约）、/review。
+> 状态：可信 RuntimeEvent 已统一驱动 Conversation、Status、Timeline 与 workspace
+> projection，并在可见前写入 scoped bounded journal；Codex Structured Exec 支持
+> provider thread 延续，App Server 双向协议层可通过能力握手显式启用。
+> 范围：产品分析、交互模型、运行时协议、实施顺序与验收。当前产品边界是
+> 自动启动恢复、provider 持续订阅/远端 archive 仍待接线；App Server sandbox、
+> approval policy 与 network 有效值已可在状态区常驻展示；
+> session picker、App Server 动作前预对账/typed 审批、独立 Plan/Changes/Agents
+> Inspector 与本地 archive 已交付，
+> TUI `/review` 已提供只读 scope、
+> structured finding 与有界报告；显式 App Server runtime 已接通 inline
+`review/start`，并将 typed finding/message evidence 绑定到当前 review turn。
 
 ## 1. 结论
 
@@ -132,28 +133,31 @@ pi-batch 不应逐项仿制 Codex 的命令或视觉外观。更合适的方向�
 | 产品能力 | 当前状态 | 主要缺口 | 优先级 |
 |---|---|---|---:|
 | 无参数进入 TUI、脚本兼容 | 已完成 | 无 | 保持 |
-| 单会话连续 turn | 部分完成 | 只有当前进程状态；缺少 session picker、resume/fork/archive | P1 |
-| 实时正文与 stderr | 已完成文本流 | stdout/stderr 无法区分命令、工具、文件、计划和正文 | P0 |
-| 取消 | 已完成 | 当前是全局 active proc 清理；未来要精确到 run/turn/runtime | P0 |
-| 工作区状态与 diff | MVP 完成 | 活跃 turn 时禁止查看；缺少 staged/base/commit/last-turn scope 与行级导航 | P1 |
-| AI Review | 未实现 | `/diff` 只是机械展示，不是独立 reviewer 工作流 | P1 |
-| 计划与进度 | 未实现 | 缺少结构化 PlanSnapshot 和阶段/任务投影 | P0/P2 |
-| 权限模式 | 未实现 | 看不到 sandbox、network、write scope、approval policy | P0 |
-| 审批 | 未实现 | 不能把 stdin 文本提示冒充审批；需要 request/response IPC | P0 |
-| steer/queue | 未实现 | busy 时只能拒绝第二次提交或 cancel | P1 |
-| 子 Agent | 编排内核已有并发角色 | TUI 没有 actor/thread 树、切换、来源标识、单体 stop | P2 |
-| Pipeline/Gate | 内核成熟 | TUI 只运行单 Task，无法看到 stage/task/gate/validator 时间线 | P2 |
-| 能力发现 | 有 Capability Registry | TUI 尚未按 runtime 能力协商启用/禁用动作 | P0 |
-| 运行历史 | 有 Memory/运行账本 | 不能直接重建 TUI 会话和结构化事件投影 | P1 |
+| 单会话连续 turn | 核心闭环完成 | 当前进程自动续轮；overlay picker + 精确 `/resume` 可恢复终态 Codex thread，`/fork` 能力驱动分叉，本地 archive 可逆；App Server resume 已动作前预对账，provider archive 仅显式命令、exact handle 与 capability 可用 | P1 |
+| 实时正文与 stderr | Legacy/Structured Exec 已统一经 EventBus/Projection 驱动；Codex 可区分 command/file/plan/usage | command 大输出已自动提升为 data-scoped ArtifactRef，Completion/Artifact Inspector 可查看；仍缺通用 tool 输出引用化 | P1/P2 |
+| 取消 | 当前 turn/handle-scoped 已完成 | 富 runtime 的远端 turn 确认、断线对账仍待能力接入 | P1 |
+| 工作区状态与 diff | scoped Changes Inspector 已完成 | all/unstaged/staged/untracked/last-turn、base/commit、文件与 hunk 导航可用；active-turn live refresh、统计/二进制视图和 finding 跳转已完成 | P1 |
+| AI Review | headless `review` / `review-fix` 与 TUI `/review` 已实现 | TUI 提供只读 scope、结构化 finding、有界报告、`/findings` → Changes 定位；显式 App Server runtime 已接入 inline `review/start`、typed evidence 与 fix 后 exact turn/validation/gate/workspace 报告，`f` 仍走普通 turn | P1 |
+| 计划与进度 | Timeline + 独立 Plan Inspector 已实现 | 同一结构化条目驱动两种视图并按 `item_id` 原位更新；validator/gate/actor 与 opt-in native Pipeline stage/task 已进入 typed timeline，PlanSnapshot 已保留 bounded scope/validator/gate/budget 与 plan digest evidence，但仍不具备统一执行授权 | P1/P2 |
+| 运行历史与 Agents Inspector | 当前 operation + scoped shared ledger + active/history Actor Tree 已实现 | 最近 100 条终态、过滤/刷新、产物引用、损坏诊断以及 provider/native 的可信 child lineage 与 bounded history groups 可用；显式 authority 的父级能力/范围继承校验已具备，仍缺 provider 根 authority 接入与单 actor 控制 | P1/P2 |
+| 每轮 Completion | typed events + authoritative workspace delta 已实现 | `/completion` 已展示 outcome/commands/changes/unfinished plan/checks/risks/usage，并可跳转 Artifact Inspector；仍缺 Pipeline 级聚合 | P1/P2 |
+| 权限模式 | 部分实现 | typed approval 已显示；App Server sandbox、network、approval policy 有效值已常驻；write scope 仍待统一事件 | P0 |
+| 审批 | App Server typed modal + append-only audit 已实现 | Native/Pipeline exact-run approval channel 已实现；更丰富 namespace 与恢复语义仍待扩展 | P1/P2 |
+| steer/queue | 进程内 follow-up queue、能力驱动 `/steer` 与 App Server 主 TUI 已实现 | Structured Exec/Legacy 不支持 live steer | P1 |
+| 子 Agent | 编排内核已有并发角色 | active/history typed Actor Tree、Native Pipeline stage/task/meta-role 与声明式 App Server provider child 来源已可见；provider/meta 权限继承仍受根 authority/能力确认约束，单体 stop/steer 仍未提供 | P2 |
+| Pipeline/Gate | 内核成熟 | gate/validator 与 opt-in native observer 的 stage/task/meta-role 事件已有 typed timeline 投影；TUI 已支持 `/pipeline FILE` 与 `tui --pipeline FILE` 的 read-only 启动/attach、exact-run approval IPC 和 scoped active-task/cooperative cancel | P2 |
+| 能力发现 | 有 Capability Registry | session resume/fork/archive 已按 runtime capability 裁决；其余 TUI 动作尚未统一能力化 | P0 |
+| 运行历史 | scope 内 picker、byte-bound 本地摘要、App Server advisory 历史页、精确恢复、可逆本地 archive 与显式 provider archive、checkpoint 完整性见证已完成 | 缺少跳过 replay 的 state snapshot 加速、自动启动恢复与 provider 持续订阅；非 App Server provider archive 仍 unsupported | P1 |
 
-当前最大技术债不是某个缺失按钮，而是这条边界：
+当前事件路径为：
 
 ```text
-TUI <- callback(kind="stdout|stderr|log", text) <- runner <- 任意 CLI
+Provider Adapter → canonical RuntimeEvent → durable EventBus
+                 → Projection → immutable TUIViewSnapshot → TUI
 ```
 
-该边界对兼容旧 Agent 很有效，但它没有稳定语义，无法回答“这是 shell 命令还是模型
-正文”“哪个子 Agent 请求审批”“文件变化属于哪个 turn”等问题。
+无结构化能力的 backend 仍可通过 Legacy Adapter 把 callback 文本转换为受限事件；
+callback 只承担兼容正文与运营诊断，不推断 command、approval、终态或权威文件变化。
 
 ## 5. 产品原则与明确决策
 
@@ -221,7 +225,8 @@ flowchart TB
 | `tui_protocol.py` | 版本化事件、请求、实体和枚举；纯数据模型 |
 | `tui_runtime.py` | `AgentRuntime` Protocol、能力协商和 Adapter 注册 |
 | `tui_controller.py` | session/turn 状态机、命令路由、超时与恢复 |
-| `tui_events.py` | 事件排序、去重、订阅、bounded journal 与 projection |
+| `tui_events.py` | 事件排序、去重、订阅与 disposable projection |
+| `tui_journal.py` | scoped bounded journal、durable append、损坏恢复与边界校验 |
 | `tui_approvals.py` | request 生命周期、决策校验、审计；不执行命令 |
 | `tui_review.py` | review scope、finding schema、只读审查编排 |
 | `adapters/legacy_cli.py` | 封装当前 `TUIBackend` 文本能力 |
@@ -244,12 +249,15 @@ JSON 字段或 Pipeline 内部对象。现有 `TUIBackend` 在迁移期成为 Le
   "capabilities": {
     "structured_events": true,
     "session_resume": true,
+    "session_read": true,
     "session_fork": true,
+    "session_archive": true,
     "turn_steer": true,
     "message_queue": true,
     "typed_approvals": true,
     "review": true,
     "subagents": true,
+    "actor_control": false,
     "images": true,
     "usage": true,
     "instruction_sources": true
@@ -368,11 +376,30 @@ source: provider | pipeline | deterministic-preflight
 原生 runtime 有 plan event 时直接映射；没有时，pi-batch 可用 Task/Pipeline 配置生成
 `deterministic-preflight` 计划，但必须标注来源，不能把协调器推导冒充模型承诺。
 
+当前 Plan 实现已落地 Timeline 与独立 Inspector 切片：Codex Structured Exec Adapter 将
+`todo_list` 映射为 provider-neutral `plan.updated`；structured backend 把原始
+`RuntimeEvent` 交给 presentation controller，controller 再更新当前 turn 的有界
+Timeline 快照。没有 raw event sink 的兼容调用才使用文本 notice。同一 `item_id`
+的后续更新在原卡片上替换，摘要显示完成数，expanded 视图显示每步状态与标题；
+输入项数、单项文本和展示详情均有独立上限。`/plan` 读取该 Timeline 条目附带的
+结构化 `PlanSnapshot`，因此可展示超出 2 KiB Timeline 预览的完整有界步骤，并在
+打开期间随事件刷新，而不复制状态源或污染 transcript。snapshot 还保留 provider 明确
+给出的 goal、read/write scope、commands、network intent、external tools、validators、
+gates、budget、assumptions、unknowns、stop policy 和 version；这些字段是有界展示证据，
+不自动变成执行授权，统一的执行边界绑定仍待后续完成。
+
+Assistant 正文同样按领域 `item_id` 投影：同一 item 的 `message.completed` 只替换
+该 item 的 provisional delta，不覆盖同一 turn 中其他 message item；无 `item_id`
+的 Legacy 流仍保持单流语义。所有 message item 共享当前 turn 的 64 KiB UTF-8
+展示预算，而不是每 item 各占一份预算。provider item id 使用 `raw:` / `sha256:`
+命名域分离；超长值携带原值摘要，避免共享前缀或伪装成摘要值的不同 item 在投影前
+碰撞。
+
 ## 8. 关键交互设计
 
 ### 8.1 主屏信息架构
 
-主屏保持一条工作主线，避免把 59 个子命令做成菜单墙：
+主屏保持一条工作主线，避免把全部子命令做成菜单墙：
 
 - **Header**：workspace/branch、session、model、sandbox、approval、context budget；
 - **Conversation**：用户消息与 Assistant 正文，只承载叙事内容；
@@ -385,24 +412,45 @@ source: provider | pipeline | deterministic-preflight
 
 ### 8.2 Composer 与运行中控制
 
-当前 busy 时禁用输入的策略应演进为能力驱动：
+当前合同：
 
-- runtime 支持 `turn_steer`：Enter 可选择“发送到当前 turn”；
-- runtime 支持 `message_queue`：Tab 或显式动作把消息排到下一 turn；
-- 两者都不支持：保留当前只允许 cancel 的行为；
-- 输入框必须明确显示当前动作是 `Send`、`Steer` 还是 `Queue`；
-- 排队消息可查看、编辑、删除；发送成功前不从本地队列丢失；
+- agent turn busy 时 composer 保持可输入，普通文本进入本地 FIFO follow-up queue；
+- 队列为当前 TUI 进程协调能力，不冒充 runtime `message_queue`；上限为 16 条、
+  总计 64 KiB、单条 16 KiB，可查看、编辑、删除和清空；
+- 当前 turn 成功后自动启动队首；失败或取消时保留并暂停，且只有新 turn 真正启动后
+  才从队列删除；session/runtime 切换时清空并显式告警；
+- `/steer <text>` 仅在已初始化 runtime 声明 `turn_steer` 且存在匹配 live handle 时
+  后台发送；能力检查不允许重初始化活动 runtime；
+- Codex Structured Exec 与 Legacy 当前均 fail closed。App Server Adapter 的
+  `turn/steer` 协议实现只有在主 TUI 接线并完成握手后才可用；
+- 来自 Adapter 的可信 `turn.steered` 进入 Timeline，正文不能伪造控制成功；
 - cancel、interrupt 和 stop actor 是三个不同 intent，不共用模糊按钮。
 
 ### 8.3 Session
 
-新增：
+当前已交付：
 
-- `/sessions`：默认只列当前 workspace，可显式查看全部；
-- `/resume [id]`：恢复 provider session，并从 journal/projection 恢复界面；
-- `/fork [id]`：创建新 pi-batch session 与 provider fork 映射；
-- `/archive [id]`：归档而非删除；
-- session picker 展示最后时间、workspace、branch、模型、最后状态和摘要。
+- `/sessions`：在独立 overlay 中只列当前 resolved workspace/memory scope 内通过边界
+  校验的最近 journal；索引不写入 conversation transcript；
+- `/resume <id>`：精确重建可信投影；仅在 journal 终态可写、provider handle 可用、
+  runtime 匹配且 capability 支持时执行续跑，否则只读；
+- 显式 Codex resume 标为 required，provider 拒绝时 fail closed，不回退新会话；
+- picker `f` / `/fork [id]`：仅在 `session_fork` capability 和来源证据匹配时，
+  创建新本地 session，并要求下一 turn 执行真实 provider fork；
+- picker `a` / `/archive <id>` / `/unarchive <id>`：锁内写入或移除本地可逆标记，
+  不删除 journal；archive 后 append fail closed，活动或未决 session 拒绝归档。Provider
+  thread 则必须通过显式 `/provider-archive <id>` / `/provider-unarchive <id>`，不与本地
+  marker 混淆。
+- picker 在已截断的本地记录上读取 byte-bound 小型摘要，显示 runtime、可信 branch、
+  最后 turn 状态和有界完成消息；缺失/陈旧/损坏缓存诚实显示 unavailable；
+- App Server `thread/list` 以 typed page、固定 cwd/source kinds 和保留 `nextCursor` 的
+  advisory 形式精确合并 name/preview/status/model provider；RPC 在 UI worker 中执行。
+
+后续新增：
+
+- provider 持续状态订阅、自动启动恢复与真正 projection checkpoint；provider archive
+  已接通 App Server exact thread API，但其他 runtime 仍保持 unsupported。
+- 仅在后续可信事件实际提供时补齐具体 model 等字段，不把 modelProvider 冒充 model。
 
 恢复流程必须先检查 workspace 身份和 runtime 能力。跨仓库恢复要显式确认或拒绝，
 不能因为同名 session 自动切换目录。Memory 索引可用于发现候选，但历史文本本身不是
@@ -447,9 +495,16 @@ Changes 视图支持以下 scope：
 - 指定 commit；
 - 全部当前工作区变化。
 
-当前 `/diff [path]` 可作为后备文本展示，但目标视图应提供文件列表、hunk 导航、
-新增/删除统计、截断和二进制提示。只读 Git 检查可以在 Agent 运行中执行，界面标注
-“live snapshot，可能继续变化”，并以 debounce 限制刷新；不需要因 busy 全面禁用。
+当前 `/changes [scope] [path]` 与 Ctrl+G 已在独立 overlay 中支持
+all/unstaged/staged/untracked/last-turn；`/changes base REF [path]` 与
+`/changes commit REF [path]` 先验证 ref，再执行参数化只读 Git 比较。文件列表按
+Enter 选择，`n`/`p` 在有界 unified diff hunk 间导航，`r` 刷新；`/files`、
+`/diff [path]` 保留为 transcript 兼容输出。当前 active turn 期间仍 fail closed；
+active live snapshot、统计/删除/二进制提示和 `/findings` 安全路径/行号跳转已交付。
+
+`/findings` 读取 completed review 的结构化 payload 或可信 `review.finding` 事件，
+在创建 `ChangesRequest` 前拒绝绝对路径、遍历、控制字符和无效行号；目标 hunk 仅由
+unified diff header 选择，缺失 diff 仍显示 unavailable，不修改工作区。
 
 `/review` 启动独立的 `run_kind=review`：
 
@@ -457,7 +512,7 @@ Changes 视图支持以下 scope：
 - scope 在启动前明确；
 - finding 使用 `severity/file/line/problem/evidence/fix_hint` 结构；
 - finding 可跳转到 diff；
-- “修复此 finding”是新的普通 turn，重新遵守当前权限与验证门禁；
+- `f` 明确启动一个普通 turn，重新遵守当前权限与验证门禁；finding 文本被标记为不可信数据；
 - 机械 diff、validator 结果和 AI finding 分栏展示，不能混称“已验证”。
 
 ### 8.6 Plan、Timeline 与完成报告
@@ -467,18 +522,29 @@ Timeline 卡片的默认密度：
 - 正在运行和失败事件展开；
 - 成功 command/tool 默认折叠为一行；
 - stdout/stderr 有界预览，完整内容按 ArtifactRef 打开；
-- plan 更新做差异展示，不重复整份计划；
-- 每轮结束生成 completion projection：改动、命令、验证、未执行项、风险和用量。
+- plan 更新不重复追加整份计划：当前 Timeline 已按相同 `item_id`
+  原位更新有界卡片，摘要和 expanded 步骤均可见；独立 Plan Inspector 复用同一
+  结构化条目展示完整有界步骤，后续仍需执行边界与版本差异；
+- 每轮 completion projection 已交付：`/completion` 直接读取 immutable snapshot，活动
+  turn 中原位更新，展示改动、命令、显式验证/Gate、未完成 Plan、风险和用量。每类
+  动态证据独立设限并报告截断；没有 event 就不声称通过，正文不能伪造事实。
 
 这与仓库现有 completion/evidence/gate 纪律一致：UI 只能说“validator 通过”或
 “reviewer 认为通过”，不能把模型陈述升级为工程门禁事实。
 
 ### 8.7 Agents
 
-统一 Actor Tree 展示两类并发：
+当前已交付的 `/agents [agent]`（`/runs` 别名）是有界运行 Inspector，并在可信
+runtime projection 存在时叠加 active-turn Actor Tree 与 retained history groups：活动 TUI
+turn/review 以 coordinator fact 标为 `current`，历史树按 trusted actor event 的 turn/run
+绑定聚合，`h` 在当前树与历史树间切换；终态运行记录仍从当前 data_dir 的共享账本读取。
+agent/status 过滤、刷新、run/session/attempt/耗时/退出码和产物引用均不进入 conversation
+transcript。损坏、超长或超过 projection 容量的记录显式跳过并报告，Actor Tree 只接受同一
+turn/run 的 typed parent lineage；没有 `actor_control` capability 与精确 actor identity
+时仍不开放单 actor stop/steer。
 
-- provider 内部子 Agent；
-- pi-batch meta role、gatekeeper、Pipeline task 或投机执行 actor。
+后续统一 Actor Tree 仍需补充权限继承、跨运行的 provider archive 关联和单 actor 控制；
+历史视图不会把共享账本摘要冒充成 provider actor 事实。
 
 每个节点显示 owner/runtime、父节点、任务、状态、耗时、权限继承、变更范围和最后
 事件。支持 inspect、steer、stop 的前提是对应 runtime capability 为 true。
@@ -486,7 +552,7 @@ Timeline 卡片的默认密度：
 当前 `/agent [binary]` 与 Codex 风格的“切换子 Agent”语义冲突。兼容演进建议：
 
 - 新增 `/runtime [binary]` 修改执行器；
-- `/agents` 打开 Actor Tree；
+- `/agents` 在 runtime 提供可信 actor 事件后，从运行历史渐进展开 Actor Tree；
 - 旧 `/agent [binary]` 保留一个弃用周期并提示迁移；
 - 不直接把 Codex 的 `/agent` 语义硬编码到通用 UI。
 
@@ -511,8 +577,10 @@ typed approval，不因为“来自 MCP”而降低边界。
 
 ```python
 class AgentRuntime(Protocol):
+    def runtime_info(self) -> RuntimeInfo: ...  # cached; non-blocking; no handshake
     def initialize(self, request: InitializeRequest) -> RuntimeInfo: ...
-    def list_sessions(self, query: SessionQuery) -> list[SessionSummary]: ...
+    def list_sessions(self, query: SessionQuery) -> SessionPage: ...
+    def read_session(self, request: ReadSessionRequest) -> RuntimeSessionObservation: ...
     def start_session(self, request: StartSessionRequest) -> RuntimeSession: ...
     def resume_session(self, request: ResumeSessionRequest) -> RuntimeSession: ...
     def fork_session(self, request: ForkSessionRequest) -> RuntimeSession: ...
@@ -526,6 +594,8 @@ class AgentRuntime(Protocol):
 
 具体实现可以是线程、asyncio、stdio 或 socket，但 Controller 只依赖上述语义。
 所有回调进入 Textual 前必须 marshal 到 UI thread；阻塞 IO 不得运行在事件循环中。
+能力展示与迟到 worker 复验只读取 `runtime_info()`；缺少该本地缓存接口时 fail closed，
+不得为了打开 picker 在 UI thread 重入 `initialize()`。
 
 ### 9.2 Legacy CLI Adapter
 
@@ -535,7 +605,10 @@ class AgentRuntime(Protocol):
 - stderr/log → `runtime.warning` 或有界 operational stream；
 - `TaskResult` → `turn.completed|failed`；
 - workspace before/after → `workspace.snapshot`、`file.changed`；
-- `kill_active_procs` 迁移为 handle-scoped interrupt，逐步消除全局取消；
+- 已迁移为 handle-scoped interrupt：`PREPARING` 阶段取消可阻止 backend 调用，
+  且不会误调用尚未启动的 provider cancel hook；`START_COMMITTED` 后以 backend
+  的取消接受结果为准，拒绝取消时保留真实终态并告警，cancel hook 异常后允许重试，
+  不伪报 `INTERRUPTED`；
 - session flags 继续由现有 adapter 配置解析。
 
 它不宣称支持 typed approval、steer、subagent 或可靠 tool events。即使输出恰好是 JSON
@@ -552,6 +625,10 @@ class AgentRuntime(Protocol):
 - 适合非交互任务、回放和 CI 同构测试；
 - 由于缺少完整双向 server request，不作为审批和 steering 的最终实现。
 
+无 raw event sink 的兼容 callback 在 canonical completion 不是 provisional delta
+前缀时发出显式 `stdout-replace`，避免追加式 `stdout` 让界面永久停留在 draft；当前
+TUI 会原位替换活动 assistant 条目。
+
 ### 9.4 Codex App Server Adapter
 
 映射建议：
@@ -564,6 +641,7 @@ class AgentRuntime(Protocol):
 | notification | RuntimeEvent |
 | server request | ApprovalRequest 或用户输入请求 |
 | thread/start/resume/fork | Session commands |
+| thread/archive/unarchive | Provider session archive commands |
 | turn/start/steer/interrupt | Turn commands |
 | review/start | Review Run |
 
@@ -583,28 +661,47 @@ Native Adapter 让 TUI 成为现有产品能力的入口，而不是只包装一
 
 - Pipeline → run；Stage → actor group/plan step；Task → child turn/item；
 - validator → validation event；gate → gate verdict；approval stage → approval request；
-- meta role → actor child；gate-fix → remediation child run；
+- meta role → actor child；gate-fix → remediation child run；Actor Tree 只接受同一
+  turn/run 内已 spawn 且 parent 匹配的 child actor；
 - artifact/archive/decision log → ArtifactRef；
 - Campaign/Isolate/Fabric 只在用户显式启动对应能力时进入控制面。
+- `pipeline.run_pipeline(..., event_sink=...)` 已提供只读 observe bridge；TUI 通过显式
+  `app.attach_native_pipeline(workspace_id)` 接入该 sink，先使用独立 bounded Projection，
+  在 workspace path 与 journal 可用时再为首个 exact native session 懒绑定独立 journal/
+  checkpoint；不会把 Pipeline 启动、取消或 approval 控制冒充为直接 turn 操作。
+- TUI 用户可通过 `/pipeline <file> [--reuse]` 或 `tui --pipeline FILE` 显式启动
+  Pipeline；启动沿用既有 runner，approval stage 通过 exact-run-scoped control
+  channel 决策，whole-pipeline cancel 仅做本地 cooperative stop，不发送 provider stop。
 
-首版应从“只读观察已有 run”开始，再开放启动和控制，避免同时重写执行内核。
+控制面仍保持窄边界：approval 只解锁当前 exact run，cancel 只在本地
+Pipeline stage 边界生效，不重写 provider turn 或发送 provider stop。
 
 ## 10. 持久化、恢复与一致性
 
 ### 10.1 数据位置
 
-所有 TUI 运行数据继续遵守 `config.data_dir(cwd)`：
+已交付的事件日志继续遵守 `config.data_dir(cwd)`，实际布局为：
 
 ```text
 <data_dir>/tui/
-  sessions.index.jsonl
-  events/<session-id>/<run-id>.jsonl
-  projections/<session-id>.json
-  artifacts/<run-id>/...
+  events/<scope-digest>/<session-digest>/
+    meta.json
+    events.jsonl
+    journal.lock
+    append-intent.json     # pending append 的持久意图；存在时恢复优先回滚
+    append-commit.json     # intent 已持久清除后的提交确认；可在清理窗口残留
+    read-only.json         # 共享 fail-closed 锁存，不用于选定单条事件边界
+    checkpoint.json         # 有界 projection digest 见证，不是恢复授权或状态快照
+    archived.json          # 可逆本地生命周期标记，不代表 provider archive
 ```
 
-目录只是建议，必须继续携带 tenant、project_id 和 sensitivity 边界。不得另建绕过
-Memory scope 的全局聊天数据库。
+原始 session id 不进入路径；`meta.json` 绑定 schema、session、resolved cwd 与
+tenant/project_id/sensitivity，目录和文件分别收紧为 0700/0600。一个逻辑 session
+跨多个 run 共用一条有序流，以保留跨轮顺序。`tui.journal_enabled` 默认开启，
+`tui.journal_max_bytes` 默认 16 MiB；也可整体通过 `--data-dir` / `PBATCH_DATA_DIR`
+外置。overlay session index 已从该布局安全派生；`checkpoint.json` 是按精确 journal
+边界写入的有界 projection 完整性清单，只作为可丢缓存/一致性见证，不是状态恢复快照、
+执行授权或全局聊天数据库。artifact 目录和跳过 replay 的状态快照加速仍是后续能力。
 
 ### 10.2 真值层级
 
@@ -614,16 +711,29 @@ Memory scope 的全局聊天数据库。
 4. projection 是可删除、可重建的展示缓存；
 5. Assistant 正文和历史消息是不可信陈述。
 
-### 10.3 恢复
+### 10.3 当前恢复合同
 
-- 启动时读取有界 session index，不全量载入所有事件；
-- 打开 session 时先载入 checkpoint，再从 journal 尾部增量折叠；
-- 上次状态为 RUNNING/WAITING_APPROVAL 时进入 RECONCILING；
-- runtime 可查询时与 provider 对账；不可查询时标记 UNKNOWN 并提供“重新连接”或
-  “以新 session 继续”，不能伪造完成；
-- journal 损坏记录跳过并告警，单行和总文件上限沿用仓库已有 bounded JSONL 模式；
-- projection 使用临时文件 + 原子 rename；journal 只追加；
-- 归档不删除 provider 历史；真正删除必须是单独、明确、可审计动作。
+- 可信事件遵守 durable-before-visible：只有 append 已完成持久 finalize 后，才进入
+  内存队列、订阅者和 projection；写入边界存在歧义时锁存只读，不猜测成功。
+- 恢复只应用完整、有序且边界匹配的可信前缀。仅 crash-truncated tail 可自动截断；
+  完整坏记录、非法状态、重复或乱序会隔离后缀并共享只读状态。
+- 已确认终态保持不变；所有未决 turn 恢复为 UNKNOWN，Controller 保持只读，等待
+  显式对账。合法 late audit 可持久化，但不回退 turn 终态；权威
+  `workspace.snapshot` 仍可更新。
+- journal、单行、run 和投影实体都有上限；耗尽时开启新 session，不静默覆盖。
+- 当前可在 scope 内通过 overlay 精确选择 session，重建 disposable projection；匹配
+  Codex capability/handle 的终态 session 可在下一 turn 执行续跑或 fork，并可用本地
+  可逆标记归档；provider thread 的远端归档/恢复通过显式 archive command 和
+  `session_archive` capability。App Server resume 会先用不加载、不订阅的 `thread/read` 对账 provider
+  状态，只有 `notLoaded`/`idle` 放行；`active`、`systemError`、未知或读取失败时只展示
+  本地可信历史。当前 `checkpoint.json` 只验证精确 journal 边界与 projection digest，
+不跳过可信 replay；自动启动恢复仍属于下一恢复层。
+- `/sessions` 的 `summary.json` 只是与精确 journal byte size 绑定的可丢展示缓存；
+  App Server `thread/list` 也只是带观测时间的分页快照。两者都不能替代上述完整恢复与
+  动作时 `thread/read`，也不会把 remote-only thread 提升成本地可执行 session。
+
+append intent/finalize、commit-only 恢复和共享 fencing 的实现合同见
+[`t17-journal.md`](tui-phase0/t17-journal.md)。
 
 ## 11. 安全与失败模型
 
@@ -638,7 +748,7 @@ Memory scope 的全局聊天数据库。
 | 全局 cancel 误伤其他 run | 每个 runtime/turn 保存专属 process handle 或 remote id |
 | live diff 与写入竞态 | 只读快照、标记时间/HEAD/fingerprint、debounce，不宣称原子视图 |
 | 供应商协议变更 | capability handshake、schema 版本、契约 fixture、Legacy 回退 |
-| 敏感数据入日志 | 按 sensitivity 脱敏；正文、argv、env 与 MCP 参数不默认全量落账 |
+| 敏感数据入日志 | scope 按 sensitivity 隔离；payload/extensions 做 best-effort 模式脱敏，identity 固定摘要，疑似含 secret 的 envelope id 或映射键直接拒绝；尚未命中模式的 command/raw 字符串仍可能落账，调用方不得把 journal 当 secret store |
 
 ## 12. 分阶段实施路线
 
@@ -650,34 +760,52 @@ Memory scope 的全局聊天数据库。
 - 用 Legacy Adapter 把现有 stdout/stderr/TaskResult/workspace delta 映射成事件；
 - 建立内存 EventBus 与 projection；UI 只读 projection；
 - cancel 绑定具体 runtime handle，去除 TUI 对全局 active proc 的长期依赖；
-- 加入事件排序、重复、迟到终态、大小上限和 UI thread 边界测试。
+- 加入事件排序、重复、合法 late audit 保留/终态不回退（含
+  `workspace.snapshot` 例外）、大小上限和 UI thread 边界测试。
 
 完成标准：现有 TUI 行为不退化；FakeBackend 测试改为 FakeRuntime 事件；任意正文不能
 伪造 command/approval/turn success。
+
+当前合同：Legacy 与 Structured Exec 共用 canonical EventBus、单向 Projection 和
+immutable snapshot；Textual 只在 UI 线程渲染快照。正文、事件、实体与可见历史均
+有界，provider observed path 与权威 Git delta 分层。持久恢复能力属于后续恢复层，
+不改变 Phase 0 的内存事件合同。
 
 ### Phase 1：核心单 Agent 产品环
 
 目标：会话、计划、变化和结构化执行可用。
 
-- session index、picker、resume/fork/archive；
-- Timeline/Plan/Changes Inspector；
-- Structured Exec Adapter，显示 command/tool/file/usage item；
-- active turn 支持能力驱动的 steer/queue；
-- live bounded diff、scope 选择和 last-turn change set；
-- 每轮结构化 completion projection。
+- overlay session picker、resume、fork 与本地 archive/restore 已交付；
+- Timeline 与独立 Plan/Changes Inspector（已交付基础闭环）；
+- 当前 operation + shared ledger 驱动的独立 Agents Inspector 已交付；
+- Structured Exec Adapter，显示 command/tool/file/plan/usage item；
+- active turn 的有界本地 queue 与能力驱动 `/steer` 控制路径已交付；
+- bounded diff、scope/ref 选择、last-turn change set 与文件/hunk 导航已交付；
+- typed event + authoritative Git delta 驱动的每轮 Completion Inspector 已交付。
+- typed `artifact.created` 驱动的 Artifact Inspector 已交付 workspace/data scope UTF-8
+  普通文件 64 KiB no-follow 预览；远程/越界/链接/目录/二进制 fail closed；Structured
+  Exec aggregate 与 App Server delta/aggregate 的大输出已自动进入私有 bounded ring。
 
 完成标准：退出重开后能恢复 session 投影；不支持 resume/steer 的 Adapter 明确禁用；
 1 MiB 级命令输出不阻塞 UI 且只通过 ArtifactRef 展开。
+
+当前合同：Structured Exec 的 message、plan、command、file、usage、terminal 与
+workspace snapshot 共用同一个有界 Controller，并可从精确 session journal 重建。
+Phase 1 的剩余闭环是“修复此 finding”；session 索引摘要、App Server advisory 历史页、
+动作前预对账、live steer、active-turn live diff 和安全 finding 跳转已完成；完整
+provider/meta actor 历史树与单 actor 控制属于后续富事件层。
 
 ### Phase 2：Codex 富集成与安全闭环
 
 目标：达到 Codex-class 的双向控制体验。
 
-- Codex App Server Adapter、initialize/version/capability handshake；
-- typed approval modal 与不可变审计；
-- sandbox/approval/network 状态常驻；
-- turn steer/interrupt、provider resume/fork；
-- 独立 `/review`，支持 uncommitted/base/commit/custom scope；
+- Codex App Server Adapter、initialize/version/capability handshake（已完成）；
+- typed approval modal 与不可变审计（已完成）；
+- sandbox/approval/network 状态常驻（App Server 有效值已接通；缺失字段明确显示未知）；
+- turn steer/interrupt、provider resume/fork（主 TUI 已接线）；
+- 独立 `/review`，支持 uncommitted/base/commit/custom scope；TUI 呈现只读
+  structured finding，`/findings` 可安全定位到 Changes；显式 App Server runtime 使用
+  inline `review/start` 并回收有界 typed evidence；`f` fixer 仍只走普通 turn；
 - app-server 异常、断线、重连、outstanding request 清理测试。
 
 完成标准：审批不能由 stdout 触发；跨 session/过期 decision 被拒；断线默认不放行；
@@ -687,8 +815,10 @@ review 不改 worktree；App Server 不可用时可显式回退 Legacy，而不�
 
 目标：把本仓库真正的差异化能力带入 TUI。
 
-- Native Adapter 投射 Pipeline/Stage/Task/validator/gate/artifact；
-- 先支持 attach/observe，再支持 start/cancel/approval；
+- Native Adapter 已通过 opt-in `event_sink` 投射 Pipeline/Stage/Task/validator/gate；
+- TUI 已通过 `attach_native_pipeline(workspace_id)` 支持 attach/observe，严格限制同
+  workspace 的 `pbatch-native`/`read_only` 事件；start 仍须显式，approval 使用独立
+exact-run channel，cancel 仅做本地 cooperative stop、不发送 provider stop；
 - gate finding、gate-fix、completion report 结构化展示；
 - Campaign/Isolate session 与 worktree 状态联动；
 - 决策日志和 Memory 只保存引用，避免上下文复制。
@@ -700,8 +830,8 @@ review 不改 worktree；App Server 不可用时可显式回退 Legacy，而不�
 
 目标：复杂任务的并发协作可控。
 
-- Actor Tree、inspect/steer/stop 和来源审批；
-- provider 子 Agent 与 meta role 的统一投影；
+- 扩展当前 active-turn Actor Tree，加入 inspect/steer/stop 和来源审批；
+- provider 子 Agent 与 meta role 的统一历史/实时投影；
 - Skills/MCP/Capability 目录与渐进加载；
 - 写冲突检测、waves 和 Isolate 引导；
 - 图片、Web、MCP resource 等富 item renderer。
@@ -719,7 +849,10 @@ UI 自动并发启动；扩展未连接时界面解释前置条件。
 - 单行、单 item、单 journal、ArtifactRef 大小和路径上限；
 - approval allow-once/session/deny/expire/disconnect；
 - capability true/false 对应动作显隐和服务端再次校验；
-- crash recovery、projection 重建、截断 journal；
+- crash recovery、projection 重建、截断 journal，pending/committed marker、
+  commit 目录 fsync 歧义与跨实例 read-only fence；
+- session switch 在队列容量、目标 journal 只读和旧 pending 事件上保持原子性，
+  可写旧事件只进旧 journal，不可写旧事件隔离且不串入新 session；
 - workspace live snapshot 与路径逃逸；
 - Adapter 协议错误不污染 Assistant 正文。
 
@@ -742,7 +875,7 @@ test 连接本地已安装版本；CI 不依赖外部账户或网络。
 
 - 宽屏/窄屏、overlay、焦点和 terminal restore；
 - message delta 合并、timeline 折叠、active event 自动滚动；
-- send/steer/queue 三种 composer 状态；
+- send/queue composer 状态、队列成功续发/失败暂停，以及 capability-driven steer；
 - approval 来源、倒计时、快捷键和 deny 默认；
 - session picker 恢复、跨 workspace 提示；
 - Changes scope、finding 跳转、截断提示；
@@ -786,14 +919,19 @@ test 连接本地已安装版本；CI 不依赖外部账户或网络。
 
 ## 16. 建议的下一实施批次
 
-下一批只做 Phase 0，控制在一个可审查的垂直切片：
+后续按依赖顺序推进：
 
-1. 新增 versioned `RuntimeEvent`、`RuntimeCapabilities`、Turn 状态机；
-2. 把当前 `TUIBackend` 包成 Legacy Adapter；
-3. 用 EventBus/Projection 重接现有 Conversation、Status 和 workspace delta；
-4. 将 cancel 从 UI 语义绑定到当前 runtime handle；
-5. 用 adversarial fixtures 验证正文无法伪造审批、成功和 command 事件；
-6. 保持现有界面和 CLI 入口不变，通过完整门禁后再进入 session persistence。
+1. App Server review/fixer 的修复后证据回收、exact turn 关联与 validation/gate/workspace
+   证据已完成；继续保持权限与验证门禁，不自动标记 finding resolved；
+2. 扩展 provider/meta Actor Tree 的历史聚合与能力驱动控制；当前 active-turn
+   lineage、声明式 App Server provider child 来源与 actor-control 校验已由
+   [`t34-actor-tree.md`](tui-phase0/t34-actor-tree.md) 承接；
+3. 为 native Pipeline 补充更丰富的 active-task 控制、更多控制能力与恢复语义；当前
+   TUI 已有 exact-run approval/scoped active-task cooperative cancel，启动/只读 attach 与 stage/task
+   child actor lineage 由 [`t33-native-pipeline-observer.md`](tui-phase0/t33-native-pipeline-observer.md)
+   承接，控制边界由 `t38-native-pipeline-control.md` 承接；
+4. 后续恢复层再推进 projection checkpoint、自动启动恢复与 provider 持续订阅；App Server
+   provider archive 已保持显式、能力驱动且与本地 archive 分离。
 
-这一步看起来没有新增很多按钮，但它决定后续审批、Codex App Server、Pipeline
-Timeline 和多 Agent 是否能在同一套可信架构上增长。
+下一步承接 provider actor 历史聚合、active-task stop、真实 Pipeline 恢复入口和
+checkpoint；所有面板继续只消费现有可信投影。

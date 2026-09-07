@@ -14,7 +14,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import subprocess
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +24,9 @@ from typing import Optional
 
 from . import config
 from .config import log
+
+
+_SIDECAR_MAX_BYTES = 64 * 1024
 
 
 def _resolved_output(output_path: str, workdir: str = "") -> Path:
@@ -213,7 +218,7 @@ def parallel_output_conflict(mode: str, tasks: list,
 
 def fingerprint(prompt: str, output: str, validate_cmd: Optional[str],
                 model: str = "", provider: str = "", workdir: str = "",
-                thinking: str = "") -> str:
+                agent: str = "", thinking: str = "") -> str:
     """sha256 of canonical task inputs (T9 / decision D1), including the
     effective reasoning level so a max-thinking run cannot reuse an artifact
     produced with a different invocation policy."""
@@ -221,7 +226,7 @@ def fingerprint(prompt: str, output: str, validate_cmd: Optional[str],
     state_cwd = workdir or str(Path(resolved).parent)
     repo_state = _repository_state(state_cwd, resolved)
     effective_thinking = thinking or config.AGENT_THINKING_OVERRIDE
-    canon = json.dumps([prompt, resolved, validate_cmd, model, provider,
+    canon = json.dumps([prompt, resolved, validate_cmd, agent, model, provider,
                         effective_thinking, repo_state],
                        sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()
@@ -230,46 +235,139 @@ def fingerprint(prompt: str, output: str, validate_cmd: Optional[str],
 def reuse_fingerprint(task, validate_cmd: Optional[str]) -> str:
     """Fingerprint for a Task object (T9), used by the single-batch
     reuse path."""
-    return fingerprint(task.prompt, str(task.output_path()), validate_cmd,
-                       task.model, task.provider, task.workdir(), task.thinking)
+    return fingerprint(task.prompt, str(task.output_path_unresolved()), validate_cmd,
+                       task.model, task.provider, task.workdir(),
+                       task.effective_agent(), task.thinking)
 
 
 def sidecar_path(output: str) -> Path:
     return Path(output).with_suffix(Path(output).suffix + ".meta.json")
 
 
+def _artifact_digest(path: Path) -> Optional[tuple[str, int]]:
+    """Hash one bounded regular artifact without following symlinks."""
+    if path.is_symlink():
+        return None
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+        with os.fdopen(fd, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_size < 1
+                    or info.st_size > config.OUTPUT_MAX_BYTES):
+                return None
+            raw = handle.read(config.OUTPUT_MAX_BYTES + 1)
+    except OSError:
+        return None
+    if not raw or len(raw) > config.OUTPUT_MAX_BYTES:
+        return None
+    return hashlib.sha256(raw).hexdigest(), len(raw)
+
+
+def _atomic_write_sidecar(path: Path, payload: str) -> None:
+    """Durably replace a regular sidecar without following a planted link."""
+    try:
+        existing = path.lstat()
+    except FileNotFoundError:
+        existing = None
+    if existing is not None and not stat.S_ISREG(existing.st_mode):
+        raise OSError(f"refusing non-regular sidecar: {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(
+        prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+    temp_path = Path(temporary)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            existing = path.lstat()
+        except FileNotFoundError:
+            existing = None
+        if existing is not None and not stat.S_ISREG(existing.st_mode):
+            raise OSError(f"refusing non-regular sidecar: {path}")
+        os.replace(temp_path, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def _read_sidecar(path: Path) -> Optional[dict]:
+    """Read one bounded regular sidecar without following symlinks."""
+    if path.is_symlink():
+        return None
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+        with os.fdopen(fd, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                return None
+            raw = handle.read(_SIDECAR_MAX_BYTES + 1)
+        if len(raw) > _SIDECAR_MAX_BYTES:
+            return None
+        value = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeError, ValueError, RecursionError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def write_sidecar(output: str, prompt: str, validate_cmd: Optional[str],
                   model: str = "", provider: str = "", workdir: str = "",
-                  thinking: str = "") -> None:
+                  agent: str = "", thinking: str = "") -> None:
     """Persist the artifact's input fingerprint next to it (frozen format
-    version 1; only written under --reuse-fingerprint)."""
+    version 2; only written under --reuse-fingerprint)."""
     resolved = str(_resolved_output(output, workdir))
+    artifact = _artifact_digest(Path(resolved))
+    if artifact is None:
+        log.warning("sidecar write failed: artifact is missing, unsafe, or oversized: %s",
+                    resolved)
+        return
     effective_thinking = thinking or config.AGENT_THINKING_OVERRIDE
     meta = {
-        "version": 1,
+        "version": 2,
         "fingerprint": fingerprint(prompt, resolved, validate_cmd, model,
-                                   provider, workdir, effective_thinking),
+                                   provider, workdir, agent, effective_thinking),
+        "artifact_sha256": artifact[0],
+        "artifact_size": artifact[1],
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "agent": agent,
         "model": model,
         "provider": provider,
         "thinking": effective_thinking,
     }
+    payload = json.dumps(meta, ensure_ascii=False)
     try:
-        sidecar_path(resolved).write_text(json.dumps(meta, ensure_ascii=False),
-                                          encoding="utf-8")
+        if len(payload.encode("utf-8")) > _SIDECAR_MAX_BYTES:
+            raise OSError("sidecar metadata exceeds size limit")
+        _atomic_write_sidecar(sidecar_path(resolved), payload)
     except OSError as e:
         log.warning("sidecar write failed: %s", e)
 
 
 def sidecar_matches(path: Path, expected_fp: str) -> bool:
-    """True when the artifact's sidecar exists, is version 1, and carries
+    """True when the artifact's sidecar exists, is version 2, and carries
     the expected fingerprint; anything else (missing/corrupt/older format)
     means the artifact must be regenerated."""
-    try:
-        meta = json.loads(sidecar_path(str(path)).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    meta = _read_sidecar(sidecar_path(str(path)))
+    if meta is None or type(meta.get("version")) is not int:
         return False
-    return meta.get("version") == 1 and meta.get("fingerprint") == expected_fp
+    string_fields = ("fingerprint", "artifact_sha256", "created_at",
+                     "agent", "model", "provider", "thinking")
+    artifact = _artifact_digest(path)
+    return (meta["version"] == 2
+            and all(isinstance(meta.get(field), str) for field in string_fields)
+            and type(meta.get("artifact_size")) is int
+            and artifact is not None
+            and meta["fingerprint"] == expected_fp
+            and meta["artifact_sha256"] == artifact[0]
+            and meta["artifact_size"] == artifact[1])
 
 
 def capture_worktree_state(workdir: str) -> str:

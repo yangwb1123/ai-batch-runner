@@ -32,6 +32,22 @@ def test_agent_argv_merges_global_and_per_agent_flags(monkeypatch):
     assert config.agent_prompt_index("codex") == 1
 
 
+def test_absolute_agent_path_inherits_basename_adapter(monkeypatch):
+    monkeypatch.setattr(config, "_AGENT_CFG", {})
+    monkeypatch.setattr(config, "_AGENTS_CFG", {"codex": {
+        "argument_flags": {"prompt": ["exec"], "model": "-m"},
+        "extra_args": ["--json"],
+    }})
+
+    command = config.build_agent_argv(
+        "/opt/codex/bin/codex", "inspect", model="gpt-x")
+
+    assert command == [
+        "/opt/codex/bin/codex", "exec", "inspect", "-m", "gpt-x",
+        "--json",
+    ]
+
+
 def test_task_argv_honors_invocation_thinking_override(monkeypatch):
     _adapter_config(monkeypatch)
     from pbatch.models import Task

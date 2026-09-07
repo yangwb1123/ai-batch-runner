@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -50,6 +51,61 @@ def test_same_domain_conflict_refuses(tmp_path):
         assert exc.value.code == LOCK_EXIT_CODE
     finally:
         release_lock(held)
+
+
+def _git(repo: Path, *args: str) -> None:
+    result = subprocess.run(["git", "-C", str(repo), *args],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def _clean_git_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "source.txt").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "source.txt")
+    _git(repo, "-c", "user.name=tests", "-c", "user.email=tests@example.invalid",
+         "commit", "-qm", "base")
+    return repo
+
+
+def test_dirty_git_worktree_never_runs_parallel(tmp_path):
+    repo = _clean_git_repo(tmp_path)
+    (repo / "source.txt").write_text("dirty\n", encoding="utf-8")
+    held = _hold_lock(repo, domain="batch-a", outputs=("docs/a.md",))
+    try:
+        holder = json.loads((repo / ".pi-batch.lock").read_text())
+        assert holder["worktree_dirty"] is True
+        with pytest.raises(SystemExit) as exc:
+            acquire_lock(repo, domain="batch-b", outputs=("docs/b.md",))
+        assert exc.value.code == LOCK_EXIT_CODE
+    finally:
+        release_lock(held)
+
+
+def test_clean_git_worktree_keeps_disjoint_parallel_opt_in(tmp_path):
+    repo = _clean_git_repo(tmp_path)
+    held = _hold_lock(repo, domain="batch-a", outputs=("docs/a.md",))
+    try:
+        assert acquire_lock(repo, domain="batch-b", outputs=("docs/b.md",)) is None
+    finally:
+        release_lock(held)
+
+
+def test_external_lock_file_does_not_touch_workspace(tmp_path, monkeypatch):
+    repo = _clean_git_repo(tmp_path)
+    external = tmp_path / "coordination" / "iris.lock"
+    monkeypatch.setenv("PBATCH_LOCK_FILE", str(external))
+    held = _hold_lock(repo)
+    try:
+        assert held == external
+        assert not (repo / lock_mod.LOCK_NAME).exists()
+        holder = json.loads(external.read_text())
+        assert holder["workspace"] == str(repo.resolve())
+    finally:
+        release_lock(held)
+    assert not external.exists()
 
 
 def test_different_named_domains_run_parallel(tmp_path):

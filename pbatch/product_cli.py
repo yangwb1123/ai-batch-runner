@@ -1,4 +1,6 @@
-"""产品 CLI 规整命令：init / version / clean / completion。
+"""产品 CLI 规整命令：product / init / version / clean / completion。
+
+- `pi-batch product`：把需求转成可评审的产品方向简报（不调用 LLM）。
 
 - `pi-batch init`：创建用户级目录骨架（~/.config|.cache/.local/share/pbatch），
   打印目录布局与配置分层说明。
@@ -11,8 +13,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -22,11 +26,88 @@ except ImportError:
     yaml = None
 
 from . import user_dirs
+from . import config
+from .product import LEVELS, format_product_brief, product_brief
+from .text_io import read_text_bounded
 from .tools import list_subcommands
 from .version import VERSION
 
 # 产品名（与 pyproject 的 [project] name 一致；单事实源在 pyproject.toml）
 PRODUCT = "pi-batch"
+
+
+def _product_text(args, parser: argparse.ArgumentParser) -> str:
+    """Read product requirements from --file or positional text."""
+    if args.file and args.task:
+        parser.error("use either positional product text or --file, not both")
+    if args.file:
+        try:
+            return read_text_bounded(Path(args.file), config.INPUT_MAX_BYTES,
+                                     "product source")
+        except ValueError as exc:
+            parser.error(str(exc))
+    text = " ".join(args.task)
+    if not text.strip():
+        parser.error("Provide a product requirement (positional text or --file)")
+    return text
+
+
+def _write_product_output(target: Path, rendered: str) -> None:
+    """Atomically write one bounded brief without following a target symlink."""
+    payload = rendered + "\n"
+    if len(payload.encode("utf-8")) > config.OUTPUT_MAX_BYTES:
+        raise ValueError(
+            f"product brief exceeds {config.OUTPUT_MAX_BYTES} output bytes")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_symlink():
+        raise ValueError(f"product brief output is a symlink: {target}")
+    descriptor, name = tempfile.mkstemp(
+        prefix=target.name + ".", suffix=".tmp", dir=str(target.parent))
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            descriptor = -1
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+
+
+def product_main(argv: Optional[list] = None) -> int:
+    """`pi-batch product`：生成产品方向简报（JSON 或 Markdown）。"""
+    parser = argparse.ArgumentParser(
+        prog="pi-batch.py product",
+        description="Generate a deterministic product-direction brief; "
+                    "unknown business decisions remain 待确认.")
+    parser.add_argument("task", nargs="*", help="product requirement text")
+    parser.add_argument("--file", default="", help="read requirement from FILE")
+    parser.add_argument("--level", choices=LEVELS,
+                        help="override the detected productization level")
+    parser.add_argument("--json", action="store_true",
+                        help="print a machine-readable product brief")
+    parser.add_argument("-o", "--output", default="",
+                        help="write the rendered brief to FILE")
+    args = parser.parse_args(argv)
+    text = _product_text(args, parser)
+    try:
+        brief = product_brief(text, args.level)
+    except ValueError as exc:
+        parser.error(str(exc))
+    rendered = (json.dumps(brief, ensure_ascii=False, indent=2)
+                if args.json else format_product_brief(brief))
+    if args.output:
+        target = Path(args.output)
+        try:
+            _write_product_output(target, rendered)
+        except (OSError, ValueError) as exc:
+            parser.error(f"unable to write product brief {target}: {exc}")
+    else:
+        print(rendered)
+    return 0
 
 
 def _version_from_pyproject() -> str:

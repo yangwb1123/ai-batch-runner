@@ -21,9 +21,10 @@
 | G3 root policy | `make check-root` | 根目录 ≤16 文件 | 根目录只允许配置/入口/文档；禁止 `*_test.py` 散落根目录 |
 | G4 style | `make check-style` | 行宽 100（警告） | 行尾空白、tab 缩进、缺末尾换行、非 utf-8 为硬失败 |
 | G5 quality | `make quality` | 函数 50 行 / 圈复杂度 15 / 文件 1000 行 / 重复函数体 | 参考版自带扫描器 `quality.py`（纯 stdlib），经 `pi-batch.yaml` 注册为 `validators.pyquality` |
-| H0 self-test | `make self-test` | — | 门禁自身单测（50 例，unittest 零依赖） |
+| R0 release metadata | `make release-check` | 名称/稳定版本/Changelog/入口一致 | 普通 CI 只验证分发契约；标签发布另以 `--tag vX.Y.Z` 校验标签并在许可证未决时 fail closed |
+| H0 self-test | `make self-test` | — | 门禁自身单测（56 例，unittest 零依赖） |
 | T0 regression | `make test` | — | 引擎、规则系统/评估器/检查器与 Campaign 回归套件（pytest，需 dev extras） |
-| E0 eval | `make eval` | 42 项 | classify/rules/assess/product/workflow 行为回归 |
+| E0 eval | `make eval` | 53 项 | classify/rules/assess/product/workflow/evolution 行为回归 |
 | T1 coverage | `make coverage` | — | checks/ + cli.py 覆盖率报告（需 pytest-cov） |
 
 ### Agent 结构化产物门禁
@@ -38,8 +39,9 @@
 make check          # G1-G4 零依赖门禁
 make self-test      # H0 门禁自身单测
 make quality        # G5 组织质量扫描（quality.py，上游同步）
+make release-check  # R0 分发元数据契约（不触发发布）
 make test           # T0 回归套件（pip install -e ".[dev]"）
-make ci             # G1-G5 + H0 + T0 + E0 + organization contracts
+make ci             # R0 + G1-G5 + H0 + T0 + E0 + organization contracts
 python cli.py check-filesize   # 单独跑某门禁
 ```
 
@@ -75,4 +77,7 @@ git config core.hooksPath .githooks
 ## CI
 
 `.github/workflows/ci.yml`：Python 3.11 + `pip install -e ".[dev]"`，依次执行
-G1-G5、H0、T0、E0、organization contracts、T1。推送到 `main` 或 PR 时触发。
+R0、G1-G5、H0、T0、E0、organization contracts、T1。推送到 `main` 或 PR 时触发。
+`.github/workflows/release.yml` 只响应 `vX.Y.Z` 标签；它执行带标签的 R0、确认提交
+可从 `main` 到达、重跑 `make ci`、构建并冒烟测试分发包，然后经受保护的 `pypi`
+Environment 和 OIDC Trusted Publishing 上传。

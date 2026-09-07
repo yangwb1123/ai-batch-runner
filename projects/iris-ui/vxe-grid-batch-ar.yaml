@@ -1,0 +1,163 @@
+# iris-ui grid 批 AR：迷你图表预览（自绘 SVG 柱状/折线——无依赖可视化）
+#
+# 目标：chartPreview?: boolean——工具栏图表按钮 → 面板：数值列选择 →
+# 自绘 SVG 迷你图（柱状/折线，当前数据或查询结果）；core 纯函数
+# 生成 SVG（无外部依赖、安全转义）；与自然语言查询闭环（预览"查询后"
+# 的数据分布）。
+# 范围：react only；additive；core SVG 生成器。
+#
+# 执行：python pi-batch.py projects/iris-ui/vxe-grid-batch-ar.yaml \
+#   --log-file logs/iris-ui-batch-ar.log --retries 2
+
+git_commit: false
+decision_log: /home/u1/iris-ui/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      You are preparing the baseline for iris-ui grid batch AR (mini chart
+      preview). Monorepo: /home/u1/iris-ui.
+
+      Read:
+      1. /home/u1/iris-ui/packages/react/src/primitives/table/Table.tsx —
+         the toolbar render (where the chart button goes), the filteredData
+         (current view for the chart data), the numeric column detection
+         (summary sum columns or typeof), the i18n usage.
+      2. /home/u1/iris-ui/packages/core/src/ — pure function conventions
+         (SVG string building — escape attribute values; no innerHTML
+         anywhere — the SVG is rendered via a component prop:
+         dangerouslySetInnerHTML is DISALLOWED by the repo style — instead
+         the core builder returns STRUCTURED data (bars/lines arrays) and
+         the react adapter renders <svg> JSX from it — document this).
+
+      Write a markdown baseline to the output path:
+      - proposed design:
+        a) core buildChartData(values: Array<number | null>, labels?:
+           Array<string>, kind: 'bar' | 'line'): { points: Array<{ label:
+           string; value: number | null }>; min: number; max: number } —
+           normalizes + scales the values (null gaps for line); NO SVG
+           string in core (framework-neutral data only); tests (empty,
+           nulls, negatives, single value)
+        b) react chartPreview?: boolean — toolbar button (data-iris-chart-
+           trigger, i18n table.chart) opens a panel (data-iris-chart-panel,
+           floating like the stats panel): a column select (numeric columns
+           — typeof number or summary sum) + a kind toggle (bar/line,
+           data-iris-chart-kind) + the <svg viewBox> rendered from
+           buildChartData over the CURRENT filteredData (first 20 rows +
+           "共 N 行" note); bar: rects; line: polyline + dots; axes
+           skipped (mini chart, document); token colors
+           (--iris-primary for the series, --iris-muted for labels);
+           Esc/outside closes
+        c) i18n table.chart / table.chart.bar / table.chart.line (en + zh)
+      - file map + tests
+      Do NOT modify files.
+    output: /home/u1/iris-ui/docs/vxe-grid/batch-ar-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Implement iris-ui grid batch AR (mini chart preview) in
+          /home/u1/iris-ui, per
+          /home/u1/iris-ui/docs/vxe-grid/batch-ar-baseline.md. Read it
+          first, then AGENTS.md.
+
+          HARD CONSTRAINTS:
+          - Core framework-free; react only; additive only; NO
+            dangerouslySetInnerHTML for the SVG (structured data → JSX).
+          - No dist/tgz/node_modules/manifest.json edits.
+          - Test files ≤500 lines; ≤4 changed files + tests.
+          - MANIFEST SCANNER HYGIENE: single-line function props.
+          - CSS uses --iris-* tokens only.
+          - TIME BUDGET: all light-medium — finish all.
+
+          IMPLEMENT:
+          1. core (packages/core/src/chart-data.ts NEW + tests):
+             - buildChartData per the baseline; export from index.ts;
+               tests (empty, nulls → gaps, negatives, single, scaling
+               bounds)
+          2. react chart preview (props.ts + Table.tsx + i18n):
+             - chartPreview?: boolean (single line)
+             - toolbar button (data-iris-chart-trigger) when enabled;
+               panel (data-iris-chart-panel): numeric column select
+               (IrisSelect with the numeric leaf columns) + bar/line kind
+               toggle (two small buttons) + <svg viewBox="0 0 300 120">
+               from buildChartData over the current filteredData (first 20
+               values + a note "共 N 行" when truncated); bar rects (width
+               computed, fill var(--iris-primary) via style fill — SVG
+               attributes accept CSS vars in modern browsers; if not, use
+               the token value via getComputedStyle fallback? — simpler:
+               fill="var(--iris-primary)" and document); line polyline +
+               circles; value labels omitted (mini chart, document);
+               Esc/outside close
+             - i18n table.chart / table.chart.bar / table.chart.line
+          3. Tests (chart-preview.test.tsx):
+             - button renders with the prop; panel opens; column select
+               lists numeric columns; bar svg has rects (count matches);
+               line has a polyline; kind toggle switches; no prop → inert
+          4. Docs: iris 独有 section
+
+          VERIFY:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm --filter @iris-ui-kit/core test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react typecheck`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react lint` (0 errors)
+          - `python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json` → 0 violations
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm gen:manifest`
+            (regenerate + commit — ALWAYS)
+          Report: files changed, tests added, counts, what is left.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-ar-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are the adversarial reviewer for iris-ui batch AR. Read
+          batch-ar-baseline.md and batch-ar-adapt.md, inspect.
+
+          Check:
+          1. buildChartData: normalization (null gaps, negatives, scaling
+             bounds — min==max edge); framework-neutral
+          2. chart preview: button gating; panel + select + kind toggle;
+             svg JSX (NO innerHTML); rect/polyline counts; truncation
+             note; dismiss; token colors
+          3. additive only; manifest hygiene; core framework-free; CSS
+             tokens; i18n both languages
+          Run verification commands (core test, react test/typecheck/lint,
+          audit, check:manifest). Write verdict markdown: PASS or FAIL with
+          numbered findings (severity, file:line, fix). Do NOT modify files.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-ar-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Gate stage for iris-ui batch AR. Read the review verdict
+          /home/u1/iris-ui/docs/vxe-grid/batch-ar-review.md.
+
+          If PASS: run the full repo gate:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm turbo run test typecheck lint build --concurrency=2`
+          - audit → 0; gen:manifest + check:manifest
+          - Commit: `git add -A -- . ':!apps/ssr-solidstart/.vinxi' && git
+            commit -m "feat(table): grid 批 AR——迷你图表预览（自绘 SVG，查询闭环）"`
+          Report commit hash and final test counts.
+
+          If FAIL with concrete fixes: apply fixes, rerun, full gate, commit.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-ar-gate.md

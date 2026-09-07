@@ -11,7 +11,7 @@ tasks:
 
       ## 设计
       1. 映射文件：data_dir(cwd)/sessions/<safe(name)>.<sid>.codex-thread
-         （config.data_dir 已有函数；safe name = 仅 [A-Za-z0-9._-] 否则替换为 _）。
+         （使用 config.data_dir；safe name = 仅 [A-Za-z0-9._-]，其他字符替换为 _）。
          内容为一行 thread_id（无换行噪声）；读取有界（≤4096 字节，超限当作无效并警告）。
       2. 捕获（runner）：新增模块内函数 _capture_codex_thread(stdout_lines, name, sid,
          workdir)：
@@ -44,8 +44,8 @@ tasks:
                         fork: ["exec","fork","{session}","{prompt}"]}
          （注释说明：{session} 语义 = codex thread_id；映射由 runner 捕获；start 空 =
          新会话无前缀参数）。
-         注意与已有 extra_args=["--approve-for-me","--json"] 组合：session-led 布局下
-         extra_args 仍追加尾部（codex resume 接受尾部 --json/--approve-for-me，已实测）。
+         注意与配置的 extra_args=["--approve-for-me","--json"] 组合：session-led 布局下
+         extra_args 仍追加尾部，保持 Codex resume 的参数布局契约。
       6. 测试：
          - tests/test_pi_batch.py 新增（fake agent 风格）：agent 脚本 echo 一行
            {"type":"thread.started","thread_id":"01a…"} + 其余；--session-mode shared
@@ -59,7 +59,8 @@ tasks:
       7. 门禁：python -m pytest tests/test_pi_batch.py tests/test_agent_adapter.py
          tests/test_tui_adapter_codex.py tests/test_tui_protocol.py tests/test_tui.py
          -q 全绿；python quality.py --strict . 不新增违规；python pi-batch.py eval 不回归。
-      完成后结论写入 docs/tui-phase0/t6-session-map.md：数据流图（首轮捕获→映射文件→
-      次轮 resume）、fallback 语义（映射缺失时的行为）、遗留事项。
+      最终回复直接给出完整 Markdown 交付报告，由 runner 写入 output；不要自行写
+      output 路径。报告固定包含首轮捕获→映射文件→次轮 resume 数据流、fallback 语义、
+      验证入口和 provider 边界。
     output: docs/tui-phase0/t6-session-map.md
     validate: pyquality

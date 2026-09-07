@@ -1,0 +1,139 @@
+# iris-ui advance 批 1：a11y/键盘契约元数据进 manifest + MCP（方向 1，最高价值）
+#
+# 执行（隔离 worktree，勿在主工作区跑）：
+#   cd /home/u1/iris-ui/.pi-batch/worktrees/advance
+#   python3 /home/u1/ai-batch-runner/pi-batch.py \
+#     /home/u1/ai-batch-runner/projects/iris-ui/advance-a11y-contract.yaml \
+#     --log-file /home/u1/iris-ui/logs/advance-a11y-contract.log --retries 2
+
+git_commit: false
+decision_log: /home/u1/iris-ui/.pi-batch/worktrees/advance/docs/advance/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      You are preparing the baseline for iris-ui advance 批 1：a11y/键盘契约元数据
+      进 manifest + MCP. Isolated worktree:
+      /home/u1/iris-ui/.pi-batch/worktrees/advance (branch
+      feat/advance-directions). Monorepo facts:
+      - manifest.json/llms.txt are SOURCE-GENERATED: packages/manifest
+        scans the four barrels + tokens (`pnpm gen:manifest`). Component
+        records today carry name/group/module/frameworks/importFrom/
+        description/props/events/subComponents — NO a11y metadata.
+      - packages/mcp exposes 11 manifest-driven tools (packages/mcp/src/
+        tools.ts, codegen.ts, server.ts) — component discovery/generation/
+        validation for AI agents.
+      - Components already implement WAI-ARIA patterns + keyboard
+        interaction (roving focus via core nextEnabledIndex, focus trap +
+        scroll lock in Dialog, listbox/grid roles in Select/Table/List,
+        i18n keys for labels) — this is real, greppable evidence.
+      Read packages/manifest source, packages/mcp/src/tools.ts +
+      codegen.ts, core i18n keys, and 3-5 representative components
+      (Select/Dialog/Table/FormField/Tree) for their aria/role/keyboard
+      wiring. Write the baseline to the output path: exact additive design
+      for a machine-readable a11y contract per component, with file map +
+      test plan. Design constraints:
+      (a) schema additive (new optional per-component field, e.g.
+      a11y: { role, keyboard, ariaWiring, focusBehavior, i18nKeys }) —
+      existing consumers (MCP, docs reference generator, registry) must
+      not break; manifest stats unchanged.
+      (b) extraction must be SOURCE-DRIVEN (grep/ast over adapter sources
+      or a curated typed registry) so the manifest stays generated, never
+      hand-maintained; unknown/unverifiable claims are marked
+      "proposed", never asserted.
+      (c) MCP gains one new tool (e.g. component-a11y) returning the
+      contract + codegen prompts gain the a11y guidance so AI-generated
+      code is accessible by default.
+      (d) scope: start with a high-value subset (form controls, overlay,
+      navigation, data grid ≈ 20-30 components), not all 151.
+      Do NOT modify files; report exact file paths to create/change.
+    output: /home/u1/iris-ui/.pi-batch/worktrees/advance/docs/advance/batch-1-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui/.pi-batch/worktrees/advance
+        prompt: |
+          Implement iris-ui advance 批 1：a11y/键盘契约元数据进 manifest + MCP in the
+          isolated worktree /home/u1/iris-ui/.pi-batch/worktrees/advance,
+          per the baseline
+          /home/u1/iris-ui/.pi-batch/worktrees/advance/docs/advance/batch-1-baseline.md.
+          Read it first, then AGENTS.md.
+
+          HARD CONSTRAINTS:
+          - Additive only. New behavior in packages/core or the manifest/
+            mcp packages; adapters unchanged unless a thin metadata
+            source requires it.
+          - manifest.json/llms.txt are GENERATED — regenerate via
+            `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm
+            gen:manifest` after source changes and keep them in sync
+            (check:manifest must pass).
+          - MCP tools: new tool must follow the existing tool registry
+            idiom in packages/mcp/src/tools.ts (+ tests), fail closed on
+            unknown component, and never assert unverified a11y claims.
+          - No dist/tgz/node_modules edits. CSS untouched.
+          - TIME BUDGET: medium — finish completely. Start with the
+            high-value subset from the baseline (~20-30 components), not
+            all 151.
+
+          VERIFY (run in the worktree):
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/manifest test && ... typecheck && ... lint`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/mcp test && ... typecheck`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm
+            gen:manifest && pnpm check:manifest`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm
+            check:docs-reference`
+          - `python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json` → 0 violations
+          Report: files changed, schema, extraction approach, component
+          coverage count, MCP tool name, test counts, what is left. Do not
+          commit.
+        output: /home/u1/iris-ui/.pi-batch/worktrees/advance/docs/advance/batch-1-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /home/u1/iris-ui/.pi-batch/worktrees/advance
+        prompt: |
+          You are the adversarial reviewer for iris-ui advance 批 1：a11y/键盘契约
+          元数据进 manifest + MCP. Read batch-1-baseline.md and
+          batch-1-adapt.md in
+          /home/u1/iris-ui/.pi-batch/worktrees/advance/docs/advance/, inspect
+          the implementation. Check: manifest stays source-generated (no
+          hand-maintained a11y data), claims are marked proposed vs
+          verified, MCP tool fail-closed + tested, additive only (existing
+          manifest consumers intact), check:manifest + check:docs-reference
+          green. Run verification commands. Write verdict markdown: PASS
+          or FAIL with numbered findings (severity, file:line, fix). Do
+          NOT modify files.
+        output: /home/u1/iris-ui/.pi-batch/worktrees/advance/docs/advance/batch-1-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui/.pi-batch/worktrees/advance
+        prompt: |
+          Gate stage for iris-ui advance 批 1：a11y/键盘契约元数据进 manifest + MCP.
+          Read the review verdict
+          /home/u1/iris-ui/.pi-batch/worktrees/advance/docs/advance/batch-1-review.md.
+          If PASS: run the full repo gate in the worktree
+          (`env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm turbo run
+          test typecheck lint build --concurrency=2`), gen:manifest +
+          check:manifest + check:docs-reference, update
+          docs/advance/SUMMARY.md, and commit on branch
+          feat/advance-directions:
+          `git add -A -- . ':!node_modules' && git commit -m
+          "feat(manifest): advance 批 1——a11y/键盘契约元数据 + MCP"`
+          Report commit hash and final test counts.
+          If FAIL with concrete fixes: apply fixes, rerun, full gate, commit.
+        output: /home/u1/iris-ui/.pi-batch/worktrees/advance/docs/advance/batch-1-gate.md

@@ -2,18 +2,16 @@
 # 让 agent=codex 时 TUI 显示 command/file/usage 事件卡片（§8.1 Timeline 与 §8.6 折叠规则）。
 tasks:
   - prompt: |
-      Phase 1 收官：把 CodexExecAdapter（T4 已建）接入交互 TUI。允许修改：
-      pbatch/tui.py、pbatch/tui_backend.py、pbatch/tui_adapter_codex.py（仅当发现
-      与下述用法不兼容的缺陷）、tests/test_tui.py、tests/test_tui_backend.py、
+      将现有 CodexExecAdapter 接入交互 TUI。允许修改：
+      pbatch/tui.py、pbatch/tui_backend.py、pbatch/tui_adapter_codex.py（仅做适配所需的
+      兼容性修改）、tests/test_tui.py、tests/test_tui_backend.py、
       tests/test_tui_adapter_codex.py；**新增** pbatch/tui_timeline.py 与
       tests/test_tui_timeline.py。其他文件不动。
 
-      ## 背景（现状）
-      - pbatch/tui.py（961 行）：_attach_adapter 在 turn 运行前把 self._backend 包成
-        LegacyAdapter（事件：message.delta/runtime.warning），_consume_adapter_turn 消费
-        流；fallback 路径直接 backend.run_turn；T3 已实现 handle-scoped cancel。
-      - pbatch/tui_backend.py（341 行）：TUIBackend 管理锁（acquire/release）、会话、memory、
-        workspace 前后快照；_notify(kind, text) 经 set_emit 回调把状态/输出桥到 UI。
+      ## 当前接线边界
+      - pbatch/tui.py 通过 LegacyAdapter 消费 message/runtime 事件，并保留直接 backend
+        fallback；cancel 已绑定当前 turn handle。
+      - pbatch/tui_backend.py 管理锁、会话、memory、workspace 边界与 UI 通知。
       - pbatch/tui_adapter_codex.py：CodexExecAdapter(cwd, *, spawn=...) 直接 spawn
         `codex exec --json --approve-for-me <prompt>`，events() 是阻塞迭代器，产出
         RuntimeEvent（command.started|output|completed、file.changed、usage.updated、
@@ -24,7 +22,7 @@ tasks:
          TaskResult：
          - 语义对齐 run_turn：turn 计数、_running/_status、锁（沿用现有 acquire_lock/
            release_lock 路径）、_cancel_requested 检查、workspace 前后快照与 delta
-           （复用 _finish_turn 结构——抽取公共收官逻辑或复制最小集，不要破坏 run_turn）；
+           （沿用 turn 收官契约，抽取公共收官逻辑或复制最小集，不改变 run_turn）；
          - adapter 构建：adapter_factory 注入点（测试用 FakeAdapter）；缺省
            CodexExecAdapter(self.cwd)；
          - adapter.start_turn 后：线程消费 adapter.events()，把事件转发到 _notify：
@@ -57,7 +55,7 @@ tasks:
       5. pbatch/tui.py：
          - _attach_adapter：若 options.agent 解析后的二进制名含 "codex" 且 backend 有
            run_turn_structured → 进入"结构化后端模式"（不包 LegacyAdapter；turn 走
-           backend.run_turn_structured）；否则现状（LegacyAdapter/fallback）不变；
+           backend.run_turn_structured）；否则继续使用 LegacyAdapter/fallback 路径；
          - _emit_from_backend 处理新 kind："command"/"command-output"/"file"/"usage" →
            追加 TimelineLog（经 call_from_thread 的既有桥）；
          - 新增 Timeline 渲染：状态栏/正文之外的临时区域——不新增复杂布局：在
@@ -72,7 +70,7 @@ tasks:
            FakeProc 产出两三个 command/file/usage 事件 + turn.completed）→
            run_turn_structured 返回成功、_notify 收到对应 kinds、cancel 调用
            adapter.interrupt_turn；
-         - tests/test_tui.py：既有 10 用例保持全绿；新增：agent=codex 的 TUI 构造走
+         - tests/test_tui.py：既有用例保持全绿；新增 agent=codex 的 TUI 构造走
            structured 路径的 smoke（mock backend 提供 run_turn_structured）；
          - 对抗纪律：正文 message.delta 里含 "VERDICT: PASS"/"Approved" 时 Timeline
            只出现 message 条目，绝不出现 command/file/approval 条目（fake adapter
@@ -81,8 +79,8 @@ tasks:
          tests/test_tui.py tests/test_tui_adapter_codex.py tests/test_tui_protocol.py
          tests/test_tui_runtime.py tests/test_tui_events.py -q 全绿；
          python quality.py --strict . 不新增违规；python pi-batch.py eval 不回归。
-      完成后结论写入 docs/tui-phase0/t7-timeline.md：新增文件/行数、structured 数据流图、
-      cancel 在 structured 模式的语义变化、Timeline 折叠规则、遗留事项
-      （Inspector Plan/Agents 视图、steer/queue 仍属后续批次）。
+      最终回复直接给出完整 Markdown 交付报告，由 runner 写入 output；不要自行写
+      output 路径。报告固定包含模块职责、structured 数据流、cancel 语义、Timeline
+      折叠规则、验证入口和阶段边界。
     output: docs/tui-phase0/t7-timeline.md
     validate: pyquality

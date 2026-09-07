@@ -83,6 +83,22 @@ def test_cli_route_json(tmp_path):
     assert "task" in data
 
 
+def test_task_default_model_is_resolved_when_constructed(monkeypatch):
+    from pbatch.models import Task
+    monkeypatch.setattr(config, "AGENT_DEFAULT_MODEL", "late-model")
+    assert Task(prompt="dynamic").model == "late-model"
+
+
+def test_pipeline_from_prompt_uses_current_default_model(monkeypatch, tmp_path):
+    from pbatch.models import Stage
+    from pbatch.pipeline import _stage_from_prompt_tasks
+    monkeypatch.setattr(config, "AGENT_DEFAULT_MODEL", "pipeline-model")
+    tasks, reused = _stage_from_prompt_tasks(
+        Stage(name="stage", from_prompt="prompt", output=str(tmp_path / "out.md")),
+        False, "", 0)
+    assert not reused and tasks[0].model == "pipeline-model"
+
+
 def test_inject_only_untouched_models(monkeypatch):
     from pbatch import cli_batch
     from pbatch.models import Task

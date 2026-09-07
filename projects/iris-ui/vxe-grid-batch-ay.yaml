@@ -1,0 +1,147 @@
+# iris-ui grid 批 AY：数据掩码（脱敏列——显示/导出双轨）
+#
+# 目标：列 mask?: 'sensitive' | ((value: unknown) => string)——显示层
+# 脱敏（内置 sensitive：邮箱/手机号/通用首尾保留）；复制/导出默认脱敏、
+# 列 exportRaw?: boolean 恢复原始值。core maskValue 纯函数。
+# 范围：react only；additive；core 纯函数。
+#
+# 执行：python pi-batch.py projects/iris-ui/vxe-grid-batch-ay.yaml \
+#   --log-file logs/iris-ui-batch-ay.log --retries 2
+
+git_commit: false
+decision_log: /home/u1/iris-ui/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      You are preparing the baseline for iris-ui grid batch AY (data mask).
+      Monorepo: /home/u1/iris-ui.
+
+      Read:
+      1. /home/u1/iris-ui/packages/react/src/primitives/table/Table.tsx —
+         the cell render chain (formatter — the mask applies where the
+         display value is produced), the export paths (exportCsv /
+         exportCurrentViewCsv / exportSelectionCsv — where the masked
+         value vs raw is chosen), the copy path (clipConfig TSV).
+      2. /home/u1/iris-ui/packages/core/src/ — pure function conventions.
+
+      Write a markdown baseline to the output path:
+      - proposed design:
+        a) core maskValue(value: unknown, kind: 'sensitive'): string —
+           email → first char + '***@' + domain; phone (11 digits) →
+           3+4+4 mask (138****5678); other strings ≥ 6 chars → first 2 +
+           '****' + last 2; shorter → '****'; non-string → String(value);
+           tests (email, phone, short, non-string, boundary)
+        b) IrisTableColumn.mask?: 'sensitive' | ((value: unknown) =>
+           string) (single line) — the display value (the cell render +
+           tooltip) uses the mask; formatter interplay: mask wins over
+           formatter? — decide: mask applies FIRST, then formatter (a
+           formatter sees the masked string — document); edit/validation
+           use the RAW value (editing a masked column shows the raw value
+           in the editor — document)
+        c) export/copy: masked columns export the MASKED value by default;
+           column.exportRaw?: boolean → the raw value instead; the export
+           column mapping (exportCsv's dataIndex path — the export helpers
+           read the raw row; the mask applies in the export serializer:
+           update exportCsv/exportCurrentViewCsv/exportSelectionCsv to
+           apply the mask per column unless exportRaw)
+      - file map + tests
+      Do NOT modify files.
+    output: /home/u1/iris-ui/docs/vxe-grid/batch-ay-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Implement iris-ui grid batch AY (data mask) in /home/u1/iris-ui,
+          per /home/u1/iris-ui/docs/vxe-grid/batch-ay-baseline.md. Read it
+          first, then AGENTS.md.
+
+          HARD CONSTRAINTS:
+          - Core framework-free; react only; additive only.
+          - No dist/tgz/node_modules/manifest.json edits.
+          - Test files ≤500 lines; ≤4 changed files + tests.
+          - MANIFEST SCANNER HYGIENE: single-line function props.
+          - TIME BUDGET: light-medium — finish both.
+
+          IMPLEMENT:
+          1. core (packages/core/src/mask.ts NEW + tests):
+             - maskValue per the baseline; export from index.ts; tests
+          2. react (types.ts + Table.tsx + exportCsv.ts):
+             - IrisTableColumn.mask?: 'sensitive' | ((value: unknown) =>
+               string) (single line) + exportRaw?: boolean (single line)
+             - display: the cell render + tooltip use the masked value
+               (mask first, formatter second — a formatter receives the
+               masked string, document); editing shows the RAW value
+             - export: exportCsv/exportCurrentViewCsv/exportSelectionCsv
+               apply the mask per column unless exportRaw (the serializer
+               reads col.mask → masked value); the copy path (clipConfig
+               TSV) too
+             - tests: display masked; formatter sees the mask; edit shows
+               raw; export masked by default; exportRaw exports raw;
+               custom mask function
+          3. Docs: iris 独有 section + example snippet
+
+          VERIFY:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm --filter @iris-ui-kit/core test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react typecheck`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react lint` (0 errors)
+          - `python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json` → 0 violations
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm gen:manifest`
+            (regenerate + commit — ALWAYS)
+          Report: files changed, tests added, counts, what is left.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-ay-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are the adversarial reviewer for iris-ui batch AY. Read
+          batch-ay-baseline.md and batch-ay-adapt.md, inspect.
+
+          Check:
+          1. maskValue: email/phone/short/boundary; non-string
+          2. display: mask before formatter; edit raw; tooltip masked
+          3. export/copy: masked default; exportRaw raw; all three export
+             helpers + copy
+          4. additive only; manifest hygiene; core framework-free; CSS
+             tokens
+          Run verification commands (core test, react test/typecheck/lint,
+          audit, check:manifest). Write verdict markdown: PASS or FAIL with
+          numbered findings (severity, file:line, fix). Do NOT modify files.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-ay-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Gate stage for iris-ui batch AY. Read the review verdict
+          /home/u1/iris-ui/docs/vxe-grid/batch-ay-review.md.
+
+          If PASS: run the full repo gate:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm turbo run test typecheck lint build --concurrency=2`
+          - audit → 0; gen:manifest + check:manifest
+          - Commit: `git add -A -- . ':!apps/ssr-solidstart/.vinxi' && git
+            commit -m "feat(table): grid 批 AY——数据掩码（脱敏列，显示/导出双轨）"`
+          Report commit hash and final test counts.
+
+          If FAIL with concrete fixes: apply fixes, rerun, full gate, commit.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-ay-gate.md

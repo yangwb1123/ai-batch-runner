@@ -21,6 +21,7 @@ prescription is driven by an expert evaluation of the REQUIREMENT itself:
 Usage:
     pi-batch assess "企业订单管理：新建订单表单，含支付审批流程"
     pi-batch assess "..." --json
+    pi-batch assess "..." --product-brief
     pi-batch assess "..." --llm-json '{"apply":[],"skip":[]}'
 """
 
@@ -38,7 +39,8 @@ from .relevance import _keyword_hit
 from .rule_matcher import (TIER_ORDER, domain_for, format_manifest,
                            load_registry, match_rules, reconcile)
 from .text_io import read_text_bounded
-from .product import format_product, product_manifest, productization_level
+from .product import (format_product, format_product_brief, product_brief,
+                       product_manifest, productization_level)
 
 # Requirement completeness dimensions (bilingual presence keywords).
 DIMENSIONS = [
@@ -250,6 +252,10 @@ def prescription(text: str, registry: Optional[dict] = None) -> dict:
         },
         "product": product_manifest(text),
         "workflow": workflow_level(text, reg, None),
+        # Keep the product-direction proposal alongside the assessment so
+        # planners and implementation prompts consume the same deterministic
+        # artifact as `pi-batch product`.
+        "product_direction": product_brief(text),
         "scale": scale, "effective_tier": effective,
         "matched_tier": matched["tier"], "risk": matched["risk"],
         "page_types": matched["page_types"],
@@ -281,6 +287,13 @@ def format_assessment(assessment: dict) -> str:
     lines.append(f"工作流: {workflow['level']}（分 {workflow['score']}）— "
                  f"{workflow['suggestion']}")
     lines.append(format_product(assessment["product"]))
+    direction = assessment.get("product_direction")
+    if direction and direction.get("status") != "不适用":
+        user_story = direction.get("user_story", {})
+        lines.append("产品方向: 提案，待确认（用户故事/旅程/状态机/功能分解已生成）")
+        lines.append("  用户故事: As a " + user_story.get("as_a", "待确认")
+                     + ", I want " + user_story.get("i_want", "待确认")
+                     + ", so that " + user_story.get("so_that", "待确认"))
     selected = assessment["prescription"]
     lines.append(f"处方（最小必要规则集，共 {len(selected)} 条）:")
     for item in selected:
@@ -369,11 +382,17 @@ def format_execution_prompt(assessment: dict) -> str:
     product = assessment["product"]
     lines.append(f"PRODUCTIZATION: {product['level']} — implicit-requirement "
                  f"questions are TO-CONFIRM, never implement silently")
-    for scenario in product["scenarios"]:
-        lines.append(f"  questions[{scenario['scenario']}]: "
-                     + " / ".join(scenario["questions"]))
-    for note in product["restraint_notes"]:
-        lines.append(f"  restraint: {note}")
+    direction = assessment.get("product_direction")
+    if direction and direction.get("status") != "不适用":
+        lines.append("PRODUCT_DIRECTION: proposal only; all unknown product "
+                     "decisions are TO-CONFIRM and must not be implemented silently")
+        lines.extend(format_product_brief(direction).splitlines())
+    else:
+        for scenario in product["scenarios"]:
+            lines.append(f"  questions[{scenario['scenario']}]: "
+                         + " / ".join(scenario["questions"]))
+        for note in product["restraint_notes"]:
+            lines.append(f"  restraint: {note}")
     workflow = assessment["workflow"]
     lines.append(f"WORKFLOW: {workflow['level']} — {workflow['suggestion']}")
     lines.append("RULES (load ONLY these files):")
@@ -390,6 +409,8 @@ def format_execution_prompt(assessment: dict) -> str:
 
 def _assess_text(args, parser) -> str:
     """需求文本来源：--file 或位置参数（有界读取）。"""
+    if args.file and args.task:
+        parser.error("use either positional requirement text or --file, not both")
     if args.file:
         try:
             return read_text_bounded(Path(args.file), config.INPUT_MAX_BYTES,
@@ -427,6 +448,36 @@ def print_profile_block(assessment: dict) -> None:
               f"[{record['status']}]")
 
 
+def _print_product_brief_mode(args, parser, text: str) -> bool:
+    """Handle product output before unrelated assessment work is loaded."""
+    if not args.product_brief:
+        return False
+    conflicts = []
+    for enabled, flag in ((args.json, "--json"), (args.prompt, "--prompt"),
+                          (bool(args.llm_json), "--llm-json"),
+                          (bool(args.registry), "--registry")):
+        if enabled:
+            conflicts.append(flag)
+    if conflicts:
+        parser.error("--product-brief cannot be combined with "
+                     + ", ".join(conflicts))
+    try:
+        brief = product_brief(text)
+    except ValueError as exc:
+        parser.error(str(exc))
+    print(format_product_brief(brief))
+    return True
+
+
+def _attach_assessment_metadata(text: str, assessment: dict, registry: dict) -> None:
+    """Attach profile, assumptions, and constitution after rule decisions."""
+    from .profile import assumption_records, task_profile
+    assessment["task_profile"] = task_profile(text, registry)
+    assessment["assumptions"] = assumption_records(text)
+    from .evolution import attach_constitution
+    attach_constitution(assessment)
+
+
 def assess_main(argv: list) -> None:
     """`pi-batch assess "<requirement>" [--json] [--llm-json '...']`."""
     import argparse
@@ -441,11 +492,15 @@ def assess_main(argv: list) -> None:
     parser.add_argument("--prompt", action="store_true",
                         help="print the compiled execution-instruction block "
                              "(feed it to the implementing agent)")
+    parser.add_argument("--product-brief", action="store_true",
+                        help="print the structured product-direction proposal")
     parser.add_argument("--llm-json", default="",
                         help='LLM selection JSON {"apply":[],"skip":[]} to reconcile')
     parser.add_argument("--registry", default="", help="rule registry YAML override")
     args = parser.parse_args(argv)
     text = _assess_text(args, parser)
+    if _print_product_brief_mode(args, parser, text):
+        return
     registry = _assess_registry(text, args.registry, parser)
     assessment = prescription(text, registry)
     if args.llm_json:
@@ -455,15 +510,9 @@ def assess_main(argv: list) -> None:
             log.error("Invalid --llm-json: %s", exc)
             sys.exit(2)
         _apply_llm_selection(text, assessment, registry, selection)
-    # Multi-dimensional profile, discretion envelope and explicit
-    # assumptions are additive metadata; the assessor's tier/risk policy
-    # above remains authoritative for the prescribed rule set.
-    # P1/P3/P4：多维画像 + 裁量包络 + 假设记录（惰性导入避免循环依赖）
-    from .profile import assumption_records, task_profile
-    assessment["task_profile"] = task_profile(text, registry)
-    assessment["assumptions"] = assumption_records(text)
-    from .evolution import attach_constitution, format_constitution_block
-    attach_constitution(assessment)
+    # Profile/assumptions/constitution are additive metadata; the assessor's
+    # tier and risk policy above remains authoritative for rule selection.
+    _attach_assessment_metadata(text, assessment, registry)
     if args.json:
         print(json.dumps(assessment, ensure_ascii=False, indent=2))
         return
@@ -472,6 +521,7 @@ def assess_main(argv: list) -> None:
         return
     print(format_assessment(assessment))
     print_profile_block(assessment)
+    from .evolution import format_constitution_block
     constitution = format_constitution_block(assessment)
     if constitution:
         print()

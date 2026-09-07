@@ -743,6 +743,16 @@ def test_reuse_filters_single_batch(tmp_path, fake_agent):
     assert "nothing to run" in second.stderr  # log line goes to stderr
     assert counter.read_text(encoding="utf-8").count("x") == 2  # agent not called again
 
+def _without_config_model(lines, mod):
+    """Keep argv assertions independent of the workspace's model default."""
+    model = getattr(mod.config, "AGENT_DEFAULT_MODEL", "")
+    result = []
+    for line in lines:
+        if result and result[-1] in {"--model", "-m"} and line == model:
+            result.pop()
+        else:
+            result.append(line)
+    return result
 
 def _recording_agent(tmp_path, args_log):
     """Agent that appends every argv element (one per line) to args_log."""
@@ -757,7 +767,9 @@ def _codex_headless_agent(tmp_path, args_log, thread_id):
     agent.write_text(
         f"#!/bin/sh\nprintf '%s\\n' \"$@\" >> {args_log}\n"
         f"echo '{{\"type\":\"thread.started\",\"thread_id\":\"{thread_id}\"}}'\n"
-        "echo done\n",
+        "echo '{\"type\":\"item.completed\",\"item\":"
+        "{\"type\":\"agent_message\",\"text\":\"done\"}}'\n"
+        "echo '{\"type\":\"turn.completed\",\"usage\":{}}'\n",
         encoding="utf-8",
     )
     agent.chmod(0o755)
@@ -790,14 +802,19 @@ def test_codex_thread_mapping_drives_second_headless_invocation(tmp_path, monkey
     first = mod.run_task(
         mod.Task(prompt="first", cwd=str(tmp_path)),
         session_flags=mod._session_flags("start", sid, name), session_name=name)
-    mapping = provider_session_path(str(tmp_path), name, sid)
-    assert first.success and mapping.name == "review_bad_name.session-1.codex-thread"
+    mapping = provider_session_path(
+        str(tmp_path), name, sid, str(agent))
+    assert first.success
+    assert mapping.parent == tmp_path / ".pi-batch" / "sessions"
+    assert mapping.name.startswith("review_bad_name-")
+    assert "/" not in mapping.name and ".." not in mapping.name
     assert mapping.read_text(encoding="utf-8") == thread_id
     second = mod.run_task(
         mod.Task(prompt="second", cwd=str(tmp_path)),
         session_flags=mod._session_flags("continue", sid, name), session_name=name)
     assert second.success
-    assert args_log.read_text(encoding="utf-8").splitlines() == [
+    lines = _without_config_model(args_log.read_text(encoding="utf-8").splitlines(), mod)
+    assert lines == [
         "exec", "first", "--approve-for-me", "--json",
         "exec", "resume", thread_id, "second", "--approve-for-me", "--json",
     ]
@@ -829,7 +846,7 @@ def test_invalid_codex_thread_first_lines_are_silent(tmp_path, monkeypatch, capl
 
 def test_provider_session_mapping_read_is_bounded(tmp_path, caplog):
     from pbatch.session import provider_session_path, resolve_provider_session
-    path = provider_session_path(str(tmp_path), "work", "sid")
+    path = provider_session_path(str(tmp_path), "work", "sid", "codex")
     path.parent.mkdir(parents=True)
     path.write_bytes(b"x" * 4097)
     assert resolve_provider_session(
@@ -848,7 +865,8 @@ def test_shared_session_flags_sequence(tmp_path):
     tasks = [mod.Task(prompt="p1", output=str(out / "1.md")), mod.Task(prompt="p2", output=str(out / "2.md"))]
     results = mod.run_serial(tasks, session_mode="shared", session_id="sess-1", session_name="props")
     assert all(r.success for r in results)
-    lines = args_log.read_text(encoding="utf-8").splitlines()
+    lines = _without_config_model(
+        args_log.read_text(encoding="utf-8").splitlines(), mod)
     assert lines == ["-p", "p1", "--session-id", "sess-1", "--name", "props",
                      "-p", "p2", "--session-id", "sess-1"]
 

@@ -1,0 +1,96 @@
+# iris-ui grid 批 EE：vue 同步：自然语言查询（四框架对齐）
+#
+# 执行：python pi-batch.py projects/iris-ui/vxe-grid-batch-ee.yaml \
+#   --log-file logs/iris-ui-batch-ee.log --retries 3
+
+git_commit: false
+decision_log: /home/u1/iris-ui/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      You are preparing the baseline for iris-ui grid 批 EE：vue 同步：自然语言查询（四框架对齐）. Monorepo: /home/u1/iris-ui.
+      Read the vue IrisTable (packages/vue/src/primitives/table/) + the react
+      reference for the same capability (packages/react/src/primitives/table/
+      Table.tsx) + the core controller (packages/core/src/) and write the
+      baseline: the design (spec: vue IrisTable 同步自然语言查询：query?: string + onQueryChange + 工具栏查询输入（core parseTableQuery 桥接；本地 filters 合并）；i18n；测试（输入过滤/坏查询错误提示）。), file map, test plan. Do NOT
+      modify files.
+    output: /home/u1/iris-ui/docs/vxe-grid/batch-ee-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Implement iris-ui grid 批 EE：vue 同步：自然语言查询（四框架对齐） in /home/u1/iris-ui, per
+          /home/u1/iris-ui/docs/vxe-grid/batch-ee-baseline.md. Read it
+          first, then AGENTS.md.
+
+          HARD CONSTRAINTS:
+          - Core framework-free; vue bridge only; do NOT touch the other
+            framework packages; additive props only.
+          - No dist/tgz/node_modules/manifest.json edits.
+          - Test files ≤500 lines; ≤4 changed files + tests.
+          - MANIFEST SCANNER HYGIENE: single-line function props; named
+            exported interfaces; export new types.
+          - CSS uses --iris-* tokens only.
+          - TIME BUDGET: light-medium — finish completely. Mirror the react
+            semantics exactly.
+
+          SPEC: vue IrisTable 同步自然语言查询：query?: string + onQueryChange + 工具栏查询输入（core parseTableQuery 桥接；本地 filters 合并）；i18n；测试（输入过滤/坏查询错误提示）。
+
+          VERIFY:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm --filter @iris-ui-kit/vue typecheck`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/vue test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/vue lint` (0 errors)
+          - `python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json` → 0 violations
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm gen:manifest`
+            (regenerate + commit — ALWAYS)
+          Report: files changed, tests added, counts, what is left.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-ee-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are the adversarial reviewer for iris-ui grid 批 EE：vue 同步：自然语言查询（四框架对齐）. Read
+          batch-ee-baseline.md and batch-ee-adapt.md, inspect the
+          vue implementation against the react reference semantics. Check:
+          exact parity; additive only; manifest hygiene (check:manifest);
+          core framework-free; CSS tokens. Run verification commands
+          (core test, vue typecheck/test/lint, audit, check:manifest).
+          Write verdict markdown: PASS or FAIL with numbered findings
+          (severity, file:line, fix). Do NOT modify files.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-ee-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Gate stage for iris-ui grid 批 EE：vue 同步：自然语言查询（四框架对齐）. Read the review verdict
+          /home/u1/iris-ui/docs/vxe-grid/batch-ee-review.md.
+          If PASS: run the full repo gate
+          (`env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm turbo run test
+          typecheck lint build --concurrency=2`), audit → 0,
+          gen:manifest + check:manifest, update
+          /home/u1/iris-ui/docs/vxe-grid-comparison.md (iris 独有四框架对齐
+          section), and commit:
+          `git add -A -- . ':!apps/ssr-solidstart/.vinxi' && git commit -m
+          "feat(table): grid 批 EE——vue 同步：自然语言查询（四框架对齐）"`
+          Report commit hash and final test counts.
+          If FAIL with concrete fixes: apply fixes, rerun, full gate, commit.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-ee-gate.md

@@ -220,9 +220,6 @@ def _apply_task_overrides(args, tasks) -> None:
     if args.provider:
         for t in tasks:
             t.provider = args.provider
-    if getattr(args, "thinking", ""):
-        for t in tasks:
-            t.thinking = args.thinking
     if args.timeout:
         for t in tasks:
             t.timeout = args.timeout
@@ -371,13 +368,15 @@ def _drop_isolated(tasks: list, circuit: Circuit, round_no: int) -> list:
 
 def _write_sidecars(args, tasks: list, results: list, cli_validate: str) -> None:
     """T9: persist input fingerprints for successful artifacts."""
-    original = {str(task.output_path()): task for task in tasks if task.output}
+    original = {str(task.output_path_unresolved()): task
+                for task in tasks if task.output}
     for r in results:
-        t = original.get(str(r.task.output_path()), r.task)
+        t = original.get(str(r.task.output_path_unresolved()), r.task)
         if r.success and t.output:
             eff = t.validate if t.validate is not None else cli_validate
-            write_sidecar(str(t.output_path()), t.prompt, eff, t.model,
-                          t.provider, t.workdir(), t.thinking)
+            write_sidecar(str(t.output_path_unresolved()), t.prompt, eff, t.model,
+                          t.provider, t.workdir(), t.effective_agent(),
+                          t.thinking)
 
 def _batch_git_baseline(args, tasks: list):
     if not (args.git_commit and not args.no_git_commit):
@@ -502,7 +501,8 @@ def _filter_reused(tasks: list, reuse: bool, validate_cmd: str = "", reuse_legac
             continue
         effective = t.validate if t.validate is not None else validate_cmd
         fp = reuse_fingerprint(t, effective) if fingerprint_mode else None
-        if reuse_decision(str(t.output_path()), effective, t.workdir(), reuse_legacy, fp):
+        output = str(t.output_path_unresolved())
+        if reuse_decision(output, effective, t.workdir(), reuse_legacy, fp):
             continue  # reused
         kept.append(t)
     skipped = len(tasks) - len(kept)

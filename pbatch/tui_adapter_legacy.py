@@ -23,10 +23,13 @@ from .tui_protocol import (
     RUNTIME_PROTOCOL_VERSION,
     RuntimeCapabilities,
     RuntimeEvent,
+    TERMINAL_TURN_STATES,
     TurnState,
 )
 from .tui_runtime import (
     ApprovalDecision,
+    ForkSessionRequest,
+    ResumeSessionRequest,
     RuntimeInfo,
     RuntimeSession,
     StartTurnRequest,
@@ -37,6 +40,7 @@ from .tui_runtime import (
 
 LEGACY_RUNTIME_NAME = "legacy"
 DEFAULT_RUNTIME_QUEUE_SIZE = 256
+MAX_RUN_SEQUENCES = 4_096
 OUTPUT_SUMMARY_CHARS = 2_000
 
 
@@ -50,6 +54,7 @@ class _BoundedRuntimeQueue:
             raise ValueError("maxsize must be a positive integer")
         self.maxsize = maxsize
         self._items: deque[RuntimeEvent] = deque()
+        self._reserved = 0
         self._closed = False
         self._condition = threading.Condition()
 
@@ -57,13 +62,38 @@ class _BoundedRuntimeQueue:
         with self._condition:
             if self._closed:
                 return False
-            if len(self._items) >= self.maxsize and not self._discard_warning():
+            if (len(self._items) + self._reserved >= self.maxsize
+                    and not self._discard_warning()):
                 if event.kind == "runtime.warning":
                     return False
                 raise OverflowError("legacy runtime event queue is full")
             self._items.append(event)
             self._condition.notify()
             return True
+
+    def reserve(self) -> None:
+        with self._condition:
+            if self._closed:
+                raise RuntimeError("legacy runtime event queue is closed")
+            if (len(self._items) + self._reserved >= self.maxsize
+                    and not self._discard_warning()):
+                raise OverflowError("legacy runtime event queue is full")
+            self._reserved += 1
+
+    def put_reserved(self, event: RuntimeEvent) -> None:
+        with self._condition:
+            if self._reserved <= 0:
+                raise RuntimeError("legacy runtime queue reservation is missing")
+            self._reserved -= 1
+            if self._closed:
+                raise RuntimeError("legacy runtime event queue is closed")
+            self._items.append(event)
+            self._condition.notify()
+
+    def release_reservation(self) -> None:
+        with self._condition:
+            if self._reserved:
+                self._reserved -= 1
 
     def _discard_warning(self) -> bool:
         for index, queued in enumerate(self._items):
@@ -126,10 +156,14 @@ class LegacyAdapter:
         self._backend = backend
         self._queue = _BoundedRuntimeQueue(maxsize)
         self._lock = threading.RLock()
+        self._cancel_condition = threading.Condition(self._lock)
         self._closed = False
         self._session: Optional[RuntimeSession] = None
         self._active: Optional[TurnHandle] = None
         self._interrupt_requested: set[str] = set()
+        self._cancel_accepted: set[str] = set()
+        self._cancel_inflight: set[str] = set()
+        self._start_committed: set[str] = set()
         self._seq_by_run: dict[str, int] = {}
         self._stream_seen: dict[str, bool] = {"stdout": False, "stderr": False}
         self._info = RuntimeInfo(
@@ -149,6 +183,10 @@ class LegacyAdapter:
         except (AttributeError, TypeError) as exc:
             raise TypeError("backend does not expose a writable emit callback") from exc
 
+    def runtime_info(self) -> RuntimeInfo:
+        """Return immutable local capabilities without reinitializing backend state."""
+        return self._info
+
     def initialize(self, request: InitializeRequest) -> RuntimeInfo:
         self._ensure_open()
         return self._info
@@ -158,28 +196,41 @@ class LegacyAdapter:
         with self._lock:
             if self._active is not None and not self._active.done:
                 raise RuntimeError("cannot replace an active runtime session")
+            run_id = _id("run")
+            if (run_id not in self._seq_by_run
+                    and len(self._seq_by_run) >= MAX_RUN_SEQUENCES):
+                raise OverflowError("legacy runtime run sequence index is full")
+            self._queue.reserve()
+            reserved = True
+            try:
+                session, provider_id = self._new_runtime_session(request)
+                self._publish(
+                    "session.created", session=session, run_id=run_id,
+                    turn_id="", payload={
+                        "provider_session_id": provider_id,
+                        "state": session.state,
+                    }, reserved=True)
+                reserved = False
+            finally:
+                if reserved:
+                    self._queue.release_reservation()
+            self._session = session
+        return session
+
+    def _new_runtime_session(
+            self, request: StartSessionRequest) -> tuple[RuntimeSession, str]:
         name = str(_request_value(request, "name", ""))
         response = self._backend.new_session(name)
         provider_id = str(_value(response, "session_id", "") or
                           getattr(self._backend, "session_id", ""))
-        session_id = str(_request_value(request, "session_id", "") or _id("ses"))
-        workspace_id = str(_request_value(request, "workspace_id", "") or
-                           self._workspace_id())
         session = RuntimeSession(
-            session_id=session_id,
+            session_id=str(_request_value(request, "session_id", "") or _id("ses")),
             provider_session_id=provider_id,
-            workspace_id=workspace_id,
-            started_at=_now(),
-            state="ACTIVE",
+            workspace_id=str(_request_value(request, "workspace_id", "") or
+                             self._workspace_id()),
+            started_at=_now(), state="ACTIVE",
         )
-        with self._lock:
-            self._session = session
-        self._publish("session.created", session=session,
-                      run_id=_id("run"), turn_id="", payload={
-                          "provider_session_id": provider_id,
-                          "state": session.state,
-                      })
-        return session
+        return session, provider_id
 
     def _adopt_session(self, request: StartSessionRequest) -> RuntimeSession:
         """Bind the adapter to a backend session without resetting it."""
@@ -207,6 +258,15 @@ class LegacyAdapter:
     def resume_session(self, request: ResumeSessionRequest) -> RuntimeSession:
         raise UnsupportedOperation("resume_session", "session_resume")
 
+    def read_session(self, request: Any):
+        raise UnsupportedOperation("read_session", "session_read")
+
+    def list_sessions(self, request: Any = None):
+        raise UnsupportedOperation("list_sessions", "session_list")
+
+    def fork_session(self, request: ForkSessionRequest) -> RuntimeSession:
+        raise UnsupportedOperation("fork_session", "session_fork")
+
     def start_turn(self, request: StartTurnRequest) -> TurnHandle:
         self._ensure_open()
         prompt = str(_request_value(request, "prompt", ""))
@@ -231,7 +291,18 @@ class LegacyAdapter:
             )
             self._active = handle
             self._interrupt_requested.clear()
+            self._cancel_accepted.clear()
+            self._cancel_inflight.clear()
+            self._start_committed.clear()
             self._stream_seen = {"stdout": False, "stderr": False}
+        try:
+            self._publish_for(handle, "turn.queued", {"state": TurnState.QUEUED})
+        except Exception:
+            with self._lock:
+                if self._active is handle:
+                    self._active = None
+            handle._done.set()
+            raise
         worker = threading.Thread(
             target=self._run_turn, args=(handle, prompt),
             name=f"legacy-turn-{handle.turn_id}", daemon=True)
@@ -240,27 +311,64 @@ class LegacyAdapter:
 
     def _run_turn(self, handle: TurnHandle, prompt: str) -> None:
         try:
-            handle.state = TurnState.RUNNING
-            self._publish_for(handle, "turn.started", {"state": handle.state})
+            self._ensure_not_interrupted(handle)
             before = self._workspace_status()
+            self._ensure_not_interrupted(handle)
             self._publish_for(handle, "workspace.snapshot",
                               {"phase": "before", "workspace": before})
+            self._commit_start(handle)
             result = self._backend.run_turn(prompt)
+            self._raise_if_cancelled(handle)
             self._emit_result_fallback(handle, result)
             after = self._workspace_status()
+            self._raise_if_cancelled(handle)
             diff = self._workspace_diff(handle)
-            self._publish_for(handle, "workspace.snapshot",
-                              {"phase": "after", "workspace": after})
+            after_payload = {"phase": "after", "workspace": after}
+            authoritative_delta = self._last_turn_workspace()
+            if authoritative_delta is not None:
+                after_payload["last_turn_workspace"] = authoritative_delta
+            self._publish_for(handle, "workspace.snapshot", after_payload)
             for path in _changed_paths(before, after, diff):
                 self._publish_for(handle, "file.changed", {"path": path})
             self._publish_result(handle, result)
         except Exception as exc:
-            handle.state = TurnState.FAILED
-            self._safe_publish_for(handle, "turn.failed", {
-                "state": handle.state, "reason": str(exc)[:OUTPUT_SUMMARY_CHARS],
-            })
+            with self._cancel_condition:
+                self._wait_for_cancel_decision(handle)
+                interrupted = handle.turn_id in self._cancel_accepted
+                handle.state = (TurnState.INTERRUPTED if interrupted
+                                else TurnState.FAILED)
+                self._safe_publish_for(handle, (
+                    "turn.interrupted" if interrupted else "turn.failed"), {
+                    "state": handle.state,
+                    "reason": str(exc)[:OUTPUT_SUMMARY_CHARS],
+                })
         finally:
             handle._done.set()
+
+    def _ensure_not_interrupted(self, handle: TurnHandle) -> None:
+        with self._lock:
+            if handle.turn_id in self._interrupt_requested:
+                raise RuntimeError("turn interrupted before backend execution")
+
+    def _commit_start(self, handle: TurnHandle) -> None:
+        """Linearization point after which backend invocation may occur."""
+        with self._lock:
+            if handle.turn_id in self._interrupt_requested:
+                raise RuntimeError("turn interrupted before backend execution")
+            self._start_committed.add(handle.turn_id)
+            handle.state = TurnState.RUNNING
+            self._publish_for(handle, "turn.started", {"state": handle.state})
+
+    def _raise_if_cancelled(self, handle: TurnHandle) -> None:
+        with self._cancel_condition:
+            self._wait_for_cancel_decision(handle)
+            if handle.turn_id in self._cancel_accepted:
+                raise RuntimeError("backend accepted turn cancellation")
+
+    def _wait_for_cancel_decision(self, handle: TurnHandle) -> None:
+        """Wait with ``_cancel_condition`` held until cancel() has decided."""
+        while handle.turn_id in self._cancel_inflight:
+            self._cancel_condition.wait()
 
     def _workspace_status(self) -> dict[str, Any]:
         value = self._backend.workspace_status()
@@ -280,29 +388,48 @@ class LegacyAdapter:
             })
             return {}
 
+    def _last_turn_workspace(self) -> Optional[dict[str, Any]]:
+        snapshot = getattr(self._backend, "snapshot", None)
+        if not callable(snapshot):
+            return None
+        try:
+            value = snapshot()
+        except Exception:
+            return None
+        delta = (value.get("last_turn_workspace")
+                 if isinstance(value, Mapping) else None)
+        return dict(delta) if isinstance(delta, Mapping) else None
+
     def _emit_result_fallback(self, handle: TurnHandle, result: Any) -> None:
         stdout = str(_value(result, "stdout", "") or "")
         stderr = str(_value(result, "stderr", "") or "")
-        if stdout and not self._stream_seen["stdout"]:
-            self._publish_for(handle, "message.delta", {"text": stdout})
-        if stderr and not self._stream_seen["stderr"]:
-            self._publish_for(handle, "runtime.warning",
-                              {"stream": "stderr", "text": stderr})
+        with self._lock:
+            if stdout and not self._stream_seen["stdout"]:
+                self._publish_for(handle, "message.delta", {"text": stdout})
+            if stderr and not self._stream_seen["stderr"]:
+                self._publish_for(handle, "runtime.warning",
+                                  {"stream": "stderr", "text": stderr})
 
     def _publish_result(self, handle: TurnHandle, result: Any) -> None:
         success = _value(result, "success", None) is True
         elapsed = _finite_number(_value(result, "elapsed", 0.0))
-        payload = {
-            "state": TurnState.SUCCEEDED if success else TurnState.FAILED,
-            "output_summary": str(_value(result, "stdout", "") or "")[
-                :OUTPUT_SUMMARY_CHARS],
-            "elapsed_seconds": elapsed,
-            "returncode": _value(result, "returncode", -1),
-            "reason": str(_value(result, "reason", "") or "")[:OUTPUT_SUMMARY_CHARS],
-        }
-        handle.state = payload["state"]
-        self._publish_for(handle, "turn.completed" if success else "turn.failed",
-                          payload)
+        with self._cancel_condition:
+            self._wait_for_cancel_decision(handle)
+            interrupted = handle.turn_id in self._cancel_accepted
+            payload = {
+                "state": (TurnState.INTERRUPTED if interrupted else
+                          (TurnState.SUCCEEDED if success else TurnState.FAILED)),
+                "output_summary": str(_value(result, "stdout", "") or "")[
+                    :OUTPUT_SUMMARY_CHARS],
+                "elapsed_seconds": elapsed,
+                "returncode": _value(result, "returncode", -1),
+                "reason": str(_value(result, "reason", "") or "")[
+                    :OUTPUT_SUMMARY_CHARS],
+            }
+            handle.state = payload["state"]
+            kind = ("turn.interrupted" if interrupted else
+                    ("turn.completed" if success else "turn.failed"))
+            self._publish_for(handle, kind, payload)
 
     def steer_turn(self, request: SteerRequest) -> None:
         raise UnsupportedOperation("steer_turn", "turn_steer")
@@ -310,18 +437,55 @@ class LegacyAdapter:
     def interrupt_turn(self, request: InterruptRequest) -> None:
         self._ensure_open()
         turn_id = str(_request_value(request, "turn_id", ""))
-        with self._lock:
+        with self._cancel_condition:
             handle = self._active
             if handle is None or handle.turn_id != turn_id:
                 raise ValueError("interrupt request does not match the active turn")
             if turn_id in self._interrupt_requested:
                 return
-            if handle.done:
+            if handle.done or handle.state in TERMINAL_TURN_STATES:
                 raise RuntimeError("cannot interrupt a terminal turn")
             self._interrupt_requested.add(turn_id)
-            handle.state = TurnState.INTERRUPTING
+            committed = turn_id in self._start_committed
+            if not committed:
+                self._accept_interrupt(handle)
+            else:
+                self._cancel_inflight.add(turn_id)
+        if not committed:
+            return
+        accepted = False
+        retryable = False
+        try:
+            accepted = bool(self._backend.cancel())
+        except Exception:
+            retryable = True
+            raise
+        finally:
+            self._settle_interrupt(handle, accepted, retryable=retryable)
+
+    def _settle_interrupt(self, handle: TurnHandle, accepted: bool, *,
+                          retryable: bool = False) -> None:
+        with self._cancel_condition:
+            self._cancel_inflight.discard(handle.turn_id)
+            try:
+                if retryable:
+                    self._interrupt_requested.discard(handle.turn_id)
+                if handle.done or handle.state in TERMINAL_TURN_STATES:
+                    return
+                if accepted:
+                    self._accept_interrupt(handle)
+                else:
+                    self._publish_for(handle, "runtime.warning", {
+                        "stream": "cancel",
+                        "text": "cancel requested but backend did not accept it",
+                    })
+            finally:
+                self._cancel_condition.notify_all()
+
+    def _accept_interrupt(self, handle: TurnHandle) -> None:
+        self._cancel_accepted.add(handle.turn_id)
+        handle.state = TurnState.INTERRUPTING
         self._publish_for(handle, "turn.interrupting", {"state": handle.state})
-        self._backend.cancel()
 
     def resolve_approval(self, decision: ApprovalDecision) -> None:
         raise UnsupportedOperation("resolve_approval", "typed_approvals")
@@ -339,7 +503,8 @@ class LegacyAdapter:
     def _backend_emit(self, kind: str, text: str) -> None:
         with self._lock:
             handle = self._active
-            if handle is None or handle.done or self._closed:
+            if (handle is None or handle.done or self._closed
+                    or handle.state in TERMINAL_TURN_STATES):
                 return
             normalized = str(kind).lower()
             if normalized == "stdout":
@@ -352,7 +517,7 @@ class LegacyAdapter:
                 payload = {"stream": normalized, "text": str(text)}
             else:
                 return
-        self._publish_for(handle, event_kind, payload)
+            self._publish_for(handle, event_kind, payload)
 
     def _publish_for(self, handle: TurnHandle, kind: str,
                      payload: dict[str, Any]) -> None:
@@ -372,18 +537,27 @@ class LegacyAdapter:
 
     def _publish(self, kind: str, *, session: RuntimeSession, run_id: str,
                  turn_id: str, payload: dict[str, Any],
-                 actor_id: str = "agent_main") -> None:
+                 actor_id: str = "agent_main", reserved: bool = False) -> None:
         with self._lock:
+            if (run_id not in self._seq_by_run
+                    and len(self._seq_by_run) >= MAX_RUN_SEQUENCES):
+                raise OverflowError("legacy runtime run sequence index is full")
             seq = self._seq_by_run.get(run_id, 0) + 1
             self._seq_by_run[run_id] = seq
-        event = RuntimeEvent(
-            event_id=_id("evt"), seq=seq, occurred_at=_now(),
-            workspace_id=session.workspace_id, session_id=session.session_id,
-            run_id=run_id, turn_id=turn_id, actor_id=actor_id,
-            kind=kind, payload=payload,
-            extensions={"runtime": LEGACY_RUNTIME_NAME},
-        )
-        self._queue.put(event)
+            extensions = {"runtime": LEGACY_RUNTIME_NAME}
+            if (kind == "workspace.snapshot" and payload.get("phase") == "after"
+                    and isinstance(payload.get("last_turn_workspace"), dict)):
+                extensions["authoritative"] = True
+            event = RuntimeEvent(
+                event_id=_id("evt"), seq=seq, occurred_at=_now(),
+                workspace_id=session.workspace_id, session_id=session.session_id,
+                run_id=run_id, turn_id=turn_id, actor_id=actor_id,
+                kind=kind, payload=payload, extensions=extensions,
+            )
+            if reserved:
+                self._queue.put_reserved(event)
+            else:
+                self._queue.put(event)
 
     def _workspace_id(self) -> str:
         try:

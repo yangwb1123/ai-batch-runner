@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -78,6 +79,74 @@ class TestGateFindings:
         prompt2 = gate_fix.gate_fix_prompt(_stage(), "reason", None)
         assert "gate stage 'gate' rejected" in prompt2
         assert "(none)" in prompt2
+
+    def test_fix_context_uses_only_rejecting_artifacts(self, tmp_path):
+        passed = tmp_path / "pass.md"
+        failed = tmp_path / "fail.md"
+        pass_contract = {
+            "schema_version": 1, "verdict": "PASS", "reason": "advisory",
+            "evidence": ["ok"],
+            "validators": [{"name": "tests", "status": "PASS"}],
+            "findings": [{"severity": "low", "file": "advisory.py",
+                          "problem": "non-blocking"}],
+        }
+        fail_contract = {
+            "schema_version": 1, "verdict": "FAIL", "reason": "blocked",
+            "findings": [{"severity": "high", "file": "blocking.py",
+                          "problem": "must fix"}],
+        }
+        passed.write_text(
+            f"```json\n{json.dumps(pass_contract)}\n```\n" + "p" * 20000,
+            encoding="utf-8")
+        failed.write_text(
+            f"```json\n{json.dumps(fail_contract)}\n```\n",
+            encoding="utf-8")
+
+        findings = gate_fix._first_findings([str(passed), str(failed)])
+        reason = gate_fix.gate_fail_reason([str(failed), str(passed)])
+
+        assert findings and [item["file"] for item in findings] == [
+            "blocking.py"]
+        assert "blocked" in reason
+        assert "advisory" not in reason
+
+    def test_reason_reports_missing_invalid_and_unreadable_artifacts(
+            self, tmp_path, monkeypatch):
+        passed = tmp_path / "pass.md"
+        invalid = tmp_path / "invalid.md"
+        missing = tmp_path / "missing.md"
+        oversized = tmp_path / "oversized.md"
+        passed.write_text("VERDICT: PASS - checked", encoding="utf-8")
+        invalid.write_text("review notes only", encoding="utf-8")
+        oversized.write_text("x" * 64, encoding="utf-8")
+
+        reason = gate_fix.gate_fail_reason(
+            [str(passed), str(invalid), str(missing)])
+        assert "review notes only" not in reason
+        assert f"{invalid}: invalid Gate artifact" in reason
+        assert "no usable Gate verdict" in reason
+        assert f"{missing}: Gate artifact is missing" in reason
+        assert str(passed) not in reason
+
+        monkeypatch.setattr(gate_fix.config, "OUTPUT_MAX_BYTES", 8)
+        unreadable = gate_fix.gate_fail_reason([str(oversized)])
+        assert f"{oversized}: invalid Gate artifact" in unreadable
+        assert "exceeds" in unreadable
+
+    def test_findings_do_not_follow_symlink_artifacts(self, tmp_path):
+        target = tmp_path / "outside.md"
+        artifact = tmp_path / "gate.md"
+        target.write_text(
+            "VERDICT: FAIL - linked\n"
+            "```json\n"
+            '[{"severity":"high","file":"outside.py",'
+            '"problem":"must not be injected"}]\n'
+            "```\n",
+            encoding="utf-8",
+        )
+        artifact.symlink_to(target)
+
+        assert gate_fix._first_findings([str(artifact)]) is None
 
 
 class TestToolRootPlaceholder:
@@ -159,6 +228,63 @@ def test_gate_fix_loop_resolves_and_continues(tmp_path):
         assert "VERDICT: PASS" in gate_text
     finally:
         config.AGENT_BIN = old_bin
+
+
+def test_stage_agent_jsonl_gate_fix_resolves_and_continues(tmp_path):
+    """A Codex-shaped transcript must drive both FAIL remediation and the
+    later PASS; the gate-fix task also keeps the gate stage's executor."""
+    from pbatch.models import Pipeline
+    from pbatch.pipeline import run_pipeline
+
+    agent = tmp_path / "jsonl-agent.py"
+    agent.write_text(
+        f"#!{sys.executable}\n"
+        "import json\n"
+        "import sys\n"
+        "prompt = sys.argv[2]\n"
+        "if 'GATE VERDICT REASON' in prompt:\n"
+        "    for _ in range(80):\n"
+        "        print(json.dumps({'type': 'item.completed', 'item': {\n"
+        "            'type': 'command_execution',\n"
+        "            'aggregated_output': 'x' * 1024}}))\n"
+        "    message = 'fixed everything; regression test added'\n"
+        "elif 'fixed everything' in prompt:\n"
+        "    message = 'VERDICT: PASS - verified after remediation'\n"
+        "elif 'gatekeeper' in prompt:\n"
+        "    message = 'VERDICT: FAIL - implementation evidence is missing'\n"
+        "else:\n"
+        "    message = 'ordinary stage output'\n"
+        "print(json.dumps({'type': 'item.completed', 'item': {\n"
+        "    'type': 'agent_message', 'text': message}}))\n"
+        "print(json.dumps({'type': 'turn.completed', 'usage': {}}))\n",
+        encoding="utf-8",
+    )
+    agent.chmod(0o755)
+    pipeline = Pipeline(stages=[
+        Stage(name="plan", agent=str(agent), from_prompt="plan",
+              output=str(tmp_path / "plan.md"), cwd=str(tmp_path)),
+        Stage(name="gate", agent=str(agent), from_outputs="plan",
+              aggregate=True, gate=True, gate_fix_rounds=1,
+              cwd=str(tmp_path), tasks=[{
+                  "prompt": "gatekeeper {input_content}",
+                  "output": str(tmp_path / "gate.md"),
+              }]),
+        Stage(name="downstream", agent=str(agent), from_outputs="gate",
+              aggregate=True, cwd=str(tmp_path), tasks=[{
+                  "prompt": "consume {input_content}",
+                  "output": str(tmp_path / "downstream.md"),
+              }]),
+    ])
+
+    _results, failed = run_pipeline(pipeline)
+
+    assert failed == []
+    fix_report = (tmp_path / "gate-fix-1.md").read_text()
+    assert "fixed everything" in fix_report
+    assert "command_execution" not in fix_report
+    assert len(fix_report.encode("utf-8")) < 1024
+    assert "VERDICT: PASS" in (tmp_path / "gate.md").read_text()
+    assert (tmp_path / "downstream.md").exists()
 
 
 def test_gate_fix_loop_exhausts_rounds_and_halts(tmp_path):
@@ -303,3 +429,38 @@ def test_ratchet_baseline_holds_and_detects_new(tmp_path):
     assert r.returncode == 1
     assert "1 new violation" in r.stderr
     assert "b.css" in r.stderr
+
+
+def test_gate_fix_uses_stage_agent_for_remediation_task(tmp_path, monkeypatch):
+    """T13/T14: the remediation task inherits stage.agent (not only the
+    global binary) so a gate on a codex stage is fixed by codex."""
+    from pbatch import runner
+    from pbatch.gate_fix import run_gate_fix
+    from pbatch.models import Stage, TaskResult
+
+    stage = Stage(name="gate", agent="/tmp/remediator", from_outputs="x",
+                  gate=True, cwd=str(tmp_path))
+    gate_out = tmp_path / "gate.md"
+    gate_out.write_text(
+        '{"type":"item.completed","item":{"id":"i0","type":"agent_message",'
+        '"text":"VERDICT: FAIL - checklist only"}}\n'
+        '{"type":"turn.completed","usage":{}}\n', encoding="utf-8")
+    invoked = []
+
+    def fake_run(task, **kwargs):
+        invoked.append(task)
+        return TaskResult(task, True, stdout="ok", elapsed=0.1)
+
+    monkeypatch.setattr(runner, "run_task", fake_run)
+    monkeypatch.setattr(runner, "_save_validated",
+                        lambda task, result, cmd: True)
+    # gate_fix calls memory.record_task from within its module
+    import pbatch.memory as memory_mod
+    monkeypatch.setattr(memory_mod, "record_task", lambda result: None)
+
+    result, _report = run_gate_fix(stage, [str(gate_out)], 1, "", "s")
+    assert result.success
+    assert invoked and invoked[0].agent == "/tmp/remediator"
+    # JSONL verdict text flows into the fix prompt
+    assert "VERDICT: FAIL - checklist only" in invoked[0].prompt
+    assert "turn.completed" not in invoked[0].prompt

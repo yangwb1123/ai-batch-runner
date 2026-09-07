@@ -1,0 +1,149 @@
+# iris-ui grid 批 AW：自然语言数据摘要（列级 AI 摘要）
+#
+# 目标：nlSummary?: boolean——右键菜单内置"摘要"项 → 面板显示该列的
+# 自然语言摘要（core 纯函数：数值列 count/范围/均值/缺失；分类列 top3
+# 分布 + 占比）——与列值分布/区域统计组合成完整数据洞察闭环。
+# 范围：react only；additive；core 纯函数。
+#
+# 执行：python pi-batch.py projects/iris-ui/vxe-grid-batch-aw.yaml \
+#   --log-file logs/iris-ui-batch-aw.log --retries 2
+
+git_commit: false
+decision_log: /home/u1/iris-ui/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      You are preparing the baseline for iris-ui grid batch AW (NL column
+      summary). Monorepo: /home/u1/iris-ui.
+
+      Read:
+      1. /home/u1/iris-ui/packages/react/src/primitives/table/Table.tsx —
+         the contextMenu machinery (batch H: items + onSelect; batch AM:
+         the built-in 值分布 item — mirror that pattern for the summary
+         item), the valueDistribution panel pattern (batch AM), the i18n.
+      2. /home/u1/iris-ui/packages/core/src/value-distribution.ts (batch
+         AM) — the distribution helper (reuse for the categorical branch).
+
+      Write a markdown baseline to the output path:
+      - proposed design:
+        a) core summarizeColumn(values: Array<unknown>, label: string):
+           string — numeric branch (≥60% of non-empty values are numbers):
+           "label：共 N 个值，范围 min–max，平均 avg（保留 1 位小数），M
+           个缺失"; categorical branch: "label：共 N 个值，M 个唯一；top1
+           (c1, p1%)、top2 (c2, p2%)、top3 (c3, p3%)，其余 R 个"（top3
+           截断）; empty → "label：无数据"; values are Strings via String();
+           tests (numeric, categorical, empty, all-null, single value,
+           percentages rounding)
+        b) react nlSummary?: boolean — contextMenu items: when true, append
+           the built-in item 摘要 (key '__iris-summary', i18n
+           table.summary) after the 值分布 item; selecting it opens a
+           panel (data-iris-summary-panel) with the summarizeColumn text
+           (muted rows, --iris-* tokens); Esc/outside closes; the panel
+           pattern mirrors the distribution panel
+        c) i18n table.summary (en + zh)
+      - file map + tests
+      Do NOT modify files.
+    output: /home/u1/iris-ui/docs/vxe-grid/batch-aw-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Implement iris-ui grid batch AW (NL column summary) in
+          /home/u1/iris-ui, per
+          /home/u1/iris-ui/docs/vxe-grid/batch-aw-baseline.md. Read it
+          first, then AGENTS.md.
+
+          HARD CONSTRAINTS:
+          - Core framework-free; react only; additive only.
+          - No dist/tgz/node_modules/manifest.json edits.
+          - Test files ≤500 lines; ≤4 changed files + tests.
+          - MANIFEST SCANNER HYGIENE: single-line function props.
+          - CSS uses --iris-* tokens only.
+          - TIME BUDGET: light — finish both.
+
+          IMPLEMENT:
+          1. core (packages/core/src/summary.ts NEW + tests):
+             - summarizeColumn per the baseline (reuse the distribution
+               logic for the categorical branch — import from
+               value-distribution or share a helper); export from index.ts;
+               tests (numeric/categorical/empty/all-null/single/rounding)
+          2. react (props.ts + Table.tsx + i18n):
+             - nlSummary?: boolean (single line)
+             - contextMenu: when enabled, append the built-in item
+               (key '__iris-summary', i18n table.summary) after the
+               distribution item; onSelect → panel
+               (data-iris-summary-panel) with summarizeColumn(bodyData
+               values of the clicked column, col.title); dismiss like the
+               distribution panel
+             - i18n table.summary (en + zh)
+          3. Tests (nl-summary.test.tsx):
+             - core: numeric summary string; categorical top3; empty
+             - react: menu item present when enabled; panel shows the
+               summary text; no prop → inert
+          4. Docs: iris 独有 section
+
+          VERIFY:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm --filter @iris-ui-kit/core test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react typecheck`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react lint` (0 errors)
+          - `python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json` → 0 violations
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm gen:manifest`
+            (regenerate + commit — ALWAYS)
+          Report: files changed, tests added, counts, what is left.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-aw-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are the adversarial reviewer for iris-ui batch AW. Read
+          batch-aw-baseline.md and batch-aw-adapt.md, inspect.
+
+          Check:
+          1. summarizeColumn: numeric/categorical branch detection;
+             rounding; percentages sum sanity; empty/all-null
+          2. react: menu item placement (after distribution); panel
+             content + dismiss; no prop → inert
+          3. additive only; manifest hygiene; core framework-free; CSS
+             tokens; i18n both languages
+          Run verification commands (core test, react test/typecheck/lint,
+          audit, check:manifest). Write verdict markdown: PASS or FAIL with
+          numbered findings (severity, file:line, fix). Do NOT modify files.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-aw-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Gate stage for iris-ui batch AW. Read the review verdict
+          /home/u1/iris-ui/docs/vxe-grid/batch-aw-review.md.
+
+          If PASS: run the full repo gate:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm turbo run test typecheck lint build --concurrency=2`
+          - audit → 0; gen:manifest + check:manifest
+          - Commit: `git add -A -- . ':!apps/ssr-solidstart/.vinxi' && git
+            commit -m "feat(table): grid 批 AW——自然语言数据摘要（列级 AI 摘要）"`
+          Report commit hash and final test counts.
+
+          If FAIL with concrete fixes: apply fixes, rerun, full gate, commit.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-aw-gate.md

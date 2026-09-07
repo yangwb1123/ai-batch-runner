@@ -1,0 +1,135 @@
+# Iris Grid Core continuation: Vue column order channel on current HEAD
+git_commit: false
+decision_log: /tmp/iris-grid-column-order-vue-1787901000/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      Prepare a factual baseline for a narrow Vue-only Iris UI Grid
+      continuation in /tmp/iris-grid-column-order-vue-1787901000, based on
+      current HEAD cc57ee16. The current core/grid columns model already owns
+      visibility, order, widths, and pinned channels; Vue's `useGridColumns`
+      bridge already exposes order methods, but Vue IrisTable currently only
+      routes visibility and widths through it and has no public columnOrder
+      channel. React is the reference for columnOrder semantics. Read
+      AGENTS.md, docs/grid-core-refactor.md, current Vue grid bridge, Vue
+      IrisTable props/types/render paths and columnDrag tests, React
+      useGridColumns/useTableColumns and relevant order tests, plus the current
+      manifest contract.
+
+      Write baseline only; do not modify source. Propose the smallest safe
+      additive Vue order-channel scope: public `columnOrder?: string[]`, the
+      Vue `update:columnOrder` event/v-model channel, one per-table Grid Core
+      columns model, and top-level order projection with known keys first,
+      unknown/duplicate keys ignored, unnamed source columns retaining relative
+      order, and `undefined`/empty restoring source order. Preserve grouped
+      top-level behavior, visibility/filter/sort/formula/summary/responsive/
+      virtualization/SSR behavior and existing columnDrag callback/DOM
+      semantics. If columnDrag can safely use the same model for a successful
+      flat drop, specify exact controlled/uncontrolled/no-op behavior; do not
+      invent pinning or unrelated UI. Core remains unchanged; no arch baseline
+      edits.
+    output: /tmp/iris-grid-column-order-vue-1787901000/docs/vxe-grid/batch-order-vue-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /tmp/iris-grid-column-order-vue-1787901000
+        prompt: |
+          Implement the Vue-only columnOrder continuation in this isolated
+          worktree according to
+          /tmp/iris-grid-column-order-vue-1787901000/docs/vxe-grid/batch-order-vue-baseline.md.
+          Read it first and then AGENTS.md. Keep Grid Core framework-neutral and
+          reuse the existing per-table useGridCore/useGridColumns instance.
+
+          HARD CONSTRAINTS:
+          - Vue adapter source, focused Vue tests, generated manifest outputs
+            only when produced by the generator, and concise grid evidence docs.
+            Do not modify React/Solid/Svelte, core, plugin/app source,
+            pnpm-lock, dist/tgz/node_modules, or scripts/arch-baseline.json.
+          - Additive public API only: `columnOrder?: string[]` and the Vue
+            `update:columnOrder` channel if confirmed by the baseline. Keep
+            parent-controlled order authoritative; inbound prop replacement is
+            silent and must not echo an event. Removing/emptying the prop must
+            restore source order without stale internal state leaking.
+          - Route order state through the existing Grid Core columns feature;
+            do not duplicate an order controller. Preserve current
+            columnVisibility/widths behavior and one Core identity. Order is a
+            top-level presentation projection, not a mutation of the caller's
+            columns array. Preserve grouped columns, unknown/duplicate order
+            keys, visibility, filtering, sorting, formulas, summaries,
+            responsive width, virtualization, SSR, and existing DOM attributes.
+          - Preserve existing columnDrag callback semantics and no-movement
+            behavior. If a successful flat drag also uses the new order channel,
+            make controlled rejection/non-optimistic behavior explicit and keep
+            the callback exactly once; do not change grouped drag behavior.
+          - No pinning/order UI expansion beyond the existing public surface.
+            No hard-coded colors, Tailwind, CSS-in-JS, or innerHTML. Test files
+            <=500 lines; no weakened/skipped tests; no arch-baseline edits.
+          - Do not hand-edit manifest.json/llms.txt. Run the repository manifest
+            generator if the public Vue prop/event changes the generated API.
+          - Do not commit.
+
+          VERIFY in the worktree:
+          - env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/vue test
+          - env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/vue typecheck
+          - env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/vue lint
+          - env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/vue build
+          - python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json
+          - git diff --check
+
+          Report exact files and focused/full/SSR counts. Do not commit.
+        output: /tmp/iris-grid-column-order-vue-1787901000/docs/vxe-grid/batch-order-vue-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /tmp/iris-grid-column-order-vue-1787901000
+        prompt: |
+          Adversarially review the Vue columnOrder continuation. Read the
+          baseline and adapt report in
+          /tmp/iris-grid-column-order-vue-1787901000/docs/vxe-grid/, inspect
+          the actual diff against current HEAD, and compare with React's
+          columnOrder contract. Do not modify source.
+
+          Check one Core/model identity, controlled prop authority and silent
+          sync, source-order restoration, known/unknown/duplicate key order,
+          top-level groups, columnDrag callback/no-op semantics, visibility and
+          all downstream render/summary/responsive/virtual paths, no source
+          array mutation, SSR, manifest hygiene, <=500-line tests, and no
+          baseline changes. Run focused/full Vue tests, typecheck, lint, build,
+          manifest check, spec audit, and diff check. Write PASS or FAIL with
+          numbered severity/file:line findings and concrete fixes; do not modify
+          source.
+        output: /tmp/iris-grid-column-order-vue-1787901000/docs/vxe-grid/batch-order-vue-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /tmp/iris-grid-column-order-vue-1787901000
+        prompt: |
+          Gate the Vue columnOrder continuation. Read
+          /tmp/iris-grid-column-order-vue-1787901000/docs/vxe-grid/batch-order-vue-review.md.
+          If PASS, rerun full Vue test/typecheck/lint/build, the spec audit,
+          `pnpm check:manifest`, and `git diff --check`; confirm
+          scripts/arch-baseline.json is unchanged. Update
+          docs/grid-core-refactor.md with one concise factual entry if
+          accepted. Do not modify other frameworks/core/apps, weaken tests, or
+          commit. If FAIL has concrete fixes, apply only those in this isolated
+          worktree, rerun all gates, and report final PASS/FAIL, exact files,
+          counts, generated manifest status, and any pre-existing ratchet
+          limitations.
+        output: /tmp/iris-grid-column-order-vue-1787901000/docs/vxe-grid/batch-order-vue-gate.md

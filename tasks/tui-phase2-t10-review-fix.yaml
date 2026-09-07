@@ -1,0 +1,67 @@
+# Phase 2 (T10) — review findings → 自动修复闭环（对接 gate-fix 机制）
+# `pi-batch review-fix`：审查发现按文件聚合 → 串行修复任务 → 门禁复验 → 结构化报告。
+tasks:
+  - prompt: |
+      Phase 2 第 10 步：把 `pi-batch review` 的结构化 findings 接到既有 gate-fix 修复机制上
+      （docs/CODEX_CLI_TUI_DESIGN.md §8.5：“修复此 finding 是新的普通 turn，重新遵守当前
+      权限与验证门禁”；docs/SPEC_SYSTEM.md 的对抗审查→裁决→修复闭环）。允许修改：
+      pbatch/review.py（仅抽取共享解析/运行为 review_fix 可复用，既有测试保持通过，
+      总体 ≤500 行否则拆 support）、pbatch/cli.py（注册一行）；新增 pbatch/review_fix.py
+      （≤500 行）与 tests/test_review_fix.py。其他文件不动。
+
+      ## 依赖接口
+      - pbatch/review.py 提供 scope 解析/互斥、codex review spawn（REVIEW 运行器注入点）、
+        finding 提取（severity 归一化、invalid 计数、字段 severity/file/line/problem/
+        evidence/fix_hint）。review_fix 调用这些接口，不重复实现。
+      - pbatch/gate_fix.py 有 gate_fix_prompt(stage-ish, reason, findings) 模板：
+        “line numbers are hints, verify against the code … Do NOT commit. Finish with
+        a short change report”。用它（或等价的同纪律模板）构建修复指令。
+
+      ## 实现要求
+      1. pbatch/review.py 重构（保持全部既有测试/CLI 行为不变）：
+         - 把 review 的“运行器”与“finding 提取器”暴露为模块级函数（参数化注入点），
+           review_main 变成薄壳；文档字符串说明 review_fix 复用入口。
+      2. pbatch/review_fix.py：
+         - review_fix_main(argv) -> int：argparse：scope 三选一（--uncommitted/--base/
+           --commit；--custom 允许与 scope 并用传修复指令附加）；--validate CMD（默认空=
+           不跑额外门禁；显式提供时每个文件修复后运行 CMD，替换 {files} 占位符为改动文件
+           列表、{cwd} 为工作目录）；--timeout（默认 900/文件）；--output（默认
+           docs/reviews/review-fix-<UTC>.md；路径必须落在 cwd 内，fail closed）。
+         - 流程：
+           a) 运行 review（复用提取器）拿 findings；无 finding → 报告“clean”退出 0；
+              review 失败 → 退出 2（附摘要）；
+           b) 按文件聚合 findings（file → [findings]）；同一文件合并为一个修复任务
+              （单 worktree 单写者纪律：任务串行执行，绝不并发）；
+           c) 每任务构建修复 prompt = gate_fix 模板（reason=扫描范围+文件内 finding
+              摘要，findings=该文件 JSON）+ 附加 --custom 指令（若给）；
+           d) 执行：codex exec（argv 走 config.build_agent_argv 的 codex 适配：prompt
+              位置参数 + --approve-for-me + --json）；修复回合允许写入工作区，
+              --json 输出仅用于核对（不解析为 finding）；stdout/stderr 有界（≤OUTPUT_MAX_BYTES）、
+              进程组硬超时、退出码非 0 → 该文件任务失败（记录 stderr 摘要）；
+           e) 任务结果记录：成功/失败/超时/无输出；若 --validate 提供 → 失败且 CMD
+              非 0 → 任务计 FAILED_VALIDATION（重试一次后仍失败才定失败）；
+           f) 报告（md 或 --json 同 review）：每文件 findings 列表 + 修复结果 +
+              复验结果；汇总：fixed/failed 计数与退出码（critical/high 有 failed → 1；
+              全部成功 → 0；review 阶段失败 → 2）。
+         - 安全纪律：修复任务串行；prompt 注入“行号是提示，必须以实际代码为准；不要
+           commit；改动只限 findings 涉及的文件与必要测试”；不篡改无关文件（agent 若改
+           了无关文件——由用户核对，工具只在报告里列出 detected 改动文件清单
+           （git status --porcelain 前后 diff 的文件集合，有界前 50 条））。
+      3. tests/test_review_fix.py（注入式，无真实 codex）：
+         - fixture findings 两文件（A 2 个 high、B 1 个 low）→ 断言生成 2 个修复任务、
+           串行执行（顺序）、prompt 含 finding JSON 与“Do NOT commit”纪律；
+         - 修复 agent 注入：成功/失败/超时三态各自的记录与退出码映射；
+         - --validate 注入：第一次失败第二次成功 → 重试一次后 FINAL 状态正确；
+         - 无 finding → exit 0 clean 报告；review 阶段注入失败 → exit 2；
+         - 报告 json schema 字段断言；--output 越界 fail closed。
+      4. 门禁：python -m pytest tests/test_review_fix.py tests/test_review.py
+         tests/test_pi_batch.py tests/test_entrypoints.py -q 全绿；python quality.py
+         --strict . 不新增违规；python pi-batch.py eval 不回归；completion 含
+         review-fix（注册表自动同步则无需动作，否则按仓库机制注册并说明）。
+      5. 可选端到端 smoke：仅在安全、可公开的测试仓库执行；交付文档固定记录最终
+         支持状态和有界验证结论。
+      最终回复直接给出完整 Markdown 交付报告，由 runner 写入 output；不要自行写
+      output 路径。报告固定包含流程、聚合与串行纪律、退出码、gate-fix 复用点、
+      验证入口和边界。
+    output: docs/tui-phase0/t10-review-fix.md
+    validate: pyquality

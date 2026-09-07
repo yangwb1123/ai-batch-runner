@@ -19,7 +19,7 @@
 | `rule_matcher.py` | 规则匹配：scale × page_type × risk 三轴 + LLM 双向校验 |
 | `advance.py` | 自推进迭代引擎（扫描→分批→state.jsonl 续跑） |
 | `assessor.py` | 需求评估：8 维检查、规模处方、产品化分级、工作流风险分级 |
-| `product.py` | 产品思维层：productization_level、场景推演链、商业/开源要素 |
+| `product.py` / `product_direction.py` | 产品思维层：分级、场景推演链、商业/开源要素、产品方向简报 |
 | `learn.py` | 自演进闭环：事故/RCA → Rule Schema 草案 → 人工批准并入注册表 |
 | `transaction.py` | 决策事务契约：guard/预算前置门、预期证据验证、补偿回滚与 JSON 重放 |
 | `world.py` | 世界状态平面：fsync WAL、原子快照、单调世界版本、计划绑定、对账与漂移裁决 |
@@ -52,6 +52,7 @@ python -m pbatch --help          # 入口（pip install . 后 pi-batch 同）
 python -m pbatch check           # 自检
 python -m pbatch eval            # 回归
 python -m pbatch classify "订单审批流" --json   # 含 system_type
+python -m pbatch product "做一个多租户审批平台"  # 产品方向简报
 python -m pbatch transaction --input transaction.json --action validate --json
 python -m pbatch world reconcile --json
 python -m pbatch world status --json

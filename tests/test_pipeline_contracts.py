@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import yaml
 
 from pbatch import cli, config, from_dir, gate_fix, meta, pipeline, reuse, runner
@@ -46,6 +48,284 @@ def test_reuse_resolves_cwd_and_fingerprint_tracks_dirty_state(tmp_path):
     source.write_text("value = 2\n", encoding="utf-8")
     fp_dirty = reuse.fingerprint("prompt", "artifact.md", "", workdir=str(tmp_path))
     assert fp_dirty != fp_clean
+
+
+def test_reuse_fingerprint_binds_effective_agent_and_rejects_v1(tmp_path):
+    output = tmp_path / "artifact.md"
+    output.write_text("artifact", encoding="utf-8")
+    first = Task(prompt="prompt", output=str(output), agent="agent-a",
+                 cwd=str(tmp_path))
+    second = Task(prompt="prompt", output=str(output), agent="agent-b",
+                  cwd=str(tmp_path))
+
+    first_fp = reuse.reuse_fingerprint(first, "")
+    second_fp = reuse.reuse_fingerprint(second, "")
+    assert first_fp != second_fp
+    reuse.write_sidecar(str(output), first.prompt, "", first.model,
+                        first.provider, first.workdir(), first.effective_agent())
+    metadata = json.loads(reuse.sidecar_path(str(output)).read_text(
+        encoding="utf-8"))
+    assert metadata["version"] == 2 and metadata["agent"] == "agent-a"
+    assert reuse.sidecar_matches(output, first_fp)
+
+    metadata["version"] = 1
+    reuse.sidecar_path(str(output)).write_text(json.dumps(metadata),
+                                               encoding="utf-8")
+    assert not reuse.reuse_decision(str(output), "", str(tmp_path),
+                                    expected_fp=first_fp)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("replacement", ["tampered", "x", "VERDICT: PASS - fake"])
+def test_reuse_fingerprint_binds_the_accepted_artifact_bytes(
+        tmp_path, replacement):
+    output = tmp_path / "artifact.md"
+    task = Task(prompt="prompt", output=str(output), cwd=str(tmp_path))
+    output.write_text("VERDICT: FAIL - original", encoding="utf-8")
+    expected = reuse.reuse_fingerprint(task, "")
+    reuse.write_sidecar(str(output), task.prompt, "", workdir=str(tmp_path),
+                        agent=task.effective_agent())
+
+    output.write_text(replacement, encoding="utf-8")
+
+    assert not reuse.reuse_decision(
+        str(output), "", str(tmp_path), expected_fp=expected)
+    assert not output.exists()
+
+
+def test_single_batch_reuse_call_sites_bind_task_agent(tmp_path):
+    output = tmp_path / "artifact.md"
+    output.write_text("artifact", encoding="utf-8")
+    first = Task(prompt="prompt", output=str(output), agent="agent-a",
+                 cwd=str(tmp_path))
+    result = TaskResult(first, True, returncode=0)
+    cli._write_sidecars(SimpleNamespace(), [first], [result], "")
+
+    same = Task(prompt="prompt", output=str(output), agent="agent-a",
+                cwd=str(tmp_path))
+    assert cli._filter_reused([same], True, "", False, True) == []
+    changed = Task(prompt="prompt", output=str(output), agent="agent-b",
+                   cwd=str(tmp_path))
+    assert cli._filter_reused([changed], True, "", False, True) == [changed]
+    assert not output.exists()
+
+
+def test_single_batch_reuse_inspects_output_symlink_not_its_target(tmp_path):
+    victim = tmp_path / "victim.md"
+    output = tmp_path / "artifact.md"
+    victim.write_text("do not reuse or overwrite", encoding="utf-8")
+    output.symlink_to(victim)
+    task = Task(prompt="prompt", output="artifact.md", cwd=str(tmp_path))
+
+    kept = cli._filter_reused([task], True, "", False, False)
+
+    assert kept == [task]
+    assert not output.exists()
+    assert victim.read_text(encoding="utf-8") == "do not reuse or overwrite"
+
+
+def test_pipeline_reuse_inspects_output_symlink_not_its_target(tmp_path):
+    victim = tmp_path / "victim.md"
+    output = tmp_path / "artifact.md"
+    victim.write_text("not a pipeline artifact", encoding="utf-8")
+    output.symlink_to(victim)
+    stage = Stage(name="start", from_prompt="work", output="artifact.md",
+                  cwd=str(tmp_path))
+
+    tasks, reused = pipeline._stage_from_prompt_tasks(
+        stage, True, "", 0, "", False, False)
+
+    assert len(tasks) == 1 and reused == []
+    assert not output.exists()
+    assert victim.read_text(encoding="utf-8") == "not a pipeline artifact"
+
+
+def test_meta_reuse_inspects_output_symlink_not_its_target(
+        tmp_path, monkeypatch):
+    victim = tmp_path / "victim.md"
+    output = tmp_path / "review.md"
+    victim.write_text("not a role artifact", encoding="utf-8")
+    output.symlink_to(victim)
+    task = Task(prompt="review", output="review.md", cwd=str(tmp_path))
+    calls = []
+
+    def fake_run(current, **kwargs):
+        calls.append(current)
+        return TaskResult(current, True, stdout="reviewed", returncode=0)
+
+    monkeypatch.setattr(meta, "run_task", fake_run)
+    monkeypatch.setattr(meta, "record_task", lambda *_args: None)
+    _, result = meta._run_role_task(
+        ("reviewer", task), "", "session", True, False, False)
+
+    assert result.success and len(calls) == 1
+    assert output.read_text(encoding="utf-8") == "reviewed"
+    assert not output.is_symlink()
+    assert victim.read_text(encoding="utf-8") == "not a role artifact"
+
+
+def test_sidecar_io_rejects_symlinks_oversize_and_nonobjects(tmp_path):
+    output = tmp_path / "artifact.md"
+    victim = tmp_path / "victim.json"
+    metadata = reuse.sidecar_path(str(output))
+    output.write_text("artifact", encoding="utf-8")
+    victim.write_text("preserve me", encoding="utf-8")
+    metadata.symlink_to(victim)
+
+    reuse.write_sidecar(str(output), "prompt", "", workdir=str(tmp_path))
+    assert victim.read_text(encoding="utf-8") == "preserve me"
+    assert metadata.is_symlink()
+    assert not reuse.sidecar_matches(output, "unused")
+
+    metadata.unlink()
+    metadata.write_bytes(b"x" * (64 * 1024 + 1))
+    assert not reuse.sidecar_matches(output, "unused")
+    metadata.write_text("[]", encoding="utf-8")
+    assert not reuse.sidecar_matches(output, "unused")
+    metadata.write_text(json.dumps({"version": 2, "fingerprint": 7}),
+                        encoding="utf-8")
+    assert not reuse.sidecar_matches(output, "unused")
+
+
+def test_pipeline_stage_agent_change_invalidates_reuse(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(tasks, **kwargs):
+        task = tasks[0]
+        calls.append(task.effective_agent())
+        task.output_path().write_text("artifact", encoding="utf-8")
+        return [TaskResult(task, True, stdout="artifact", returncode=0)]
+
+    monkeypatch.setattr(pipeline, "run_serial", fake_run)
+    first = Pipeline(stages=[Stage(
+        name="start", from_prompt="work", output="out.md",
+        agent="agent-a", cwd=str(tmp_path))])
+    changed = Pipeline(stages=[Stage(
+        name="start", from_prompt="work", output="out.md",
+        agent="agent-b", cwd=str(tmp_path))])
+
+    pipeline.run_pipeline(first, fingerprint_mode=True)
+    reused, failed = pipeline.run_pipeline(first, reuse=True,
+                                           fingerprint_mode=True)
+    regenerated, changed_failed = pipeline.run_pipeline(
+        changed, reuse=True, fingerprint_mode=True)
+
+    assert not failed and not changed_failed
+    assert reused[0].reason == "reused"
+    assert regenerated[0].task.effective_agent() == "agent-b"
+    assert calls == ["agent-a", "agent-b"]
+
+
+def test_pipeline_task_agent_change_invalidates_reuse(tmp_path):
+    source = tmp_path / "source.md"
+    source.write_text("evidence", encoding="utf-8")
+
+    def build(agent, reuse_enabled=False):
+        stage = Stage(name="review", from_outputs="source", tasks=[{
+            "prompt": "review {input_content}",
+            "output": str(tmp_path / "review.md"),
+            "agent": agent,
+        }])
+        return pipeline._stage_from_outputs_tasks(
+            stage, {"source": [str(source)]}, reuse_enabled, "", 0,
+            "", False, True)
+
+    first, _ = build("agent-a")
+    first[0].output_path().write_text("review", encoding="utf-8")
+    pipeline._write_stage_sidecars(
+        [TaskResult(first[0], True, returncode=0)], "")
+
+    changed, reused = build("agent-b", True)
+    assert len(changed) == 1 and reused == []
+    assert changed[0].effective_agent() == "agent-b"
+    assert not (tmp_path / "review.md").exists()
+
+
+def test_meta_role_agent_change_invalidates_reuse(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(task, **kwargs):
+        calls.append(task.effective_agent())
+        return TaskResult(task, True, stdout="review", returncode=0)
+
+    monkeypatch.setattr(meta, "run_task", fake_run)
+    output = tmp_path / "review.md"
+    first = Task(prompt="review", output=str(output), agent="agent-a",
+                 cwd=str(tmp_path))
+    changed = Task(prompt="review", output=str(output), agent="agent-b",
+                   cwd=str(tmp_path))
+
+    _, initial = meta._run_role_task(
+        ("reviewer", first), "", "", False, False, True)
+    _, regenerated = meta._run_role_task(
+        ("reviewer", changed), "", "", True, False, True)
+    _, reused = meta._run_role_task(
+        ("reviewer", changed), "", "", True, False, True)
+
+    assert initial.success and regenerated.success
+    assert reused.success and reused.reason == "reused"
+    assert calls == ["agent-a", "agent-b"]
+
+
+def test_meta_retry_success_writes_fingerprint_sidecar_for_next_reuse(
+        tmp_path, monkeypatch):
+    output = tmp_path / "review.md"
+    task = Task(prompt="review", output=str(output), agent="agent-a",
+                cwd=str(tmp_path))
+    original = TaskResult(task, False, returncode=1, reason="timeout")
+    calls = []
+
+    def fake_run(current, **kwargs):
+        calls.append(current)
+        return TaskResult(current, True, stdout="reviewed", returncode=0)
+
+    monkeypatch.setattr(meta, "run_task", fake_run)
+    monkeypatch.setattr(meta, "record_task", lambda *_args: None)
+    remaining = meta._retry_failed_roles(
+        Stage(name="review"), [original], [], [], "", "session", 1, True)
+    expected = reuse.reuse_fingerprint(task, "")
+
+    assert remaining == []
+    assert reuse.sidecar_matches(output, expected)
+    _, reused = meta._run_role_task(
+        ("reviewer", task), "", "session", True, False, True)
+    assert reused.success and reused.reason == "reused"
+    assert len(calls) == 1
+
+
+def test_from_dir_aggregate_inherits_stage_agent(tmp_path):
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    (inputs / "source.md").write_text("evidence", encoding="utf-8")
+    stage = Stage(name="review", from_dir=str(inputs), aggregate=True,
+                  agent="stage-agent")
+
+    tasks, reused = pipeline._stage_from_dir_tasks(stage, False, "", 0)
+
+    assert reused == [] and len(tasks) == 1
+    assert tasks[0].effective_agent() == "stage-agent"
+
+
+@pytest.mark.parametrize(
+    ("aggregate", "output_name"),
+    [(False, "source.out.md"), (True, "aggregate.out.md")],
+)
+def test_from_dir_reuse_inspects_generated_output_symlink(
+        tmp_path, aggregate, output_name):
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    (inputs / "source.md").write_text("evidence", encoding="utf-8")
+    victim = tmp_path / "victim.md"
+    victim.write_text("not generated", encoding="utf-8")
+    output = inputs / output_name
+    output.symlink_to(victim)
+    stage = Stage(name="review", from_dir=str(inputs), aggregate=aggregate)
+
+    tasks, reused = pipeline._stage_from_dir_tasks(stage, True, "", 0)
+
+    assert len(tasks) == 1 and reused == []
+    assert not output.exists()
+    assert victim.read_text(encoding="utf-8") == "not generated"
 
 
 def test_reuse_rejects_artifact_older_than_tracked_dirty_file(tmp_path):
@@ -770,7 +1050,7 @@ def test_from_dir_aggregate_fingerprint_receives_task_workdir(
     original = from_dir._expected_fp
 
     def capture(*args, **kwargs):
-        seen.append(args[-1])
+        seen.append((args[-2], args[-1]))
         return original(*args, **kwargs)
 
     monkeypatch.setattr(from_dir, "_expected_fp", capture)
@@ -779,7 +1059,7 @@ def test_from_dir_aggregate_fingerprint_receives_task_workdir(
         [inputs / "one.md"], False, "", 0, "", False, True)
 
     assert len(tasks) == 1 and reused == []
-    assert seen == [str(inputs.resolve())]
+    assert seen == [(str(inputs.resolve()), config.AGENT_BIN)]
 
 
 def test_from_prompt_file_reference_resolves_against_stage_cwd(

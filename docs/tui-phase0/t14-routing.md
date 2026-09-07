@@ -7,8 +7,9 @@
 ```bash
 # 规划预览（零 LLM 成本，确定性画像）
 pi-batch route "修复生产环境的偶发空指针崩溃，涉及支付链路，需要尽快上线"
-# tier     critical  (DOWNGRADED)
-# model    gpt-5.6-sol
+# tier     low  (DOWNGRADED)
+# model    deepseek-v4-flash
+# thinking max
 # quota    10% remaining today
 #   - profile mode=3 workflow=L3_platform
 #   - daily quota remaining 10% < 25%: downgraded to 'low'
@@ -25,14 +26,14 @@ pi-batch -p "..." --route-model
 model_routing:
   enabled: false                       # 显式开启
   tiers:
-    low:      {model: ""}              # 琐碎任务 = agent 默认（最省）
-    medium:   {model: "gpt-5.1-mini"}
+    low:      {model: "deepseek-v4-flash"}
+    medium:   {model: "gpt-5.6-luna"}
     high:     {model: "gpt-5.6"}
     critical: {model: "gpt-5.6-sol"}   # 支付/生产事故/高风险
   downgrade:
     enabled: true
     remaining_ratio_threshold: 0.25    # 今日配额剩余 < 25% → 降档
-    min_tier: low                      # 下线（绝不高于此档）
+    min_tier: low                      # 阈值触发后的目标档位
 ```
 
 ## 难度档判定（确定性启发式，复用 profile 12 维向量）

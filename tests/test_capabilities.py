@@ -30,6 +30,14 @@ def test_registry_domains_valid():
         assert capability["entry"].startswith("pi-batch ")
 
 
+def test_product_capability_is_registered_as_low_risk_planning():
+    product = next(item for item in capabilities.build_registry()
+                   if item["id"] == "product")
+    assert product["domain"] == "planning"
+    assert product["risk"] == "low"
+    assert product["output"] == "有界产品方向简报"
+
+
 def test_registry_check_valid():
     """owner 模块存在 + 依赖预算内（自检：0 超限）。"""
     report = capabilities.registry_check()

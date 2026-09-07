@@ -14,6 +14,9 @@ from .runner import run_argv
 _STATUS_FILE_LIMIT = 200
 _DIFF_MAX_BYTES = 256 * 1024
 _GIT_TIMEOUT = 10
+WORKSPACE_DIFF_SCOPES = frozenset({
+    "all", "unstaged", "staged", "untracked", "base", "commit",
+})
 
 
 @dataclass(frozen=True)
@@ -133,26 +136,53 @@ def workspace_delta(before: WorkspaceStatus,
 def workspace_diff(cwd: str, path: str = "",
                    max_bytes: int = _DIFF_MAX_BYTES) -> dict[str, Any]:
     """Return a bounded unified diff, including untracked files."""
+    return workspace_diff_scoped(
+        cwd, scope="all", path=path, max_bytes=max_bytes)
+
+
+def workspace_diff_scoped(cwd: str, *, scope: str = "all", path: str = "",
+                          target: str = "",
+                          max_bytes: int = _DIFF_MAX_BYTES) -> dict[str, Any]:
+    """Return one validated Git comparison scope without mutating the repo."""
+    selected = str(scope or "all").strip().lower()
+    if selected not in WORKSPACE_DIFF_SCOPES:
+        return _diff_error(path, f"unsupported diff scope: {selected}", selected, target)
     status = capture_workspace(cwd)
     if not status.available:
-        return _diff_error(path, status.error)
+        return _diff_error(path, status.error, selected, target)
     relative, error = _relative_path(status.root, cwd, path)
     if error:
-        return _diff_error(path, error)
-    tracked = _tracked_diff(status.root, relative, max_bytes)
+        return _diff_error(path, error, selected, target)
+    resolved, error = _resolve_diff_target(status.root, selected, target)
+    if error:
+        return _diff_error(relative, error, selected, target)
+    tracked = _scoped_tracked_diff(
+        status.root, selected, relative, resolved, max_bytes)
     if tracked[2]:
-        return _diff_error(relative, tracked[2])
+        return _diff_error(relative, tracked[2], selected, target)
     text, truncated = tracked[:2]
-    untracked = [item for item in status.files if item.untracked]
+    untracked = _scope_untracked(status, selected)
+    untracked_omitted = (
+        selected in {"all", "untracked", "base"}
+        and status.untracked_files > len(untracked))
     if relative:
         untracked = [item for item in untracked if item.path == relative]
     text, more_truncated = _append_untracked(
         status.root, text, untracked, max_bytes)
+    files, files_truncated, file_error = _scope_files(
+        status, selected, resolved)
+    if file_error:
+        return _diff_error(relative, file_error, selected, target)
     return {
         "path": relative,
+        "scope": selected,
+        "target": str(target or ""),
+        "resolved_target": resolved,
         "patch": text or "No diff for the selected workspace scope.",
-        "truncated": bool(truncated or more_truncated),
+        "truncated": bool(truncated or more_truncated or untracked_omitted),
         "bytes": len(text.encode("utf-8", errors="replace")),
+        "files": files,
+        "files_truncated": files_truncated,
         "error": "",
     }
 
@@ -225,11 +255,32 @@ def _relative_path(root: str, cwd: str, value: str) -> tuple[str, str]:
         return "", "diff path must stay inside the Git workspace"
 
 
-def _tracked_diff(root: str, path: str,
-                  cap: int) -> tuple[str, bool, str]:
+def _scoped_tracked_diff(root: str, scope: str, path: str, target: str,
+                         cap: int) -> tuple[str, bool, str]:
     base = ["diff", "--no-ext-diff", "--no-color"]
-    commands = ([base + ["HEAD"]] if _head_revision(root)
+    commands = _diff_commands(root, scope, target, base)
+    return _run_diff_commands(root, commands, path, cap)
+
+
+def _diff_commands(root: str, scope: str, target: str,
+                   base: list[str]) -> list[list[str]]:
+    if scope == "all":
+        return ([base + ["HEAD"]] if _head_revision(root)
                 else [base + ["--cached"], base])
+    if scope == "staged":
+        suffix = ["--cached"] + (["HEAD"] if _head_revision(root) else [])
+        return [base + suffix]
+    if scope == "unstaged":
+        return [base]
+    if scope == "base":
+        return [base + [target]]
+    if scope == "commit":
+        return [["show", "--format=", "--no-ext-diff", "--no-color", target]]
+    return []
+
+
+def _run_diff_commands(root: str, commands: list[list[str]], path: str,
+                       cap: int) -> tuple[str, bool, str]:
     text, overflow = "", False
     for command in commands:
         remaining = cap - len(text.encode("utf-8", errors="replace"))
@@ -244,6 +295,107 @@ def _tracked_diff(root: str, path: str,
         text += result.stdout
         overflow = overflow or exceeded
     return text, overflow, ""
+
+
+def _resolve_diff_target(root: str, scope: str,
+                         target: str) -> tuple[str, str]:
+    value = str(target or "").strip()
+    if scope not in {"base", "commit"}:
+        return ("", "diff target is only valid for base/commit scope") if value else ("", "")
+    if not value:
+        return "", f"{scope} diff scope requires a Git ref"
+    if (value.startswith("-") or len(value.encode("utf-8")) > 200
+            or any(ord(char) < 32 for char in value)):
+        return "", "Git ref contains unsupported characters"
+    result = _git(root, "rev-parse", "--verify", f"{value}^{{commit}}", cap=4096)
+    if not result.ok:
+        detail = _diagnostic(result.stderr, "unknown revision")
+        return "", f"unable to resolve Git ref {value}: {detail}"
+    return result.stdout.strip(), ""
+
+
+def _scope_untracked(status: WorkspaceStatus,
+                     scope: str) -> list[WorkspaceFile]:
+    if scope not in {"all", "untracked", "base"}:
+        return []
+    return [item for item in status.files if item.untracked]
+
+
+def _scope_files(status: WorkspaceStatus, scope: str,
+                 target: str) -> tuple[list[dict[str, Any]], bool, str]:
+    if scope in {"base", "commit"}:
+        files, truncated, error = _target_scope_files(status.root, scope, target)
+        if scope == "base" and not error:
+            files = _merge_file_rows(
+                files, [item.to_dict() for item in _scope_untracked(status, scope)])
+        return files[:_STATUS_FILE_LIMIT], truncated or len(files) > _STATUS_FILE_LIMIT, error
+    selected = [item for item in status.files if _file_matches_scope(item, scope)]
+    expected = _scope_file_count(status, scope)
+    return ([item.to_dict() for item in selected], expected > len(selected), "")
+
+
+def _file_matches_scope(item: WorkspaceFile, scope: str) -> bool:
+    if scope == "staged":
+        return item.staged
+    if scope == "unstaged":
+        return item.unstaged
+    if scope == "untracked":
+        return item.untracked
+    return True
+
+
+def _scope_file_count(status: WorkspaceStatus, scope: str) -> int:
+    if scope == "staged":
+        return status.staged_files
+    if scope == "unstaged":
+        return status.unstaged_files
+    if scope == "untracked":
+        return status.untracked_files
+    return status.total_files
+
+
+def _target_scope_files(root: str, scope: str,
+                        target: str) -> tuple[list[dict[str, Any]], bool, str]:
+    args = (["diff", "--name-status", "-z", target, "--"]
+            if scope == "base" else
+            ["diff-tree", "--root", "--no-commit-id", "--name-status",
+             "-r", "-z", target, "--"])
+    result = _git(root, *args, cap=128 * 1024)
+    exceeded = "output exceeds" in result.stderr
+    if not result.ok and not exceeded:
+        return [], False, _diagnostic(
+            result.stderr, "unable to enumerate changed files")
+    files = _parse_name_status(result.stdout)
+    return files[:_STATUS_FILE_LIMIT], exceeded or len(files) > _STATUS_FILE_LIMIT, ""
+
+
+def _parse_name_status(raw: str) -> list[dict[str, Any]]:
+    fields, files, index = raw.split("\0"), [], 0
+    while index < len(fields) and fields[index]:
+        status = fields[index]
+        index += 1
+        if index >= len(fields):
+            break
+        original, path = "", fields[index]
+        index += 1
+        if status[:1] in {"R", "C"} and index < len(fields):
+            original, path = path, fields[index]
+            index += 1
+        if not _operational_path(path):
+            files.append({"path": path, "status": status,
+                          "original_path": original})
+    return files
+
+
+def _merge_file_rows(first: list[dict[str, Any]],
+                     second: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged, seen = [], set()
+    for row in first + second:
+        path = str(row.get("path", ""))
+        if path and path not in seen:
+            merged.append(row)
+            seen.add(path)
+    return merged
 
 
 def _append_untracked(root: str, initial: str, files: list[WorkspaceFile],
@@ -263,6 +415,9 @@ def _append_untracked(root: str, initial: str, files: list[WorkspaceFile],
     return text, truncated
 
 
-def _diff_error(path: str, error: str) -> dict[str, Any]:
-    return {"path": path, "patch": "", "truncated": False,
-            "bytes": 0, "error": error}
+def _diff_error(path: str, error: str, scope: str = "all",
+                target: str = "") -> dict[str, Any]:
+    return {"path": path, "scope": scope, "target": str(target or ""),
+            "resolved_target": "", "patch": "", "truncated": False,
+            "bytes": 0, "files": [], "files_truncated": False,
+            "error": error}

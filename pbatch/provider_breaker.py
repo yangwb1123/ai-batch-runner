@@ -6,9 +6,9 @@ per-task Circuit 与 round 级 StallDetector 都看不见（每任务只失败�
 次就换任务）——7×24 无人值守在 provider 系统性故障时会空转烧钱。
 
 本模块：连续 N 次 provider 失败（不同任务也算）→ 进入指数退避冷却；
-冷却期间任务 spawn 前等待（有界，超限则以明确 reason 失败而非假装
-执行）；任一成功重置窗口。事件进交互账本、日志清晰可见（retro 可
-复盘 provider_breaker 行）。
+冷却期间同一 provider 的任务 spawn 前等待（有界，超限则以明确 reason
+失败而非假装执行）；同一 provider 任一成功重置其窗口，不影响其他
+provider。事件进交互账本、日志清晰可见（retro 可复盘 provider_breaker 行）。
 
 配置（pi-batch.yaml limits.provider_breaker）：
   threshold     连续 provider 失败数（默认 5；0 = 关闭）
@@ -19,9 +19,13 @@ per-task Circuit 与 round 级 StallDetector 都看不见（每任务只失败�
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import math
 import os
+import re
+import stat
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -36,6 +40,15 @@ _DEFAULT_MAX = 900
 
 _lock = threading.RLock()
 _STATE_NAME = "provider-breaker.json"
+_STATE_VERSION = 2
+_STATE_MAX_BYTES = 64 * 1024
+_MAX_PROVIDER_ENTRIES = 128
+_OVERFLOW_PROVIDER = "__overflow__"
+_ENTRY_FIELDS = ("streak", "step", "cooldown_until", "updated_at")
+_PROVIDER_FAILURE_PREFIXES = (
+    "agent reported provider failure (",
+    "agent replied with a provider failure (",
+)
 
 
 def _state_path(data_dir=None) -> str:
@@ -50,59 +63,155 @@ def _state_path(data_dir=None) -> str:
 
 def _read_handle(handle) -> dict:
     handle.seek(0)
-    raw = handle.read(64 * 1024)
+    raw = handle.read(_STATE_MAX_BYTES + 1)
     if not raw:
-        return {}
+        # Missing state is handled before opening the file. An existing but
+        # empty file is a torn legacy write and must not silently reset an
+        # active circuit.
+        return _error_state("empty")
+    if len(raw.encode("utf-8", errors="replace")) > _STATE_MAX_BYTES:
+        return _error_state("oversized")
     try:
         value = json.loads(raw)
-    except (TypeError, ValueError):
-        return {}
-    return value if isinstance(value, dict) else {}
+    except (TypeError, ValueError, RecursionError):
+        return _error_state("malformed")
+    return value if isinstance(value, dict) else _error_state("malformed")
 
 
-def _write_handle(handle, state: dict) -> None:
+def _state_payload(state: dict) -> str:
+    state["version"] = _STATE_VERSION
+    state["clock"] = "unix"
     payload = json.dumps(state, separators=(",", ":"),
                          sort_keys=True)
-    handle.seek(0)
-    handle.truncate()
-    handle.write(payload)
-    handle.flush()
-    os.fsync(handle.fileno())
+    if len(payload.encode("utf-8")) > _STATE_MAX_BYTES:
+        raise ValueError("provider breaker state exceeds size limit")
+    return payload
+
+
+def _lock_path(path: Path) -> Path:
+    return path.with_name(f"{path.name}.lock")
+
+
+def _open_regular(path: Path, flags: int, mode: int = 0o600) -> int:
+    """Open a state inode without blocking on FIFOs/devices."""
+    descriptor = os.open(
+        path, flags | getattr(os, "O_NONBLOCK", 0), mode)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise OSError(f"shared state path is not a regular file: {path}")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _open_lock(path: Path):
+    lock_path = _lock_path(path)
+    if lock_path.is_symlink():
+        raise OSError("provider breaker lock is a symlink")
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = _open_regular(lock_path, flags)
+    return os.fdopen(descriptor, "r+", encoding="utf-8")
+
+
+def _read_path(path: Path) -> dict:
+    if path.is_symlink():
+        return _error_state("symlink")
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = _open_regular(path, flags)
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        return _error_state("unreadable")
+    with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+        return _read_handle(handle)
+
+
+def _write_path(path: Path, state: dict) -> None:
+    """Atomically publish a complete state while the stable lock is held."""
+    payload = _state_payload(state)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            descriptor = -1
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        temporary = ""
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
 
 
 def _read_state(data_dir=None) -> dict:
     path = Path(_state_path(data_dir))
     try:
-        with path.open("r", encoding="utf-8") as handle:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with _open_lock(path) as handle:
             fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
             try:
-                return _read_handle(handle)
+                return _read_path(path)
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     except (OSError, ValueError):
-        return {}
+        return _error_state("unreadable")
 
 
-def _mutate_state(mutator, data_dir=None):
+def _mutate_state(mutator, data_dir=None, allow_repair: bool = False):
     """原子地锁住共享文件并执行一次 read-modify-write。"""
     path = Path(_state_path(data_dir))
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a+", encoding="utf-8") as handle:
+        with _open_lock(path) as handle:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             try:
-                state = _read_handle(handle)
+                state = _read_path(path)
+                if state.get("state_error") and not allow_repair:
+                    return None
                 result = mutator(state)
-                _write_handle(handle, state)
+                _write_path(path, state)
                 return result
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-    except OSError:
+    except (OSError, ValueError):
         return None  # unavailable state must not crash an agent run
 
 
 def _now() -> float:
-    return time.monotonic()
+    """Persistent deadlines use the Unix clock across process reboots."""
+    return time.time()
+
+
+def _error_state(reason: str) -> dict:
+    """Represent unreadable state as an aggregate fail-closed partition."""
+    return {
+        "version": _STATE_VERSION,
+        "clock": "unix",
+        "state_error": reason,
+        "providers": {_OVERFLOW_PROVIDER: {
+            "streak": 0, "step": 1,
+            "cooldown_until": _now() + _max_cooldown(),
+            "updated_at": _now(),
+        }},
+    }
 
 
 def _settings() -> dict:
@@ -114,25 +223,29 @@ def _settings() -> dict:
 def threshold() -> int:
     value = _settings().get("threshold", _DEFAULT_THRESHOLD)
     try:
+        if isinstance(value, bool):
+            raise ValueError
         number = int(value)
-    except (TypeError, ValueError):
-        return 0
+    except (TypeError, ValueError, OverflowError):
+        return _DEFAULT_THRESHOLD
     return number if number >= 0 else 0
 
 
 def _base_cooldown() -> float:
     value = _settings().get("base_cooldown", _DEFAULT_BASE)
     try:
-        return max(0.0, float(value))
-    except (TypeError, ValueError):
+        number = float(value)
+        return max(0.0, number) if math.isfinite(number) else float(_DEFAULT_BASE)
+    except (TypeError, ValueError, OverflowError):
         return float(_DEFAULT_BASE)
 
 
 def _max_cooldown() -> float:
     value = _settings().get("max_cooldown", _DEFAULT_MAX)
     try:
-        return max(1.0, float(value))
-    except (TypeError, ValueError):
+        number = float(value)
+        return max(1.0, number) if math.isfinite(number) else float(_DEFAULT_MAX)
+    except (TypeError, ValueError, OverflowError):
         return float(_DEFAULT_MAX)
 
 
@@ -159,21 +272,200 @@ def _streak_after(streak: int, limit: int) -> int:
     return 0 if streak >= limit else streak
 
 
-def register_provider_failure(signature: str = "", data_dir=None) -> bool:
+def is_provider_failure_reason(reason: str) -> bool:
+    """Return whether a runner rejection represents provider health."""
+    return str(reason or "").startswith(_PROVIDER_FAILURE_PREFIXES)
+
+
+def provider_failure_reason(stderr: str, stdout: str = "",
+                            bin_name: str = "") -> str:
+    """Classify provider health independently from artifact rejection."""
+    candidates = [str(stderr or "")]
+    lines = [line for line in str(stdout or "").splitlines() if line.strip()]
+    if lines and len(lines) <= 8:
+        candidates.append("\n".join(lines))
+    for pattern in config.agent_provider_error_patterns(bin_name):
+        if any(pattern.search(value) for value in candidates if value):
+            return f"agent reported provider failure ({pattern.pattern})"
+    return ""
+
+
+def _bounded_identity(kind: str, value: object) -> str:
+    text = str(value or "").strip()
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", text).strip("_")[:120]
+    if safe != text:
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:10]
+        safe = f"{safe or 'default'}-{digest}"
+    return f"{kind}:{safe or 'default'}"
+
+
+def breaker_identity(provider: str = "", agent: str = "") -> str:
+    """Stable breaker partition: explicit provider, otherwise agent binary."""
+    provider = str(provider or "").strip()
+    if provider:
+        return _bounded_identity("provider", provider)
+    return _bounded_identity("agent", Path(str(agent or config.AGENT_BIN)).name)
+
+
+def provider_identity(task) -> str:
+    """Resolve a task onto the provider/agent breaker partition."""
+    try:
+        agent = task.effective_agent()
+    except (AttributeError, TypeError, ValueError):
+        agent = config.AGENT_BIN
+    return breaker_identity(getattr(task, "provider", ""), agent)
+
+
+def _deadline(value: object, clock: str) -> float:
+    deadline = _state_float({"value": value}, "value")
+    if deadline <= 0 or clock == "unix" or deadline >= 1_000_000_000:
+        return deadline
+    remaining = max(0.0, deadline - time.monotonic())
+    return _now() + min(remaining, _max_cooldown()) if remaining else 0.0
+
+
+def _clean_entry(value: object, clock: str = "unix") -> dict:
+    entry = value if isinstance(value, dict) else {}
+    return {
+        "streak": _state_int(entry, "streak"),
+        "step": _state_int(entry, "step"),
+        "cooldown_until": _deadline(entry.get("cooldown_until"), clock),
+        "updated_at": _state_float(entry, "updated_at") or _now(),
+    }
+
+
+def _has_legacy_entry(state: dict) -> bool:
+    return any(field in state for field in _ENTRY_FIELDS)
+
+
+def _provider_entries(state: dict) -> dict[str, dict]:
+    raw = state.get("providers")
+    if isinstance(raw, dict):
+        clock = str(state.get("clock", ""))
+        entries = {str(key): _clean_entry(value, clock)
+                   for key, value in raw.items() if str(key)}
+        return _bounded_entries(entries)
+    if _has_legacy_entry(state):
+        return {"default": _clean_entry(state, str(state.get("clock", "")))}
+    return {}
+
+
+def _merge_entries(values: list[dict]) -> dict:
+    if not values:
+        return _clean_entry({})
+    return {
+        "streak": max(_state_int(value, "streak") for value in values),
+        "step": max(_state_int(value, "step") for value in values),
+        "cooldown_until": max(
+            _state_float(value, "cooldown_until") for value in values),
+        "updated_at": max(
+            _state_float(value, "updated_at") for value in values),
+    }
+
+
+def _bounded_entries(entries: dict[str, dict]) -> dict[str, dict]:
+    if len(entries) <= _MAX_PROVIDER_ENTRIES:
+        return entries
+    overflow = entries.pop(_OVERFLOW_PROVIDER, None)
+    ordered = sorted(
+        entries.items(),
+        key=lambda item: (
+            _state_float(item[1], "cooldown_until") <= _now(),
+            -_state_float(item[1], "updated_at"), item[0]),
+    )
+    kept = dict(ordered[:_MAX_PROVIDER_ENTRIES - 1])
+    omitted = [entry for _, entry in ordered[_MAX_PROVIDER_ENTRIES - 1:]]
+    if overflow:
+        omitted.append(overflow)
+    kept[_OVERFLOW_PROVIDER] = _merge_entries(omitted)
+    return kept
+
+
+def _entries_for_update(state: dict, migration_key: str) -> dict:
+    entries = _provider_entries(state)
+    if _has_legacy_entry(state) and "default" in entries:
+        entries[migration_key] = entries.pop("default")
+    state.clear()
+    state["providers"] = entries
+    return entries
+
+
+def _entry_for_update(entries: dict[str, dict], identity: str) -> dict:
+    if identity in entries:
+        return entries[identity]
+    if _OVERFLOW_PROVIDER in entries:
+        return entries[_OVERFLOW_PROVIDER]
+    if len(entries) < _MAX_PROVIDER_ENTRIES:
+        entry = _clean_entry({})
+        entries[identity] = entry
+        return entry
+    victim = min(entries, key=lambda key: (
+        _state_float(entries[key], "cooldown_until") > _now(),
+        _state_float(entries[key], "updated_at"), key))
+    entries[_OVERFLOW_PROVIDER] = _merge_entries([entries.pop(victim)])
+    return entries[_OVERFLOW_PROVIDER]
+
+
+def _success_eviction_key(entries: dict[str, dict]) -> str:
+    candidates = [key for key in entries if key != _OVERFLOW_PROVIDER]
+    return min(candidates, key=lambda key: (
+        _state_float(entries[key], "cooldown_until") > _now(),
+        _state_float(entries[key], "updated_at"), key))
+
+
+def _clear_provider_entry(entries: dict[str, dict], identity: str) -> None:
+    """Record identity-specific recovery without clearing other overflow.
+
+    Once identities have been conservatively coalesced into the overflow
+    partition, removing a recovered identity would make it inherit that
+    partition again. Keep a bounded clean exception instead; at capacity an
+    older named entry is merged into overflow to make room.
+    """
+    if _OVERFLOW_PROVIDER not in entries:
+        entries.pop(identity, None)
+        return
+    if identity not in entries and len(entries) >= _MAX_PROVIDER_ENTRIES:
+        victim = _success_eviction_key(entries)
+        entries[_OVERFLOW_PROVIDER] = _merge_entries([
+            entries[_OVERFLOW_PROVIDER], entries.pop(victim)])
+    entries[identity] = _clean_entry({})
+
+
+def _entry_for_read(state: dict, provider: str) -> dict:
+    if _has_legacy_entry(state) and not isinstance(state.get("providers"), dict):
+        return _clean_entry(state, str(state.get("clock", "")))
+    entries = _provider_entries(state)
+    return entries.get(provider, entries.get(
+        _OVERFLOW_PROVIDER, _clean_entry({})))
+
+
+def _cooldown_for_step(step: int) -> float:
+    base, maximum = _base_cooldown(), _max_cooldown()
+    if base <= 0 or base >= maximum:
+        return min(base, maximum)
+    max_exponent = max(0, math.ceil(math.log2(maximum / base)))
+    return min(base * (2 ** min(max(0, step - 1), max_exponent)), maximum)
+
+
+def register_provider_failure(signature: str = "", data_dir=None,
+                              provider: str = "") -> bool:
     """记录一次 provider 失败签名拒绝；达到阈值进入共享冷却。"""
     limit = threshold()
     if limit <= 0:
         return False
+    identity = provider or "default"
 
     def update(state):
-        streak = _streak_after(_state_int(state, "streak") + 1, limit)
-        state["streak"] = streak
+        entries = _entries_for_update(state, identity)
+        entry = _entry_for_update(entries, identity)
+        streak = _streak_after(_state_int(entry, "streak") + 1, limit)
+        entry["streak"] = streak
+        entry["updated_at"] = _now()
         if streak != 0:
             return False, 0.0, 0
-        step = _state_int(state, "step") + 1
-        cooldown = min(_base_cooldown() * (2 ** (step - 1)),
-                       _max_cooldown())
-        state.update({"step": step, "cooldown_until": _now() + cooldown})
+        step = _state_int(entry, "step") + 1
+        cooldown = _cooldown_for_step(step)
+        entry.update({"step": step, "cooldown_until": _now() + cooldown})
         return True, cooldown, step
 
     with _lock:
@@ -182,78 +474,116 @@ def register_provider_failure(signature: str = "", data_dir=None) -> bool:
         return False
     _, cooldown, step = result
     log.error(
-        "PROVIDER BREAKER: %d consecutive provider failures '%s' — "
+        "PROVIDER BREAKER [%s]: %d consecutive provider failures '%s' — "
         "cooldown %.0fs (step %d); tasks will wait before spawning.",
-        limit, signature[:80], cooldown, step)
-    _emit("provider_breaker", signature[:80], cooldown, step)
+        identity, limit, signature[:80], cooldown, step)
+    _emit("provider_breaker", signature[:80], cooldown, step, identity)
     return True
 
 
-def register_success(data_dir=None) -> None:
-    """一次成功重置窗口并立即解除共享冷却。"""
+def register_success(data_dir=None, provider: str = "") -> None:
+    """Reset one provider; an omitted provider preserves global API semantics."""
     def clear(state):
-        state.clear()
-        state.update({"streak": 0, "step": 0, "cooldown_until": 0.0})
+        if not provider:
+            state.clear()
+            state["providers"] = {}
+            return
+        entries = _entries_for_update(state, provider)
+        _clear_provider_entry(entries, provider)
     with _lock:
-        _mutate_state(clear, data_dir)
+        _mutate_state(clear, data_dir, allow_repair=not provider)
 
 
-def cooldown_remaining(data_dir=None) -> float:
+def cooldown_remaining(data_dir=None, provider: str = "") -> float:
     state = _read_state(data_dir)
-    until = _state_float(state, "cooldown_until")
-    remaining = until - _now()
-    return remaining if remaining > 0 else 0.0
+    if state.get("state_error"):
+        return _max_cooldown()
+    if provider:
+        entries = [_entry_for_read(state, provider)]
+    else:
+        entries = list(_provider_entries(state).values())
+    until = max((_state_float(entry, "cooldown_until")
+                 for entry in entries), default=0.0)
+    return max(0.0, until - _now())
 
 
-def breaker_state(data_dir=None) -> dict:
-    """控制台可见状态（ops overview / HTML / TUI）。"""
-    state = _read_state(data_dir)
-    until = _state_float(state, "cooldown_until")
-    remaining = max(0.0, until - _now())
+def _entry_status(entry: dict) -> dict:
+    remaining = max(0.0, _state_float(entry, "cooldown_until") - _now())
     return {
         "active": remaining > 0,
         "cooldown_remaining_s": round(remaining, 1),
-        "streak": _state_int(state, "streak"),
-        "step": _state_int(state, "step"),
+        "streak": _state_int(entry, "streak"),
+        "step": _state_int(entry, "step"),
+    }
+
+
+def breaker_state(data_dir=None, provider: str = "") -> dict:
+    """控制台可见状态（ops overview / HTML / TUI）。"""
+    state = _read_state(data_dir)
+    if provider:
+        providers = {provider: _entry_status(_entry_for_read(state, provider))}
+    else:
+        providers = {key: _entry_status(entry)
+                     for key, entry in _provider_entries(state).items()}
+    remaining = max((item["cooldown_remaining_s"]
+                     for item in providers.values()), default=0.0)
+    return {
+        "active": remaining > 0,
+        "cooldown_remaining_s": remaining,
+        "streak": max((item["streak"] for item in providers.values()),
+                      default=0),
+        "step": max((item["step"] for item in providers.values()), default=0),
         "threshold": threshold(),
         "shared_state_file": _state_path(data_dir),
+        "provider_count": len(providers),
+        "active_providers": sorted(
+            key for key, item in providers.items() if item["active"]),
+        "providers": providers,
+        "state_error": str(state.get("state_error", "")),
     }
 
 
 def cooldown_failure(task, data_dir=None) -> Optional[object]:
     """Runner 集成点：冷却中尝试等待（有界）；超限返回失败 TaskResult，
     可执行返回 None。延迟 import 避免循环依赖。"""
-    reason = wait_or_fail(300.0, data_dir)
+    reason = wait_or_fail(300.0, data_dir, provider_identity(task))
     if reason is None:
         return None
     from .models import TaskResult
     return TaskResult(task, False, returncode=-1, reason=reason)
 
 
-def wait_or_fail(timeout: float, data_dir=None) -> Optional[str]:
+def wait_or_fail(timeout: float, data_dir=None,
+                 provider: str = "") -> Optional[str]:
     """任务 spawn 前调用：冷却中则等待（有界）；等待超限返回失败 reason。
     返回 None 表示可以执行。"""
     if threshold() <= 0:
         return None
     deadline = time.monotonic() + max(0.0, timeout)
-    while cooldown_remaining(data_dir) > 0:
-        remaining = cooldown_remaining(data_dir)
-        if time.monotonic() + remaining > deadline:
+    while True:
+        remaining = cooldown_remaining(data_dir, provider)
+        if remaining <= 0:
+            return None
+        budget = max(0.0, deadline - time.monotonic())
+        if remaining > budget:
             reason = "provider breaker cooldown exceeded wait budget"
-            log.error("PROVIDER BREAKER: %s", reason)
-            _emit("provider_breaker_wait_exceeded", "", remaining, 0)
+            log.error("PROVIDER BREAKER [%s]: %s",
+                      provider or "aggregate", reason)
+            _emit("provider_breaker_wait_exceeded", "", remaining, 0,
+                  provider or "aggregate")
             return reason
         log.warning(
-            "PROVIDER BREAKER: waiting %.0fs before next spawn "
-            "(provider recovering)", remaining)
-        time.sleep(min(max(1.0, remaining), 10.0))
-    return None
+            "PROVIDER BREAKER [%s]: waiting %.0fs before next spawn "
+            "(provider recovering)", provider or "aggregate", remaining)
+        time.sleep(min(remaining, budget, 10.0))
 
 
-def _emit(kind: str, signature: str, cooldown: float, step: int) -> None:
+def _emit(kind: str, signature: str, cooldown: float, step: int,
+          provider: str) -> None:
     try:
         from .metering import record_event
-        record_event(kind, signature, f"cooldown={cooldown:.0f}s step={step}",
+        detail = f"provider={provider} cooldown={cooldown:.0f}s step={step}"
+        record_event(kind, signature, detail,
                      config.data_dir())
     except Exception:
         pass  # 事件记录 best-effort

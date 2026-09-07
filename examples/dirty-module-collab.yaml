@@ -1,0 +1,24 @@
+# Protected multi-agent collaboration from an intentionally dirty baseline.
+# Replace paths and prompts with the real module slices before execution.
+workspace: /path/to/project
+worktree_root: /tmp/project-module-worktrees
+workers: 2
+agents:
+  - id: core
+    seed_dirty:
+      - packages/core/src
+    write_scope:
+      - packages/core/src
+    prompt: |
+      Implement the assigned Core module slice and its tests. Do not modify
+      files outside the declared write scope. Do not commit or merge.
+    timeout: 14400
+  - id: adapter
+    seed_dirty:
+      - packages/react/src/grid
+    write_scope:
+      - packages/react/src/grid
+    prompt: |
+      Implement the assigned adapter module slice and its tests. Do not
+      modify files outside the declared write scope. Do not commit or merge.
+    timeout: 14400

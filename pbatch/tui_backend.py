@@ -5,7 +5,9 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import uuid
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -13,7 +15,13 @@ from . import config, runner, tui_backend_structured
 from .lock import LOCK_EXIT_CODE, acquire_lock, release_lock
 from .memory import new_session_id, record_task
 from .models import Task, TaskResult
-from .tui_workspace import capture_workspace, workspace_delta, workspace_diff
+from .tui_protocol import RuntimeEvent
+from .tui_workspace import (
+    capture_workspace,
+    workspace_delta,
+    workspace_diff,
+    workspace_diff_scoped,
+)
 
 
 Emit = Callable[[str, str], None]
@@ -82,6 +90,10 @@ class TUIBackend:
         self._turn_done.set()
         self._turn_procs: tuple = ()
         self._turn_interrupt: Optional[Callable[[], None]] = None
+        self._runtime_event_sink: Optional[Callable[[RuntimeEvent], None]] = None
+        self.provider_thread_id = ""
+        self.provider_resume_required = False
+        self.provider_fork_required = False
         self._running = False
         self._session_started = False
         self._turn = 0
@@ -105,6 +117,16 @@ class TUIBackend:
                 raise RuntimeError("cannot replace emit callback during a turn")
             self.emit = emit
             self._configure_sinks()
+
+    def set_runtime_event_sink(
+            self, sink: Optional[Callable[[RuntimeEvent], None]]) -> None:
+        """Attach a raw typed-event sink before a structured turn starts."""
+        if sink is not None and not callable(sink):
+            raise TypeError("runtime event sink must be callable or None")
+        with self._state_lock:
+            if self._running and sink is not None:
+                raise RuntimeError("cannot replace runtime event sink during a turn")
+            self._runtime_event_sink = sink
 
     def _configure_sinks(self) -> None:
         self._stdout = _CallbackSink("stdout", self.emit, self._emit_lock)
@@ -135,6 +157,8 @@ class TUIBackend:
                 "session_name": self.session_name, "turn": self._turn,
                 "agent": self.agent, "model": self.model,
                 "provider": self.provider, "memory_mode": self.memory_mode,
+                "provider_resume_pending": self.provider_resume_required,
+                "provider_fork_pending": self.provider_fork_required,
                 "agent_ready": not agent_errors,
                 "agent_error": "; ".join(agent_errors),
                 "timeout": self.timeout, "cwd": self.cwd,
@@ -152,6 +176,14 @@ class TUIBackend:
     def workspace_diff(self, path: str = "") -> dict:
         """Return a bounded, read-only unified diff for the workspace."""
         result = workspace_diff(self.cwd, path)
+        self._workspace = capture_workspace(self.cwd)
+        return result
+
+    def workspace_diff_scope(self, scope: str = "all", path: str = "",
+                             target: str = "") -> dict:
+        """Return a validated staged/worktree/ref comparison for Changes."""
+        result = workspace_diff_scoped(
+            self.cwd, scope=scope, path=path, target=target)
         self._workspace = capture_workspace(self.cwd)
         return result
 
@@ -184,12 +216,45 @@ class TUIBackend:
             self._turn = 0
             self._status = "idle"
             self._last_result = None
+            self.provider_thread_id = ""
+            self.provider_resume_required = False
+            self.provider_fork_required = False
             self._cancel_requested.clear()
             self._last_workspace_delta = {
                 "changed": False, "paths": [], "head_changed": False,
             }
         self._notify("status", "new_session")
         return self.snapshot()
+
+    def resume_session(self, session_id: str, provider_session_id: str) -> dict:
+        """Bind an exact historical provider thread; never silently replace it."""
+        session = _resume_id(session_id, "session_id")
+        provider = _resume_id(provider_session_id, "provider_session_id")
+        with self._state_lock:
+            if self._running:
+                raise RuntimeError("cannot replace a running session")
+        snapshot = self.new_session(session_id=session)
+        with self._state_lock:
+            self.provider_thread_id = provider
+            self.provider_resume_required = True
+            self.provider_fork_required = False
+        self._notify("status", "session_resume_pending")
+        return {**snapshot, "provider_resume_pending": True}
+
+    def fork_session(self, session_id: str, provider_session_id: str) -> dict:
+        """Prepare an exact provider fork for the next structured turn."""
+        session = _resume_id(session_id, "session_id")
+        provider = _resume_id(provider_session_id, "provider_session_id")
+        with self._state_lock:
+            if self._running:
+                raise RuntimeError("cannot replace a running session")
+        snapshot = self.new_session(session_id=session)
+        with self._state_lock:
+            self.provider_thread_id = provider
+            self.provider_resume_required = False
+            self.provider_fork_required = True
+        self._notify("status", "session_fork_pending")
+        return {**snapshot, "provider_fork_pending": True}
 
     def run_turn(self, prompt: str) -> TaskResult:
         """Synchronously execute a turn; UI callers should use a worker."""
@@ -210,13 +275,65 @@ class TUIBackend:
                             adapter_factory: Optional[Callable[[str], Any]] = None
                             ) -> TaskResult:
         """Execute one turn through a typed event adapter."""
-        return tui_backend_structured.run_turn_structured(
+        context: dict[str, str] = {}
+        evidence: dict[str, Any] = {}
+        sink = self._tracked_event_sink(context)
+        result = tui_backend_structured.run_turn_structured(
             self, prompt, adapter_factory=adapter_factory, turn_lock=_TURN_LOCK,
             begin_turn=self._begin_turn, make_task=self._task,
-            runtime_config=self._runtime_config, finish_turn=self._finish_turn,
+            runtime_config=self._runtime_config,
+            finish_turn=lambda item: self._finish_structured_turn(item, evidence),
             record_result=self._record_result, end_turn=self._end_turn,
             install_interrupt=self._set_turn_interrupt, notify=self._notify,
-            is_cancelled=self._cancel_requested.is_set)
+            is_cancelled=self._cancel_requested.is_set, event_sink=sink)
+        self._publish_workspace_snapshot(sink, context, evidence)
+        return result
+
+    def _tracked_event_sink(self, context: dict[str, str]):
+        sink = self._runtime_event_sink
+        if sink is None:
+            return None
+
+        def deliver(event: RuntimeEvent) -> None:
+            context.update({
+                "workspace_id": event.workspace_id,
+                "session_id": event.session_id,
+                "run_id": event.run_id,
+                "turn_id": event.turn_id,
+                "actor_id": event.actor_id,
+            })
+            with self._state_lock:
+                current = self._runtime_event_sink
+            if current is not None:
+                current(event)
+        return deliver
+
+    def _publish_workspace_snapshot(
+            self, sink, context: dict[str, str], evidence: dict[str, Any]) -> None:
+        if sink is None or not context.get("turn_id"):
+            return
+        event = RuntimeEvent(
+            event_id=f"evt_{uuid.uuid4().hex}", seq=0,
+            occurred_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            workspace_id=context["workspace_id"],
+            session_id=context["session_id"], run_id=context["run_id"],
+            turn_id=context["turn_id"], actor_id=context["actor_id"],
+            kind="workspace.snapshot", payload={
+                "phase": "after", "workspace": dict(evidence.get("workspace", {})),
+                "delta": dict(evidence.get("delta", {})),
+            }, extensions={"runtime": "tui-backend", "authoritative": True})
+        try:
+            sink(event)
+        except Exception as exc:
+            self._notify("status", f"workspace projection failed: {exc}")
+
+    def _finish_structured_turn(
+            self, result: TaskResult, evidence: dict[str, Any]) -> TaskResult:
+        finished = self._finish_turn(result)
+        with self._state_lock:
+            evidence["workspace"] = self._workspace.summary()
+            evidence["delta"] = dict(self._last_workspace_delta)
+        return finished
 
     def _begin_turn(self) -> tuple[int, str]:
         workspace_before = capture_workspace(self.cwd)
@@ -361,6 +478,15 @@ class TUIBackend:
                 self.emit(kind, text)
             except Exception:
                 pass
+
+
+def _resume_id(value: str, label: str) -> str:
+    text = str(value or "").strip()
+    if not text or any(character in text for character in "\r\n\0"):
+        raise ValueError(f"{label} must be a non-empty single-line string")
+    if len(text.encode("utf-8")) > 2_048:
+        raise ValueError(f"{label} exceeds 2048 bytes")
+    return text
 
 
 TurnBackend = TUIBackend

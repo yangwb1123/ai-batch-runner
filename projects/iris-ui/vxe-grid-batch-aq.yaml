@@ -1,0 +1,162 @@
+# iris-ui grid 批 AQ：拖拽填充柄（Excel 式选区填充）
+#
+# 目标：cellRange 选中时选区右下角显示填充柄——拖拽向下/右扩展时将
+# 选区值复制到扩展区域（vxe 与主流 grid 均无的电子表格标志性交互）。
+# 范围：react only；additive（cellRange 开启且 rangeFill?: boolean 时启用）。
+#
+# 执行：python pi-batch.py projects/iris-ui/vxe-grid-batch-aq.yaml \
+#   --log-file logs/iris-ui-batch-aq.log --retries 2
+
+git_commit: false
+decision_log: /home/u1/iris-ui/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      You are preparing the baseline for iris-ui grid batch AQ (drag fill
+      handle). Monorepo: /home/u1/iris-ui.
+
+      Read:
+      1. /home/u1/iris-ui/packages/react/src/primitives/table/Table.tsx —
+         the cellRange state (anchor/end coordinates — how the range is
+         computed and rendered: data-iris-cell-selected, isInRange), the
+         row/col grid layout (the selection overlay positioning — find how
+         selected cells are styled; the fill handle needs a position —
+         absolute over the last selected cell), the write-back channel
+         (commitRowList/setCellValue), the useDrag primitive (for pointer
+         tracking) or the raw pointer pattern used by rowDrag.
+      2. /home/u1/iris-ui/packages/react/src/primitives/drag/useDrag.ts —
+         the drag hook (position tracking).
+
+      Write a markdown baseline to the output path:
+      - proposed design:
+        a) rangeFill?: boolean — when true && cellRange && a range is
+           active: render a fill handle (data-iris-range-fill) at the
+           bottom-right corner of the LAST selected cell (absolute
+           positioning: the table rows are grid rows — the handle overlays
+           the cell; compute its position from the cell rect or the grid
+           coordinates — pick: render inside the last selected cell with
+           position absolute right/bottom + a 6px square with
+           --iris-primary)
+        b) drag behavior: pointer down on the handle → track movement
+           (reuse the rowDrag pointer pattern — container-level
+           pointermove/up); the drag target = the rectangle from the range
+           anchor to the drag end (down/right only — the drag must extend
+           past the range; the cells between the range edge and the drag
+           end get highlighted data-iris-range-fill-target); on pointer up:
+           copy the range's values into the target cells (each target cell
+           (r, c) gets the value of the source cell ((r - anchorRow) %
+           rangeRows + anchorRow, (c - anchorCol) % rangeCols + anchorCol)
+           — cyclic fill, Excel-style) via ONE commitRowList; the range
+           EXTENDS to the drag end after the fill (document)
+        c) keyboard: no new keys (document)
+      - file map + tests
+      Do NOT modify files.
+    output: /home/u1/iris-ui/docs/vxe-grid/batch-aq-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Implement iris-ui grid batch AQ (drag fill handle) in
+          /home/u1/iris-ui, per
+          /home/u1/iris-ui/docs/vxe-grid/batch-aq-baseline.md. Read it
+          first, then AGENTS.md.
+
+          HARD CONSTRAINTS:
+          - Core framework-free; react only; additive only.
+          - No dist/tgz/node_modules/manifest.json edits.
+          - Test files ≤500 lines; ≤4 changed files + tests.
+          - MANIFEST SCANNER HYGIENE: single-line function props.
+          - CSS uses --iris-* tokens only.
+          - TIME BUDGET: medium — implement the handle render + drag +
+            cyclic fill + tests.
+
+          IMPLEMENT:
+          1. rangeFill (props.ts + types.ts + Table.tsx + styles.ts):
+             - rangeFill?: boolean (single line)
+             - handle: when rangeFill && cellRange && the range is active
+               (≥1 cell), render the fill handle inside/over the last
+               selected cell (data-iris-range-fill, 6px square,
+               background var(--iris-primary), cursor crosshair, absolute
+               right/bottom with a small offset); only for the DOWN/RIGHT
+               drag (the handle sits at the bottom-right — dragging up/left
+               is ignored, document)
+             - drag: pointer down on the handle → capture; container
+               pointermove computes the drag end cell (from clientY/X vs
+               the cell rects — use the row/col mapping: reuse how
+               cellRange computes cells from coordinates if it exists, or
+               compute from the grid geometry); target cells (the rectangle
+               between the range edge and the drag end, excluding the
+               source range) get data-iris-range-fill-target; pointer up:
+               cyclic fill (source value at ((r - anchorRow) % rangeRows +
+               anchorRow, ...)) via ONE commitRowList (setCellValue per
+               cell); then extend the range to the drag end; pointer cancel
+               → drop the target highlight
+             - tests: drag down fills the rows cyclically; drag right
+               fills the columns; drag up/left ignored; one onDataChange;
+               no rangeFill → no handle
+          2. Docs: iris 独有 section
+
+          VERIFY:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm --filter @iris-ui-kit/react typecheck`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react lint` (0 errors)
+          - `python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json` → 0 violations
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm gen:manifest`
+            (regenerate + commit — ALWAYS)
+          Report: files changed, tests added, counts, what is left.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-aq-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are the adversarial reviewer for iris-ui batch AQ. Read
+          batch-aq-baseline.md and batch-aq-adapt.md, inspect.
+
+          Check:
+          1. handle: rendered only with rangeFill + active range; position
+             over the last cell; styling tokens
+          2. drag: target rectangle highlight; cyclic fill correctness
+             (modulo math); down/right only; ONE commit; range extends;
+             cancel cleans up
+          3. additive only; manifest hygiene; core framework-free; CSS
+             tokens
+          Run verification commands (react test/typecheck/lint, audit,
+          check:manifest). Write verdict markdown: PASS or FAIL with numbered
+          findings (severity, file:line, fix). Do NOT modify files.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-aq-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Gate stage for iris-ui batch AQ. Read the review verdict
+          /home/u1/iris-ui/docs/vxe-grid/batch-aq-review.md.
+
+          If PASS: run the full repo gate:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm turbo run test typecheck lint build --concurrency=2`
+          - audit → 0; gen:manifest + check:manifest
+          - Commit: `git add -A -- . ':!apps/ssr-solidstart/.vinxi' && git
+            commit -m "feat(table): grid 批 AQ——拖拽填充柄（Excel 式选区填充）"`
+          Report commit hash and final test counts.
+
+          If FAIL with concrete fixes: apply fixes, rerun, full gate, commit.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-aq-gate.md

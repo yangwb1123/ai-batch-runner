@@ -142,15 +142,17 @@ def _add_memory_arg(p: argparse.ArgumentParser) -> None:
 
 def _add_lock_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--no-lock", action="store_true",
-                   help="skip the single-instance lock (T4 escape hatch)")
+                   help="skip the single-instance lock (T4 escape hatch; "
+                        "PBATCH_LOCK_FILE moves it outside the workspace)")
     p.add_argument("--wait-lock", type=int, default=0, metavar="MINUTES",
                    help="queue behind a held lock: poll every 30s up to MINUTES "
                         "instead of exiting 5 (shared-machine workflows)")
     p.add_argument("--run-domain", default="", metavar="NAME",
                    help="multi-instance run domain: a NON-EMPTY name different "
                         "from the holder's domain runs in parallel without the "
-                        "lock (keep outputs/sessions disjoint — your "
-                        "responsibility); same/default domains keep excluding")
+                        "lock only when the Git worktree is clean (keep outputs/"
+                        "sessions disjoint — your responsibility); same/default "
+                        "domains keep excluding")
 
 
 def _add_validate_args(p: argparse.ArgumentParser) -> None:
@@ -375,6 +377,9 @@ def _run_configured(args, lock_path) -> None:
 
 
 _SUBCOMMANDS: dict[str, str] = {
+    # Canonical Pi namespace: arguments after ``pi`` belong to
+    # earendil-works/pi and are deliberately not parsed by pi-batch.
+    "pi": "pi_cli:pi_main",
     "tui": "tui:tui_main",
     "agents": "agent_ledger:agents_main",
     "config": "config_cli:config_main",
@@ -382,6 +387,7 @@ _SUBCOMMANDS: dict[str, str] = {
     "classify": "classifier:classify_main",
     "rules": "rule_cli:rules_main",
     "assess": "assessor:assess_main",
+    "product": "product_cli:product_main",
     "learn": "learn:learn_main",
     "context": "context:context_main",
     "eval": "eval:eval_main",
@@ -442,6 +448,7 @@ _SUBCOMMANDS: dict[str, str] = {
     "runner": "fabric_runner:runner_main",
     "evolution": "evolution:evolution_main",
     "isolate": "isolate:isolate_main",
+    "collab": "collab:collab_main",
 }
 
 

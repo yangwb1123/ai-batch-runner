@@ -23,7 +23,7 @@ _EXPECTED_MAPPINGS = {
     "agent", "limits", "memory", "session", "logging", "input", "output",
     "evidence", "prompt", "validation", "commands", "project", "commit",
     "classifier", "runtime_policy", "device_fabric", "agent_ledger",
-    "model_routing",
+    "model_routing", "tui",
     "validators",
 }
 _EXPECTED_SCALARS = {"config_version", "ui_scan_dir"}
@@ -186,6 +186,8 @@ _RUNTIME_ATTRS = {
     "validation.output_max_bytes": "VALIDATION_OUTPUT_MAX_BYTES",
     "commands.timeout": "COMMAND_TIMEOUT",
     "commands.output_max_bytes": "COMMAND_OUTPUT_MAX_BYTES",
+    "tui.journal_enabled": "TUI_JOURNAL_ENABLED",
+    "tui.journal_max_bytes": "TUI_JOURNAL_MAX_BYTES",
     "memory.mode": "MEMORY_MODE",
     "memory.agent_names": "MEMORY_AGENT_NAMES",
     "memory.manifest_recent": "MEMORY_MANIFEST_RECENT",

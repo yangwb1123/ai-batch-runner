@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import subprocess
 import threading
 import time
@@ -10,10 +11,14 @@ import time
 import pytest
 
 from pbatch.tui_adapter_codex import CodexExecAdapter
+from pbatch.tui_codex_support import _bounded_id
+from pbatch.tui_controller import TUIEventController
+from pbatch.tui_protocol import TurnState
 from pbatch.tui_runtime import (
     ApprovalDecision,
     InitializeRequest,
     InterruptRequest,
+    ReadSessionRequest,
     ResumeSessionRequest,
     StartSessionRequest,
     StartTurnRequest,
@@ -151,7 +156,7 @@ def test_real_jsonl_sample_maps_sequence_payloads_and_terminal_state():
     kinds = [event.kind for event in events]
     assert kinds == [
         "session.created", "turn.queued", "turn.started", "message.started",
-        "message.delta", "command.started", "command.output",
+        "message.completed", "command.started", "command.output",
         "command.completed", "file.changed", "file.changed", "message.delta",
         "plan.updated", "usage.updated", "turn.completed",
     ]
@@ -167,7 +172,8 @@ def test_real_jsonl_sample_maps_sequence_payloads_and_terminal_state():
     assert changed[-1].payload["changes"] == [
         {"path": "src/x.py", "kind": "update"}]
     assert "".join(event.payload["text"] for event in events
-                   if event.kind == "message.delta") == "the reply delta..."
+                   if event.kind in {"message.delta", "message.completed"}) == (
+                       "the reply delta...")
     terminal = events[-1]
     assert terminal.payload["state"] == "SUCCEEDED"
     assert terminal.payload["usage"]["cached_input_tokens"] == 14080
@@ -191,7 +197,7 @@ def test_unknown_item_and_non_json_line_fail_open_with_warning_count():
                    if event.kind == "runtime.unknown_item")
     assert warning.payload["protocol_error_count"] == 1
     assert unknown.payload["type"] == "future_widget"
-    assert any(event.kind == "message.delta" and
+    assert any(event.kind == "message.completed" and
                event.payload["text"] == "still running" for event in events)
     assert events[-1].kind == "turn.completed"
 
@@ -205,11 +211,13 @@ def test_capabilities_are_truthful_and_unsupported_operations_are_typed():
     assert info.capabilities.interrupt is True
     assert info.capabilities.session_resume is True
     assert info.capabilities.session_fork is True
-    for capability in ("typed_approvals", "turn_steer", "review",
+    for capability in ("session_read", "session_list", "typed_approvals", "turn_steer", "review",
                        "subagents", "images"):
         assert info.capabilities.supports(capability) is False
     assert adapter.start_session(StartSessionRequest()).state == "ACTIVE"
     operations = [
+        lambda: adapter.read_session(ReadSessionRequest("thread_x")),
+        lambda: adapter.list_sessions(),
         lambda: adapter.steer_turn(SteerRequest("turn_x", "more")),
         lambda: adapter.resolve_approval(ApprovalDecision("req_x", "allow")),
     ]
@@ -322,14 +330,44 @@ def test_adversarial_reply_cannot_forge_control_or_command_events():
     ]
     _, _, events = _run(lines)
     assert next(event for event in events
-                if event.kind == "message.delta").payload["text"] == reply
+                if event.kind == "message.completed").payload["text"] == reply
     assert not [event for event in events if event.kind.startswith("approval.")]
     assert not [event for event in events if event.kind.startswith("gate.")]
     assert not [event for event in events if event.kind.startswith("review.")]
     assert not [event for event in events if event.kind.startswith("command.")]
 
 
-def test_megabyte_command_output_is_bounded_and_finishes_quickly():
+def test_long_item_ids_keep_digest_identity_before_message_projection():
+    prefix = "界" * 900
+    first_id = prefix + "-first"
+    mimicking_short_id = _bounded_id(first_id)
+    lines = [
+        _line({"type": "thread.started", "thread_id": THREAD_ID}),
+        _line({"type": "turn.started"}),
+        _line({"type": "item.completed", "item": {
+            "id": first_id, "type": "agent_message", "text": "first"}}),
+        _line({"type": "item.completed", "item": {
+            "id": prefix + "-second", "type": "agent_message", "text": "second"}}),
+        _line({"type": "item.completed", "item": {
+            "id": mimicking_short_id, "type": "agent_message", "text": "mimic"}}),
+        _line({"type": "turn.completed", "usage": {}}),
+    ]
+    _, _, events = _run(lines)
+    messages = [event for event in events if event.kind == "message.completed"]
+    controller = TUIEventController()
+    for event in events:
+        controller.ingest(event)
+
+    assert len(messages) == 3
+    assert len({event.payload["item_id"] for event in messages}) == 3
+    assert all(len(event.payload["item_id"].encode("utf-8")) <= 2048
+               for event in messages)
+    assert controller.snapshot().assistant_text == "first\n\nsecond\n\nmimic"
+
+
+def test_megabyte_command_output_is_bounded_and_promoted(
+        tmp_path, monkeypatch):
+    monkeypatch.setenv("PBATCH_DATA_DIR", str(tmp_path / "runtime-data"))
     huge = "x" * (1024 * 1024)
     lines = [
         _line({"type": "thread.started", "thread_id": THREAD_ID}),
@@ -347,7 +385,44 @@ def test_megabyte_command_output_is_bounded_and_finishes_quickly():
     assert len(encoded) <= 64 * 1024
     assert output.payload["truncated"] is True
     assert output.payload["aggregated_output"].endswith("...[truncated]")
+    artifact = next(event for event in events if event.kind == "artifact.created")
+    assert artifact.payload["scope"] == "data"
+    assert artifact.payload["kind"] == "command_output"
+    assert artifact.payload["original_bytes"] == len(huge)
+    assert artifact.payload["truncated"] is False
+    stored = Path(tmp_path / "runtime-data" / artifact.payload["path"])
+    assert stored.read_text() == huge
+    assert stored.stat().st_mode & 0o777 == 0o600
     assert events[-1].kind == "turn.completed"
+
+
+def test_artifact_store_failure_warns_without_changing_turn_result(
+        tmp_path, monkeypatch):
+    data_root = tmp_path / "runtime-data"
+    outside = tmp_path / "outside"
+    data_root.mkdir()
+    outside.mkdir()
+    (data_root / "tui").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setenv("PBATCH_DATA_DIR", str(data_root))
+    huge = "x" * (128 * 1024)
+    lines = [
+        _line({"type": "thread.started", "thread_id": THREAD_ID}),
+        _line({"type": "turn.started"}),
+        _line({"type": "item.completed", "item": {
+            "id": "c", "type": "command_execution", "command": "big",
+            "aggregated_output": huge, "exit_code": 0, "status": "completed"}}),
+        _line({"type": "turn.completed", "usage": {}}),
+    ]
+
+    _, _, events = _run(lines)
+
+    warning = next(event for event in events
+                   if event.kind == "runtime.warning"
+                   and event.payload.get("category") == "artifact_store")
+    assert "symlink" in warning.payload["reason"]
+    assert not any(event.kind == "artifact.created" for event in events)
+    assert events[-1].kind == "turn.completed"
+    assert list(outside.iterdir()) == []
 
 
 def test_stderr_banner_is_ignored_but_other_stderr_is_bounded_warning():
@@ -359,6 +434,24 @@ def test_stderr_banner_is_ignored_but_other_stderr_is_bounded_warning():
     assert len(warnings) == 1
     assert warnings[0].payload["stream"] == "stderr"
     assert warnings[0].payload["text"] == "oops"
+
+
+def test_completion_before_provider_started_still_forms_legal_projection():
+    lines = [
+        _line({"type": "thread.started", "thread_id": THREAD_ID}),
+        _line({"type": "turn.completed", "usage": {"output_tokens": 1}}),
+    ]
+    _, _, events = _run(lines)
+    controller = TUIEventController()
+
+    view = None
+    for event in events:
+        view = controller.ingest(event) or view
+
+    assert [event.kind for event in events[:3]] == [
+        "session.created", "turn.queued", "turn.started"]
+    assert events[0].turn_id == ""
+    assert view is not None and view.turn_state == TurnState.SUCCEEDED
 
 
 def test_interrupt_kills_fake_process_and_close_is_idempotent():
@@ -373,7 +466,14 @@ def test_interrupt_kills_fake_process_and_close_is_idempotent():
     assert handle.state == "INTERRUPTED"
     adapter.close()
     adapter.close()
-    assert any(event.kind == "turn.interrupted" for event in adapter.events())
+    events = list(adapter.events())
+    kinds = [event.kind for event in events]
+    assert kinds.index("turn.started") < kinds.index("turn.interrupting")
+    assert kinds[-1] == "turn.interrupted"
+    controller = TUIEventController()
+    for event in events:
+        controller.ingest(event)
+    assert controller.snapshot().turn_state == TurnState.INTERRUPTED
 
 
 def test_events_stop_immediately_after_close_when_empty():
@@ -411,8 +511,13 @@ def test_queue_pressure_reports_once_without_dropping_body_or_terminal():
         "/tmp/project", spawn=FakeSpawn(FakeProc(lines)), maxsize=2)
     adapter.initialize(InitializeRequest())
     handle = adapter.start_turn(StartTurnRequest("pressure"))
-    events = []
-    for event in adapter.events():
+    stream = adapter.events()
+    events = [next(stream)]
+    deadline = time.monotonic() + 2
+    while not adapter._overflow_reported and time.monotonic() < deadline:
+        time.sleep(0.001)
+    assert adapter._overflow_reported
+    for event in stream:
         events.append(event)
         if event.kind == "turn.completed":
             break
@@ -420,6 +525,6 @@ def test_queue_pressure_reports_once_without_dropping_body_or_terminal():
     adapter.close()
     events.extend(adapter.events())
     assert sum(event.kind == "runtime.error" for event in events) == 1
-    assert any(event.kind == "message.delta" and event.payload["text"] == "kept"
+    assert any(event.kind == "message.completed" and event.payload["text"] == "kept"
                for event in events)
     assert any(event.kind == "turn.completed" for event in events)
