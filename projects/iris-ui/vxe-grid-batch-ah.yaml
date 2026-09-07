@@ -1,0 +1,179 @@
+# iris-ui grid 批 AH：命名视图预设 + 区域浮动工具栏（iris 独有交互）
+#
+# 目标（本项目 grid 独立演进第二批）：
+# 1. 视图预设（named views）：把 persistState 的状态快照命名为"视图"——
+#    保存/切换/删除（vxe 与主流 grid 均无的 iris 独有能力）
+# 2. 区域浮动工具栏：cellRange 选中时在选区上方浮动工具条
+#    （复制/导出 CSV——与 clipConfig/exportCurrentViewCsv 组合）
+# 范围：react only；additive。
+#
+# 执行：python pi-batch.py projects/iris-ui/vxe-grid-batch-ah.yaml \
+#   --log-file logs/iris-ui-batch-ah.log --retries 2
+
+git_commit: false
+decision_log: /home/u1/iris-ui/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      You are preparing the baseline for iris-ui grid batch AH (named view
+      presets + range floating toolbar). Monorepo: /home/u1/iris-ui.
+
+      Read:
+      1. /home/u1/iris-ui/packages/react/src/primitives/table/Table.tsx —
+         the persistState wiring (batch AG: how state pieces are read +
+         applied via callbacks — the snapshot shape), the cellRange
+         machinery (startRange/extendRange/isInRange, the range anchor
+         cells), the clipConfig copy path (batch O), exportCurrentViewCsv
+         (batch W).
+      2. /home/u1/iris-ui/packages/react/src/primitives/table/props.ts —
+         persistState config shape.
+
+      Write a markdown baseline to the output path:
+      - proposed design (react only, additive):
+        a) views?: { storage?: Pick<Storage, 'getItem' | 'setItem'> |
+           false; key?: string; label?: (name: string) => string } — named
+           view presets ON TOP of persistState: each view is a snapshot of
+           the SAME state pieces; the table renders a small view selector
+           in the toolbar (data-iris-table-views): a select of saved views
+           + "保存当前为视图…" (prompt-free: a small inline input in a
+           floating menu) + delete per view; switching a view applies the
+           snapshot through the same callbacks; the active view name is
+           optional (views.activeKey + onActiveViewChange? — keep it
+           simple: a controlled `views.activeKey?: string` +
+           `onActiveViewChange?`); persistence reuses the persistState
+           storage convention (separate key, default 'iris-table-views')
+           — storage false disables persistence but keeps in-memory views
+        b) range toolbar: when cellRange is active AND a range is selected
+           (≥1 cell), render a floating bar above the range top edge
+           (data-iris-table-range-toolbar, absolute position at the range
+           bounding box — measure the anchor cell rect; or simpler: fixed
+           below the header at the selection column — pick: absolute above
+           the first selected cell using getBoundingClientRect + a portal;
+           keep simple with the ContextMenu virtual-anchor pattern) with
+           buttons: 复制 (copy the range as TSV — reuse the clipConfig copy
+           path), 导出 CSV (downloadFile of the range), 清除 (clear the
+           range values through the write-back channel); the bar hides when
+           the range clears
+      - file map + tests
+      Do NOT modify source files.
+    output: /home/u1/iris-ui/docs/vxe-grid/batch-ah-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Implement iris-ui grid batch AH (named views + range toolbar) in
+          /home/u1/iris-ui, per
+          /home/u1/iris-ui/docs/vxe-grid/batch-ah-baseline.md. Read it
+          first, then AGENTS.md.
+
+          HARD CONSTRAINTS:
+          - Core framework-free; react only; additive only.
+          - No dist/tgz/node_modules/manifest.json edits.
+          - Test files ≤500 lines; ≤4 changed files + tests.
+          - MANIFEST SCANNER HYGIENE: single-line function props; named
+            exported interfaces; export new types.
+          - CSS uses --iris-* tokens only.
+          - TIME BUDGET: (1) views (medium); (2) range toolbar (medium).
+            If low, finish 1, then 2's copy/export buttons, then clear.
+
+          IMPLEMENT:
+          1. views (props.ts + types.ts + Table.tsx + i18n):
+             - views?: { storage?: ...; key?: string; label?: (name) =>
+               string } (single line; named interface IrisTableViewConfig)
+             - state: views list (name + snapshot) + activeKey (controlled
+               via props: views.activeKey + onActiveViewChange)
+             - load on mount (same guards as persistState); save on
+               save-view action
+             - toolbar: a compact select (data-iris-table-views) listing
+               saved views + "＋ 保存" item opening a small inline input
+               (data-iris-views-save) — on confirm, snapshot the current
+               state pieces (same collector as persistState) under the
+               typed name + persist; selecting a view applies its snapshot
+               through the callbacks; a delete (×) removes the view +
+               persists; switching sets activeKey
+             - i18n: table.views.save / table.views.placeholder /
+               table.views.delete (en + zh)
+             - tests: save a view → stored; switch applies the snapshot
+               (callbacks called); delete removes; storage false keeps
+               in-memory; corrupt JSON ignored
+          2. range toolbar (Table.tsx + styles.ts):
+             - when cellRange && the range has ≥1 cell: render the toolbar
+               via the ContextMenu-style floating pattern (anchor = the
+               first selected cell's rect via getBoundingClientRect,
+               placement above, useFloating); buttons: 复制 (reuse the
+               clip copy TSV builder for the CURRENT range), 导出 CSV
+               (downloadFile(csv)), 清除 (clear the range cells through
+               commitRowList — setCellValue per cell, one commit)
+             - hide on range clear / outside click (reuse useDismiss)
+             - i18n table.range.copy / table.range.export /
+               table.range.clear (en + zh)
+             - tests: range select shows the bar; copy writes the TSV to
+               the clipboard stub; clear zeroes the cells via onDataChange;
+               no range → no bar
+          3. Docs: add both to the iris 独有 section
+
+          VERIFY:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm --filter @iris-ui-kit/react typecheck`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react lint` (0 errors)
+          - `python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json` → 0 violations
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm gen:manifest`
+            (regenerate + commit — ALWAYS)
+          Report: files changed, tests added, counts, what is left.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-ah-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are the adversarial reviewer for iris-ui batch AH (views +
+          range toolbar). Read batch-ah-baseline.md and batch-ah-adapt.md,
+          inspect.
+
+          Check:
+          1. views: snapshot collector matches persistState pieces; apply
+             through callbacks only; persistence guards; activeKey
+             controlled; delete/save UX
+          2. range toolbar: anchored above the range; copy/export/clear;
+             clear via write-back; hides on range clear/outside
+          3. additive only; manifest hygiene; core framework-free; CSS
+             tokens; i18n both languages
+          Run verification commands (react test/typecheck/lint, audit,
+          check:manifest). Write verdict markdown: PASS or FAIL with numbered
+          findings (severity, file:line, fix). Do NOT modify files.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-ah-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Gate stage for iris-ui batch AH. Read the review verdict
+          /home/u1/iris-ui/docs/vxe-grid/batch-ah-review.md.
+
+          If PASS: run the full repo gate:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm turbo run test typecheck lint build --concurrency=2`
+          - audit → 0; gen:manifest + check:manifest
+          - Commit: `git add -A -- . ':!apps/ssr-solidstart/.vinxi' && git
+            commit -m "feat(table): grid 批 AH——命名视图预设 + 区域浮动工具栏（iris 独有）"`
+          Report commit hash and final test counts.
+
+          If FAIL with concrete fixes: apply fixes, rerun, full gate, commit.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-ah-gate.md

@@ -1,5 +1,4 @@
 # Phase 2.5 (T12) — handoff 接力：A agent 的产物注入 B agent
-# 用户需求最后一环：“安排几个不同的 agent 来完成任务，要可以共享结果”。
 # 账本（T11）记录 outputs 路径；本任务把源 run 的产物有界摘录注入目标 agent 的 prompt。
 tasks:
   - prompt: |
@@ -9,14 +8,14 @@ tasks:
       "handoff" 一行）；新增 pbatch/handoff.py（≤450 行）与 tests/test_handoff.py。
       其他文件不动。
 
-      ## 复用事实
+      ## 依赖接口
       - pbatch/evidence.py：combine_outputs(outputs, maximum) —— 多路径公平字节预算
         （默认 config.EVIDENCE_MAX_BYTES=64KiB、EVIDENCE_MAX_SOURCES=64）、截断标记、
         文件存在性过滤；source_manifest(outputs) —— 路径清单（含省略标记）。
       - pbatch/agent_ledger.py：query(data_dir, *, agent, limit, since_ts) →
         list[dict]（字段 agent/status/task_brief/outputs/run_id/session_id/
         session_name/ts/elapsed_ms/exit_code）；record_result 由 execution_trace
-        钩子在每次 run 后自动调用（已启用）。
+        钩子在每次 run 后调用。
       - runner.run_task(task, ...) 可直调（tui_backend 同款用法）；Task(prompt=...,
         output=..., cwd=...)；失败签名/超时/账本钩子自动生效。
       - pi-batch.yaml agent.bin 为默认执行器；cli.acquire_lock（exit 5）语义可复用。
@@ -66,7 +65,7 @@ tasks:
          tests/test_pi_batch.py tests/test_entrypoints.py -q 全绿；python quality.py
          --strict . 不新增违规；python pi-batch.py eval 不回归；
          python pi-batch.py handoff --help 输出正确。
-      5. 结局文档 docs/tui-phase0/t12-handoff.md：命令用法、源选择优先级、注入格式
-        （证据纪律）、退出码表、端到端演示记录（协调者会补跑真实双 agent 演示）。
+      5. 最终回复直接给出完整 Markdown 交付报告，由 runner 写入 output；不要自行写
+         output 路径。报告固定包含用法、源选择、证据注入、退出码、验证入口和边界。
     output: docs/tui-phase0/t12-handoff.md
     validate: pyquality

@@ -1,0 +1,200 @@
+# iris-ui vxe-grid 批 P：mergeHeaderCells/footerSpanMethod + round/padding + aggregateAccuracy + 表头表尾提示
+#
+# 目标（对照 vxe tableProps 盘点继续关闭缺口）：
+# 1. mergeHeaderCells：表头单元格合并（vxe mergeCells 三件套剩余）
+# 2. footerSpanMethod：表尾单元格合并（vxe footerSpanMethod parity）
+# 3. round / padding：圆角边框 / 内边距
+# 4. aggregateAccuracy：合计精度（summary 数字保留小数位）
+# 5. headerTooltipConfig / footerTooltipConfig：表头/表尾悬停提示
+# 范围：react only；additive。
+#
+# 执行：python pi-batch.py projects/iris-ui/vxe-grid-batch-p.yaml \
+#   --log-file logs/iris-ui-batch-p.log --retries 2
+
+git_commit: false
+decision_log: /home/u1/iris-ui/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      You are preparing the baseline for iris-ui vxe-grid batch P (header
+      merge + footer span + round/padding + accuracy + header/footer
+      tooltips). Monorepo: /home/u1/iris-ui. Reference:
+      /tmp/vxe-ref/package/es/table/src/props.js.
+
+      Read:
+      1. /home/u1/iris-ui/packages/react/src/primitives/table/Table.tsx —
+         the grouped header render (headerMatrix, cell.colSpan/rowSpan),
+         the flat header render, the summary/footerMethod/footerData rows,
+         the root container style (borderRadius), BASE_CELL_STYLE padding.
+      2. /home/u1/iris-ui/packages/react/src/primitives/table/props.ts +
+         types.ts — spanMethod, summary (IrisTableAggregateOp), tooltipConfig,
+         bordered/round.
+      3. /home/u1/iris-ui/packages/react/src/primitives/table/styles.ts —
+         TABLE_ROW_CSS / borderStyle helpers.
+
+      Write a markdown baseline to the output path:
+      - proposed iris design (react only, additive):
+        a) mergeHeaderCells?: Array<{ row: number; col: number; rowspan?:
+           number; colspan?: number }> — applies to the FLAT header (1-row)
+           AND the grouped header matrix rows? — vxe mergeHeaderCells
+           targets the header cells; for iris: apply to the flat header row
+           (grid row 1): cells at (row=0, col) get rowspan/colspan via
+           gridColumnEnd/gridRowEnd span (same occupied-skip technique as
+           spanMethod: an occupied set over (row, col) keys, skipped cells
+           render null); grouped headers: also support (row = headerMatrix
+           level, col = leaf index)? keep SIMPLE: flat header only (row
+           always 0), document
+        b) footerSpanMethod?: (params: { rowIndex: number; columnIndex:
+           number; columns: IrisTableColumn<Row>[]; data: Row[] }) =>
+           { rowspan?: number; colspan?: number } | null — applies to the
+           footerMethod rows AND the summary row (whichever renders): same
+           occupied-skip technique as spanMethod but over the footer rows;
+           rowIndex counts the footer rows (0-based)
+        c) round?: boolean — when bordered && round: root border-radius
+           var(--iris-radius-lg); padding?: string — overrides BASE_CELL_STYLE
+           padding (cell-level; applied via a CSS var --iris-cell-pad on the
+           root so baseCellStyle reads var(--iris-cell-pad, var(--iris-cell-
+           pad-y, 8px) 12px))
+        d) aggregateAccuracy?: number — summary aggregate results round to
+           that many decimals (toFixed(n), strip trailing zeros? keep
+           Number(x.toFixed(n)) for numeric; non-numeric untouched)
+        e) headerTooltipConfig?: { content?: (column:
+           IrisTableColumn<Row>) => string } — header cells get a native
+           title when set (same pattern as tooltipConfig); footerTooltipConfig
+           same for summary/footerMethod/footerData cells with (column) →
+           string
+      - file map + tests
+      Do NOT modify source files.
+    output: /home/u1/iris-ui/docs/vxe-grid/batch-p-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Implement iris-ui vxe-grid batch P (header merge + footer span +
+          round/padding + accuracy + header/footer tooltips) in
+          /home/u1/iris-ui, per
+          /home/u1/iris-ui/docs/vxe-grid/batch-p-baseline.md. Read it first,
+          then AGENTS.md.
+
+          HARD CONSTRAINTS:
+          - Core framework-free; React only; additive only.
+          - No dist/tgz/node_modules/manifest.json edits.
+          - Test files ≤500 lines; ≤4 changed files + tests.
+          - MANIFEST SCANNER HYGIENE: function-type props on ONE line; inline
+            object params use named exported interfaces; export new types
+            from index.ts.
+          - CSS uses --iris-* tokens only.
+
+          IMPLEMENT:
+          1. mergeHeaderCells (props.ts + types.ts + Table.tsx):
+             - mergeHeaderCells?: Array<{ row: number; col: number;
+               rowspan?: number; colspan?: number }> (single line; named
+               interface IrisTableMergeCell exported)
+             - flat header: an occupied set of "row:col" keys; cells in the
+               merge list get gridColumnEnd span colspan / gridRowEnd span
+               rowspan; occupied cells render null; only row 0 supported
+               (document); grouped header: NOT applied (document)
+          2. footerSpanMethod (props.ts + Table.tsx):
+             - footerSpanMethod?: (params: { rowIndex: number; columnIndex:
+               number; columns: IrisTableColumn<Row>[]; data: Row[] }) =>
+               { rowspan?: number; colspan?: number } | null (single line)
+             - applies over the footer row stack (footerMethod rows then
+               summary row then footerData — whichever renders; document the
+               order); same occupied-skip as spanMethod (reuse the pattern);
+               the rowIndex is 0-based over the rendered footer rows
+          3. round/padding (props.ts + Table.tsx + styles.ts):
+             - round?: boolean — root border-radius:
+               var(--iris-radius-lg, 10px) when bordered && round
+             - padding?: string — root sets --iris-cell-pad: <padding>;
+               BASE_CELL_STYLE padding becomes var(--iris-cell-pad,
+               var(--iris-cell-pad-y, 8px) 12px) (size presets still
+               override via --iris-cell-pad-y)
+          4. aggregateAccuracy (props.ts + Table.tsx):
+             - aggregateAccuracy?: number — the summary render of an
+               aggregate value: Number(value.toFixed(n)) when the op result
+               is a finite number; string results untouched; renderSummary
+               still wins when provided
+          5. headerTooltipConfig/footerTooltipConfig (props.ts + Table.tsx):
+             - headerTooltipConfig?: { content?: (column:
+               IrisTableColumn<Row>) => string }; footerTooltipConfig?: {
+               content?: (column: IrisTableColumn<Row>) => string } (single
+               lines) — native title on header cells / footer cells (summary,
+               footerMethod, footerData) when set
+          6. Tests (new merge-round-accuracy.test.tsx):
+             - mergeHeaderCells: colspan merges adjacent header cells,
+               occupied cells skipped; no merge → unchanged
+             - footerSpanMethod: colspan on footerMethod rows; occupied
+               skip
+             - round renders the radius; padding overrides cell padding
+             - aggregateAccuracy rounds the summary sum
+             - header/footer tooltips render title attrs
+
+          VERIFY:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm --filter @iris-ui-kit/react typecheck`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react lint` (0 errors)
+          - `python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json` → 0 violations
+          Report: files changed, tests added, counts, unfinished items.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-p-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are the adversarial reviewer for iris-ui batch P. Read
+          batch-p-baseline.md and batch-p-adapt.md, inspect.
+
+          Check:
+          1. mergeHeaderCells: span + occupied skip; flat only (grouped
+             untouched); gridColumnEnd correctness
+          2. footerSpanMethod: applies to the right footer rows; occupied
+             skip; spanMethod (body) untouched
+          3. round/padding: radius only when bordered+round; padding var
+             precedence (padding prop > size preset > default)
+          4. aggregateAccuracy: rounding correct; renderSummary wins;
+             non-numeric untouched
+          5. header/footer tooltips: title only when config set; body
+             tooltipConfig untouched
+          6. additive only; manifest hygiene; core framework-free; CSS tokens
+          Run verification commands (react test/typecheck/lint, audit). Write
+          verdict markdown: PASS or FAIL with numbered findings (severity,
+          file:line, fix). Do NOT modify files.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-p-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Gate stage for iris-ui batch P. Read the review verdict
+          /home/u1/iris-ui/docs/vxe-grid/batch-p-review.md.
+
+          If PASS: run the full repo gate:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm turbo run test typecheck lint build --concurrency=2`
+          - audit → 0; `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm gen:manifest`
+          - Update /home/u1/iris-ui/docs/vxe-grid-comparison.md: mark batch P
+            rows (mergeHeaderCells / footerSpanMethod / round / padding /
+            aggregateAccuracy / header+footer tooltips) done (react).
+          - Commit: `git add -A -- . ':!apps/ssr-solidstart/.vinxi' && git
+            commit -m "feat(table): vxe-grid 批 P——表头表尾合并/圆角内边距/合计精度/表头表尾提示（react only）"`
+          Report commit hash and final test counts.
+
+          If FAIL with concrete fixes: apply fixes, rerun, full gate, commit.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-p-gate.md

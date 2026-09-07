@@ -1,0 +1,170 @@
+# iris-ui grid 批 AT：编辑审计日志（数据血缘/变更历史）
+#
+# 目标：auditLog?: boolean——每次数据变更（编辑/行操作/粘贴/批量/填充/
+# 撤销/重做）记录 { timestamp, type, rowKey, column?, oldValue?, newValue? }
+# ——core createAuditLog（环形缓冲 + 订阅）；工具栏审计按钮 → 面板列表；
+# handle.getAuditLog() / clearAuditLog()。
+# 范围：react only；additive；core 控制器。
+#
+# 执行：python pi-batch.py projects/iris-ui/vxe-grid-batch-at.yaml \
+#   --log-file logs/iris-ui-batch-at.log --retries 2
+
+git_commit: false
+decision_log: /home/u1/iris-ui/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      You are preparing the baseline for iris-ui grid batch AT (audit log).
+      Monorepo: /home/u1/iris-ui.
+
+      Read:
+      1. /home/u1/iris-ui/packages/react/src/primitives/table/Table.tsx —
+         the mutation points (commitRowList — the single write-back
+         channel: edit commits, row ops, paste, batch edit, fill, undo/
+         redo — where to hook the audit record; the handle object; the
+         toolbar render; the existing panel patterns (stats/views) for the
+         audit panel).
+      2. /home/u1/iris-ui/packages/core/src/ — controller conventions
+         (create* with subscribe/getState — mirror createUndoStack).
+
+      Write a markdown baseline to the output path:
+      - proposed design:
+        a) core createAuditLog<Row>(options?: { limit?: number }) — push
+           (entry) with a monotonic seq + timestamp; list(): entries
+           (newest first); clear(); subscribe(listener); limit default 200
+           (ring buffer — oldest dropped); type
+           IrisAuditEntry { seq: number; timestamp: number; type:
+           'edit' | 'insert' | 'remove' | 'update' | 'paste' | 'batch' |
+           'fill' | 'undo' | 'redo'; rowKey?: string | number; column?:
+           string; oldValue?: unknown; newValue?: unknown }; tests (ring
+           limit, order, clear, subscribe)
+        b) react auditLog?: boolean — when enabled: every commitRowList
+           mutation records an entry (the commit path has the context?
+           commitRowList receives the next rows only — the audit needs the
+           diff: compute a light diff between the previous rows ref and the
+           next rows (rowKey-level: added/removed/changed cells) — keep it
+           simple: record ONE entry per commit with type 'edit' and the
+           changed cell keys (first change only? — record type from the
+           caller: the mutation sites pass a type hint — commitRowList
+           gains an optional type param, default 'edit'); the toolbar
+           renders an audit button (data-iris-audit-trigger, i18n
+           table.audit) → panel (data-iris-audit-panel) listing entries
+           (time + type + rowKey + column + old→new, muted rows, newest
+           first, max height + scroll); handle gains getAuditLog():
+           Array<entry> and clearAuditLog(): void
+        c) i18n table.audit (en + zh)
+      - file map + tests
+      Do NOT modify files.
+    output: /home/u1/iris-ui/docs/vxe-grid/batch-at-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Implement iris-ui grid batch AT (audit log) in /home/u1/iris-ui,
+          per /home/u1/iris-ui/docs/vxe-grid/batch-at-baseline.md. Read it
+          first, then AGENTS.md.
+
+          HARD CONSTRAINTS:
+          - Core framework-free; react only; additive only.
+          - No dist/tgz/node_modules/manifest.json edits.
+          - Test files ≤500 lines; ≤4 changed files + tests.
+          - MANIFEST SCANNER HYGIENE: single-line function props; named
+            exported interfaces.
+          - CSS uses --iris-* tokens only.
+          - TIME BUDGET: (1) core + tests (light); (2) react wiring +
+            panel + handle (medium). Finish both.
+
+          IMPLEMENT:
+          1. core (packages/core/src/audit-log.ts NEW + tests):
+             - createAuditLog per the baseline; export from index.ts +
+             types; tests (ring limit, newest-first list, clear,
+             subscribe)
+          2. react (props.ts + Table.tsx + i18n):
+             - auditLog?: boolean (single line)
+             - controller in a ref (create once); commitRowList gains an
+               optional type hint (the mutation sites pass their type:
+               edits 'edit', insert/removeRows 'insert'/'remove', paste
+               'paste', batch 'batch', fill 'fill', undo/redo
+               'undo'/'redo'); push a single entry per commit (rowKey =
+               the first changed row key or undefined; column + old→new
+               from the diff — compute a light diff: compare the previous
+               rows (kept in a ref) with the next; record the first
+               changed cell; document the simplification)
+             - toolbar audit button (when enabled) → panel (floating, like
+               the stats panel): newest-first entries (seq + formatted
+               time via the existing formatClock + type + rowKey + column
+               + old→new, muted), max-height scroll; Esc/outside close
+             - handle: getAuditLog / clearAuditLog
+             - i18n table.audit (en + zh)
+          3. Tests (audit-log.test.tsx):
+             - core: ring/order/clear/subscribe
+             - react: an edit commit records an entry; insert records
+               'insert'; the panel lists entries; clear empties; no prop →
+               inert
+          4. Docs: iris 独有 section
+
+          VERIFY:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm --filter @iris-ui-kit/core test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react typecheck`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react lint` (0 errors)
+          - `python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json` → 0 violations
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm gen:manifest`
+            (regenerate + commit — ALWAYS)
+          Report: files changed, tests added, counts, what is left.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-at-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are the adversarial reviewer for iris-ui batch AT. Read
+          batch-at-baseline.md and batch-at-adapt.md, inspect.
+
+          Check:
+          1. core: ring limit; newest-first; clear; subscribe; type shape
+          2. react: commitRowList type hints from every mutation site;
+             diff simplification documented; panel content + dismiss;
+             handle methods
+          3. additive only; manifest hygiene; core framework-free; CSS
+             tokens; i18n both languages
+          Run verification commands (core test, react test/typecheck/lint,
+          audit, check:manifest). Write verdict markdown: PASS or FAIL with
+          numbered findings (severity, file:line, fix). Do NOT modify files.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-at-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Gate stage for iris-ui batch AT. Read the review verdict
+          /home/u1/iris-ui/docs/vxe-grid/batch-at-review.md.
+
+          If PASS: run the full repo gate:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm turbo run test typecheck lint build --concurrency=2`
+          - audit → 0; gen:manifest + check:manifest
+          - Commit: `git add -A -- . ':!apps/ssr-solidstart/.vinxi' && git
+            commit -m "feat(table): grid 批 AT——编辑审计日志（数据血缘/变更历史）"`
+          Report commit hash and final test counts.
+
+          If FAIL with concrete fixes: apply fixes, rerun, full gate, commit.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-at-gate.md

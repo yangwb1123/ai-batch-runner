@@ -1,6 +1,5 @@
 # Phase 2.5 (T11) — 多 Agent 协作台：异构 agent 注册 + 共享 run 账本 + 互见
-# 用户需求：可选不同 agent（codex/claude/gemini/pi…）；不同 agent 能互相看到其余
-# agent 的任务和当前会话；多 agent 分任务时结果共享（账本记录产物路径即共享基础）。
+# 账本记录产物路径，为异构 agent 提供可查询的任务与会话事实源。
 tasks:
   - prompt: |
       实现多 Agent 协作底座：① pi-batch.yaml 补全 claude/gemini/opencode 适配段；
@@ -11,9 +10,7 @@ tasks:
       /agents，≤25 行）；新增 pbatch/agent_ledger.py（≤400 行）、pbatch/tui_agents.py
       （≤300 行）、tests/test_agent_ledger.py、tests/test_tui_agents.py。其他文件不动。
 
-      ## 已实测的 CLI 契约（codex-cli 0.149 / claude 2.1.218 / gemini 0.46.0 /
-      opencode 0.149.x 环境版本；pi 为默认。代码里以配置为准，不要在任务中真跑
-      claude/gemini API——只做配置与账本）
+      ## CLI 适配契约（pi 为默认；以配置和各 provider 当前能力为准）
       - claude: prompt 用 -p（print 模式）；model --model；session：-r/--resume
         [value]（value=session id，交互 --resume 不带值时用最近会话；print 模式
         需要显式 id 或配合 --continue）；--fork-session；失败签名：
@@ -23,8 +20,7 @@ tasks:
         参数（每轮新会话）；失败签名：保留默认表。
       - opencode run：prompt 为 run 后的位置参数（argument_flags.prompt 用
         ["run"]，与 codex 的 ["exec"] 同构）；model -m；session -s/--session
-        <id>、--fork、--continue；--format json 结构化输出（默认不用，留
-        T12 适配器）；失败签名：默认表。
+        <id>、--fork、--continue；--format json 结构化输出（按需启用）；失败签名：默认表。
       - 配置段结构参照现有 agents.codex：argument_flags / extra_args /
         session_flags / error_patterns（per-agent 覆盖语义）。
 
@@ -107,9 +103,9 @@ tasks:
       python quality.py --strict . 不新增违规；python pi-batch.py eval 不回归；
       python pi-batch.py agents list --json 输出含 codex/claude/gemini/opencode/pi。
 
-      ## G. 结局文档
-      docs/tui-phase0/t11-agents.md：五 agent 适配表、账本数据模型、互见语义
-      （账本即"互相看到任务/会话"的事实源；产物路径=结果共享基础，handoff
-      接力为 T12）、TUI 面板用法、轮转/边界。
+      ## G. 交付报告
+      最终回复直接给出完整 Markdown 交付报告，由 runner 写入 output；不要自行写
+      output 路径。报告固定包含五 agent 适配边界、账本数据模型、互见语义、TUI 用法、
+      轮转、验证入口和边界。
     output: docs/tui-phase0/t11-agents.md
     validate: pyquality

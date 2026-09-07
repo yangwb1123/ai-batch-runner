@@ -36,6 +36,8 @@ from .runner import (_save_validated, print_summary, run_parallel,
 from .text_io import read_text_bounded
 from .task_loading import (load_tasks, load_tasks_from_dir, _task_data_error,
                            _task_string_error, _tasks_from_data)
+from .pipeline_native import execute_stage_tasks as _execute_stage_tasks_native
+from .tui_native import current_native_approval, current_native_observer
 def load_pipeline(path: str) -> Pipeline:
     """Load pipeline definition from YAML file."""
     if not yaml:
@@ -170,7 +172,8 @@ def _task_prompt(task_def: dict, input_content: str, input_stem: str, input_path
                  .replace("{input_path}", input_path)
                  .replace("{prompt}", original_prompt))
 def _expected_fp(prompt: str, out: str, validate_cmd: str, model: str,
-                 provider: str, fp_mode: bool, workdir: str = "") -> Optional[str]:
+                 provider: str, fp_mode: bool, workdir: str = "",
+                 agent: str = "") -> Optional[str]:
     """T9: fingerprint for a reuse candidate when --reuse-fingerprint is on
     (None otherwise); a mismatch regenerates the artifact. model/provider
     are the TASK's EFFECTIVE values (overrides included) — hashing the raw
@@ -178,7 +181,8 @@ def _expected_fp(prompt: str, out: str, validate_cmd: str, model: str,
     records the executed task's values (round-4 finding M6)."""
     if not fp_mode:
         return None
-    return reuse_fp(prompt, out, validate_cmd or "", model, provider, workdir)
+    return reuse_fp(prompt, out, validate_cmd or "", model, provider,
+                    workdir, agent)
 
 def _task_from_def(task_def: dict, prompt: str, output_path: str, model_override: str = "",
                    timeout_override: int = 0, stage: Optional[Stage] = None) -> Task:
@@ -188,7 +192,8 @@ def _task_from_def(task_def: dict, prompt: str, output_path: str, model_override
         prompt=prompt,
         output=output_path,
         agent=task_def.get("agent") or (stage.agent if stage else ""),
-        model=task_def.get("model") or (stage.model if stage else ""),
+        model=(task_def.get("model") or (stage.model if stage else "")
+               or config.AGENT_DEFAULT_MODEL),
         provider=task_def.get("provider") or (stage.provider if stage else ""),
         thinking=task_def.get("thinking") or "",
         tools=task_def.get("tools") or "",
@@ -237,10 +242,11 @@ def _aggregate_tasks(stage: Stage, prev_outputs: list, model_override: str = "",
         task = _task_from_def(task_def, prompt, output_path, model_override, timeout_override, stage)
         prepare_task_context(task, prev_outputs, strict=False)
         # T9: fingerprint effective inputs (resolved output + model).
-        out_resolved = str(task.output_path()) if task.output else ""
+        out_resolved = str(task.output_path_unresolved()) if task.output else ""
         effective_validate = task.validate if task.validate is not None else validate_cmd
         fp = _expected_fp(task.prompt, out_resolved, effective_validate, task.model,
-                          task.provider, fingerprint_mode, task.workdir())
+                          task.provider, fingerprint_mode, task.workdir(),
+                          task.effective_agent())
         if _maybe_reuse_task(stage, task, out_resolved, output_path,
                               effective_validate, reuse_legacy, fp, reuse, reused):
             continue
@@ -259,7 +265,8 @@ def _stage_from_prompt_tasks(stage: Stage, reuse: bool, model_override: str, tim
         log.error("Stage '%s': from_prompt requires output", stage.name)
         return [], []
     task = Task(prompt=stage.from_prompt.replace("{prompt}", original_prompt),
-                output=stage.output, agent=stage.agent, model=stage.model,
+                output=stage.output, agent=stage.agent,
+                model=stage.model or config.AGENT_DEFAULT_MODEL,
                 provider=stage.provider, cwd=stage.cwd)
     # from_prompt supports @file references (same semantics as task files):
     # the pipeline can inject an external requirement without YAML editing.
@@ -275,9 +282,10 @@ def _stage_from_prompt_tasks(stage: Stage, reuse: bool, model_override: str, tim
     prepare_task_context(task)
     # T9 (round-4 M6): hash the task's effective inputs so the sidecar
     # written after success matches the reuse-check fingerprint.
-    out_resolved = str(task.output_path()) if task.output else ""
+    out_resolved = str(task.output_path_unresolved()) if task.output else ""
     fp = _expected_fp(task.prompt, out_resolved, validate_cmd, task.model,
-                      task.provider, fingerprint_mode, task.workdir())
+                      task.provider, fingerprint_mode, task.workdir(),
+                      task.effective_agent())
     if reuse and reuse_decision(out_resolved, validate_cmd, task.workdir(),
                                 reuse_legacy, fp):
         log.info("REUSE: %s (reused+validated)", stage.output)
@@ -310,7 +318,8 @@ def _stage_from_dir_tasks(stage: Stage, reuse: bool, model_override: str, timeou
     for fpath in files:
         # Resolve absolutely: task cwd is the input dir (relative outputs
         # would double-prefix under output_path()).
-        out_path = (fpath.parent / (fpath.stem + stage.output_suffix)).resolve()
+        out_path = Path(os.path.abspath(
+            fpath.parent / (fpath.stem + stage.output_suffix)))
         prompt = read_text_bounded(fpath, config.INPUT_MAX_BYTES,
                                    "stage input")
         task = Task(prompt=prompt, output=str(out_path), cwd=str(fpath.parent))
@@ -323,7 +332,8 @@ def _stage_from_dir_tasks(stage: Stage, reuse: bool, model_override: str, timeou
             task.timeout = timeout_override
         prepare_task_context(task, [fpath.resolve()], strict=False)
         fp = _expected_fp(task.prompt, str(out_path), validate_cmd, task.model,
-                          task.provider, fingerprint_mode, task.workdir())
+                          task.provider, fingerprint_mode, task.workdir(),
+                          task.effective_agent())
         if reuse and reuse_decision(str(out_path), validate_cmd, str(fpath.parent), reuse_legacy, fp):
             log.info("REUSE: %s (reused+validated)", out_path.name)
             reused.append(str(out_path))
@@ -369,10 +379,11 @@ def _stage_from_outputs_tasks(stage: Stage, stage_outputs: dict, reuse: bool, mo
             prepare_task_context(task, [out_path.resolve()], strict=False)
             # T9 (round-4 M6): fingerprint the task's effective inputs so
             # the sidecar written after success matches this hash.
-            out_resolved = str(task.output_path()) if task.output else ""
+            out_resolved = str(task.output_path_unresolved()) if task.output else ""
             effective_validate = task.validate if task.validate is not None else validate_cmd
             fp = _expected_fp(task.prompt, out_resolved, effective_validate, task.model,
-                              task.provider, fingerprint_mode, task.workdir())
+                              task.provider, fingerprint_mode, task.workdir(),
+                              task.effective_agent())
             if _maybe_reuse_task(stage, task, out_resolved, output_path,
                                   effective_validate, reuse_legacy, fp, reuse, reused):
                 continue
@@ -410,7 +421,8 @@ def execute_stage(stage: Stage, stage_outputs: dict[str, list[str]], model_overr
                   extra_evidence: Optional[list[str]] = None,
                   retries: int = 0, retry_delay: float = 10.0,
                   backoff: float = 2.0,
-                  git_baseline=None) -> tuple[list[TaskResult], bool]:
+                  git_baseline=None,
+                  session_state: Optional[set] = None) -> tuple[list[TaskResult], bool]:
     """Execute one stage; extra_evidence folds gate-fix reports into it."""
     _log_stage_header(stage, reuse)
     stage_validate = stage.validate_cmd if stage.validate_cmd is not None else validate_cmd
@@ -442,7 +454,8 @@ def execute_stage(stage: Stage, stage_outputs: dict[str, list[str]], model_overr
     stage_session_id = f"{session_name}-{stage.name}" if session_mode == "per-stage" else session_name
     results, outputs = _execute_stage_tasks(stage, tasks, reused_outputs, stage_validate,
                                             session_mode, session_name, stage_session_id,
-                                            retries, retry_delay, backoff)
+                                            retries, retry_delay, backoff,
+                                            session_state)
     stage_outputs[stage.name] = outputs
     _log_stage_completion(stage, len(outputs), len(tasks))
     if fingerprint_mode:
@@ -456,6 +469,9 @@ def _finalize_stage(stage: Stage, results: list[TaskResult], outputs: list[str],
                     effective_validate=None,
                     git_baseline=None) -> tuple[list[TaskResult], bool]:
     """Apply stage-wide gates even when every artifact was reused."""
+    if getattr(current_native_approval(), "cancelled", False):
+        _record_stage_failure(stage, results, outputs, False, False, False, "", False)
+        return results, False
     task_ok = stage_ok
     approved = _apply_approval(stage, task_ok, outputs, approval_file)
     commands_ok = _run_stage_commands(stage) if approved else False
@@ -507,17 +523,21 @@ def _write_stage_sidecars(results: list, stage_validate: str) -> None:
     for r in results:
         if r.success and r.task.output:
             eff = r.task.validate if r.task.validate is not None else stage_validate
-            write_sidecar(str(r.task.output_path()), r.task.prompt, eff,
-                          r.task.model, r.task.provider, r.task.workdir())
+            write_sidecar(str(r.task.output_path_unresolved()), r.task.prompt, eff,
+                          r.task.model, r.task.provider, r.task.workdir(),
+                          r.task.effective_agent())
 
 def _log_stage_completion(stage: Stage, done: int, total_tasks: int) -> None:
     log.info("")
     log.info("Stage '%s' completed: %d/%d tasks succeeded", stage.name, done, total_tasks)
 
 def _check_approval(stage: Stage, outputs: list, approval_file: str) -> bool:
-    """T12c (D5): human-in-the-loop gate. Channels, in order:
-    PBATCH_APPROVE=1 env -> approved; --approve-file exists -> approved;
-    interactive y/n on a real TTY; anything else fails closed."""
+    """T12c (D5): human-in-the-loop gate with native IPC first.
+    Native TUI approval is exact-run scoped; headless channels retain the
+    historical env/file/TTY behavior and fail closed without a TTY."""
+    native = current_native_approval()
+    if native is not None:
+        return native.request(stage.name, outputs)
     import os as _os
     if _os.environ.get("PBATCH_APPROVE", "").lower() in ("1", "true", "yes"):
         log.info("APPROVAL: stage '%s' approved via PBATCH_APPROVE env", stage.name)
@@ -578,7 +598,8 @@ def _build_stage_tasks(stage: Stage, stage_outputs: dict, reuse: bool, model_ove
             return [], [], run_meta_stage(
                 stage, stage_outputs, model_override, timeout_override,
                 validate_cmd, session_name, reuse, reuse_legacy,
-                fingerprint_mode, original_prompt)
+                fingerprint_mode, original_prompt,
+                cancel_event=getattr(current_native_approval(), "cancel_event", None))
         if stage.from_prompt:
             tasks, reused_outputs = _stage_from_prompt_tasks(stage, reuse, model_override, timeout_override,
                                                              validate_cmd, reuse_legacy, fingerprint_mode,
@@ -609,31 +630,20 @@ def _build_stage_tasks(stage: Stage, stage_outputs: dict, reuse: bool, model_ove
 def _execute_stage_tasks(stage: Stage, tasks: list, reused_outputs: list, stage_validate: str,
                          session_mode: str, session_name: str, stage_session_id: str,
                          retries: int = 0, retry_delay: float = 10.0,
-                         backoff: float = 2.0) -> tuple[list, list]:
-    """Run the stage's tasks (serial or parallel) and collect the output
-    paths that downstream stages will consume (reused outputs included)."""
-    if stage.or_tasks:
-        return _execute_or_tasks(stage, tasks, reused_outputs, stage_validate,
-                                 session_mode, session_name, stage_session_id)
-    if stage.mode == "parallel":
-        results = run_parallel(tasks, stage.workers, validate_cmd=stage_validate,
-                               retries=retries, retry_delay=retry_delay,
-                               backoff=backoff)
-    else:
-        results = run_serial(tasks, retries=retries, retry_delay=retry_delay,
-                             backoff=backoff, session_mode=session_mode,
-                             session_id=stage_session_id, session_name=session_name,
-                             validate_cmd=stage_validate)
-    outputs = list(reused_outputs)
-    for r in results:
-        # Resolved paths (output_path honors task.cwd), not raw strings.
-        if r.success and r.task.output:
-            outputs.append(str(r.task.output_path()))
-    return results, outputs
+                         backoff: float = 2.0,
+                         session_state: Optional[set] = None) -> tuple[list, list]:
+    """Run stage tasks through the optional native observation bridge."""
+    return _execute_stage_tasks_native(
+        stage, tasks, reused_outputs, stage_validate, session_mode,
+        session_name, stage_session_id, retries, retry_delay, backoff,
+        session_state, current_native_observer(), _execute_or_tasks,
+        run_parallel, run_serial)
 
 def _execute_or_tasks(stage: Stage, tasks: list, reused_outputs: list,
                         stage_validate: str, session_mode: str,
-                        session_name: str, stage_session_id: str) -> tuple:
+                        session_name: str, stage_session_id: str,
+                        session_state: Optional[set] = None,
+                        cancel_event=None, result_callback=None) -> tuple:
     """OR 算子（AADM §6）：候选任务模板按序执行，**第一个通过验证者
     胜出**（其余候选跳过）；全部失败 → 阶段失败（fail closed）。"""
     results = []
@@ -643,7 +653,10 @@ def _execute_or_tasks(stage: Stage, tasks: list, reused_outputs: list,
         batch = run_serial([task], retries=0, session_mode=session_mode,
                            session_id=stage_session_id,
                            session_name=session_name,
-                           validate_cmd=stage_validate)
+                           validate_cmd=stage_validate,
+                           session_state=session_state,
+                           cancel_event=cancel_event,
+                           result_callback=result_callback)
         results.extend(batch)
         if batch and batch[0].success:
             log.info("OR: candidate %d 通过，其余候选跳过", index)
@@ -799,8 +812,8 @@ def _run_pipeline_stage(stage: Stage, stage_outputs: dict, failed_stages: list,
                         model_override: str, reuse: bool, timeout_override: int,
                         session_mode: str, session_name: str, validate_cmd: str,
                         reuse_legacy: bool, fingerprint_mode: bool, approval_file: str,
-                        original_prompt: str, decision_log: str, retries: int = 0,
-                        retry_delay: float = 10.0, backoff: float = 2.0) -> tuple[bool, list]:
+                        original_prompt: str, decision_log: str, retries: int = 0, retry_delay: float = 10.0,
+                        backoff: float = 2.0, session_state: Optional[set] = None) -> tuple[bool, list]:
     """Execute, gate, optionally fix one stage; return (stop, results)."""
     git_baseline = (capture_stage_dirty_paths(stage.cwd or os.getcwd())
                     if stage.git_commit else None)
@@ -809,8 +822,8 @@ def _run_pipeline_stage(stage: Stage, stage_outputs: dict, failed_stages: list,
                                       validate_cmd, reuse_legacy, fingerprint_mode,
                                       approval_file, original_prompt,
                                       retries=retries, retry_delay=retry_delay,
-                                      backoff=backoff,
-                                      git_baseline=git_baseline)
+                                      backoff=backoff, git_baseline=git_baseline,
+                                      session_state=session_state)
     results = _include_reused_results(results, stage_outputs.get(stage.name, []))
     if not stage_ok:
         _mark_failed(failed_stages, stage.name)
@@ -832,7 +845,7 @@ def _run_pipeline_stage(stage: Stage, stage_outputs: dict, failed_stages: list,
         verdict, fix_results = _run_gate_fix_loop(stage, stage_outputs,
             effective_validate, session_name, reuse, model_override,
             timeout_override, session_mode, reuse_legacy, fingerprint_mode,
-            approval_file, original_prompt, decision_log, git_baseline)
+            approval_file, original_prompt, decision_log, git_baseline, session_state)
         results = [*results, *fix_results]
         if verdict == "PASS":
             return False, results  # gate resolved; move on
@@ -851,36 +864,15 @@ def run_pipeline(pipeline: Pipeline, model_override: str = "", dry_run: bool = F
                  reuse_legacy: bool = False, fingerprint_mode: bool = False,
                  approval_file: str = "", original_prompt: str = "",
                  retries: int = 0, retry_delay: float = 10.0,
-                 backoff: float = 2.0) -> tuple[list[TaskResult], list[str]]:
-    """Execute stages sequentially (gates halt; gate_fix_rounds > 0
-    auto-remediates FAIL/REJECT up to N rounds)."""
-    all_results: list[TaskResult] = []
-    failed_stages: list[str] = []
-    stage_outputs: dict[str, list[str]] = {}  # stage_name -> [output_file_paths]
-    
-    _log_pipeline_start(pipeline, reuse)
-    
-    for stage in pipeline.stages:
-        if dry_run:
-            from .from_dir import _describe_stage
-            _describe_stage(stage, reuse)
-            continue
-        stop, results = _run_pipeline_stage(
-            stage, stage_outputs, failed_stages, model_override, reuse,
-            timeout_override, session_mode, session_name, validate_cmd,
-            reuse_legacy, fingerprint_mode, approval_file, original_prompt,
-            decision_log or pipeline.decision_log, retries, retry_delay,
-            backoff)
-        all_results.extend(results)
-        if stop:
-            break
-
-    # The pipeline completed (no failed stages, no gate rejection): move the
-    # committed deliverables into the archive so the worktree stays clean.
-    if not failed_stages and (pipeline.archive_dir or archive_dir):
-        _archive_pipeline_results(pipeline, all_results, archive_dir, session_name)
-    
-    return all_results, failed_stages
+                 backoff: float = 2.0,
+                 event_sink=None, approval_channel=None) -> tuple[list[TaskResult], list[str]]:
+    """Execute stages sequentially with an optional native event observer."""
+    from .pipeline_native import run_pipeline_observed
+    return run_pipeline_observed(
+        pipeline, model_override, dry_run, reuse, timeout_override,
+        session_mode, session_name, validate_cmd, decision_log, archive_dir,
+        reuse_legacy, fingerprint_mode, approval_file, original_prompt,
+        retries, retry_delay, backoff, event_sink, approval_channel)
 
 def _archive_pipeline_results(pipeline: Pipeline, results: list[TaskResult],
                               archive_dir: str, session_name: str) -> None:
@@ -905,7 +897,8 @@ def _handle_gate(stage: Stage, stage_outputs: dict, session_name: str = "") -> O
     verdict = decision.verdict
     if verdict is None:
         verdict = "FAIL"
-        if decision.source == "none":
+        if (decision.source == "none"
+                or "no usable Gate verdict" in decision.reason):
             log.error("GATE stage '%s' produced no VERDICT: line; failing closed",
                       stage.name)
         else:
@@ -915,6 +908,11 @@ def _handle_gate(stage: Stage, stage_outputs: dict, session_name: str = "") -> O
         log.error("GATE REJECTED at stage '%s' (verdict: %s) — later stages blocked", stage.name, verdict)
     else:
         log.info("GATE PASSED at stage '%s'", stage.name)
+    observer = current_native_observer()
+    if observer is not None:
+        observer.gate_verdict(
+            stage.name, verdict, decision.reason,
+            len(stage_outputs.get(stage.name, [])))
     from .memory import record_gate
     record_gate(stage.name, verdict, stage_outputs.get(stage.name, []),
                 stage.cwd or os.getcwd(), session_name)
@@ -933,7 +931,8 @@ def _run_gate_fix_loop(stage: Stage, stage_outputs: dict, validate_cmd: str,
                        reuse_legacy: bool, fingerprint_mode: bool,
                        approval_file: str, original_prompt: str,
                        decision_log: str,
-                       git_baseline=None) -> tuple[Optional[str], list]:
+                       git_baseline=None,
+                       session_state: Optional[set] = None) -> tuple[Optional[str], list]:
     """gate FAIL/REJECT + gate_fix_rounds > 0: remediate up to N rounds."""
     from .gate_fix import run_gate_fix
     gate_outputs = list(stage_outputs.get(stage.name, []))
@@ -949,7 +948,8 @@ def _run_gate_fix_loop(stage: Stage, stage_outputs: dict, validate_cmd: str,
             stage, stage_outputs, model_override, reuse, timeout_override,
             session_mode, session_name, validate_cmd, reuse_legacy,
             fingerprint_mode, approval_file, original_prompt,
-            extra_evidence=[fix_report], git_baseline=git_baseline)
+            extra_evidence=[fix_report], git_baseline=git_baseline,
+            session_state=session_state)
         results.extend(gate_results)
         if not stage_ok:
             if decision_log:

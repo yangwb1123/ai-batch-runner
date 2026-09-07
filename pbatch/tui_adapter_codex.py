@@ -14,6 +14,7 @@ from typing import Any, Callable, Iterator, Mapping, Sequence
 from .tui_codex_support import (
     CODEX_EXEC_RUNTIME_NAME,
     _bound,
+    _bounded_id,
     _bounded_changes,
     _bounded_list,
     _default_spawn,
@@ -28,6 +29,11 @@ from .tui_codex_support import (
     _workspace_id,
 )
 from .tui_protocol import RuntimeEvent, TurnState
+from .tui_command_artifacts import (
+    CommandArtifactContext,
+    CommandArtifactStore,
+    CommandArtifactOutcome,
+)
 from .tui_runtime import (
     RuntimeInfo,
     RuntimeSession,
@@ -117,9 +123,13 @@ class CodexExecAdapter:
         self._protocol_errors = 0
         self._started_monotonic = 0.0
         self._info = _runtime_info()
+        self._command_artifacts = CommandArtifactStore(self._cwd)
     @property
     def session(self) -> RuntimeSession:
         return self._session
+    def runtime_info(self) -> RuntimeInfo:
+        """Return immutable local capabilities without starting provider I/O."""
+        return self._info
     def initialize(self, request: Any = None) -> RuntimeInfo:
         self._ensure_open()
         workspace_id = str(_request_value(request, "workspace_id", "") or "")
@@ -143,6 +153,10 @@ class CodexExecAdapter:
         return session
     def resume_session(self, request: Any) -> RuntimeSession:
         return self._continue_session(request, "resumed")
+    def read_session(self, request: Any):
+        raise UnsupportedOperation("read_session", "session_read")
+    def list_sessions(self, request: Any = None):
+        raise UnsupportedOperation("list_sessions", "session_list")
     def fork_session(self, request: Any) -> RuntimeSession:
         return self._continue_session(request, "forked")
     def _continue_session(self, request: Any, mode: str) -> RuntimeSession:
@@ -250,6 +264,7 @@ class CodexExecAdapter:
     def _warn_protocol(self, handle: TurnHandle, raw: str) -> None:
         self._protocol_errors += 1
         self._ensure_session_event(handle)
+        self._start_provider_turn(handle)
         self._publish(handle, "runtime.warning", {
             "stream": "stdout", "category": "protocol_error",
             "protocol_error_count": self._protocol_errors, **_text("raw", raw)})
@@ -260,12 +275,13 @@ class CodexExecAdapter:
                 continue
             self._session_ready.wait(0.05)
             self._ensure_session_event(handle)
+            self._start_provider_turn(handle)
             self._publish(handle, "runtime.warning",
                           {"stream": "stderr", **_text("text", raw)})
     def _dispatch(self, handle: TurnHandle, value: dict[str, Any], raw: str) -> None:
         provider_type = str(value.get("type", ""))
         if provider_type == "thread.started":
-            provider_id = _bound(value.get("thread_id", ""), 2048)[0]
+            provider_id = str(value.get("thread_id", "") or "")
             with self._lock:
                 self._provider_session_id = provider_id
                 self._session.provider_session_id = provider_id
@@ -278,28 +294,34 @@ class CodexExecAdapter:
             return
         if provider_type == "turn.started":
             self._start_provider_turn(handle)
-        elif provider_type in {"item.started", "item.completed", "item.updated"}:
-            self._dispatch_item(handle, provider_type, value.get("item"), raw)
-        elif provider_type == "turn.completed":
-            self._complete_provider_turn(handle, value.get("usage"))
-            return
-        elif provider_type == "turn.failed":
-            self._finish(handle, "turn.failed", TurnState.FAILED,
-                         {**_text("reason", value.get("error", ""))})
-            return
         else:
-            self._unknown(handle, provider_type, raw)
+            self._start_provider_turn(handle)
+            if provider_type in {"item.started", "item.completed", "item.updated"}:
+                self._dispatch_item(handle, provider_type, value.get("item"), raw)
+            elif provider_type == "turn.completed":
+                self._complete_provider_turn(handle, value.get("usage"))
+                return
+            elif provider_type == "turn.failed":
+                self._finish(handle, "turn.failed", TurnState.FAILED,
+                             {**_text("reason", value.get("error", ""))})
+                return
+            else:
+                self._unknown(handle, provider_type, raw)
         if "usage" in value:
             self._emit_usage(handle, value.get("usage"))
     def _start_provider_turn(self, handle: TurnHandle) -> None:
-        with self._lock:
-            if self._terminal or handle.state != TurnState.QUEUED: return
-        self._publish(handle, "turn.queued", {"turn_id": handle.turn_id, "state": TurnState.QUEUED})
-        with self._lock:
-            if self._terminal or handle.state != TurnState.QUEUED: return
-            handle.state = TurnState.RUNNING
-        self._publish(handle, "turn.started", {"turn_id": handle.turn_id,
-                                                "state": TurnState.RUNNING})
+        with self._publish_lock:
+            with self._lock:
+                if self._terminal or handle.state != TurnState.QUEUED:
+                    return
+            self._publish(handle, "turn.queued", {
+                "turn_id": handle.turn_id, "state": TurnState.QUEUED})
+            with self._lock:
+                if self._terminal or handle.state != TurnState.QUEUED:
+                    return
+                handle.state = TurnState.RUNNING
+            self._publish(handle, "turn.started", {
+                "turn_id": handle.turn_id, "state": TurnState.RUNNING})
     def _dispatch_item(self, handle: TurnHandle, provider_type: str,
                        item_value: Any, raw: str) -> None:
         if not isinstance(item_value, Mapping):
@@ -319,39 +341,66 @@ class CodexExecAdapter:
             self._plan_item(handle, phase, item)
     def _message_item(self, handle: TurnHandle, phase: str,
                       item: Mapping[str, Any]) -> None:
-        item_id = _bound(item.get("id", ""), 2048)[0]
+        item_id = _bounded_id(item.get("id", ""))
         if phase == "started":
             self._publish(handle, "message.started", {"item_id": item_id})
+        elif phase == "completed":
+            self._publish(handle, "message.completed",
+                          {"item_id": item_id, **_text("text", item.get("text", ""))})
         else:
             self._publish(handle, "message.delta",
                           {"item_id": item_id, **_text("text", item.get("text", ""))})
     def _command_item(self, handle: TurnHandle, phase: str,
                       item: Mapping[str, Any]) -> None:
-        base = {"item_id": _bound(item.get("id", ""), 2048)[0],
+        base = {"item_id": _bounded_id(item.get("id", "")),
                 "command": _bound(item.get("command", ""), 24 * 1024)[0],
                 "status": _bound(item.get("status", ""), 256)[0]}
         if phase == "started":
             self._publish(handle, "command.started", base)
             return
+        output = item.get("aggregated_output", "")
+        output_payload = _text("aggregated_output", output)
         self._publish(handle, "command.output", {
             "item_id": base["item_id"],
-            **_text("aggregated_output", item.get("aggregated_output", ""))})
+            **output_payload})
+        if output_payload.get("truncated") is True:
+            self._emit_command_artifact(
+                handle, base["item_id"], base["command"], output)
         exit_code = item.get("exit_code")
         safe_code = exit_code if isinstance(exit_code, int) and not isinstance(
             exit_code, bool) else None
         self._publish(handle, "command.completed", {**base, "exit_code": safe_code})
+
+    def _emit_command_artifact(
+            self, handle: TurnHandle, item_id: str,
+            command: str, output: Any) -> None:
+        try:
+            context = CommandArtifactContext(
+                self._session.workspace_id, self._session.session_id,
+                handle.run_id, handle.turn_id, item_id)
+            outcome = self._command_artifacts.capture(context, output)
+        except (OSError, RuntimeError, ValueError) as exc:
+            outcome = CommandArtifactOutcome(warning=str(exc))
+        if outcome.artifact is not None:
+            name = f"Command output · {_bound(command, 160)[0]}"
+            self._publish(handle, "artifact.created",
+                          outcome.artifact.event_payload(item_id, name))
+        elif outcome.warning:
+            self._publish(handle, "runtime.warning", {
+                "category": "artifact_store", "item_id": item_id,
+                "reason": _bound(outcome.warning, 2048)[0]})
     def _file_item(self, handle: TurnHandle, phase: str,
                    item: Mapping[str, Any]) -> None:
         changes, truncated = _bounded_changes(item.get("changes"))
         self._publish(handle, "file.changed", {
-            "item_id": _bound(item.get("id", ""), 2048)[0],
+            "item_id": _bounded_id(item.get("id", "")),
             "status": _bound(item.get("status", phase), 256)[0],
             "changes": changes, "truncated": truncated})
     def _plan_item(self, handle: TurnHandle, phase: str,
                    item: Mapping[str, Any]) -> None:
         items, truncated = _bounded_list(item.get("items", item.get("todos", [])))
         self._publish(handle, "plan.updated", {
-            "item_id": _bound(item.get("id", ""), 2048)[0],
+            "item_id": _bounded_id(item.get("id", "")),
             "status": _bound(item.get("status", phase), 256)[0],
             "items": items, "truncated": truncated})
     def _emit_usage(self, handle: TurnHandle, usage: Any) -> None:
@@ -376,7 +425,8 @@ class CodexExecAdapter:
         payload = {
             "workspace_id": self._session.workspace_id,
             "session_id": self._session.session_id,
-            "provider_session_id": self._session.provider_session_id,
+            "provider_session_id": _bound(
+                self._session.provider_session_id, 2048)[0],
             "state": self._session.state}
         if self._turn_mode != "normal":
             payload["mode"] = self._turn_mode
@@ -391,11 +441,13 @@ class CodexExecAdapter:
         except Exception as exc:
             returncode = -1
             self._ensure_session_event(handle)
+            self._start_provider_turn(handle)
             self._publish(handle, "runtime.error",
                           {"phase": "wait", **_text("reason", exc)})
         self._ensure_session_event(handle)
         if self._is_terminal(handle):
             return
+        self._start_provider_turn(handle)
         if self._interrupt_requested:
             self._finish(handle, "turn.interrupted", TurnState.INTERRUPTED,
                          {"returncode": returncode})
@@ -429,9 +481,15 @@ class CodexExecAdapter:
                 return
             if self._terminal or handle.done:
                 raise RuntimeError("cannot interrupt a terminal turn")
-            self._interrupt_requested, handle.state = True, TurnState.INTERRUPTING
             process = self._process
         self._ensure_session_event(handle)
+        self._start_provider_turn(handle)
+        with self._lock:
+            if self._interrupt_requested:
+                return
+            if self._terminal or handle.done:
+                raise RuntimeError("cannot interrupt a terminal turn")
+            self._interrupt_requested, handle.state = True, TurnState.INTERRUPTING
         self._publish(handle, "turn.interrupting", {"state": handle.state})
         _stop_process(process)
         self._finish(handle, "turn.interrupted", TurnState.INTERRUPTED, {})
@@ -455,6 +513,7 @@ class CodexExecAdapter:
                 worker.join(timeout=1.0)
         if handle is not None:
             handle._done.set()
+        self._command_artifacts.close()
         self._queue.close()
     def _publish(self, handle: TurnHandle, kind: str,
                  payload: dict[str, Any]) -> None:
@@ -470,7 +529,8 @@ class CodexExecAdapter:
                 event_id=_id("evt"), seq=seq, occurred_at=_now(),
                 workspace_id=self._session.workspace_id,
                 session_id=self._session.session_id, run_id=handle.run_id,
-                turn_id=handle.turn_id, actor_id=handle.actor_id, kind=kind,
+                turn_id="" if kind.startswith("session.") else handle.turn_id,
+                actor_id=handle.actor_id, kind=kind,
                 payload=payload, extensions={"runtime": CODEX_EXEC_RUNTIME_NAME})
             accepted, dropped = self._queue.put(event)
             if dropped and kind != "runtime.error":

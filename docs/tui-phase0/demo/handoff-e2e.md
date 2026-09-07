@@ -1,46 +1,34 @@
-# 多 Agent 接力端到端演示（2026-08-22 实证）
+# 多 Agent 产物接力示例
 
-> 用户需求闭环证明："安排几个不同的 agent 来完成任务，要可以共享结果"。
-
-## 演示过程（全部真实执行，非模拟）
+该示例展示 Agent A 产出文件、共享账本记录路径、Agent B 通过 handoff 使用有界证据的完整路径。
 
 ```bash
-# ① pi 生产数据（8.0s，账本自动记录产物路径）
-pi-batch -p 'Create /tmp/handoff-data.json containing exactly:
-  {"product": "ai-batch-runner", "version": "0.3.0",
-   "supported_agents": ["pi","codex","claude","gemini","opencode"],
-   "secret_color": "crimson"}' \
-  --agent-bin pi -o /tmp/handoff-producer.md
+pi-batch -p '生成一份产品能力摘要' \
+  --agent-bin pi -o docs/demo/producer.md
 
-# ② codex 接力消费（19.9s；产物有界摘录自动注入 prompt）
 pi-batch handoff --from-agent pi --agent codex \
-  "From the handed-off artifact, answer: what is the secret_color and
-   how many supported agents are listed? Reply EXACTLY in the format:
-   COLOR=... AGENTS=N"
+  --output docs/demo/consumer.md \
+  "核对上游摘要，并列出你实际采用的事实"
 ```
 
-## 结果
+## 正向流程
 
-```
-pi 产物（字节级校验）:
-  {"product": "ai-batch-runner", "version": "0.3.0",
-   "supported_agents": ["pi","codex","claude","gemini","opencode"],
-   "secret_color": "crimson"}
-
-codex 接力回答:
-  COLOR=crimson AGENTS=5        ← 完全正确
-  （codex 实际执行 sed 阅读了注入的产物摘录：事件流可见 command_execution）
-
-handoff succeeded; target run recorded in the agent ledger.
+```text
+Agent A run
+  → ledger 记录 succeeded + outputs
+  → handoff 选择唯一来源
+  → source manifest + 有界摘录
+  → Agent B run
+  → ledger 记录新结果
 ```
 
-## 闭环链路
+## 验收点
 
-```
-pi run ──账本(agent_ledger.outputs)──► handoff ──有界摘录(evidence.combine_outputs)──► codex run ──► 账本
-  生产                                   事实引用（禁止编造）                           消费
-```
+- `pi-batch agents sessions` 能看到两次 run 的 agent、session、状态与产物路径。
+- Agent B 的 prompt 包含来源身份、路径 manifest、截断标记和公平有界摘录。
+- Agent B 的报告引用实际使用的上游产物；coordinator 只读取并摘录源文件。
+- 不存在成功来源、run 前缀不唯一或全部产物不可读时，在启动 Agent B 前拒绝。
+- 目标执行继续遵守 workspace lock、timeout、validator 和 prompt 大小门禁；若账本
+  指向 cwd 外绝对路径，调用方负责确认数据边界及目标 Agent 的写权限。
 
-- 账本：`data_dir/agents/ledger.jsonl`（`pi-batch agents sessions` 可查双方记录）
-- 摘录纪律：64KiB 公平预算、截断标记、source manifest 路径清单
-- 接力结果自动回写账本 → 第三个 agent 可继续接力（链式）
+该文档是可复现操作示例；具体运行证据以当前工作区的账本记录和产物摘要为准。

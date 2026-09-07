@@ -25,6 +25,9 @@ check-root: ## Root directory policy (thin launcher layer only).
 check-style: ## Whitespace hygiene (trailing space, tabs, final newline).
 	python cli.py check-style
 
+release-check: ## Validate distribution name, version, changelog, and CLI entry point.
+	python tools/check-release.py
+
 self-test: ## Harness integrity: the gates' own unit tests (zero-dep unittest).
 	python cli.py check-test
 
@@ -44,12 +47,12 @@ coverage: ## Coverage report for tests/ + checks/. Requires pytest-cov.
 	python -m pytest --cov=checks --cov=cli --cov-report=term-missing tests/ checks/
 
 # -- aggregate ---------------------------------------------------------
-ci: check self-test test eval quality org ## Full CI: gates + tests + eval + org scanner + engineering-org specs.
+ci: release-check check self-test test eval quality org ## Full CI: release metadata + gates + tests + eval + org specs.
 
 org: ## Engineering-org spec integrity (17 node specs + capability registry + graph).
 	python pi-batch.py org check
 	python pi-batch.py capabilities check
 	python pi-batch.py graph extract --input pbatch
 
-.PHONY: help check check-filesize check-complexity check-root check-style \
+.PHONY: help check check-filesize check-complexity check-root check-style release-check \
         self-test quality harness test eval coverage org ci

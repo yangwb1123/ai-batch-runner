@@ -208,3 +208,20 @@ def format_product(manifest: dict) -> str:
     for note in manifest["restraint_notes"]:
         lines.append(f"  克制: {note}")
     return "\n".join(lines)
+
+
+def product_brief(text: str, level: Optional[str] = None) -> dict:
+    """Build the reviewable product-direction artifact for ``text``.
+
+    The implementation lives in a separate module to keep this assessment
+    module focused; this lazy wrapper preserves the natural public API
+    ``pbatch.product.product_brief`` without introducing an import cycle.
+    """
+    from .product_direction import product_brief as build_brief
+    return build_brief(text, level)
+
+
+def format_product_brief(brief: dict) -> str:
+    """Render a product-direction artifact as Markdown."""
+    from .product_direction import format_product_brief as render_brief
+    return render_brief(brief)

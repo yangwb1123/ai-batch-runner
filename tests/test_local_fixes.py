@@ -1635,51 +1635,73 @@ class TestRateLimiter:
 
     def test_unlimited_by_default(self):
         from pbatch import ratelimit
-        ratelimit.configure(0, 1, {})
-        start = time.monotonic()
+        ratelimit.configure(0, 1, {}, shared_file="")
         for _ in range(5):
-            assert ratelimit.acquire("p") is True
-        assert time.monotonic() - start < 0.5
+            assert ratelimit.acquire("p", timeout=0) is True
 
     def test_rate_limits_invocations(self):
         from pbatch import ratelimit
-        ratelimit.configure(100, 1, {})  # 100/s: 10 calls need >= 90ms
+        ratelimit.configure(
+            100, 1, {}, shared_file="")  # 100/s: 10 calls need >= 90ms
         start = time.monotonic()
         for _ in range(10):
             assert ratelimit.acquire("p") is True
         elapsed = time.monotonic() - start
         assert elapsed >= 0.07, f"10 calls at 100/s should take ~90ms, took {elapsed:.3f}s"
-        ratelimit.configure(0, 1, {})
+        ratelimit.configure(0, 1, {}, shared_file="")
 
     def test_burst_allows_immediate_batch(self):
         from pbatch import ratelimit
-        ratelimit.configure(1, 5, {})
-        start = time.monotonic()
+        ratelimit.configure(1, 5, {}, shared_file="")
         for _ in range(5):  # burst capacity: all immediate
-            assert ratelimit.acquire("p") is True
-        assert time.monotonic() - start < 0.3
-        ratelimit.configure(0, 1, {})
+            assert ratelimit.acquire("p", timeout=0) is True
+        ratelimit.configure(0, 1, {}, shared_file="")
 
     def test_provider_buckets_are_independent(self):
         from pbatch import ratelimit
-        ratelimit.configure(0, 1, {"slow": 0.0})  # provider override disables
-        ratelimit.configure(0.5, 1, {"fast": 100.0, "slow": 0.0})
+        ratelimit.configure(
+            0.5, 1, {"fast": 100.0, "slow": 0.0}, shared_file="")
+        assert ratelimit.PROVIDER_RATES["slow"] == 0.0
         assert ratelimit.acquire("fast") is True
-        start = time.monotonic()
-        assert ratelimit.acquire("slow") is True  # unlimited provider
-        assert time.monotonic() - start < 0.3
+        for _ in range(2):
+            assert ratelimit.acquire("slow", timeout=0) is True
         # the default bucket still applies the global rate
         assert ratelimit.acquire("") is True  # burst token
-        ratelimit.configure(0, 1, {})
+        ratelimit.configure(0, 1, {}, shared_file="")
+
+    def test_non_finite_rates_are_ignored(self):
+        from pbatch import config, ratelimit
+        ratelimit.configure(float("nan"), float("inf"), {
+            "zero": 0, "nan": float("nan"), "inf": float("inf"),
+            "negative": -1, "overflow": 10 ** 10_000, "valid": 2,
+        }, shared_file="")
+        assert ratelimit.RATE_PER_SECOND == 0.0
+        assert ratelimit.BURST == 1.0
+        assert ratelimit.PROVIDER_RATES == {"zero": 0.0, "valid": 2.0}
+        assert config._rate_provider_overrides({
+            "zero": 0, "nan": float("nan"), "inf": float("inf"),
+        }) == {"zero": 0.0}
 
     def test_acquire_timeout_returns_false(self):
         from pbatch import ratelimit
-        ratelimit.configure(0.1, 1, {})
+        ratelimit.configure(0.1, 1, {}, shared_file="")
         assert ratelimit.acquire("p") is True  # burst token
-        start = time.monotonic()
-        assert ratelimit.acquire("p", timeout=0.1) is False  # no refill yet
-        assert time.monotonic() - start < 0.5
-        ratelimit.configure(0, 1, {})
+        started = time.monotonic()
+        assert ratelimit.acquire("p", timeout=0.02) is False  # no refill yet
+        assert time.monotonic() - started < 0.15
+        ratelimit.configure(0, 1, {}, shared_file="")
+
+    def test_explicit_local_bucket_ignores_shared_environment(
+            self, monkeypatch, tmp_path):
+        from pbatch import ratelimit
+        monkeypatch.setenv(
+            "PBATCH_RATE_LIMIT_FILE", str(tmp_path / "shared.json"))
+
+        ratelimit.configure(1, 2, {}, shared_file="")
+
+        assert ratelimit.SHARED_FILE == ""
+        assert ratelimit.acquire("p", timeout=0) is True
+        assert ratelimit.acquire("p", timeout=0) is True
 
     def test_shared_file_coordinates_independent_runner_processes(self, tmp_path):
         """Isolated Campaign children must consume one shared burst."""
@@ -1687,7 +1709,9 @@ class TestRateLimiter:
         state = tmp_path / "rate-limit.json"
         script = (
             "from pbatch import ratelimit; "
-            "ratelimit.configure(1, 1, {}, r'" + str(state) + "'); "
+            # One token per 20s keeps process-startup jitter from refilling
+            # the shared burst before the second independent interpreter.
+            "ratelimit.configure(0.05, 1, {}, r'" + str(state) + "'); "
             "print(ratelimit.acquire('provider', timeout=0.05))"
         )
         first = subprocess.run([sys.executable, "-c", script],
@@ -1696,7 +1720,124 @@ class TestRateLimiter:
                                 capture_output=True, text=True, timeout=5)
         assert first.stdout.strip() == "True", first.stderr
         assert second.stdout.strip() == "False", second.stderr
-        ratelimit.configure(0, 1, {})
+        ratelimit.configure(0, 1, {}, shared_file="")
+
+    def test_shared_state_hashes_unbounded_provider_names(self, tmp_path):
+        from pbatch import ratelimit
+        state = tmp_path / "rate-limit.json"
+        provider = "vendor/" + "x" * (256 * 1024)
+        ratelimit.configure(0.001, 1, {}, shared_file=str(state))
+
+        assert ratelimit.acquire(provider, timeout=0) is True
+        assert ratelimit.acquire(provider, timeout=0) is False
+
+        payload = json.loads(state.read_text(encoding="utf-8"))
+        assert state.stat().st_size <= ratelimit._SHARED_MAX_BYTES
+        assert len(payload["buckets"]) == 1
+        key = next(iter(payload["buckets"]))
+        assert key.startswith("provider:") and len(key) == 73
+        assert provider not in state.read_text(encoding="utf-8")
+        ratelimit.configure(0, 1, {}, shared_file="")
+
+    @pytest.mark.parametrize("payload", [
+        b"{broken-json",
+        b"x" * (64 * 1024 + 1),
+        b"",
+        b"[" * 2000 + b"0" + b"]" * 2000,
+    ])
+    def test_corrupt_shared_state_fails_wait_without_minting_burst(
+            self, tmp_path, payload):
+        from pbatch import ratelimit
+        state = tmp_path / "rate-limit.json"
+        state.write_bytes(payload)
+        ratelimit.configure(0.001, 1, {}, shared_file=str(state))
+
+        assert ratelimit.acquire("new-provider", timeout=0) is False
+        assert state.read_bytes() == payload
+        ratelimit.configure(0, 1, {}, shared_file="")
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO requires POSIX")
+    @pytest.mark.parametrize("target", ["state", "lock"])
+    def test_special_shared_paths_fail_wait_without_blocking(
+            self, tmp_path, target):
+        from pbatch import ratelimit
+        state = tmp_path / "rate-limit.json"
+        special = (state if target == "state"
+                   else state.with_name(f"{state.name}.lock"))
+        os.mkfifo(special)
+        ratelimit.configure(0.001, 1, {}, shared_file=str(state))
+
+        assert ratelimit.acquire("provider", timeout=0) is False
+        ratelimit.configure(0, 1, {}, shared_file="")
+
+    def test_shared_provider_overflow_is_bounded_and_cannot_mint_bursts(
+            self, tmp_path):
+        from pbatch import ratelimit
+        state = tmp_path / "rate-limit.json"
+        ratelimit.configure(0.0001, 1, {}, shared_file=str(state))
+
+        for index in range(ratelimit._SHARED_MAX_BUCKETS):
+            assert ratelimit.acquire(f"provider-{index}", timeout=0) is True
+        assert ratelimit.acquire("overflow-a", timeout=0) is False
+        assert ratelimit.acquire("overflow-b", timeout=0) is False
+
+        payload = json.loads(state.read_text(encoding="utf-8"))
+        assert len(payload["buckets"]) <= ratelimit._SHARED_MAX_BUCKETS
+        assert ratelimit._SHARED_OVERFLOW_KEY in payload["buckets"]
+        assert state.stat().st_size <= ratelimit._SHARED_MAX_BYTES
+        ratelimit.configure(0, 1, {}, shared_file="")
+
+    def test_shared_overflow_persists_slowest_effective_rate(self, tmp_path):
+        from pbatch import ratelimit
+        state = tmp_path / "rate-limit.json"
+        now = time.time() + 60.0
+        buckets = {
+            ratelimit._provider_state_key(f"seed-{index}"): {
+                "tokens": 0.0, "last": now, "rate": 100.0,
+            }
+            for index in range(ratelimit._SHARED_MAX_BUCKETS)
+        }
+        state.write_text(json.dumps({
+            "version": ratelimit._SHARED_VERSION, "buckets": buckets,
+        }), encoding="utf-8")
+        ratelimit.configure(
+            1.0, 4, {"fast": 100.0, "slow": 0.001},
+            shared_file=str(state))
+
+        assert ratelimit.acquire("fast", timeout=0) is False
+        time.sleep(0.05)
+        assert ratelimit.acquire("fast", timeout=0) is True
+        # The fast call refilled four tokens and left three. Joining with a
+        # slower identity must discard those leftovers and lower the durable
+        # aggregate rate before it can consume anything.
+        assert ratelimit.acquire("slow", timeout=0) is False
+        assert ratelimit.acquire("fast", timeout=0) is False
+
+        payload = json.loads(state.read_text(encoding="utf-8"))
+        overflow = payload["buckets"][ratelimit._SHARED_OVERFLOW_KEY]
+        assert overflow["rate"] == pytest.approx(0.001)
+        assert overflow["tokens"] < 1.0
+        ratelimit.configure(0, 1, {}, shared_file="")
+
+    def test_legacy_shared_state_migrates_within_bounds(self, tmp_path):
+        from pbatch import ratelimit
+        state = tmp_path / "rate-limit.json"
+        now = time.time()
+        legacy = {
+            f"legacy-provider-{index}": {"tokens": 0.0, "last": now}
+            for index in range(ratelimit._SHARED_MAX_BUCKETS)
+        }
+        state.write_text(json.dumps(legacy), encoding="utf-8")
+        ratelimit.configure(0.001, 1, {}, shared_file=str(state))
+
+        assert ratelimit.acquire("legacy-provider-0", timeout=0) is False
+
+        payload = json.loads(state.read_text(encoding="utf-8"))
+        assert payload["version"] == ratelimit._SHARED_VERSION
+        assert len(payload["buckets"]) <= ratelimit._SHARED_MAX_BUCKETS
+        assert state.stat().st_size <= ratelimit._SHARED_MAX_BYTES
+        assert all(len(key) <= 73 for key in payload["buckets"])
+        ratelimit.configure(0, 1, {}, shared_file="")
 
 
 class TestRetryJitter:
@@ -1728,7 +1869,7 @@ class TestRetryJitter:
     def test_rate_gate_runs_under_high_limit(self, tmp_path):
         """run_task passes through the rate gate when the limit is high."""
         from pbatch import ratelimit
-        ratelimit.configure(1000, 1, {})
+        ratelimit.configure(1000, 1, {}, shared_file="")
         try:
             mod = load_batch()
             agent = tmp_path / "agent.sh"
@@ -1740,7 +1881,7 @@ class TestRetryJitter:
             assert result[0].success
             assert out.exists()
         finally:
-            ratelimit.configure(0, 1, {})
+            ratelimit.configure(0, 1, {}, shared_file="")
 
 
 class TestFromDirAggregate:

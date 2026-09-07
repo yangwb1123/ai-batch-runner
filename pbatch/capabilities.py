@@ -38,6 +38,8 @@ TESTS_DIR = Path(config.TOOL_ROOT) / "tests"
 # 能力 id → (domain, risk, input 摘要, output 摘要)。
 # 与 _SUBCOMMANDS 同步维护；未登记的自动按 domain=ops/risk=low 兜底。
 MANUAL = {
+    "pi": ("execution", "medium", "Pi CLI 参数/终端输入",
+           "官方 Pi TUI、文本、JSONL、RPC 或包管理结果"),
     "tui": ("execution", "medium", "交互任务/项目上下文", "agent 回复/工作区变更/会话"),
     "graph": ("reasoning", "low", "graph.json|源代码目录", "结构违规/依赖环/统计"),
     "profile": ("reasoning", "low", "需求文本", "12 维画像/模式/包络"),
@@ -46,6 +48,7 @@ MANUAL = {
     "proposal": ("reasoning", "low", "多 Agent 提案", "冲突/合并/收益"),
     "diversity": ("reasoning", "low", "Agent 配置列表", "独立性评分"),
     "assess": ("planning", "low", "需求文本", "处方/工作流/画像"),
+    "product": ("planning", "low", "产品需求文本", "有界产品方向简报"),
     "rules": ("planning", "low", "任务文本", "规则 manifest"),
     "classify": ("reasoning", "low", "任务文本", "任务类型"),
     "atomize": ("reasoning", "low", "需求文本", "认知原子/超图"),

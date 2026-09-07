@@ -1,0 +1,66 @@
+# Repair the failed Solid recentFilters batch in its preserved isolated worktree
+git_commit: false
+decision_log: /tmp/iris-grid-recent-solid-1787971066/docs/vxe-grid/DECISIONS.md
+stages:
+  - name: diagnose
+    from_prompt: |
+      Diagnose the preserved Solid recentFilters batch in /tmp/iris-grid-recent-solid-1787971066. Read AGENTS.md,
+      the existing recentFilters baseline, the actual diff, and the runner
+      rejection evidence under /tmp/pbatch-recent-1787971066-solid/rejected/.
+      The prior adapt timed out and direct focused execution showed a passing
+      test followed by a vitest worker onTaskUpdate timeout, so identify the
+      concrete lifecycle/reactivity/test-hang cause. Do not modify source.
+      Produce a short repair plan; preserve the narrow React batch CB contract
+      and do not broaden scope.
+    output: /tmp/iris-grid-recent-solid-1787971066/docs/vxe-grid/batch-recent-solid-repair-diagnose.md
+    mode: serial
+  - name: repair
+    from_outputs: diagnose
+    mode: serial
+    tasks:
+      - cwd: /tmp/iris-grid-recent-solid-1787971066
+        prompt: |
+          Repair the existing Solid recentFilters implementation according to
+          the diagnosis at /tmp/iris-grid-recent-solid-1787971066/docs/vxe-grid/batch-recent-solid-repair-diagnose.md.
+          Work only in this isolated worktree. Fix the concrete lifecycle,
+          reactivity, or test-harness issue causing focused tests to take tens
+          of seconds/hang; do not weaken or skip tests and do not paper over
+          the issue with huge timeouts. Preserve the contract: recentFilters
+          default off, core createRecentFilters reuse, record non-empty values
+          only at confirm throat, 10-entry MRU, recent section above options,
+          immediate ordinary-path application and close, controlled and
+          uncontrolled behavior, i18n/token-only styles, SSR determinism.
+          Do not modify core, React, Vue, Svelte, apps, lockfiles, manifest by
+          hand, or arch baseline. Regenerate manifest if source API requires
+          it. Run the focused client test and SSR test first, then typecheck,
+          lint, and relevant full Solid tests. Do not commit.
+        output: /tmp/iris-grid-recent-solid-1787971066/docs/vxe-grid/batch-recent-solid-repair.md
+  - name: review
+    from_outputs: repair
+    mode: serial
+    tasks:
+      - cwd: /tmp/iris-grid-recent-solid-1787971066
+        prompt: |
+          Review the repaired Solid recentFilters worktree against the
+          diagnose/repair reports and React batch CB. Do not modify source.
+          Confirm the prior timeout/hang is gone (focused client + SSR tests),
+          all seven behavior cases are real assertions, no test weakening,
+          correct Solid lifecycle disposal/reactivity, default-off inert path,
+          MRU semantics, i18n/styles, manifest and scope hygiene. Run focused
+          tests, typecheck/lint, and diff check. Write PASS or FAIL with exact
+          evidence.
+        output: /tmp/iris-grid-recent-solid-1787971066/docs/vxe-grid/batch-recent-solid-repair-review.md
+  - name: gate
+    from_outputs: review
+    mode: serial
+    tasks:
+      - cwd: /tmp/iris-grid-recent-solid-1787971066
+        prompt: |
+          Gate the repaired Solid recentFilters batch. Read the review. If
+          PASS, run the full Solid client suite and dedicated SSR suite,
+          typecheck, lint, build, spec audit, pnpm check:manifest, and git diff
+          --check; confirm scripts/arch-baseline.json is unchanged. Add concise
+          acceptance docs only if all gates pass. Do not modify other frameworks
+          or commit. If FAIL, report the exact blocker and leave the worktree
+          intact.
+        output: /tmp/iris-grid-recent-solid-1787971066/docs/vxe-grid/batch-recent-solid-repair-gate.md

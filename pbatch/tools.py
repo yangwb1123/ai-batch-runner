@@ -24,6 +24,7 @@ DESCRIPTIONS = {
     "classify": "任务类型判定（frontend/backend 路由）",
     "rules": "规则 manifest（scale×page_type×risk + 双向校验）",
     "assess": "需求评估（完整性/规模/处方/画像）",
+    "product": "产品方向简报（用户故事/旅程/状态机/功能分解）",
     "profile": "多维任务画像（向量/自主性/L0-L3 路由/包络/假设）",
     "learn": "规则生命周期（draft/shadow/exception/promote）",
     "context": "项目文档上下文路由",

@@ -55,7 +55,7 @@
 - **职责**：用户故事（As a/I want/So that）、流程设计（User Journey/
   State Machine）、功能拆分（Epic/Feature/Story/Task）、业务规则
 - **检查规则**：产品化分级（L0-L3 克制处方）；推演链问题标记"待确认"
-- **自动检测**：`pi-batch assess`（product 段）、`pi-batch profile`
+- **自动检测**：`pi-batch product`（产品方向简报）、`pi-batch assess`（product 段）、`pi-batch profile`
   （goal_model 护栏）
 - **失败案例**：L0 小工具被产品化结构污染（克制原则）
 - **Review Checklist**：□ 用户故事完整？□ 状态机覆盖异常？□ 隐含需求

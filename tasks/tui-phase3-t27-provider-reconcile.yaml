@@ -1,0 +1,12 @@
+# Phase 3 (T27) — Codex App Server thread/read 恢复预对账与 steer 响应确认
+tasks:
+  - prompt: |
+      对照 OpenAI Codex App Server 官方 thread/read、thread/resume 和 turn/steer 合同：
+      1. 提供非订阅、非采用的 thread/read summary API，并声明 truthful session_read capability。
+      2. 严格校验 thread id、status.type 与 activeFlags；字段必须有界。
+      3. resume 前执行 read；仅 notLoaded/idle 放行，active/systemError/未知/错误失败关闭。
+      4. TUI 对 provider 阻断继续展示本地可信 journal，但禁止下一 turn，不修改 provider session。
+      5. turn/steer 返回 turnId 必须等于 expectedTurnId，才能发布 turn.steered。
+      6. 更新设计、产品、使用文档、feature matrix 与 changelog。
+    validate: pyquality
+    output: docs/tui-phase0/t27-provider-reconcile.md

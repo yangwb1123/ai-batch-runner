@@ -51,6 +51,9 @@ jobs:
       - name: Install dev extras
         run: pip install -e ".[dev]"
 
+      - name: Release metadata contract
+        run: make release-check
+
       - name: Gate G1 — filesize
         run: make check-filesize
 

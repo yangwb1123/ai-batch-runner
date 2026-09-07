@@ -19,6 +19,10 @@ RUNTIME_PROTOCOL_VERSION = 1
 MAX_EVENT_PAYLOAD_BYTES = 64 * 1024
 MAX_EVENT_EXTENSIONS_BYTES = 16 * 1024
 MAX_EVENT_LINE_BYTES = 128 * 1024
+RUNTIME_IDENTITY_FIELDS = frozenset({
+    "id", "item_id", "message_id", "command_id", "plan_id", "request_id",
+    "call_id", "tool_call_id", "parent_id", "parent_actor_id", "actor_id",
+})
 
 RuntimeEventKind = Literal[
     "session.created",
@@ -33,10 +37,19 @@ RuntimeEventKind = Literal[
     "turn.completed",
     "turn.failed",
     "turn.interrupted",
+    "pipeline.started",
+    "pipeline.checkpoint",
+    "pipeline.completed",
+    "pipeline.failed",
+    "stage.started",
+    "stage.completed",
+    "task.started",
+    "task.completed",
     "message.started",
     "message.delta",
     "message.completed",
     "plan.updated",
+    "policy.updated",
     "command.started",
     "command.output",
     "command.completed",
@@ -67,8 +80,11 @@ RUNTIME_EVENT_KINDS = frozenset({
     "session.created", "session.resumed", "session.forked",
     "session.archived", "session.disconnected", "turn.queued",
     "turn.started", "turn.steered", "turn.interrupting", "turn.completed",
-    "turn.failed", "turn.interrupted", "message.started", "message.delta",
-    "message.completed", "plan.updated", "command.started", "command.output",
+    "turn.failed", "turn.interrupted", "pipeline.started", "pipeline.checkpoint",
+    "pipeline.completed",
+    "pipeline.failed", "stage.started", "stage.completed", "task.started",
+    "task.completed", "message.started", "message.delta",
+    "message.completed", "plan.updated", "policy.updated", "command.started", "command.output",
     "command.completed", "tool.started", "tool.completed", "tool.failed",
     "file.changed", "workspace.snapshot", "validation.started",
     "validation.completed", "gate.verdict", "approval.requested",
@@ -148,6 +164,11 @@ class RuntimeEvent:
             raise ValueError(f"unsupported schema_version: {self.schema_version!r}")
         if not isinstance(self.event_id, str) or not _EVENT_ID_RE.fullmatch(self.event_id):
             raise ValueError(f"invalid event_id: {self.event_id!r}")
+        for name in (
+                "occurred_at", "workspace_id", "session_id",
+                "run_id", "turn_id", "actor_id"):
+            if not isinstance(getattr(self, name), str):
+                raise ValueError(f"{name} must be a string")
         if isinstance(self.seq, bool) or not isinstance(self.seq, int) or self.seq < 0:
             raise ValueError("seq must be a non-negative integer")
         if not isinstance(self.kind, str) or self.kind not in RUNTIME_EVENT_KINDS:
@@ -233,9 +254,12 @@ def _validate_jsonl_line(line: str) -> str:
 
 
 RICH_CAPABILITY_NAMES = (
-    "structured_events", "session_resume", "session_fork", "turn_steer",
-    "message_queue", "typed_approvals", "review", "subagents", "images",
-    "usage", "instruction_sources",
+    "structured_events", "session_resume", "session_read", "session_list", "session_fork",
+    "session_archive",
+    "session_state", "session_stats", "session_compact",
+    "turn_steer", "message_queue", "typed_approvals", "review", "subagents",
+    "actor_control", "images", "usage", "instruction_sources", "model_catalog", "thinking_levels",
+    "model_select", "thinking_select",
 )
 LEGACY_CAPABILITY_NAMES = ("message_stream", "interrupt")
 
@@ -325,7 +349,9 @@ TERMINAL_TURN_STATES = frozenset({
     TurnState.UNKNOWN,
 })
 TURN_TRANSITIONS = {
-    TurnState.QUEUED: frozenset({TurnState.RUNNING}),
+    TurnState.QUEUED: frozenset({
+        TurnState.RUNNING, TurnState.INTERRUPTING, TurnState.FAILED,
+    }),
     TurnState.RUNNING: frozenset({
         TurnState.SUCCEEDED, TurnState.FAILED, TurnState.INTERRUPTING,
         TurnState.WAITING_APPROVAL, TurnState.DISCONNECTED, TurnState.UNKNOWN,

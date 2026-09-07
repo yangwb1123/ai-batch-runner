@@ -54,6 +54,17 @@ def test_python_m_pbatch_classify_json():
     assert payload["route_frontend"] is False
 
 
+def test_python_m_pbatch_product_json():
+    import json
+    result = _run([sys.executable, "-m", "pbatch", "product", "--json",
+                   "做一个多租户审批平台"])
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == "product-brief/v1"
+    assert payload["productization"]["level"] == "L2_platform_capability"
+    assert payload["decomposition"]["features"]
+
+
 @pytest.mark.skipif(shutil.which("pi-batch") is None,
                     reason="console script not installed (pip install .)")
 def test_installed_console_script():
@@ -111,3 +122,17 @@ def test_cli_dispatcher_propagates_health_failure(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         cli.main()
     assert exc.value.code == 1
+
+
+def test_cli_dispatches_canonical_pi_namespace(monkeypatch):
+    """Everything after ``pi`` is owned by the upstream Pi CLI."""
+    from pbatch import cli, pi_cli
+
+    calls = []
+    monkeypatch.setattr(sys, "argv", [
+        "pi-batch", "pi", "--mode", "rpc", "--no-session"])
+    monkeypatch.setattr(pi_cli, "pi_main", lambda argv: calls.append(argv) or 0)
+
+    cli.main()
+
+    assert calls == [["--mode", "rpc", "--no-session"]]

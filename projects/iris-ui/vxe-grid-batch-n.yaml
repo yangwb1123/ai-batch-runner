@@ -1,0 +1,192 @@
+# iris-ui vxe-grid 批 N：表格高度 + 表头/表尾对齐 + 表尾计算方法 + 悬停高亮
+#
+# 目标（对照 vxe tableProps 全量盘点的剩余缺口）：
+# 1. height / minHeight / maxHeight：表格高度（数字/字符串，容器内滚动）
+# 2. headerAlign / footerAlign：表头/表尾列对齐（覆盖列级 align）
+# 3. footerMethod：表尾自定义计算方法（返回行数组，替代 summary 时生效）
+# 4. highlightHoverRow：悬停行高亮（--iris-surface-hover）
+# 范围：react only；additive。
+#
+# 执行：python pi-batch.py projects/iris-ui/vxe-grid-batch-n.yaml \
+#   --log-file logs/iris-ui-batch-n.log --retries 2
+
+git_commit: false
+decision_log: /home/u1/iris-ui/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      You are preparing the baseline for iris-ui vxe-grid batch N (height +
+      header/footer align + footerMethod + hover highlight). Monorepo:
+      /home/u1/iris-ui. Reference: /tmp/vxe-ref/package/es/table/src/props.js
+      (vxe tableProps — height/minHeight/maxHeight, headerAlign/footerAlign,
+      footerMethod, highlightHoverRow semantics).
+
+      Read:
+      1. /tmp/vxe-ref/package/es/table/src/props.js — the props semantics.
+      2. /home/u1/iris-ui/packages/react/src/primitives/table/Table.tsx —
+         the root container style (maxHeight/overflow handling today), the
+         header cell style (justifyContent), the summary row render
+         (aggregate op per column), the row hover CSS
+         (TABLE_ROW_CSS [role="row"]:hover).
+      3. /home/u1/iris-ui/packages/react/src/primitives/table/props.ts +
+         types.ts — IrisTableProps (bordered/size/…), IrisTableColumn
+         (align/summary), the summary types.
+
+      Write a markdown baseline to the output path:
+      - vxe semantics: height (Number|String, body scrolls inside a fixed
+        height), minHeight/maxHeight, headerAlign/footerAlign (override the
+        column align for the header/footer cells), footerMethod (returns an
+        array of footer rows — each entry is a record of column key → value
+        or an aggregate computation; replaces the default summary when
+        present), highlightHoverRow (row hover highlight)
+      - proposed iris design (react only, additive):
+        a) IrisTableProps: height?: number | string; minHeight?: number |
+           string; maxHeight?: number | string — root container gets the
+           height (maxHeight → max-height + overflow:auto; height → fixed
+           height + overflow:auto; minHeight → min-height); the body scrolls
+           (existing table root already handles column virtualization
+           overflow — reuse the pattern; verify sticky headers still work:
+           the header row is a grid row inside the scroll container — for
+           height mode the header should stay sticky (position: sticky top:
+           0) — check the current header structure and apply
+           data-iris-table-fixed-height attr when any height prop is set so
+           the header row gets position: sticky
+        b) IrisTableProps: headerAlign?: 'left' | 'center' | 'right';
+           footerAlign?: 'left' | 'center' | 'right' — header cells use
+           headerAlign ?? column.align ?? 'left' for justifyContent; footer
+           (summary) cells use footerAlign ?? column.align
+        c) footerMethod?: (params: { columns: IrisTableColumn<Row>[];
+           data: Row[] }) => Row[] — when present, REPLACES the summary row
+           render (the existing summary op path is skipped); renders one row
+           per returned entry (structure = column key → cell value);
+           styling matches the existing summary row (fontWeight 600, border
+           top, --iris-* tokens); footerData (custom rows) still renders
+           after footerMethod rows
+        d) highlightHoverRow?: boolean (default true — current CSS already
+           hovers; when false, suppress the hover bg via
+           data-iris-no-hover attr + CSS rule)
+      - file map + tests
+      Do NOT modify source files.
+    output: /home/u1/iris-ui/docs/vxe-grid/batch-n-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Implement iris-ui vxe-grid batch N (height + header/footer align +
+          footerMethod + hover highlight) in /home/u1/iris-ui, per
+          /home/u1/iris-ui/docs/vxe-grid/batch-n-baseline.md. Read it first,
+          then AGENTS.md.
+
+          HARD CONSTRAINTS:
+          - Core framework-free; React only; additive only.
+          - No dist/tgz/node_modules/manifest.json edits.
+          - Test files ≤500 lines; ≤4 changed files + tests.
+          - MANIFEST SCANNER HYGIENE: function-type props on ONE line; export
+            new types from index.ts.
+          - CSS uses --iris-* tokens only.
+
+          IMPLEMENT:
+          1. height/minHeight/maxHeight (props.ts + Table.tsx + styles.ts):
+             - props (single line each); root container: when any set, apply
+               the styles (height/maxHeight/minHeight + overflow:auto) and
+               data-iris-table-fixed-height="true"; add CSS: [data-iris-
+               table-fixed-height] [data-iris-table-row="header"] { position:
+               sticky; top: 0; z-index: ... } (check the header row is
+               actually the one with data-iris-table-row="header" — both the
+               flat and grouped variants) so the header stays visible while
+               the body scrolls
+          2. headerAlign/footerAlign (props.ts + Table.tsx):
+             - header cells: justifyContent = headerAlign ?? column.align ??
+               'left' (both flat and grouped header cell style branches)
+             - summary/footer cells: footerAlign ?? column.align (the
+               existing summary cell justifyContent uses col.align — extend
+               it; footerData cells too)
+          3. footerMethod (props.ts + Table.tsx):
+             - footerMethod?: (params: { columns: IrisTableColumn<Row>[];
+               data: Row[] }) => Row[] (single line)
+             - when present: the summary row render is REPLACED by
+               footerMethod rows (one per returned entry; cell value =
+               entry[col.key]); keep the same row styling as the summary
+               row; footerData still renders below; the summary op path is
+               skipped entirely when footerMethod exists
+          4. highlightHoverRow (props.ts + Table.tsx + styles.ts):
+             - default true; when false, root gets data-iris-no-hover and
+               TABLE_ROW_CSS gains [data-iris-table][data-iris-no-hover]
+               [role="row"]:hover { --iris-cell-bg: transparent } (or a
+               var(--iris-surface-hover) reset)
+          5. Tests (new height-align-footermethod.test.tsx):
+             - height renders fixed height + overflow + sticky header attr
+             - headerAlign/footerAlign drive justifyContent
+             - footerMethod replaces summary; multiple rows; footerData
+               renders after
+             - highlightHoverRow=false adds the no-hover attr
+
+          VERIFY:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm --filter @iris-ui-kit/react typecheck`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react lint` (0 errors)
+          - `python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json` → 0 violations
+          Report: files changed, tests added, counts, unfinished items.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-n-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are the adversarial reviewer for iris-ui batch N (height +
+          align + footerMethod + hover). Read batch-n-baseline.md and
+          batch-n-adapt.md, inspect the implementation.
+
+          Check:
+          1. height: fixed/min/max applied; overflow scrolls; sticky header
+             works for flat AND grouped headers; column virtualization
+             interplay (scrollLeft sync still works)
+          2. headerAlign/footerAlign: precedence (prop > column > default);
+             grouped header leaves aligned
+          3. footerMethod: replaces summary (no double render); multiple
+             rows; footerData coexistence; empty return renders nothing
+          4. highlightHoverRow: false suppresses hover; true default
+             unchanged
+          5. additive only; manifest hygiene; core framework-free; CSS tokens
+          Run verification commands (react test/typecheck/lint, audit). Write
+          verdict markdown: PASS or FAIL with numbered findings (severity,
+          file:line, fix). Do NOT modify files.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-n-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Gate stage for iris-ui batch N. Read the review verdict
+          /home/u1/iris-ui/docs/vxe-grid/batch-n-review.md.
+
+          If PASS: run the full repo gate:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm turbo run test typecheck lint build --concurrency=2`
+          - audit → 0; `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm gen:manifest`
+          - Update /home/u1/iris-ui/docs/vxe-grid-comparison.md: mark batch N
+            rows (height / headerAlign+footerAlign / footerMethod /
+            highlightHoverRow) done (react).
+          - Commit: `git add -A -- . ':!apps/ssr-solidstart/.vinxi' && git
+            commit -m "feat(table): vxe-grid 批 N——表格高度/表头表尾对齐/表尾计算方法/悬停高亮（react only）"`
+          Report commit hash and final test counts.
+
+          If FAIL with concrete fixes: apply fixes, rerun, full gate, commit.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-n-gate.md

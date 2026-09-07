@@ -1,0 +1,131 @@
+# Iris Grid Core continuation: Vue column visibility fade on current HEAD
+# The worktree is isolated from the dirty main checkout.
+git_commit: false
+decision_log: /tmp/iris-grid-fade-vue-1787900100/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      Prepare a baseline for a narrow Vue-only Iris UI Grid continuation in
+      /tmp/iris-grid-fade-vue-1787900100, based on the current HEAD
+      876eaaf6. The goal is to bring the existing React columnFade behavior to
+      Vue, not to redesign Grid Core. Read AGENTS.md, docs/grid-core-refactor.md,
+      the current Vue IrisTable and its extracted render helpers, the React
+      columnFade implementation/tests, and the completed reference patch
+      620ad28af6182dc616f05b9cb1cca2b1d7f9d294 (do not blindly cherry-pick it;
+      its parent is older than this worktree).
+
+      Write a factual baseline only; do not modify source. Specify the smallest
+      file map and invariants. The new additive Vue prop is `columnFade?:
+      boolean`, default false, matching React. When enabled, changes to the
+      existing controlled `columnVisibility` map animate a 200ms token-driven
+      opacity + grid-track width transition for headers, body cells, summaries,
+      and column totals; the default-off path must remain inert. Reduced motion,
+      SSR, initial hidden columns, mid-transition reversal, focus recovery,
+      unmount/timer cleanup, grouped columns, column virtualization, and the
+      existing Grid Core columns bridge must be addressed. The adapter owns DOM
+      and lifecycle; do not move browser behavior into core. Do not change
+      other frameworks, apps, plugin code, or arch baselines.
+    output: /tmp/iris-grid-fade-vue-1787900100/docs/vxe-grid/batch-fade-vue-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /tmp/iris-grid-fade-vue-1787900100
+        prompt: |
+          Implement the Vue-only columnFade continuation in this isolated
+          worktree, following
+          /tmp/iris-grid-fade-vue-1787900100/docs/vxe-grid/batch-fade-vue-baseline.md.
+          Read the baseline first and then AGENTS.md. You may use the prior
+          completed patch 620ad28af6182dc616f05b9cb1cca2b1d7f9d294 as a design
+          reference, but adapt it to the current HEAD rather than replacing
+          current Grid Core columns-state work.
+
+          HARD CONSTRAINTS:
+          - Modify Vue adapter source, focused Vue tests, the Vue package test
+            config only when needed, and concise Grid/refactor evidence docs.
+            Do not modify React/Solid/Svelte, core, plugin/app code, pnpm-lock,
+            scripts/arch-baseline.json, dist/tgz/node_modules, or unrelated
+            dirty work.
+          - `columnFade` is additive and default-off. Preserve existing
+            columnVisibility semantics and the one per-table Grid Core columns
+            model; do not create a second core or put DOM/timer code in core.
+          - Use Iris tokens / existing injected stylesheet conventions; no new
+            hard-coded colors, Tailwind, CSS-in-JS, or innerHTML.
+          - Keep all new/changed test files <=500 lines and do not weaken or
+            skip tests. Add SSR and, where the Vue setup supports it, hydration
+            coverage for the inert/default and enabled paths. No arch baseline
+            edits.
+          - Preserve SSR safety, reduced-motion fail-closed behavior, focus and
+            inert/ARIA behavior, grouped top-level/leaf mapping, column totals,
+            summary, resize/virtualization wiring, and all existing callbacks.
+          - Do not manually edit manifest.json or llms.txt. If the public prop
+            changes generated API output, run the manifest generator and keep
+            only generator-produced changes.
+          - Do not commit.
+
+          VERIFY in the worktree:
+          - env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/vue test
+          - env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/vue typecheck
+          - env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/vue lint
+          - env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/vue build
+          - python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json
+          - git diff --check
+
+          Report exact files, focused/full/SSR counts, default-off and
+          reduced-motion behavior, and any deferred coverage. Do not commit.
+        output: /tmp/iris-grid-fade-vue-1787900100/docs/vxe-grid/batch-fade-vue-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /tmp/iris-grid-fade-vue-1787900100
+        prompt: |
+          Act as an adversarial reviewer for the Vue columnFade continuation.
+          Read the baseline and adapt report under
+          /tmp/iris-grid-fade-vue-1787900100/docs/vxe-grid/, inspect the actual
+          diff against current HEAD, and compare with the React implementation
+          and prior reference commit 620ad28a. Do not modify source.
+
+          Check at minimum: default-off zero timers/listeners/DOM changes;
+          exactly one per-table Grid Core and columns model; controlled
+          visibility prop replacement and initial-hidden behavior; 200ms
+          token-driven track/opacity timing; reduced motion; mid-fade reversal;
+          focus recovery and inert/ARIA; grouped headers and leaf cells;
+          summary/totals/virtual columns; SSR and cleanup; no core/framework
+          violation; no arch-baseline tampering; test-file <=500 lines; and
+          manifest/format hygiene. Run the relevant Vue tests, typecheck, lint,
+          build, spec audit, and diff check. Write PASS or FAIL with numbered
+          severity/file:line findings and concrete fixes. Do not modify source.
+        output: /tmp/iris-grid-fade-vue-1787900100/docs/vxe-grid/batch-fade-vue-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /tmp/iris-grid-fade-vue-1787900100
+        prompt: |
+          Gate the Vue columnFade continuation. Read
+          /tmp/iris-grid-fade-vue-1787900100/docs/vxe-grid/batch-fade-vue-review.md.
+          If PASS, rerun the full Vue test/typecheck/lint/build gates, the
+          iris-ui spec audit, `pnpm check:manifest`, and `git diff --check`.
+          Confirm scripts/arch-baseline.json was not changed. Update
+          docs/grid-core-refactor.md with one concise factual entry if the
+          implementation is accepted. Do not change other frameworks/core/apps,
+          do not weaken tests, and do not commit. If FAIL has concrete fixes,
+          apply only those in this isolated worktree, rerun all gates, and
+          report the final PASS/FAIL, exact files, counts, manifest status, and
+          any pre-existing ratchet limitations.
+        output: /tmp/iris-grid-fade-vue-1787900100/docs/vxe-grid/batch-fade-vue-gate.md

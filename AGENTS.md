@@ -32,7 +32,7 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `pbatch/evolution.py` / `evolution-specs/` | **第四域：实战规律引擎**（归纳自 snaplink-console / iris-ui 实战）：项目形态分类（契约驱动/平台/面向产品/探索）→ 规律分级路由（invariant 硬执行 / contract-policy 可豁免 / suggestion 只注入）；**探索豁免**（spike 任务自动降级，创新不被锁死）；项目宪法（`docs/evolution/constitution.yaml`：明确不做/变更预算/豁免留痕）——**assess 处方携带宪法块、advance 批次剔除 denylist 文件、campaign 分析注入宪法+已拒方向（L10 防重复）并沉淀批次轨迹事件**；**`evolution track` 演化路径分析**（轨迹事件 → 触发源分类/状态分布/模块热度/被拒收敛信号 → TRACK.md）；门禁五件套——`baseline`（L1 基线先行）、`authority`（L2 权威源分层，禁发明接口）、`evidence`（L7 证据纪律）、`nongoal`（L6 明确不做 fail closed）、`changebudget`（L9 变更预算）；`learn promote --registry evolution` 沉淀闭环（强制 samples/confidence）；eval 第四域回归（10 用例） |
 | `pbatch/advance.py` | 自推进迭代引擎（`advance` 子命令）：扫描项目全部规范维度（UI 间距/颜色/样式、前端工程错误/N+1/复杂度、后端工程/架构）→ 按细颗粒度分批（P0 可恢复性 > P1 视觉 token > P2 架构）→ 状态记录（docs/advance/state.jsonl）逐轮可续 |
 | `pbatch/assessor.py` | 需求评估器（`assess` 子命令）：资深经验式评审——8 维需求完整性检查、规模信号（S/M/L）克制处方（"企业登录页"不会全量上规则）、缺失维度建议、刻意未选用清单、**产品化分级评估**（L0-L3）、**工作流风险分级**（L0 直改 / L1 标准 / L2 高风险对抗 / L3 平台产品） |
-| `pbatch/product.py` / `product-specs/` | 产品思维层：productization_level（L0 小工具不推演 / L1 模块 / L2 平台 / L3 产品）→ 场景推演链（登录/上传/审批/聊天/ERP/搜索，产出待确认问题非功能）、开源要素、商业要素（低成本预留 vs 高成本实现红线）、完成证据报告；`product-specs/rules.yaml` 声明式注册表（L1=demo/L2=standard/L3=production 派生 specs，billing 双重门禁：min_tier production + page_types） |
+| `pbatch/product.py` / `pbatch/product_direction.py` / `product-specs/` | 产品思维层：productization_level（L0 小工具不推演 / L1 模块 / L2 平台 / L3 产品）→ 场景推演链（登录/上传/审批/聊天/ERP/搜索，产出待确认问题非功能）、`product` 产品方向简报（用户故事/旅程/异常状态机/Epic→Feature→Story→Task）、开源要素、商业要素（低成本预留 vs 高成本实现红线）、完成证据报告；`product-specs/rules.yaml` 声明式注册表（L1=demo/L2=standard/L3=production 派生 specs，billing 双重门禁：min_tier production + page_types） |
 | `pbatch/learn.py` | 自演进闭环（Evolution Engineering）：`learn` 子命令把事故/RCA 沉淀为统一 Rule Schema 草案（docs/rules/drafts/），人工批准后并入域注册表 |
 | `pbatch/ratelimit.py` | F 线 provider 令牌桶限速（`limits.per_second/burst/providers` 或 `--rate-limit/--rate-burst`）：并行 worker 与 meta 角色并发在 spawn 前排队；Campaign 隔离流水线通过共享文件锁跨进程共用 bucket；重试等待带 jitter（速率/网络类 30–60s 分散、普通 ±50%）防惊群重试 |
 | `pbatch/context.py` / `docs/agent-context/` | 上下文路由（Context Engineering）：按文件路径 glob + 任务关键词加载项目文档（ADR/契约/安全基线），`context` 子命令，缺失文档显式警告 |
@@ -181,6 +181,9 @@ validators:
 
 运行日志与 message 分层管理：`--log-file` 只记录生命周期、重试、验证和
 Gate 等运营元数据；完整模型正文保留在任务产物和 agent 原生会话中。
+声明 `output_protocol: codex-jsonl` 的 Codex adapter 会逐条 fail-closed 解析
+`--json` 事件，只把最终完成的 assistant message 写入产物；原始 JSONL 仅作为
+provider 原生会话证据，不进入产物或终端正文流。
 `auto` 在 nohup/CI/systemd 等非 TTY 场景不实时复制正文，`full`/`none` 可显式
 覆盖。无 `output` 的单问答仍会在任务结束时把最终答案输出一次。Campaign
 隔离流水线由子进程的轮转 handler 单独写日志，避免同一路径双写和轮转竞争。

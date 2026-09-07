@@ -199,9 +199,9 @@ def _reverse_events(cwd: str = "", override: str = ""):
             yield event
 
 def record_task(result, cwd: str = "") -> None:
-    if not memory_enabled():
-        return
     task = result.task
+    if not memory_enabled(task.effective_agent()):
+        return
     workdir = cwd or task.workdir()
     profile = classify_prompt(task.prompt)
     raw = result.raw_session or _raw_session(workdir, result.session_id)

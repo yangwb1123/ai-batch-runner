@@ -26,7 +26,8 @@ from pbatch.tui_protocol import (
 EXPECTED_EVENT_KINDS = frozenset("""
 session.created session.resumed session.forked session.archived session.disconnected
 turn.queued turn.started turn.steered turn.interrupting turn.completed turn.failed
-turn.interrupted message.started message.delta message.completed plan.updated
+turn.interrupted pipeline.started pipeline.checkpoint pipeline.completed pipeline.failed stage.started
+stage.completed task.started task.completed message.started message.delta message.completed plan.updated policy.updated
 command.started command.output command.completed tool.started tool.completed tool.failed
 file.changed workspace.snapshot validation.started validation.completed gate.verdict
 approval.requested approval.resolved approval.expired actor.spawned actor.status
@@ -118,7 +119,9 @@ def test_terminal_turn_state_rejects_every_transition():
 
 
 EXPECTED_TRANSITIONS = {
-    TurnState.QUEUED: {TurnState.RUNNING},
+    TurnState.QUEUED: {
+        TurnState.RUNNING, TurnState.INTERRUPTING, TurnState.FAILED,
+    },
     TurnState.RUNNING: {
         TurnState.SUCCEEDED, TurnState.FAILED, TurnState.INTERRUPTING,
         TurnState.WAITING_APPROVAL, TurnState.DISCONNECTED, TurnState.UNKNOWN,
@@ -199,9 +202,12 @@ def test_runtime_capabilities_have_legacy_safe_defaults():
     runtime = RuntimeCapabilities()
     legacy = {"message_stream", "interrupt"}
     rich = {
-        "structured_events", "session_resume", "session_fork", "turn_steer",
-        "message_queue", "typed_approvals", "review", "subagents", "images",
-        "usage", "instruction_sources",
+        "structured_events", "session_resume", "session_read", "session_list",
+        "session_fork", "session_archive", "session_state", "session_stats",
+        "session_compact",
+        "turn_steer", "message_queue", "typed_approvals", "review", "subagents",
+        "actor_control", "images", "usage", "instruction_sources", "model_catalog", "thinking_levels",
+        "model_select", "thinking_select",
     }
     assert runtime.protocol_version == 1
     assert runtime.runtime == "legacy"

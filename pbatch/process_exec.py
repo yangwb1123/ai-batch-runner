@@ -25,6 +25,16 @@ class ValidationResult(NamedTuple):
     timed_out: bool
 
 
+class _CancelledDrain(RuntimeError):
+    """A scoped cancellation killed the bounded child process."""
+
+    def __init__(self, stdout_lines, stderr_lines, threads):
+        self.stdout_lines = stdout_lines
+        self.stderr_lines = stderr_lines
+        self.threads = threads
+        super().__init__("process cancelled")
+
+
 class _DrainTimeout(subprocess.TimeoutExpired):
     """Timeout carrying collectors so partial output survives process kill."""
 
@@ -38,7 +48,7 @@ class _DrainTimeout(subprocess.TimeoutExpired):
 
 
 def run_bounded(cmd, cwd: str, timeout: float, output_cap: int,
-                shell: bool, label: str) -> ValidationResult:
+                shell: bool, label: str, cancel_event=None) -> ValidationResult:
     """Spawn one command, drain both pipes and fail closed on every boundary."""
     try:
         proc = subprocess.Popen(
@@ -48,7 +58,11 @@ def run_bounded(cmd, cwd: str, timeout: float, output_cap: int,
         return ValidationResult(False, -1, "", str(exc), False)
     start = time.monotonic()
     try:
-        output = _drain_process(proc, start, timeout, output_cap)
+        output = _drain_process(proc, start, timeout, output_cap, cancel_event)
+    except _CancelledDrain as exc:
+        _kill_group(proc)
+        _join_drainers(exc.threads)
+        return ValidationResult(False, -1, *_partial_output(exc), False)
     except _DrainTimeout as exc:
         _kill_group(proc)
         _join_drainers(exc.threads)
@@ -67,7 +81,7 @@ def run_bounded(cmd, cwd: str, timeout: float, output_cap: int,
                             stdout, stderr, False)
 
 
-def _partial_output(exc: _DrainTimeout) -> tuple[str, str]:
+def _partial_output(exc) -> tuple[str, str]:
     """Join the bounded chunks collected before/after the kill."""
     return "".join(exc.stdout_lines), "".join(exc.stderr_lines)
 
@@ -104,7 +118,7 @@ def _read_stream(stream, collector: list, cap: int, overflow: list) -> None:
 
 
 def _drain_process(proc: subprocess.Popen, start: float, timeout: float,
-                   cap: int) -> tuple[str, str, tuple[bool, bool]]:
+                   cap: int, cancel_event=None) -> tuple[str, str, tuple[bool, bool]]:
     """Drain both pipes against one absolute deadline."""
     stdout, stderr = [], []
     overflow = [[False], [False]]
@@ -120,8 +134,21 @@ def _drain_process(proc: subprocess.Popen, start: float, timeout: float,
         thread.start()
     deadline = start + timeout
     for thread in threads:
-        thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        while thread.is_alive():
+            if _cancel_requested(cancel_event):
+                _kill_group(proc)
+                _join_drainers(threads)
+                raise _CancelledDrain(stdout, stderr, threads)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise _DrainTimeout(proc.args, timeout, stdout, stderr,
+                                    (overflow[0][0], overflow[1][0]), threads)
+            thread.join(timeout=min(0.05, remaining))
     while proc.poll() is None:
+        if _cancel_requested(cancel_event):
+            _kill_group(proc)
+            _join_drainers(threads)
+            raise _CancelledDrain(stdout, stderr, threads)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise _DrainTimeout(proc.args, timeout, stdout, stderr,
@@ -129,6 +156,13 @@ def _drain_process(proc: subprocess.Popen, start: float, timeout: float,
         time.sleep(min(0.05, remaining))
     return "".join(stdout), "".join(stderr), (
         overflow[0][0], overflow[1][0])
+
+
+def _cancel_requested(cancel_event) -> bool:
+    try:
+        return bool(cancel_event is not None and cancel_event.is_set())
+    except (AttributeError, TypeError):
+        return False
 
 
 def _join_drainers(threads: tuple, maximum: float = 1.0) -> None:

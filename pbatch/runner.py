@@ -15,33 +15,48 @@ import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Optional
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from .validation_batch import run_file_validators
 from . import config
 from .config import _resolve_validator_specs, _resolve_validators, _session_flags, log
 from .cmd_expand import expand_cmd
 from .context_inject import inject_task_context
 from .execution_trace import (annotate_result, attach_session,
-                               finish_task_result, record_validation_event)
+                              finish_task_result as _finish_result,
+                              record_validation_event)
 from .models import Task, TaskResult
 from .execution_ids import task_id as make_task_id
-from .runner_results import (agent_stdout_banner_reason as _stdout_banner_reason,
+from .runner_results import (agent_result_reason as _agent_result_reason,
+                             agent_stdout_banner_reason as _stdout_banner_reason,
+                             expects_codex_transcript as _expects_codex_transcript,
                              overflow_result as _overflow_result,
+                             projected_agent_stdout as _projected_agent_stdout,
                              prompt_limit_result as _prompt_limit_result)
 from .provider_breaker import (cooldown_failure as _pb_cooldown,
+                               provider_identity as _pb_identity,
+                               provider_failure_reason as _pb_reason,
                                register_provider_failure as _pb_register_fail,
                                register_success as _pb_register_ok)
 from . import metering
-from . import ratelimit
-from .metering import budget_allows, budget_try_consume, record_event
-from .memory import (enrich_prompt, memory_enabled, new_session_id,
-                     record_task, session_id_from_flags)
-from .parallel_plan import validate_parallel_plan
+from .metering import budget_try_consume, record_event
+from .memory import record_task
 from .reuse import capture_worktree_state, preserve_failed_worktree
-from .session import (capture_codex_thread, fork_flags, has_compaction,
-                      resolve_provider_session, session_size_bytes)
+from .runner_session import (bind_spawned_session as _bind_spawned_session,
+                             _capture_codex_thread,
+                             _memory_invocation,
+                             rotation_flags as _rotation_flags,
+                             unexpected_result as _unexpected_result)
 from .triage import clear_marker, is_retryable, task_key, write_marker
 from .process_exec import ValidationResult, _DrainTimeout, run_bounded
+from .runner_cancel import (
+    CancelledDrain as _CancelledDrain, cancel_requested as _cancel_requested,
+    cancelled_result as _cancelled_result,
+    join_stream_threads as _join_stream_threads,
+    rate_gate as _rate_gate_impl,
+    task_cancel_event as _task_cancel_event,
+    wait_for_cancel as _wait_for_cancel_impl,
+)
+from .runner_parallel import run_parallel as _run_parallel_impl
+from .runner_process import drain_process as _drain_process_impl
 # registry of live agent subprocesses (parallel mode: a budget cap must be
 # able to kill in-flight agents so the executor shutdown is prompt)
 _ACTIVE_PROCS: set = set()
@@ -122,15 +137,11 @@ def _budget_gate(task: Task, key: str, workdir: str, session_name: str = "",
                      stage_id=str(task.memory.get("stage", "")), attempt=attempt)
         clear_marker(key, workdir)
         raise SystemExit(3)
-def session_file_path(cwd: str, session_name: str) -> Optional[str]:
-    """Active pi session file for a shared/per-stage session (T10)."""
-    from .session import session_file
-    f = session_file(cwd, session_name)
-    return str(f) if f else None
 def _prompt_brief(task: Task, cmd: list) -> str:
     """One-line log summary with the prompt truncated (log-file safe)."""
     brief = " ".join(task.prompt.split())[:80]
-    flags = " ".join(config.agent_argument_flags(config.AGENT_BIN)["prompt"])
+    flags = " ".join(config.agent_argument_flags(
+        task.effective_agent())["prompt"])
     elided = "..." if len(brief) == 80 else ""
     return f"{cmd[0]} {flags} {brief}{elided}"
 def _kill_group(proc: Optional[subprocess.Popen]) -> None:
@@ -163,12 +174,13 @@ def _spawn_agent(cmd: list, workdir: str, env: dict) -> subprocess.Popen:
 def _agent_not_found(task: Task) -> TaskResult:
     """The agent binary is missing from PATH: a permanent, non-retryable
     failure (never saved as an artifact)."""
+    agent = task.effective_agent()
     log.error(
         "'%s' not found in PATH — 请先安装 agent 或在 pi-batch.yaml 配置 "
         "agent.bin 后重试（本次任务未启动，无副作用）",
-        config.AGENT_BIN,
+        agent,
     )
-    return TaskResult(task=task, success=False, stderr=f"{config.AGENT_BIN} not found in PATH",
+    return TaskResult(task=task, success=False, stderr=f"{agent} not found in PATH",
                       reason="agent binary not found")
 def _context_rejection(task: Task) -> Optional[TaskResult]:
     try:
@@ -193,24 +205,32 @@ def _task_invocation(task: Task, session_flags: Optional[list],
         return TaskResult(task=task, success=False, returncode=-1,
                           stderr=str(exc), reason=reason)
     if prompt_limit := _prompt_limit_result(task, cmd):
-        return attach_session(prompt_limit, session_id, effective_name, workdir)
+        return attach_session(prompt_limit, session_id, effective_name,
+                              workdir, task.effective_agent())
     return cmd, workdir, session_id, effective_name
-def _finish_result(result: TaskResult, task: Task, session_id: str,
-                   session_name: str, workdir: str, usage_before: Optional[dict],
-                   trace_task_id: str, attempt: int) -> TaskResult:
-    """Keep the hot task-execution function within the file budget."""
-    return finish_task_result(result, task, session_id, session_name, workdir,
-                              usage_before, trace_task_id, attempt)
 def _stream_task(proc, prefix: str, start: float, timeout: int, emit: bool,
-                 stdout_target=None, stderr_target=None):
+                 stdout_target=None, stderr_target=None, stderr_emit=None,
+                 cancel_event=None):
     """Forward opt-in display targets without changing legacy mock calls."""
     targets = {"stdout_target": stdout_target} if stdout_target else {}
     if stderr_target is not None:
         targets["stderr_target"] = stderr_target
+    if stderr_emit is not None:
+        targets["stderr_emit"] = stderr_emit
+    if cancel_event is not None:
+        targets["cancel_event"] = cancel_event
     return _stream_proc(proc, prefix, start, timeout, emit, **targets)
-def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = False,
-             session_flags: Optional[list] = None, session_name: str = "", attempt: int = 1,
-             trace_task_id: str = "", stdout_target=None, stderr_target=None) -> TaskResult:
+def _finish_spawned_result(result, task, flags, stdout_lines, session_id,
+                           name, workdir, usage, trace_id, attempt):
+    result = _bind_spawned_session(
+        result, task, flags, stdout_lines, name, session_id, workdir)
+    return _finish_result(
+        result, task, session_id, name, workdir, usage, trace_id, attempt)
+
+
+def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = False, session_flags: Optional[list] = None, session_name: str = "", attempt: int = 1, trace_task_id: str = "", stdout_target=None, stderr_target=None, cancel_event=None) -> TaskResult:
+    if _cancel_requested(cancel_event):
+        return _cancelled_result(task)
     trace_task_id = trace_task_id or make_task_id(metering.RUN_ID, task.prompt, task.output, task.workdir(), task_index)
     stage_id = str(task.memory.get("stage", ""))
     if rejected := _context_rejection(task):
@@ -221,94 +241,79 @@ def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = F
         annotate_result(invocation, trace_task_id, stage_id, attempt)
         return invocation
     cmd, workdir, session_id, effective_name = invocation
-    start, proc, completed = time.monotonic(), None, False
+    start, proc, completed, stdout_lines = time.monotonic(), None, False, []
     prefix, env, key, usage_before = _prepare_task_run(task, cmd, task_index, total, parallel, workdir, effective_name, session_id, trace_task_id, attempt)
     try:
-        _rate_gate(task, effective_name)
         if (cooldown := _pb_cooldown(task)) is not None:
-            return cooldown
+            return _finish_result(cooldown, task, session_id, effective_name, workdir, usage_before, trace_task_id, attempt)
+        _budget_gate(task, key, workdir, effective_name, trace_task_id, attempt)
+        rate_ok = (_rate_gate(task, effective_name) if cancel_event is None else
+                   _rate_gate(task, effective_name, cancel_event=cancel_event))
+        if rate_ok is False or _cancel_requested(cancel_event):
+            return _cancelled_result(task)
         proc = _spawn_agent(cmd, workdir, env)
         _register_proc(proc)
         write_marker(key, workdir, agent_pid=proc.pid)
-        streamed = _stream_output_enabled()
+        stream_requested, structured_stdout = _stream_output_enabled(), _expects_codex_transcript(task)
+        stdout_streamed = stream_requested and not structured_stdout
         stdout_lines, stderr_lines, overflow = _stream_task(
-            proc, prefix, start, task.timeout, streamed, stdout_target,
-            stderr_target)
+            proc, prefix, start, task.timeout, stdout_streamed,
+            stdout_target, stderr_target, stream_requested, cancel_event)
         completed = True
-        if overflow[0]:
-            _r = _overflow_result(task, proc, stdout_lines, stderr_lines, start)
-            return _finish_result(_r, task, session_id, effective_name, workdir, usage_before, trace_task_id, attempt)
-        result = _result_from_proc(task, proc, stdout_lines, stderr_lines, time.monotonic() - start)
-        result.streamed_output = streamed
-        if session_flags is not None:
-            _capture_codex_thread(stdout_lines, effective_name, session_id, workdir)
-        return _finish_result(result, task, session_id, effective_name, workdir, usage_before, trace_task_id, attempt)
-    except subprocess.TimeoutExpired:
-        return _finish_result(_timeout_result(task, proc, start), task, session_id, effective_name, workdir, usage_before, trace_task_id, attempt)
-    except FileNotFoundError:
-        return _finish_result(_agent_not_found(task), task, session_id, effective_name, workdir, usage_before, trace_task_id, attempt)
-    except Exception as e:
-        elapsed = time.monotonic() - start
-        log.error("ERROR  [%.1fs]  [%s]", elapsed, e)
-        return _finish_result(TaskResult(task=task, success=False, stderr=str(e), elapsed=elapsed, reason=str(e)), task, session_id, effective_name, workdir, usage_before, trace_task_id, attempt)
+        result = (_overflow_result(task, proc, stdout_lines, stderr_lines, start)
+                  if overflow[0] else _result_from_proc(
+                      task, proc, stdout_lines, stderr_lines,
+                      time.monotonic() - start))
+        result.streamed_output, result.streamed_stderr = stdout_streamed, stream_requested
+        return _finish_spawned_result(result, task, session_flags, stdout_lines,
+            session_id, effective_name, workdir, usage_before, trace_task_id, attempt)
+    except Exception as exc:
+        return _task_exception_result(
+            exc, task, proc, start, session_flags, stdout_lines, session_id,
+            effective_name, workdir, usage_before, trace_task_id, attempt)
     finally:
-        if proc is not None and not completed:
-            _kill_group(proc)
-        if proc is not None:
-            _unregister_proc(proc)
+        if proc is not None and not completed: _kill_group(proc)
+        if proc is not None: _unregister_proc(proc)
         clear_marker(key, workdir)
-def _prepare_task_run(task: Task, cmd: list, task_index: int, total: int,
-                      parallel: bool, workdir: str, session_name: str,
-                      session_id: str = "", trace_task_id: str = "",
-                      attempt: int = 0) -> tuple:
+def _task_exception_result(exc, task, proc, start, session_flags,
+                           stdout_lines, session_id, effective_name, workdir,
+                           usage_before, trace_task_id, attempt):
+    if isinstance(exc, _CancelledDrain):
+        return _finish_spawned_result(_cancelled_result(task), task,
+            session_flags, exc.stdout_lines, session_id, effective_name,
+            workdir, usage_before, trace_task_id, attempt)
+    if isinstance(exc, _DrainTimeout):
+        return _finish_spawned_result(_timeout_result(task, proc, start), task,
+            session_flags, exc.stdout_lines, session_id, effective_name,
+            workdir, usage_before, trace_task_id, attempt)
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return _finish_spawned_result(_timeout_result(task, proc, start), task,
+            session_flags, [], session_id, effective_name, workdir,
+            usage_before, trace_task_id, attempt)
+    if isinstance(exc, FileNotFoundError):
+        return _finish_result(_agent_not_found(task), task, session_id,
+                              effective_name, workdir, usage_before,
+                              trace_task_id, attempt)
+    result = _unexpected_result(
+        exc, proc, start, task, session_flags, stdout_lines,
+        effective_name, session_id, workdir)
+    return _finish_result(result, task, session_id, effective_name, workdir,
+                          usage_before, trace_task_id, attempt)
+
+
+def _prepare_task_run(task: Task, cmd: list, task_index: int, total: int, parallel: bool,
+                      workdir: str, session_name: str, session_id: str = "", trace_task_id: str = "", attempt: int = 0) -> tuple:
     prefix = f"[task-{task_index}] " if (parallel and total > 1) else ""
-    log.info(">>  %s  [model=%s]  [timeout=%ss]  [dir=%s]",
-             _prompt_brief(task, cmd), task.model or "default", task.timeout, workdir)
+    log.info(">>  %s  [model=%s]  [timeout=%ss]  [dir=%s]", _prompt_brief(task, cmd), task.model or "default", task.timeout, workdir)
     env = {**os.environ, **task.env}
     key = task_key(task)
     write_marker(key, workdir)
-    _budget_gate(task, key, workdir, session_name, trace_task_id, attempt)
     usage_ref = session_id or session_name
     usage = metering.session_usage(workdir, usage_ref) if metering.EVENTS_FILE else None
     return prefix, env, key, usage
 
-def _rate_gate(task: Task, session_name: str = "") -> None:
-    """F line: wait for a provider token before spawning the agent. Runs
-    AFTER the budget gate so a capped run stops before waiting; blocks
-    parallel workers into a queue instead of overloading the provider.
-    Best-effort: an acquire timeout (or a provider-missing key) only logs."""
-    if ratelimit.RATE_PER_SECOND <= 0 and not ratelimit.PROVIDER_RATES:
-        return
-    if not ratelimit.acquire(task.provider or "", timeout=300.0):
-        log.warning("RATE: token wait timed out for provider '%s' (300s); spawning anyway",
-                    task.provider or "default")
-
-def _memory_invocation(task: Task, session_flags: Optional[list],
-                       session_name: str) -> tuple[list, str, str, str]:
-    workdir = task.workdir()
-    flags = session_flags
-    name = session_name or getattr(flags, "session_name", "") or task.memory.get(
-        "stage", "") or "batch"
-    kind = getattr(flags, "kind", "")
-    session_id = getattr(flags, "session_id", "") or session_id_from_flags(flags)
-    prompt = task.prompt
-    if memory_enabled():
-        prompt = enrich_prompt(prompt, workdir, str(task.memory.get("memory_mode", "")))
-        if flags is None:
-            session_id = new_session_id(name, task.prompt, workdir)
-            flags = _session_flags("start", session_id, name)
-            kind = "start"
-    if (kind in ("continue", "fork")
-            and config.agent_session_argv_layout(config.AGENT_BIN) == "led"):
-        provider_session, _ = resolve_provider_session(
-            workdir, name, session_id, kind, config.AGENT_BIN)
-        flags = config.agent_session_flags(
-            kind, session_id, name, config.AGENT_BIN, provider_session=provider_session)
-    return replace(task, prompt=prompt).to_cmd(flags), workdir, session_id, name
-
-def _capture_codex_thread(stdout_lines: list, name: str, sid: str, workdir: str) -> None:
-    """Capture Codex's first JSONL thread event for an explicit session."""
-    capture_codex_thread(stdout_lines, name, sid, workdir, config.AGENT_BIN)
+def _rate_gate(task: Task, session_name: str = "", cancel_event=None) -> bool:
+    return _rate_gate_impl(task, cancel_event)
 
 def _output_path_is_symlink(task: Task) -> bool:
     """T0.1: probe the UNRESOLVED output path — output_path() resolves
@@ -326,10 +331,14 @@ def save_result(task: Task, result: TaskResult) -> None:
     """
     out_path = task.output_path()
     if out_path is None:
-        if not result.streamed_output:
+        structured_failure = (_expects_codex_transcript(task)
+                              and not result.success)
+        if not result.streamed_output and not structured_failure:
             sys.stdout.write(result.stdout)
-            if result.stderr:
-                sys.stderr.write(result.stderr)
+        stderr_streamed = (result.streamed_output if result.streamed_stderr is None
+                           else result.streamed_stderr)
+        if result.stderr and not stderr_streamed:
+            sys.stderr.write(result.stderr)
         return
 
     if not result.success:
@@ -388,7 +397,7 @@ def expand_command_placeholders(cmd: str, cwd: str, output: str = "") -> str:
     return expand_cmd(cmd, output, cwd, config.TOOL_ROOT)
 
 def run_validation(cmd: str, cwd: str, timeout: float = 600,
-                   cap: Optional[int] = None) -> ValidationResult:
+                   cap: Optional[int] = None, cancel_event=None) -> ValidationResult:
     """Run one validator command in its own process group with a hard
     deadline and bounded diagnostics. A spawn crash fails closed."""
     if not isinstance(cmd, str):
@@ -396,7 +405,10 @@ def run_validation(cmd: str, cwd: str, timeout: float = 600,
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout < 0:
         raise ValueError("validator timeout must be non-negative")
     output_cap = config.VALIDATION_OUTPUT_MAX_BYTES if cap is None else max(1, cap)
-    return run_bounded(cmd, cwd, timeout, output_cap, True, "validator")
+    if cancel_event is None:
+        return run_bounded(cmd, cwd, timeout, output_cap, True, "validator")
+    return run_bounded(cmd, cwd, timeout, output_cap, True, "validator",
+                       cancel_event=cancel_event)
 
 def run_argv(cmd: list[str], cwd: str, timeout: float = 30,
              cap: Optional[int] = None) -> ValidationResult:
@@ -441,7 +453,8 @@ def _save_rejected_excerpt(tmp: Path, workdir: str, cmd: str, reason: str) -> Op
         log.warning("could not keep rejected excerpt: %s", exc)
         return ""
 
-def _apply_gate_commands(tmp: Path, task: Task, commands: list, result: TaskResult) -> bool:
+def _apply_gate_commands(tmp: Path, task: Task, commands: list,
+                         result: TaskResult, cancel_event=None) -> bool:
     """Run file gate commands concurrently and fold them with AND semantics;
     a failure deletes the artifact, records the outcome on the result
     (T2 feedback fields) and returns False. T12a: a validator may reply
@@ -451,9 +464,12 @@ def _apply_gate_commands(tmp: Path, task: Task, commands: list, result: TaskResu
     (fail closed on missing/bare verdict). Repo-scoped validators are
     deferred to the stage/batch end (N2) and skipped here."""
     workdir = task.workdir()
+    run_one = (run_validation if cancel_event is None else
+               lambda command, cwd: run_validation(
+                   command, cwd, cancel_event=cancel_event))
     validations = run_file_validators(
         commands, workdir, tmp, expand_command_placeholders,
-        run_validation, log, "VALIDATE",
+        run_one, log, "VALIDATE",
     )
     for spec, cmd, v in validations:
         result.validation_ok = v.ok
@@ -513,7 +529,8 @@ def _gate_spec_passed(spec, cmd: str, tmp: Path, result: TaskResult, v, workdir:
         log.warning("VALIDATE WARN: %s (output saved with warning)", cmd)
     return True
 
-def _save_validated(task: Task, result: TaskResult, validate_cmd: str) -> bool:
+def _save_validated(task: Task, result: TaskResult, validate_cmd: str,
+                    cancel_event=None) -> bool:
     """Save a successful result through the engineering gates. The output is
     written to a temp file, every resolved validator command must exit 0
     (AND semantics), then the file is atomically renamed into place; a
@@ -521,7 +538,7 @@ def _save_validated(task: Task, result: TaskResult, validate_cmd: str) -> bool:
     points at the temp file so gates can inspect the generated content.
     validate_cmd is a comma-separated list of registry names or raw shell
     commands (see _resolve_validators). Returns True when saved."""
-    if not result.success:
+    if not result.success or _cancel_requested(cancel_event):
         return False
     commands = _resolve_validator_specs(validate_cmd)
     if not commands:
@@ -549,7 +566,10 @@ def _save_validated(task: Task, result: TaskResult, validate_cmd: str) -> bool:
     tmp.write_text(result.stdout, encoding="utf-8")
     # Local fix (self-iteration round 2, F3): shell-escape {output}/{cwd}
     # substitutions so paths with spaces/quotes cannot inject commands.
-    if not _apply_gate_commands(tmp, task, commands, result):
+    if not _apply_gate_commands(tmp, task, commands, result, cancel_event):
+        return False
+    if _cancel_requested(cancel_event):
+        tmp.unlink(missing_ok=True)
         return False
     tmp.rename(out_path)
     log.info("WROTE %s (validated)", out_path)
@@ -690,32 +710,54 @@ def _revalidation_passed(spec, path: Path, cmd: str, v) -> bool:
             return False
     return True
 
+def _agent_output_reasons(task: Task, stdout_text: str, stderr_text: str,
+                          provider_stdout: Optional[str] = None) -> tuple[str, str]:
+    agent = task.effective_agent()
+    stderr_reason = (agent_failure_reason(0, stderr_text, agent)
+                     if stderr_text.strip() else "")
+    stdout_reason = (_stdout_banner_reason(stdout_text, agent)
+                     if stdout_text.strip() and provider_stdout is None else "")
+    provider_stderr = (stderr_text if provider_stdout is None else
+                       f"{stderr_text}\n{provider_stdout}")
+    provider_reason = _pb_reason(
+        provider_stderr, stdout_text if provider_stdout is None else "", agent)
+    return stderr_reason or stdout_reason, provider_reason
+
+
+def _record_provider_health(task: Task, success: bool,
+                            provider_reason: str) -> None:
+    identity = _pb_identity(task)
+    if provider_reason:
+        _pb_register_fail(provider_reason, provider=identity)
+    elif success:
+        _pb_register_ok(provider=identity)
+
+
 def _result_from_proc(task: Task, proc: subprocess.Popen, stdout_lines: list, stderr_lines: list, elapsed: float) -> TaskResult:
-    """Build a result; failure signatures override a nominal exit code 0."""
-    stdout_text = "".join(stdout_lines)
+    """Build a result; decode structured transport before signature scans."""
     stderr_text = "".join(stderr_lines)
+    stdout_text, transcript_reason, provider_stdout = _projected_agent_stdout(
+        task, stdout_lines, proc.returncode)
+    output_reason, provider_reason = _agent_output_reasons(
+        task, stdout_text, stderr_text, provider_stdout)
     # Exit code first, then body presence, then signatures: operational
     # signatures apply to stderr; the stdout body only rejects line-anchored
     # banners + short error replies (see runner_results docstring).
-    if proc.returncode != 0:
-        reason = f"agent exited {proc.returncode}"
-    elif not stdout_text.strip():
-        reason = "agent produced no output"
-    else:
-        # Empty stderr must not trip agent_failure_reason's own output guard.
-        reason = (agent_failure_reason(0, stderr_text)
-                  if stderr_text.strip() else "")
-        reason = reason or _stdout_banner_reason(stdout_text, config.AGENT_BIN)
+    reason = _agent_result_reason(
+        proc.returncode, stdout_text, transcript_reason, output_reason)
     success = proc.returncode == 0 and not reason
+    # Preserve raw structured diagnostics on failure; only success is content.
+    result_stdout = ("".join(stdout_lines)
+                     if provider_stdout is not None and not success
+                     else stdout_text)
     if reason:
         # P7（使用反馈）：拒绝行内联 stderr 首行（provider 400/model
         # unavailable 一眼可见，不必翻到下一行的 FAIL 明细）。
         first_err = (stderr_text or "").strip().splitlines()
         hint = f" | {first_err[0][:200]}" if first_err and first_err[0] else ""
         log.warning("agent output REJECTED: %s%s", reason, hint)
-        _pb_register_fail(reason)
+    _record_provider_health(task, success, provider_reason)
     if success:
-        _pb_register_ok()
         log.info("OK  done  [%.1fs]  [output=%s]", elapsed, task.output or "(stdout)")
     else:
         # F2 (retro finding): failures must carry a stderr tail so root
@@ -724,7 +766,7 @@ def _result_from_proc(task: Task, proc: subprocess.Popen, stdout_lines: list, st
         detail = f"\n  stderr: {tail}" if tail else ""
         log.warning("FAIL  [code=%d]  [%.1fs]%s", proc.returncode, elapsed, detail)
     return TaskResult(
-        task=task, success=success, stdout=stdout_text, stderr=stderr_text,
+        task=task, success=success, stdout=result_stdout, stderr=stderr_text,
         elapsed=elapsed, returncode=proc.returncode, reason=reason or "",
     )
 
@@ -746,64 +788,32 @@ def _stream_output_enabled() -> bool:
 
 def _stream_proc(proc: subprocess.Popen, prefix: str, start: float,
                  timeout: int, emit: bool = False, stdout_target=None,
-                 stderr_target=None) -> tuple[list[str], list[str], list]:
+                 stderr_target=None, stderr_emit=None,
+                 cancel_event=None) -> tuple[list[str], list[str], list]:
     """Drain both pipes to one deadline; report stdout-cap overflow."""
     stdout_lines, stderr_lines, overflow, _ = _drain_process(
         proc, prefix, start, timeout, config.OUTPUT_MAX_BYTES, emit,
-        stdout_target, stderr_target)
+        stdout_target, stderr_target, stderr_emit, cancel_event)
     return stdout_lines, stderr_lines, overflow
-
-
 def _drain_process(proc: subprocess.Popen, prefix: str, start: float,
                    timeout: float, cap: int, emit: bool = False,
-                   stdout_target=None, stderr_target=None) -> tuple:
-    """Drain both pipes with one absolute deadline and bounded collectors."""
-    from threading import Thread
-    stdout_lines: list[str] = []
-    stderr_lines: list[str] = []
-    stdout_overflow: list = [False]
-    stderr_overflow: list = [False]
-    stdout_sink = stdout_target or sys.stdout
-    stderr_sink = stderr_target or sys.stderr
-    args = (cap, stdout_overflow, emit, stdout_sink)
-    tout = Thread(target=_read_stream, args=(proc.stdout, prefix, stdout_lines, *args), daemon=True)
-    err_args = (cap, stderr_overflow, emit, stderr_sink)
-    terr = Thread(target=_read_stream, args=(proc.stderr, prefix, stderr_lines, *err_args), daemon=True)
-    tout.start()
-    terr.start()
-    deadline = start + timeout
-    tout.join(timeout=max(0, deadline - time.monotonic()))
-    terr.join(timeout=max(0, deadline - time.monotonic()))
-    while proc.poll() is None:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise _DrainTimeout(proc.args, timeout, stdout_lines, stderr_lines,
-                                (stdout_overflow[0], stderr_overflow[0]),
-                                (tout, terr))
-        _PROCESS_POLL_WAIT.wait(min(0.05, remaining))
-    return stdout_lines, stderr_lines, stdout_overflow, stderr_overflow
+                   stdout_target=None, stderr_target=None,
+                   stderr_emit=None, cancel_event=None) -> tuple:
+    return _drain_process_impl(
+        proc, prefix, start, timeout, cap, emit, stdout_target,
+        stderr_target, stderr_emit, cancel_event, _read_stream, _kill_group,
+        _PROCESS_POLL_WAIT, _DrainTimeout, _CancelledDrain,
+        _join_stream_threads)
 
 
-def _rotation_flags(session_id: str, session_name: str, workdir: str = "") -> list:
-    """T10: continue flags, or fork flags past the session size watermark
-    (compaction entries are warned about). Session lookups use the TASK's
-    workdir (sessions live under the task's cwd, not the process cwd —
-    round-4 finding P3/L6)."""
-    flags = _session_flags("continue", session_id, session_name)
-    cwd = workdir or os.getcwd()
-    if has_compaction(cwd, session_id):
-        log.warning("SESSION: compaction entry in %s (context was shrunk by pi)", session_id)
-    sfile = session_file_path(cwd, session_id)
-    if sfile and session_size_bytes(cwd, session_id) > config.SESSION_MAX_BYTES:
-        log.warning("SESSION ROTATION: %s exceeds %d bytes; forking",
-                    sfile, config.SESSION_MAX_BYTES)
-        return fork_flags(str(sfile))
-    return flags
+def _wait_for_cancel(seconds: float, cancel_event=None) -> bool:
+    return _wait_for_cancel_impl(seconds, cancel_event, _scheduled_sleep)
+
 
 def _run_with_gate(task: Task, validate_cmd: str, index: int, total: int,
                     session_flags: Optional[list] = None, parallel: bool = False,
                     session_name: str = "", attempt: int = 1,
-                    trace_task_id: str = "") -> TaskResult:
+                    trace_task_id: str = "", cancel_event=None) -> TaskResult:
     """Run one task and push its result through the engineering gate;
     a gate rejection marks the task failed with the exit signature."""
     worktree_before = capture_worktree_state(task.workdir())
@@ -811,11 +821,20 @@ def _run_with_gate(task: Task, validate_cmd: str, index: int, total: int,
         metering.RUN_ID, task.prompt, task.output, task.workdir(), index)
     result = run_task(task, task_index=index, total=total, parallel=parallel,
                       session_flags=session_flags, session_name=session_name,
-                      attempt=attempt, trace_task_id=trace_task_id)
+                      attempt=attempt, trace_task_id=trace_task_id,
+                      cancel_event=cancel_event)
+    if result.success and _cancel_requested(cancel_event):
+        result = _cancelled_result(task)
     if result.success:
-        result.success = _save_validated(task, result, task.validate if task.validate is not None else validate_cmd)
+        effective_validate = (task.validate if task.validate is not None
+                              else validate_cmd)
+        result.success = (_save_validated(task, result, effective_validate)
+                          if cancel_event is None else
+                          _save_validated(task, result, effective_validate,
+                                          cancel_event))
         if not result.success:
-            result.reason = (f"validation failed (exit={result.validation_exit})"
+            result.reason = ("cancelled" if _cancel_requested(cancel_event)
+                             else f"validation failed (exit={result.validation_exit})"
                              if result.validation_exit else "validation failed")
     annotate_result(result, trace_task_id,
                     str(task.memory.get("stage", "")), attempt)
@@ -831,15 +850,18 @@ def _run_with_gate(task: Task, validate_cmd: str, index: int, total: int,
 def _run_retried(task: Task, validate_cmd: str, index: int, total: int,
                  retries: int, retry_delay: float, backoff: float,
                  session_flags=None, retry_flags=None, parallel: bool = False,
-                 session_name: str = "") -> TaskResult:
+                 session_name: str = "", continue_flags=None,
+                 cancel_event=None) -> TaskResult:
     """Run once plus exactly retries bounded retry attempts."""
     trace_task_id = make_task_id(
         metering.RUN_ID, task.prompt, task.output, task.workdir(), index)
     result = _run_with_gate(task, validate_cmd, index, total, session_flags,
                             parallel, session_name, attempt=1,
-                            trace_task_id=trace_task_id)
+                            trace_task_id=trace_task_id,
+                            cancel_event=cancel_event)
+    established = result.session_established
     for attempt in range(1, retries + 1):
-        if result.success:
+        if result.success or _cancel_requested(cancel_event):
             break
         if not is_retryable(result.reason):
             log.warning("RETRY SKIPPED for task [%d/%d]: permanent failure (%s)",
@@ -849,13 +871,18 @@ def _run_retried(task: Task, validate_cmd: str, index: int, total: int,
         log.warning("RETRY %d/%d for task [%d/%d] in %.0fs (reason: %s)",
                     attempt, retries, index, total, wait,
                     result.reason or f"exit {result.returncode}")
-        _scheduled_sleep(wait)
+        if not _wait_for_cancel(wait, cancel_event):
+            return _cancelled_result(task)
         retry_task = (_retry_task_with_feedback(task, result)
                       if result.validation_stderr else task)
         result = _run_with_gate(retry_task, validate_cmd, index, total,
-                                retry_flags, parallel, session_name,
+                                continue_flags if established else retry_flags,
+                                parallel, session_name,
                                 attempt=attempt + 1,
-                                trace_task_id=trace_task_id)
+                                trace_task_id=trace_task_id,
+                                cancel_event=cancel_event)
+        established = established or result.session_established
+        result.session_established = established
     return result
 
 
@@ -863,108 +890,64 @@ def run_serial(tasks: list[Task], retries: int = 0, retry_delay: float = 10.0,
                backoff: float = 2.0, min_interval: float = 0.0,
                session_mode: str = "new", session_id: str = "",
                session_name: str = "",
-               validate_cmd: str = "") -> list[TaskResult]:
+               validate_cmd: str = "",
+               session_state: Optional[set] = None,
+               cancel_event=None, result_callback=None) -> list[TaskResult]:
     """Run serially with validation, retries, throttling, and stable sessions."""
     results = []
     total = len(tasks)
-    session_active = False
+    active_sessions = session_state if session_state is not None else set()
     for i, task in enumerate(tasks, 1):
+        if _cancel_requested(cancel_event):
+            results.extend(_cancelled_result(item) for item in tasks[i - 1:])
+            break
         log.info("-- [%d/%d] --", i, total)
         flags = None
+        agent = task.effective_agent()
+        session_key = (session_id, os.path.realpath(task.workdir()),
+                       agent, task.provider)
+        active = session_key in active_sessions
+        continue_flags = None
         if session_mode != "new":
-            if not session_active:
-                flags = _session_flags("start", session_id, session_name)
-                session_active = True
+            continue_flags = config.agent_session_flags(
+                "continue", session_id, session_name, agent)
+            if not active:
+                flags = config.agent_session_flags(
+                    "start", session_id, session_name, agent)
             else:
-                flags = _rotation_flags(session_id, session_name, task.workdir())
-        retry_flags = (_session_flags("continue", session_id, session_name)
-                       if session_mode != "new" else None)
+                flags = _rotation_flags(
+                    session_id, session_name, task.workdir(), agent)
+        retry_flags = continue_flags if active else flags
         result = _run_retried(task, validate_cmd, i, total, retries,
                               retry_delay, backoff, flags, retry_flags,
-                              session_name=session_name)
+                              session_name=session_name,
+                              continue_flags=continue_flags,
+                              cancel_event=_task_cancel_event(
+                                  cancel_event, task))
         results.append(result)
+        if result_callback is not None:
+            result_callback(result)
+        if ((result.success or result.session_established)
+                and session_mode != "new"):
+            active_sessions.add(session_key)
+        if _cancel_requested(cancel_event):
+            continue
         if result.success and min_interval > 0:
-            _scheduled_sleep(min_interval)
+            _wait_for_cancel(min_interval, cancel_event)
     return results
-
-
-def _run_parallel_one(task: Task, index: int, total: int, validate_cmd: str,
-                      retries: int, retry_delay: float,
-                      backoff: float) -> Optional[TaskResult]:
-    """Run one parallel task with the shared bounded retry contract."""
-    try:
-        return _run_retried(task, validate_cmd, index, total, retries,
-                            retry_delay, backoff, parallel=True)
-    except SystemExit as exc:
-        if exc.code == 3:
-            return None
-        raise
-
-
-def _collect_parallel(fut_map, total: int, min_interval: float,
-                      capped: bool = False) -> tuple[list[TaskResult], bool]:
-    """Drain futures, applying completion throttling and prompt cap stops."""
-    results: list[TaskResult] = []
-    successes = 0
-    for future in as_completed(fut_map):
-        result = future.result()
-        if result is None:
-            capped = True
-            log.error(_BUDGET_MESSAGE)
-        else:
-            if result.success:
-                if successes > 0 and min_interval > 0:
-                    _scheduled_sleep(min_interval)
-                successes += 1
-            results.append(result)
-            log.info("PROGRESS: %d/%d done", len(results), total)
-        if capped:
-            kill_active_procs()
-    return results, capped
 
 
 def run_parallel(tasks: list[Task], workers: int = 0, validate_cmd: str = "",
                  retries: int = 0, retry_delay: float = 10.0,
                  backoff: float = 2.0, min_interval: float = 0.0,
-                 waves: Optional[list] = None) -> list[TaskResult]:
-    """Run tasks concurrently after fail-closed output planning.
-
-    ``waves=None`` rejects any intra-batch output/cwd collision before agent
-    spawn.  A supplied plan uses string task ids (``str(index)``), validates
-    only intra-wave conflicts, and drains each wave before starting the next.
-    """
-    wave_plan = validate_parallel_plan(tasks, waves)
-    if waves is not None and not wave_plan:
-        return []
-    workers = workers or config.AGENT_DEFAULT_WORKERS
-    total = len(tasks)
-    log.info("PARALLEL x%d  (%d tasks)", workers, total)
-    capped = False
-    batches = ([list(range(total))] if waves is None
-               else [[int(node_id) for node_id in wave] for wave in wave_plan])
-    results: list[TaskResult] = []
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        for batch in batches:
-            fut_map = {}
-            for index in batch:
-                if not budget_allows():
-                    capped = True
-                    log.error(_BUDGET_MESSAGE)
-                    break
-                task = tasks[index]
-                future = pool.submit(
-                    _run_parallel_one, task, index + 1, total, validate_cmd,
-                    retries, retry_delay, backoff)
-                fut_map[future] = task
-            wave_results, capped = _collect_parallel(
-                fut_map, total, min_interval, capped)
-            results.extend(wave_results)
-            if capped:
-                break
-
-    if capped:
-        raise SystemExit(3)
-    return results
+                 waves: Optional[list] = None, cancel_event=None,
+                 result_callback=None) -> list[TaskResult]:
+    """Run parallel tasks through the bounded scheduling helper."""
+    return _run_parallel_impl(
+        tasks, workers, validate_cmd, retries, retry_delay, backoff,
+        min_interval, waves, cancel_event, _run_retried,
+        _wait_for_cancel, kill_active_procs, _cancelled_result,
+        _BUDGET_MESSAGE, result_callback)
 def print_summary(results: list[TaskResult]) -> None:
     """Print an execution summary table."""
     total = len(results)

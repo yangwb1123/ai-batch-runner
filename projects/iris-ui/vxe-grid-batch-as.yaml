@@ -1,0 +1,156 @@
+# iris-ui grid 批 AS：自动刷新 + 数据新鲜度指示（数据闭环）
+#
+# 目标：
+# 1. 自动刷新：autoRefresh?: { intervalMs: number }——proxy 模式定时
+#    静默 refetch（不触发全屏 loading——仅数据替换）
+# 2. 数据新鲜度：freshness?: boolean——工具栏/摘要显示"更新于
+#    HH:MM:SS"（数据每次变化更新时间戳——本地/代理均生效）
+# 范围：react only；additive。
+#
+# 执行：python pi-batch.py projects/iris-ui/vxe-grid-batch-as.yaml \
+#   --log-file logs/iris-ui-batch-as.log --retries 2
+
+git_commit: false
+decision_log: /home/u1/iris-ui/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      You are preparing the baseline for iris-ui grid batch AS (auto
+      refresh + freshness). Monorepo: /home/u1/iris-ui.
+
+      Read:
+      1. /home/u1/iris-ui/packages/react/src/primitives/table/Table.tsx —
+         the proxy bridge (proxyRef/refetch), the liveData sync (where data
+         lands — the freshness timestamp should update when liveData
+         changes), the toolbar render (where the timestamp goes), the i18n
+         usage.
+      2. /home/u1/iris-ui/packages/react/src/primitives/table/props.ts —
+         proxyConfig shape.
+
+      Write a markdown baseline to the output path:
+      - proposed design:
+        a) autoRefresh?: { intervalMs: number } (single line) — when proxy
+           mode && autoRefresh: an interval (setInterval in an effect,
+           cleanup on unmount + on prop change) calls proxyRef.refetch()
+           silently (the controller's loading is used ONLY if the current
+           load takes longer than the interval? NO — keep simple: the
+           refetch does not flip the table's loading state — check how the
+           table's loading is driven (batch C: loading/error driven by the
+           controller state) — the refresh is a normal refetch; document
+           that the loading flash is the standard behavior (or suppress by
+           a silent flag if the controller supports it — check
+           createRemoteTableSource for a silent option; if none, document)
+        b) freshness?: boolean — when enabled: a timestamp state updated
+           whenever liveData changes (edit write-back, row ops, proxy page
+           load, paste, batch, undo…) — the toolbar renders
+           data-iris-freshness "更新于 HH:MM:SS"（i18n table.freshness
+           {time}）; no data yet → hidden; format via a small core helper
+           formatClock(date): string (HH:MM:SS, tests) or inline —
+           prefer core formatClock with tests
+      - file map + tests
+      Do NOT modify files.
+    output: /home/u1/iris-ui/docs/vxe-grid/batch-as-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Implement iris-ui grid batch AS (auto refresh + freshness) in
+          /home/u1/iris-ui, per
+          /home/u1/iris-ui/docs/vxe-grid/batch-as-baseline.md. Read it
+          first, then AGENTS.md.
+
+          HARD CONSTRAINTS:
+          - Core framework-free; react only; additive only.
+          - No dist/tgz/node_modules/manifest.json edits.
+          - Test files ≤500 lines; ≤4 changed files + tests.
+          - MANIFEST SCANNER HYGIENE: single-line function props.
+          - CSS uses --iris-* tokens only.
+          - TIME BUDGET: light — finish both.
+
+          IMPLEMENT:
+          1. core formatClock (packages/core/src/format.ts or a small new
+             file + tests): HH:MM:SS from a Date; tests (midnight, padding)
+          2. autoRefresh (props.ts + Table.tsx):
+             - autoRefresh?: { intervalMs: number } (single line)
+             - effect: when proxy && autoRefresh: setInterval(() =>
+               proxyRef.current?.refetch(), intervalMs); cleanup clear;
+               restart on intervalMs change; document the loading behavior
+             - tests: fake timers — interval fires refetch (query called
+               again); unmount clears; no prop → no timer
+          3. freshness (props.ts + Table.tsx + i18n):
+             - freshness?: boolean (single line)
+             - a timestamp state; an effect on liveData sets it to
+               Date.now() (skip the very first data arrival? no — set on
+               every change incl. first); the toolbar renders
+               data-iris-freshness with formatClock (i18n table.freshness
+               {time}, en + zh)
+             - tests: initial data sets the timestamp; an edit updates it;
+               no prop → no element
+          4. Docs: iris 独有 section
+
+          VERIFY:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm --filter @iris-ui-kit/core test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react typecheck`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react lint` (0 errors)
+          - `python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json` → 0 violations
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm gen:manifest`
+            (regenerate + commit — ALWAYS)
+          Report: files changed, tests added, counts, what is left.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-as-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are the adversarial reviewer for iris-ui batch AS. Read
+          batch-as-baseline.md and batch-as-adapt.md, inspect.
+
+          Check:
+          1. formatClock: padding; core placement
+          2. autoRefresh: interval lifecycle (restart on prop change,
+             cleanup); proxy-only; fake-timer tests honest
+          3. freshness: updates on every liveData change; toolbar render;
+             i18n; hidden without the prop
+          4. additive only; manifest hygiene; core framework-free; CSS
+             tokens
+          Run verification commands (core test, react test/typecheck/lint,
+          audit, check:manifest). Write verdict markdown: PASS or FAIL with
+          numbered findings (severity, file:line, fix). Do NOT modify files.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-as-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Gate stage for iris-ui batch AS. Read the review verdict
+          /home/u1/iris-ui/docs/vxe-grid/batch-as-review.md.
+
+          If PASS: run the full repo gate:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm turbo run test typecheck lint build --concurrency=2`
+          - audit → 0; gen:manifest + check:manifest
+          - Commit: `git add -A -- . ':!apps/ssr-solidstart/.vinxi' && git
+            commit -m "feat(table): grid 批 AS——自动刷新 + 数据新鲜度指示（数据闭环）"`
+          Report commit hash and final test counts.
+
+          If FAIL with concrete fixes: apply fixes, rerun, full gate, commit.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-as-gate.md

@@ -1,0 +1,195 @@
+# iris-ui grid 批 AG：状态持久化（iris 特色）+ 可变高度虚拟化（ROADMAP 项）
+#
+# 目标：IrisTable 从"vxe 对标"转向"本项目独立演进"——
+# 1. 状态持久化（iris 特色，vxe 没有的一站式能力）：
+#    persistState 配置——sort/filters/filterValues/columnVisibility/
+#    columnOrder/columnWidths/pageSize 一键序列化到回调或 Storage
+# 2. 可变高度虚拟化（AGENTS.md ROADMAP 明确项）：
+#    virtualScroll 支持 itemHeight 函数/估算——行高可变的虚拟窗口
+# 范围：react only；additive。
+#
+# 执行：python pi-batch.py projects/iris-ui/vxe-grid-batch-ag.yaml \
+#   --log-file logs/iris-ui-batch-ag.log --retries 2
+
+git_commit: false
+decision_log: /home/u1/iris-ui/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      You are preparing the baseline for iris-ui grid batch AG (state
+      persistence + variable-height virtualization). Monorepo: /home/u1/iris-ui.
+
+      Read:
+      1. /home/u1/iris-ui/packages/react/src/primitives/table/Table.tsx —
+         the controlled state props (sort/multiSortState/filters/
+         filterValues/columnVisibility/columnOrder/columnWidths/pageSize —
+         via proxyConfig) and their change callbacks; the virtualScroll
+         render (IrisVirtualScroll props: itemHeight/height/buffer — fixed
+         height today).
+      2. /home/u1/iris-ui/packages/react/src/primitives/virtual-scroll/
+         VirtualScroll.tsx — how the window computes (itemSize fixed?).
+      3. /home/u1/iris-ui/packages/core/src/virtual.ts — computeVirtualRange
+         (itemSize: (i) => number — does it already support per-item
+         sizes?).
+      4. /home/u1/iris-ui/docs/vxe-grid-comparison.md — the iris-only
+         features section (add the new ones).
+
+      Write a markdown baseline to the output path:
+      - proposed design (react only, additive):
+        a) persistState?: { storage?: Pick<Storage, 'getItem' | 'setItem'>
+          | false; key?: string; include?: Array<'sort' | 'filters' |
+          'filterValues' | 'columnVisibility' | 'columnOrder' |
+          'columnWidths' | 'pageSize'> } — when set: on every state change,
+          serialize the included pieces (JSON) and write to storage (or the
+          custom storage object; key default 'iris-table-state'); on mount,
+          read + apply via the change callbacks (each piece restored only
+          when the corresponding callback is provided — the parent owns the
+          state; the table just LOADS and SAVES). Storage access must be
+          try/catch guarded (SSR + private mode). persistState=false or
+          absent → no-op. This is a coordinator, not new state.
+        b) variable-height virtualization: virtualScroll gains
+           itemHeight?: number | ((index: number) => number) — when a
+           function, the window uses cumulative offsets (prefix sums over
+           the visible range — computeVirtualRange may already support
+           itemSize functions? check core/virtual.ts; if it does, wire the
+           table to pass a function; the row render uses the same function
+           for absolute top; buffer/overscan unchanged; document the
+           complexity note (expansion changes shift — same recompute path as
+           virtual tree)
+      - file map + tests
+      Do NOT modify source files.
+    output: /home/u1/iris-ui/docs/vxe-grid/batch-ag-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Implement iris-ui grid batch AG (state persistence +
+          variable-height virtualization) in /home/u1/iris-ui, per
+          /home/u1/iris-ui/docs/vxe-grid/batch-ag-baseline.md. Read it
+          first, then AGENTS.md.
+
+          HARD CONSTRAINTS:
+          - Core framework-free; react only; additive only.
+          - No dist/tgz/node_modules/manifest.json edits.
+          - Test files ≤500 lines; ≤4 changed files + tests.
+          - MANIFEST SCANNER HYGIENE: single-line function props; named
+            exported interfaces; export new types.
+          - CSS uses --iris-* tokens only.
+          - TIME BUDGET: (1) persistState (medium); (2) variable-height
+            virtualization (medium — depends on core/virtual.ts support).
+            If low, finish 1 and the virtualization wiring, then tests.
+
+          IMPLEMENT:
+          1. persistState (props.ts + types.ts + Table.tsx):
+             - persistState?: { storage?: Pick<Storage, 'getItem' |
+               'setItem'> | false; key?: string; include?: Array<...> }
+               (single line; named interface IrisTablePersistConfig
+               exported)
+             - on mount: read + JSON.parse (try/catch); for each included
+               piece with a matching change callback, call the callback with
+               the restored value (sort → onSortChange, multiSortState →
+               onMultiSortChange, filters → onFiltersChange, filterValues →
+               onFilterValuesChange, columnVisibility →
+               onColumnVisibilityChange, columnOrder →
+               onColumnOrderChange, columnWidths →
+               onColumnWidthsChange, pageSize → only meaningful with
+               proxyConfig.onPageChange — restore pageSize by calling
+               onPageChange(1, restored) or skip pageSize when no proxy —
+               document)
+             - on every change: serialize the included pieces (read from
+               the current props — the table is controlled; build the object
+               from the props + callbacks' latest values) and write
+               (try/catch; storage false → skip writes, still load? — no:
+               storage false means fully disabled, document)
+             - SSR guard: typeof window / typeof localStorage checks
+             - default key 'iris-table-state'; include defaults to all
+               pieces
+             - tests: storage stub — mount applies restored state through
+               the callbacks; a change fires a save with the JSON; storage
+               false → no read/write; corrupt JSON → ignored
+          2. variable-height virtualization (core/virtual.ts + Table.tsx +
+             VirtualScroll.tsx if needed):
+             - check computeVirtualRange: does itemSize already accept
+               per-item functions? (read core/virtual.ts) — if yes, wire
+               IrisVirtualScroll to accept itemHeight as
+               number | ((i: number) => number) and pass it through; the
+               table's virtualScroll prop gains the function form
+             - the virtual row render must position rows by cumulative
+               offset when heights vary (check how VirtualScroll renders
+               rows today — absolute top from index*itemHeight? change to
+               prefix sums for the function form)
+             - tests: variable heights render in the right positions
+               (cumulative tops); fixed number form unchanged; window
+               bounds correct
+          3. Docs: add the two features to docs/vxe-grid-comparison.md
+             under an "iris 独有" section
+
+          VERIFY:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm --filter @iris-ui-kit/core test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react typecheck`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react lint` (0 errors)
+          - `python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json` → 0 violations
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm gen:manifest`
+            (regenerate + commit — ALWAYS)
+          Report: files changed, tests added, counts, what is left.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-ag-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are the adversarial reviewer for iris-ui batch AG (persistence
+          + variable-height virtual). Read batch-ag-baseline.md and
+          batch-ag-adapt.md, inspect.
+
+          Check:
+          1. persistState: mount restore through callbacks only; save on
+             change; storage guards (SSR/corrupt/private); include filter;
+             storage false disabled; no restore without the callback
+          2. variable height: cumulative offsets correct; fixed form
+             unchanged; window bounds; overscan
+          3. additive only; manifest hygiene; core framework-free; CSS
+             tokens
+          Run verification commands (core test, react test/typecheck/lint,
+          audit, check:manifest). Write verdict markdown: PASS or FAIL with
+          numbered findings (severity, file:line, fix). Do NOT modify files.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-ag-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Gate stage for iris-ui batch AG. Read the review verdict
+          /home/u1/iris-ui/docs/vxe-grid/batch-ag-review.md.
+
+          If PASS: run the full repo gate:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm turbo run test typecheck lint build --concurrency=2`
+          - audit → 0; gen:manifest + check:manifest
+          - Update /home/u1/iris-ui/docs/vxe-grid-comparison.md (iris 独有
+            section) and commit.
+          - Commit: `git add -A -- . ':!apps/ssr-solidstart/.vinxi' && git
+            commit -m "feat(table): grid 批 AG——状态一键持久化 + 可变高度虚拟化（iris 独有）"`
+          Report commit hash and final test counts.
+
+          If FAIL with concrete fixes: apply fixes, rerun, full gate, commit.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-ag-gate.md

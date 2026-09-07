@@ -1,0 +1,170 @@
+# iris-ui grid 批 AN：F2/Delete 快捷键 + 列模板预设（DX 增强）
+#
+# 目标：
+# 1. 电子表格习惯快捷键：聚焦单元格 F2 进入编辑、Delete/Backspace 清空
+#    值（编辑态外）——与 keyboardNavigation/cellRange 组合（additive：
+#    tableShortcuts?: boolean 开启，默认关）
+# 2. 列模板预设：IrisTableColumn.preset?: 'date' | 'money' | 'status' |
+#    'progress'——一键生成列配置（formatter + align + 编辑器类型 +
+#    editRules 默认）——iris DX 特色
+# 范围：react only；additive；core 纯函数（列模板工厂）。
+#
+# 执行：python pi-batch.py projects/iris-ui/vxe-grid-batch-an.yaml \
+#   --log-file logs/iris-ui-batch-an.log --retries 2
+
+git_commit: false
+decision_log: /home/u1/iris-ui/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      You are preparing the baseline for iris-ui grid batch AN (shortcuts +
+      column presets). Monorepo: /home/u1/iris-ui.
+
+      Read:
+      1. /home/u1/iris-ui/packages/react/src/primitives/table/Table.tsx —
+         the keyboard navigation (focusedCell state — the focused cell
+         coordinates), the beginEdit path, the cellRange anchor, the
+         commitRowList write-back (for the Delete clear), and the
+         IrisTableColumn type (formatter/editor/align/editRules fields).
+      2. /home/u1/iris-ui/packages/core/src/ — date material (formatLocalISO
+         for the date preset formatter), color/status conventions.
+
+      Write a markdown baseline to the output path:
+      - proposed design:
+        a) tableShortcuts?: boolean — when true AND a focused cell exists
+           (keyboardNavigation or cellRange active): F2 → beginEdit the
+           focused cell (if editable); Delete/Backspace (not while editing)
+           → clear the focused cell through commitRowList (setCellValue ''
+           — or null? pick '' and document); the shortcuts apply only when
+           the table root has focus (document); additive off by default
+        b) IrisTableColumn.preset?: 'date' | 'money' | 'status' |
+           'progress' — a factory (core pure function
+           applyColumnPreset(column, preset): IrisTableColumn) that fills:
+           date → formatter (formatLocalISO/date string),
+           align 'right'? (left, document), editor 'text';
+           money → formatter (2 decimals + thousands separator),
+           align 'right', editor 'number', editRules number;
+           status → align 'center', formatter (badge-like text — keep it
+           plain text formatting: uppercase? document);
+           progress → formatter ('42%'), align 'right';
+           the preset applies at column resolution time (the table resolves
+           presets once per render — in displayColumns or a memo — and the
+           user fields on the column WIN over the preset (spread order:
+           preset first, column overrides)
+      - file map + tests
+      Do NOT modify files.
+    output: /home/u1/iris-ui/docs/vxe-grid/batch-an-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Implement iris-ui grid batch AN (shortcuts + column presets) in
+          /home/u1/iris-ui, per
+          /home/u1/iris-ui/docs/vxe-grid/batch-an-baseline.md. Read it
+          first, then AGENTS.md.
+
+          HARD CONSTRAINTS:
+          - Core framework-free; react only; additive only.
+          - No dist/tgz/node_modules/manifest.json edits.
+          - Test files ≤500 lines; ≤4 changed files + tests.
+          - MANIFEST SCANNER HYGIENE: single-line function props.
+          - CSS uses --iris-* tokens only.
+          - TIME BUDGET: both light-medium — finish both.
+
+          IMPLEMENT:
+          1. presets (core column-presets.ts NEW + tests + react wiring):
+             - core applyColumnPreset<Row>(column: IrisTableColumn<Row>?
+               — NO: core must stay framework-free; the preset factory
+               operates on a framework-neutral shape: a partial column
+               descriptor { formatter?: (value) => string; align?;
+               editor?: string; editRules?: unknown[] } — the react adapter
+               maps its IrisTableColumn onto this shape; OR simpler: the
+               factory returns the DEFAULT OVERRIDES and the adapter spreads
+               (preset overrides first, user fields win). Pick the
+               framework-neutral approach and document.
+             - money formatter: Number → toFixed(2) with thousands
+               separator (a core pure formatMoney helper); progress:
+               value → `${Math.round(Number(v) * 100)}%` when 0..1 else
+               `${v}%`; date: String(value) (document — locale formatting
+               is the caller's job)
+             - tests for each preset (formatter output, align, editor,
+               editRules presence, spread precedence)
+          2. shortcuts (Table.tsx + props.ts):
+             - tableShortcuts?: boolean (single line)
+             - keydown on the root: when enabled && !editing && the root
+               has a focused cell (focusedCell state from keyboardNavigation
+               — if keyboardNavigation is off, skip F2/Delete; document):
+               F2 → beginEdit(row, col of the focused cell) when the column
+               is editable; Delete/Backspace → setCellValue(rowKey, col.key,
+               '') through commitRowList
+             - tests: F2 opens the editor; Delete clears; inert without
+               the prop; inert while editing
+          3. Docs: iris 独有 section + example usage snippet
+
+          VERIFY:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm --filter @iris-ui-kit/core test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react typecheck`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react lint` (0 errors)
+          - `python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json` → 0 violations
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm gen:manifest`
+            (regenerate + commit — ALWAYS)
+          Report: files changed, tests added, counts, what is left.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-an-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are the adversarial reviewer for iris-ui batch AN. Read
+          batch-an-baseline.md and batch-an-adapt.md, inspect.
+
+          Check:
+          1. presets: framework-neutral factory; formatter outputs (money
+             thousands; progress %; date string); spread precedence (user
+             wins); editRules presence
+          2. shortcuts: F2 gating (editable + focused + not editing +
+             keyboardNavigation on); Delete clears through write-back;
+             inert without the prop
+          3. additive only; manifest hygiene; core framework-free; CSS
+             tokens
+          Run verification commands (core test, react test/typecheck/lint,
+          audit, check:manifest). Write verdict markdown: PASS or FAIL with
+          numbered findings (severity, file:line, fix). Do NOT modify files.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-an-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Gate stage for iris-ui batch AN. Read the review verdict
+          /home/u1/iris-ui/docs/vxe-grid/batch-an-review.md.
+
+          If PASS: run the full repo gate:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm turbo run test typecheck lint build --concurrency=2`
+          - audit → 0; gen:manifest + check:manifest
+          - Commit: `git add -A -- . ':!apps/ssr-solidstart/.vinxi' && git
+            commit -m "feat(table): grid 批 AN——F2/Delete 快捷键 + 列模板预设（DX 增强）"`
+          Report commit hash and final test counts.
+
+          If FAIL with concrete fixes: apply fixes, rerun, full gate, commit.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-an-gate.md

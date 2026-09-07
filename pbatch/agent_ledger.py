@@ -9,6 +9,7 @@ import os
 import shutil
 import tempfile
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from itertools import islice
 from pathlib import Path
@@ -20,10 +21,23 @@ from .config import log
 
 LEDGER_MAX_BYTES = 16 * 1024 * 1024
 LEDGER_MAX_LINE_BYTES = 4 * 1024
+LEDGER_READ_LINE_MAX_BYTES = 4 * 1024
 LEDGER_KEEP_LINES = 1000
 QUERY_MAX_RECORDS = 1000
 OUTPUT_PATH_MAX_CHARS = 512
 DEFAULT_AGENTS = ("pi", "codex", "claude", "gemini", "opencode")
+
+
+@dataclass(frozen=True)
+class LedgerQuerySnapshot:
+    """Bounded read result with diagnostics hidden by the legacy list API."""
+
+    records: tuple[dict, ...] = ()
+    skipped_records: int = 0
+    truncated: bool = False
+    error: str = ""
+    path: str = ""
+    bytes_read: int = 0
 
 
 def ledger_path(data_dir) -> Path:
@@ -75,6 +89,7 @@ def _entry(*, agent: str, provider: str, run_id: str, session_id: str,
                     (_output_path(item) for item in islice(outputs or (), 8)) if path],
         "elapsed_ms": max(0, int(elapsed_ms or 0)),
         "exit_code": int(exit_code or 0),
+        "attempt": max(0, int(attempt or 0)),
     }
 
 
@@ -142,7 +157,7 @@ def record(data_dir, *, agent, provider="", run_id="", session_id="",
             agent=agent, provider=provider, run_id=run_id,
             session_id=session_id, session_name=session_name, status=status,
             task_brief=task_brief, outputs=outputs, elapsed_ms=elapsed_ms,
-            exit_code=exit_code, ts=ts)
+            exit_code=exit_code, attempt=attempt, ts=ts)
         encoded = (json.dumps(entry, ensure_ascii=False, separators=(",", ":")) +
                    "\n").encode("utf-8")
         capacity = min(LEDGER_MAX_LINE_BYTES, LEDGER_MAX_BYTES)
@@ -185,31 +200,60 @@ def _ts_key(value: object) -> tuple[int, object]:
 
 def query(data_dir, *, agent="", limit=50, since_ts=None) -> list[dict]:
     """Return the most recent matching records, ordered by timestamp."""
-    try:
-        count = max(0, min(int(limit), QUERY_MAX_RECORDS))
-    except (TypeError, ValueError):
-        count = 50
-    if not count:
-        return []
+    return list(query_snapshot(
+        data_dir, agent=agent, limit=limit, since_ts=since_ts).records)
+
+
+def query_snapshot(data_dir, *, agent="", limit=50,
+                   since_ts=None) -> LedgerQuerySnapshot:
+    """Read recent records with corruption and truncation diagnostics."""
+    count = _query_limit(limit)
     path = ledger_path(data_dir)
+    if not count:
+        return LedgerQuerySnapshot(path=str(path))
     try:
         lines = _tail_lines(path, LEDGER_MAX_BYTES)
-    except OSError:
-        return []
-    records = []
+        size = path.stat().st_size if path.is_file() else 0
+    except OSError as exc:
+        return LedgerQuerySnapshot(
+            error=_brief(str(exc), 500), path=str(path))
+    records, skipped = _decode_query_lines(lines, agent, since_ts)
+    records.sort(key=lambda item: _ts_key(item.get("ts")))
+    truncated = len(records) > count
+    return LedgerQuerySnapshot(
+        tuple(records[-count:]), skipped, truncated, "", str(path),
+        min(size, LEDGER_MAX_BYTES))
+
+
+def _query_limit(limit: object) -> int:
+    try:
+        return max(0, min(int(limit), QUERY_MAX_RECORDS))
+    except (TypeError, ValueError):
+        return 50
+
+
+def _decode_query_lines(lines: list[bytes], agent: str,
+                        since_ts: object) -> tuple[list[dict], int]:
+    records, skipped = [], 0
     since_key = _ts_key(since_ts) if since_ts is not None else None
     for raw in lines:
+        if len(raw) > LEDGER_READ_LINE_MAX_BYTES:
+            skipped += 1
+            continue
         try:
             item = json.loads(raw)
         except (UnicodeDecodeError, ValueError):
+            skipped += 1
             continue
-        if not isinstance(item, dict) or (agent and item.get("agent") != agent):
+        if not isinstance(item, dict):
+            skipped += 1
+            continue
+        if agent and item.get("agent") != agent:
             continue
         if since_key is not None and _ts_key(item.get("ts")) < since_key:
             continue
         records.append(item)
-    records.sort(key=lambda item: _ts_key(item.get("ts")))
-    return records[-count:]
+    return records, skipped
 
 
 def _configured_agent(name: str) -> bool:
@@ -248,7 +292,7 @@ def record_result(result, task, workdir: str) -> bool:
     """Bridge a runner result into the stable ledger record contract."""
     output = task.output_path()
     return record(
-        config.data_dir(workdir), agent=task.agent or config.AGENT_BIN,
+        config.data_dir(workdir), agent=task.effective_agent(),
         provider=task.provider, run_id=result.run_id,
         session_id=result.session_id, session_name=result.session_name,
         status=_result_status(result), task_brief=task.prompt,

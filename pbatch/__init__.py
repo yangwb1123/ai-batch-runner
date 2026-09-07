@@ -8,6 +8,21 @@ from .config import (AGENT_BIN, AGENT_DEFAULT_MODEL, AGENT_DEFAULT_TIMEOUT,
                      AGENT_DEFAULT_WORKERS, COMMIT_PREFIX_DEFAULT, VALIDATORS,
                      log, yaml)
 from .models import Pipeline, Stage, Task, TaskResult
+from .agent_session import (
+    AgentSession, AgentSessionOptions, CompactionTimeout, PromptOutcome,
+    QueueReceipt, TurnResult, create_agent_session,
+)
+from .tui_actor_tree import ActorNode, ActorTreeSnapshot
+from .tui_native import (
+    NativePipelineApprovalChannel, NativePipelineAttachment,
+    NativePipelineControlChannel, NativePipelineObserver)
+from .tui_runtime import (
+    ActorControlRuntime, ActorInterruptRequest, ActorSteerRequest,
+    CompactionHandle, RuntimeCompactionResult, RuntimeContextUsage,
+    RuntimeModelCatalog, RuntimeModelRef, RuntimeSessionState, RuntimeSessionStats,
+    RuntimeThinkingLevels,
+    RuntimeTokenTotals,
+)
 from .runner import (ValidationResult, agent_failure_reason, print_summary,
                      revalidate_existing, run_parallel, run_serial, run_task,
                      run_validation, run_argv, save_result)
@@ -29,6 +44,16 @@ __all__ = [
     "AGENT_BIN", "AGENT_DEFAULT_MODEL", "AGENT_DEFAULT_TIMEOUT",
     "AGENT_DEFAULT_WORKERS", "COMMIT_PREFIX_DEFAULT", "VALIDATORS", "log", "yaml",
     "Pipeline", "Stage", "Task", "TaskResult",
+    "AgentSession", "AgentSessionOptions", "CompactionHandle",
+    "CompactionTimeout", "PromptOutcome", "QueueReceipt",
+    "ActorControlRuntime", "ActorInterruptRequest", "ActorSteerRequest",
+    "RuntimeCompactionResult", "RuntimeContextUsage", "RuntimeModelCatalog",
+    "RuntimeModelRef", "RuntimeThinkingLevels",
+    "RuntimeSessionState", "RuntimeSessionStats", "RuntimeTokenTotals",
+    "TurnResult", "create_agent_session", "NativePipelineApprovalChannel",
+    "NativePipelineAttachment", "NativePipelineControlChannel",
+    "NativePipelineObserver",
+    "ActorNode", "ActorTreeSnapshot",
     "agent_failure_reason", "print_summary", "run_parallel", "run_serial",
     "run_task", "save_result", "run_validation", "revalidate_existing",
     "run_argv",

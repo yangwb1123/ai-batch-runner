@@ -1,0 +1,154 @@
+# Iris Grid Core continuation: Vue columnPinMenu parity (React batch BX) on current HEAD
+git_commit: false
+decision_log: /tmp/iris-grid-pinmenu-vue-1787882181/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      Prepare a factual baseline only for a narrow Vue-only Iris UI Grid
+      parity batch in /tmp/iris-grid-pinmenu-vue-1787882181, based on current
+      HEAD 9718a06a. Scope: React batch BX `columnPinMenu` (header right-click
+      pin menu) ported to Vue with identical semantics. Read AGENTS.md,
+      docs/grid-core-refactor.md, docs/vxe-grid-comparison.md batch BX/CH
+      entries, React Table.tsx columnPinMenu implementation
+      (handleHeaderContextMenu, pinMenuState floating menu via TableContextMenu,
+      pinOf single throat, controlled/uncontrolled dual channel with internal
+      fallback, grouped-leaf header pin visuals), props/layout.ts
+      `columnPinMenu?: boolean`, core i18n-messages.ts `table.pinLeft` /
+      `table.unpin` (keys already exist — do NOT add i18n keys), the accepted
+      Vue pinnedColumns continuation (commit ca58c137) as the closest
+      precedent, Vue Table.ts pinned channel and existing contextMenu
+      infrastructure (batch Z), and manifest.
+
+      Do not modify source. Specify the smallest safe additive scope: public
+      `columnPinMenu?: boolean` (default off, fail-closed, decoupled from
+      `contextMenu` — works with NO contextMenu configured), header leaf-column
+      right-click opens a small floating menu at the cursor with exactly two
+      built-in items (Pin left / Unpin, core i18n), same dismissal semantics
+      as the existing contextMenu (Esc / outside / scroll close, disabled items
+      inert), no new props beyond the flag and no new events (writes go through
+      the EXISTING pinned channels: controlled `pinnedColumns` +
+      `update:columnPinned`-style callback when present, otherwise internal
+      fallback state mirrored from declarations so the render changes without
+      a parent). Define `pinOf` single-throat projection so the menu, the pin
+      visual, and pinned drag all read one source. Preserve existing
+      contextMenu body-cell behavior, grouped tables (leaf headers only),
+      columnOrder/visibility/widths/pinned channels, SSR determinism (menu
+      never opens during SSR render). Batch CH drag-out-pin composition is OUT
+      of scope. No core changes, no arch baseline changes.
+    output: /tmp/iris-grid-pinmenu-vue-1787882181/docs/vxe-grid/batch-pinmenu-vue-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /tmp/iris-grid-pinmenu-vue-1787882181
+        prompt: |
+          Implement the Vue-only columnPinMenu parity batch in this isolated
+          worktree according to
+          /tmp/iris-grid-pinmenu-vue-1787882181/docs/vxe-grid/batch-pinmenu-vue-baseline.md.
+          Read it first and then AGENTS.md. Reuse the existing Vue contextMenu
+          floating-menu plumbing and the existing pinned channels; do not
+          create a second pin controller or mutate the caller's columns array.
+
+          HARD CONSTRAINTS:
+          - Vue adapter source, focused tests, generator-produced manifest
+            outputs if the public API changes, and concise grid docs only. Do
+            not modify React/Solid/Svelte, core, plugin/app source,
+            pnpm-lock, dist/tgz/node_modules, or scripts/arch-baseline.json.
+          - Additive public API only: `columnPinMenu?: boolean` (default off;
+            off path byte-identical, no header onContextMenu wiring, no menu
+            DOM). Works independently of `contextMenu`.
+          - Menu: exactly two built-in items — Pin left (when the leaf column
+            is not left-pinned) / Unpin (when pinned left or right), labeled
+            via core i18n `table.pinLeft` / `table.unpin`; cursor-anchored
+            floating instance; Esc/outside/scroll close; disabled items inert;
+            keyboard/a11y parity with the existing contextMenu menu.
+          - Writes: single throat dispatch — when `pinnedColumns` is
+            explicitly controlled, a menu action emits the per-key
+            `columnPinned` update callback and routes through the Core pinned
+            channel with no optimistic local flip (parent re-render drives
+            render); when NOT controlled, apply to internal fallback pin
+            state (seeded from `col.pinned` declarations) so the render
+            changes with zero parent involvement, and still emit the callback
+            exactly as pinnedDrag does today. No-op actions fire nothing.
+          - `pinOf` single-throat: menu state, pin visual (grouped leaf
+            headers included), and pinned drag boundary math all consume one
+            projection. Preserve grouped tables, columnOrder/visibility/
+            widths/pinned channels, and SSR determinism (no menu, no events,
+            no Core writes during SSR render). Test files <=500 lines; no
+            weakened/skipped tests. No hard-coded colors, Tailwind, CSS-in-JS,
+            innerHTML, core edits, or arch-baseline edits. Do not hand-edit
+            manifest files.
+          - Do not commit.
+
+          VERIFY in the worktree:
+          - env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/vue test
+          - env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/vue typecheck
+          - env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/vue lint
+          - env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/vue build
+          - python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json
+          - git diff --check
+          Note: the bundled test command may hit the shared node_modules
+          symlink resolveFsAllow limit in this worktree; if so, use a
+          throwaway config re-exporting the worktree's vitest.config.ts from
+          the main checkout (identical semantics), then delete it and report
+          that workaround.
+
+          Report exact files and focused/full/SSR counts. Do not commit.
+        output: /tmp/iris-grid-pinmenu-vue-1787882181/docs/vxe-grid/batch-pinmenu-vue-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /tmp/iris-grid-pinmenu-vue-1787882181
+        prompt: |
+          Adversarially review the Vue columnPinMenu parity batch. Read the
+          baseline and adapt report under
+          /tmp/iris-grid-pinmenu-vue-1787882181/docs/vxe-grid/, inspect the
+          actual diff against current HEAD, and compare with React's batch BX
+          semantics (menu items, dismissal, dual channel, pinOf throat,
+          grouped leaf headers) and the accepted Vue pinnedColumns precedent.
+          Do not modify source.
+
+          Check: off path byte-identical; decoupled from contextMenu; exactly
+          two i18n-driven items; controlled path has no optimistic flip and
+          silent inbound replacement; uncontrolled internal fallback seeds
+          from declarations and does not leak after control is removed; no-op
+          actions fire nothing; pinOf single throat shared with visuals/drag;
+          grouped leaf headers; existing body-cell contextMenu untouched; SSR
+          determinism; no source mutation; manifest hygiene; <=500-line
+          tests; no baseline changes. Run focused/full tests, typecheck,
+          lint, build, manifest check, spec audit, and diff check. Write PASS
+          or FAIL with numbered severity/file:line findings and concrete
+          fixes; do not modify source.
+        output: /tmp/iris-grid-pinmenu-vue-1787882181/docs/vxe-grid/batch-pinmenu-vue-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    tasks:
+      - cwd: /tmp/iris-grid-pinmenu-vue-1787882181
+        prompt: |
+          Gate the Vue columnPinMenu parity batch. Read
+          /tmp/iris-grid-pinmenu-vue-1787882181/docs/vxe-grid/batch-pinmenu-vue-review.md.
+          If PASS, rerun full Vue test/typecheck/lint/build, spec audit,
+          `pnpm check:manifest`, and `git diff --check`; confirm
+          scripts/arch-baseline.json is unchanged. Update
+          docs/grid-core-refactor.md with one concise factual entry if
+          accepted. Do not modify other frameworks/core/apps, weaken tests,
+          or commit. If FAIL has concrete fixes, apply only those in this
+          isolated worktree, rerun all gates, and report final PASS/FAIL,
+          exact files, counts, manifest status, and pre-existing ratchet
+          limitations (arch-check may stay red on the grandfathered oversized
+          files — record it, do not fix baselines).
+        output: /tmp/iris-grid-pinmenu-vue-1787882181/docs/vxe-grid/batch-pinmenu-vue-gate.md

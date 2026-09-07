@@ -11,7 +11,68 @@
 - 对话式 Markdown 界面、流式 stdout/stderr、状态侧栏、命令面板、稳定会话，
   以及 `/help`、`/status`、`/new`、`/clear`、`/model`、`/provider`、
   `/agent`、`/memory`、`/doctor`、`/quit`。
-- `Ctrl+P/N/L/C/Q` 键盘工作流；运行中防重复提交，取消会终止 agent 进程组。
+- TUI `/sessions` 与 `/resume <session-id>`：在当前 cwd/memory scope 内有界发现
+  journal、重建可信投影，并仅在 runtime 能力和 provider handle 匹配时续跑；
+  未决/损坏/不兼容历史只读，显式续跑失败不会静默开启新会话。
+- `/sessions` 已升级为不污染 transcript 的键盘 picker：Enter 精确恢复，`f` 按
+  `session_fork` capability 准备 provider fork，`a` 以锁内可逆本地标记
+  archive/restore；archive 不删除事件，也不伪装 provider archive。
+- `/sessions` 新增 projection-commit 后写入、精确 journal byte size 绑定的有界
+  `summary.json`，显示 runtime/branch/last turn/完成消息；缺失、陈旧或损坏缓存只降级
+  展示。App Server `thread/list` 现在使用 typed page、固定 cwd/source kind、严格字段
+  校验并保留 `nextCursor`，在独立 worker 中按 provider handle 精确 advisory 合并；
+  remote-only thread 和列表状态都不能替代动作时 journal 恢复与 `thread/read`。
+- TUI `/plan` 与 `/changes` 独立 Inspector：Plan 与 Timeline 共用结构化投影并实时
+  刷新；Changes 支持 all/unstaged/staged/untracked/last-turn、base/commit ref、
+  文件选择与 hunk 导航。两者均保持有界只读，不向 conversation transcript 注入检查内容。
+- TUI `/agents [agent]`（`/runs` 兼容别名）升级为独立 Agents Inspector：展示当前
+  coordinator operation 与 scoped shared ledger 的最近终态，支持 agent/status 过滤、
+  手动刷新、产物引用和损坏/截断诊断；不把运行摘要写入 conversation transcript，
+  也不在缺少 runtime capability 时伪造 actor stop/steer。
+- TUI `/completion` 独立 Completion Inspector：从 canonical typed events 与权威
+  workspace snapshot 汇总当前 turn 的终态、命令、变化、未完成 Plan、validator/gate、
+  tool、artifact、风险和 usage；活动 turn 中原位刷新，缺少验证事件时不声称通过，
+  Assistant 正文不能伪造 completion facts。
+- TUI `/artifacts [N]`（`/artifact` 别名）独立 Artifact Inspector：只消费当前 turn
+  的 typed `artifact.created`，支持 Completion 内按 `a` 跳转、列表选择与实时刷新；
+  workspace 内 UTF-8 普通文件通过逐级 no-follow 打开并有界预览，远程 URI、越界路径、
+  符号链接、目录和二进制内容不读取，也不启动外部 viewer 或污染 transcript。
+- Codex Structured Exec/App Server 的命令大输出自动提升为 data-scoped ArtifactRef：
+  event/Timeline 继续只保留短预览，aggregate 或 output delta 进入私有 data_dir 存储；
+  默认单文件 2 MiB、每 workspace/session 64 MiB/256 文件滚动保留，身份只入哈希路径，
+  目录/文件权限为 0700/0600。存储失败发 typed warning，不篡改 command/turn 终态。
+- Codex App Server adapter 对齐当前官方协议：默认直启 stdio server、完成
+  `initialize`→`initialized` 握手；显式 daemon socket 才走 proxy。provider terminal
+  status 现在精确区分 completed/failed/interrupted，未知状态失败关闭，不再把失败或
+  中断误报为成功。
+- 新增 canonical `pi-batch pi [PI_ARGS...]` 原样透传，以及长期 Pi JSONL RPC
+  runtime / Python `AgentSession` facade；`PBATCH_PI_BIN` 在透传、TUI 与 Python
+  默认选择中保持同一 executable-token 语义。
+- Pi typed controls 新增 `/session`、后台 `/compact`、动态 `/model` 与
+  `/thinking`。adapter 对同一 executable 做有界 stable SemVer 探测，仅在
+  Pi 0.84.3+ 自动开放 session-only 设置；旧版或未知版本零写入、fail closed。
+  模型/思考选择在 mutation 前校验 provider 当前快照，之后以 `get_state` 权威回读。
+- TUI slash 命令面收敛为 immutable registry，同源生成 help、dispatch、
+  command palette 与 busy allowlist；composer 支持零 RPC 的本地命令名
+  Tab/Right/Enter 补全，palette 补齐 session/model/thinking 入口。`/model QUERY`
+  与 `/thinking QUERY` 参数补全按 adapter/session/kind context 最多读取一次只读
+  available snapshot，再在本地 fuzzy；键入参数自动打开，粘贴上下文可用 Tab 显式
+  打开，picker 的 Tab/Enter 都只填入 canonical 命令文本，随后 Enter 才提交并经 fresh
+  catalog/scope/version 门禁。旧/global scope
+  仍可只读补全但不能调用 setter。RPC available catalog 不冒充 `scopedModels`；
+  completion-only 排序复刻 Pi token fuzzy 与 model 搜索字段，thinking 仅搜索 level；
+  `/scoped-models` 与 cycle 在缺少权威 scope 协议时保持关闭。
+- App Server session resume 新增 `thread/read` 预对账：读取不加载、不订阅 provider
+  thread，只有 `notLoaded`/`idle` 状态才允许 `thread/resume`；active、systemError、
+  畸形或不可用状态保留本地可信历史但禁止执行。`turn/steer` 也会校验响应 turnId，
+  未精确确认时不发布已接受事件。
+- 活动 turn 期间普通输入进入有界、可查看/编辑/删除的进程内 follow-up queue；成功
+  终态自动续发，失败或取消时保留并暂停。`/steer` 仅在活动 runtime 明确声明
+  `turn_steer` 且存在匹配 turn handle 时发送，不把本地队列冒充 provider 能力。
+- `pi-batch product`、`assess --product-brief` 与 TUI `/product`：按 L0-L3
+  生成有界、确定性的产品方向提案，覆盖用户故事、旅程、异常状态机、
+  Epic→Feature→Story→Task、业务规则和待确认问题；L0 不生成产品结构。
+- `Ctrl+P/N/L/C/Q` 键盘工作流；内部 turn 防重入，取消会终止 agent 进程组。
 - TUI turn 复用既有 prompt/session/memory/timeout/失败签名机制，并遵守项目
   单实例锁；缺少 agent 时首屏仍可打开并展示诊断。
 
@@ -20,6 +81,16 @@
 - stdin/stdout 任一被重定向时不进入 TUI；pipe prompt、`-p`、pipeline、所有
   子命令和 JSON 输出保持原有无头契约。
 - wheel 将 `textual>=8.2,<9` 声明为核心依赖，并包含 TUI/backend 模块。
+
+### 发布
+
+- PyPI distribution 固定为 `ai-batch-runner`，安装后的产品命令固定为
+  `pi-batch`。
+- `vX.Y.Z` 标签触发独立发布流水线：版本与 changelog 校验、完整 `make ci`、
+  wheel/sdist 构建、Twine 检查、隔离安装冒烟后，通过 OIDC Trusted Publishing
+  上传 PyPI；`pypi` Environment 保留人工批准点。
+- 当前 `LICENSE` 中的上游授权未决说明会阻断标签发布；确认版权/许可证证据并
+  更新归属后才允许首次公开上传。
 
 ## [0.2.0] - 2026-08-08（产品化里程碑）
 

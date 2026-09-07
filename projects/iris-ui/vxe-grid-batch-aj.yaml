@@ -1,0 +1,170 @@
+# iris-ui grid 批 AJ：区域统计 + 查询视图联动（iris 独有闭环）
+#
+# 目标（组合已有能力成闭环）：
+# 1. 区域统计：cellRange 选中时浮动条新增"统计"——对选中区域的数值列
+#    即时聚合（count/sum/avg/min/max），本地纯计算（core 纯函数）
+# 2. 查询视图联动：命名视图（批 AH views）快照纳入 query（批 AI）——
+#    保存当前查询为视图、切换视图恢复查询
+# 范围：react only；additive；逻辑下沉 core。
+#
+# 执行：python pi-batch.py projects/iris-ui/vxe-grid-batch-aj.yaml \
+#   --log-file logs/iris-ui-batch-aj.log --retries 2
+
+git_commit: false
+decision_log: /home/u1/iris-ui/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      You are preparing the baseline for iris-ui grid batch AJ (range stats
+      + query-view linkage). Monorepo: /home/u1/iris-ui.
+
+      Read:
+      1. /home/u1/iris-ui/packages/react/src/primitives/table/Table.tsx —
+         the range toolbar (batch AH: buttons copy/export/clear, the range
+         cells access — how to enumerate the selected cells), the views
+         machinery (batch AH: snapshot collector + apply), the query
+         machinery (batch AI: query prop, parse memo).
+      2. /home/u1/iris-ui/packages/core/src/ — existing aggregate material
+         (the summary op — sum/avg/min/max/count — reuse the same
+         semantics for range stats).
+      3. /home/u1/iris-ui/packages/react/src/primitives/table/props.ts —
+         views/query prop shapes.
+
+      Write a markdown baseline to the output path:
+      - proposed design (react only, additive):
+        a) core rangeStats(rows: readonly Record<string, unknown>[],
+           columns: Array<{ key: string }>): Record<string, { count:
+           number; sum: number | null; avg: number | null; min: number |
+           null; max: number | null }> — pure function over the selected
+           cells (rows × the numeric columns present in the range);
+           non-numeric values ignored; empty range → empty object; tests
+           (numeric mix, non-numeric ignored, empty, single cell)
+        b) range toolbar adds a 统计 button (data-iris-range-stats, i18n
+           table.range.stats) — clicking toggles a small panel
+           (data-iris-range-stats-panel) below the bar listing per-column
+           count/sum/avg/min/max (muted rows, --iris-* tokens); the panel
+           recomputes on range change; closes on outside click (reuse the
+           dismiss pattern)
+        c) views snapshot gains `query` — the save-view collector includes
+           the query string when the query prop is set; applying a view
+           restores query via onQueryChange (before the other pieces);
+           existing views without a query field are unaffected (optional
+           field)
+      - file map + tests
+      Do NOT modify source files.
+    output: /home/u1/iris-ui/docs/vxe-grid/batch-aj-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Implement iris-ui grid batch AJ (range stats + query-view
+          linkage) in /home/u1/iris-ui, per
+          /home/u1/iris-ui/docs/vxe-grid/batch-aj-baseline.md. Read it
+          first, then AGENTS.md.
+
+          HARD CONSTRAINTS:
+          - Core framework-free; react only; additive only.
+          - No dist/tgz/node_modules/manifest.json edits.
+          - Test files ≤500 lines; ≤4 changed files + tests.
+          - MANIFEST SCANNER HYGIENE: single-line function props; named
+            exported interfaces; export new types.
+          - CSS uses --iris-* tokens only.
+          - TIME BUDGET: (1) core rangeStats + tests (light); (2) stats
+            button + panel (light); (3) query in views (light). All light
+            — finish all.
+
+          IMPLEMENT:
+          1. core (packages/core/src/range-stats.ts NEW + tests):
+             - rangeStats per the baseline; export from index.ts; tests
+          2. range toolbar stats (Table.tsx + styles.ts + i18n):
+             - 统计 button (data-iris-range-stats) after 清除; toggles the
+               panel (data-iris-range-stats-panel) rendered in the floating
+               bar container (absolute below); enumerate the range cells
+               (rows between anchor and end — the range state has the
+               coordinates: find how isInRange works and enumerate all
+               selected (rowIdx, colIdx) pairs), group by column key, feed
+               rangeStats, render per-column rows (count/sum/avg/min/max)
+             - closes on outside click (useDismiss) + on range clear
+             - i18n table.range.stats + zh
+          3. query in views (Table.tsx + types):
+             - the save-view snapshot collector adds query (when the query
+               prop is set); the apply path restores query first via
+               onQueryChange (if provided); the view type gains
+               query?: string (optional)
+             - tests: save with a query → snapshot contains it; apply
+               restores via onQueryChange; legacy views without query work
+          4. Tests (range-stats-view.test.tsx):
+             - selecting a numeric range + stats button → panel shows
+               sum/avg/min/max; non-numeric column shows count only
+             - view save includes the query; apply restores it; legacy view
+               applies without touching query
+          5. Docs: iris 独有 section additions
+
+          VERIFY:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm --filter @iris-ui-kit/core test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react typecheck`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react lint` (0 errors)
+          - `python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json` → 0 violations
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm gen:manifest`
+            (regenerate + commit — ALWAYS)
+          Report: files changed, tests added, counts, what is left.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-aj-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are the adversarial reviewer for iris-ui batch AJ (range stats
+          + query views). Read batch-aj-baseline.md and batch-aj-adapt.md,
+          inspect.
+
+          Check:
+          1. rangeStats: numeric extraction; non-numeric ignored; empty;
+             null handling for non-numeric columns
+          2. stats panel: correct range enumeration (anchor..end rows ×
+             cols); recompute on range change; dismiss; per-column rows
+          3. query in views: snapshot includes query; apply order (query
+             first); legacy views safe
+          4. additive only; manifest hygiene; core framework-free; CSS
+             tokens; i18n both languages
+          Run verification commands (core test, react test/typecheck/lint,
+          audit, check:manifest). Write verdict markdown: PASS or FAIL with
+          numbered findings (severity, file:line, fix). Do NOT modify files.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-aj-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Gate stage for iris-ui batch AJ. Read the review verdict
+          /home/u1/iris-ui/docs/vxe-grid/batch-aj-review.md.
+
+          If PASS: run the full repo gate:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm turbo run test typecheck lint build --concurrency=2`
+          - audit → 0; gen:manifest + check:manifest
+          - Commit: `git add -A -- . ':!apps/ssr-solidstart/.vinxi' && git
+            commit -m "feat(table): grid 批 AJ——区域统计 + 查询视图联动（iris 独有闭环）"`
+          Report commit hash and final test counts.
+
+          If FAIL with concrete fixes: apply fixes, rerun, full gate, commit.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-aj-gate.md

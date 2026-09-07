@@ -5,15 +5,16 @@ tasks:
       两件紧耦合的工作：A) 让 config 的 session_flags 支持 {prompt} 占位符（session-led
       argv 布局）；B) 让 CodexExecAdapter 捕获 codex thread id 并实现 resume/fork 闭环。
       A 允许修改 pbatch/config.py 与 tests/test_agent_adapter.py；B 允许修改
-      pbatch/tui_adapter_codex.py 与 tests/test_tui_adapter_codex.py。其他文件不动。
+      pbatch/tui_adapter_codex.py、pbatch/tui_codex_support.py 与
+      tests/test_tui_adapter_codex.py。其他文件不动。适配器与 support 模块均须满足
+      文件 ≤500 行、import 位于顶部、常量单一归属，公开行为由既有测试固定。
 
-      ## 背景事实（已实测 codex-cli 0.149.0）
+      ## Provider 会话契约
       - 普通执行：`codex exec --json --approve-for-me "PROMPT"`（--json 可在 prompt 后）；
       - 恢复：`codex exec resume <THREAD_ID_SID> "PROMPT" --json`（THREAD_ID 是 codex 自己
         生成的 UUID，形如 01a02778-9991-7843-a7a6-f0f60d7b97f4；--json 在位置参数后可用）；
       - 分支：`codex exec fork <THREAD_ID_SID> "PROMPT" --json`（语法同 resume）；
-      - `codex exec --json` 首行必是 {"type":"thread.started","thread_id":...}（thread_id
-        即 provider_session_id 的取值来源）。
+      - `codex exec --json` 的 `thread.started.thread_id` 是 provider_session_id 的来源。
 
       ## A. config：session_flags 支持 {prompt} 占位符（向后兼容）
       1. pbatch/config.py build_agent_argv：当 session_flags 任一 token 含 "{prompt}"
@@ -49,9 +50,9 @@ tasks:
          self._spawn_argv(prompt, mode) 构造，spawn 注入点不变。
       6. fork_session(request)：同 resume 但子命令为 fork；fork 后 provider_session_id
          更新为新 thread_id（thread.started 里读）。
-      7. capabilities 更新（initialize 时）：session_resume=True、session_fork=True
-         （实现支持）；其余能力保持 T4 现状（typed_approvals/turn_steer/...仍 False）；
-         start_session/resume_session/fork_session 不再是 UnsupportedOperation；
+      7. capabilities 更新（initialize 时）：session_resume=True、session_fork=True；
+         typed_approvals、turn_steer、message_queue、review、subagents 保持 False；
+         start_session/resume_session/fork_session 提供对应实现；
          steer/resolve_approval 仍抛 UnsupportedOperation。
       8. 每轮 start_turn 发出 turn.queued/started；resume/fork 模式在 session.created
          事件 payload 标注 resumed/forked 语义（payload 加 "mode": "resumed"|"forked"）。
@@ -68,10 +69,10 @@ tasks:
       tests/test_tui_protocol.py tests/test_tui_runtime.py tests/test_tui_events.py
       tests/test_tui.py -q 全绿；python quality.py --strict . 不新增违规；
       python pi-batch.py eval 不回归。
-      完成后结论写入 docs/tui-phase0/t5-codex-session.md：改动文件、argv 布局前后对比表、
-      session 生命周期说明、遗留事项（headless runner 的 session 映射尚未接入 —— 说明
-      为什么留给 T6）。
+      最终回复直接给出完整 Markdown 交付报告，由 runner 写入 output；不要自行写
+      output 路径。报告固定包含模块职责、argv 布局、session 生命周期、验证入口和
+      provider session 边界。
 
-      注意：A 与 B 独立可测；不要改动 pi-batch.yaml（会话级配置留到 T6）。
+      注意：A 与 B 独立可测；不要改动 pi-batch.yaml，会话级配置由 T6 统一处理。
     output: docs/tui-phase0/t5-codex-session.md
     validate: pyquality

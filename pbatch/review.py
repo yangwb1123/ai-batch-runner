@@ -404,6 +404,14 @@ def _markdown(payload: Mapping[str, Any], timed_out: bool) -> str:
              f"- Codex exit: {payload['codex_exit']}",
              f"- Timed out: {'yes' if timed_out else 'no'}",
              "- Findings: " + ", ".join(f"{name}={counts[name]}" for name in SEVERITIES), ""]
+    runtime_scope = payload.get("runtime_scope")
+    if isinstance(runtime_scope, Mapping):
+        for name in ("workspace_id", "session_id", "run_id", "turn_id", "actor_id"):
+            value = runtime_scope.get(name)
+            if value:
+                safe_value = _md_cell(value).replace("`", "\\`")
+                lines.append(f"- Runtime {name}: `{safe_value}`")
+        lines.append("")
     if payload["flagged_writes"]:
         lines += ["> WARNING: Codex emitted a `file_change` event; the read-only contract was violated.", ""]
     if not findings:

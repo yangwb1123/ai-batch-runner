@@ -1,0 +1,195 @@
+# iris-ui vxe-grid 批 U：zoomConfig 最大化 + 行分组折叠 + 列 title ReactNode + visibleMethod
+#
+# 目标（功能面继续收口）：
+# 1. zoomConfig：表格最大化/还原（vxe-grid zoomConfig parity，工具栏按钮）
+# 2. 行分组折叠：分组统计标题行可点击折叠/展开该组（批 M 增强）
+# 3. 列 title 支持 ReactNode（表头自定义渲染）
+# 4. visibleMethod：批量列显隐条件（vxe visibleMethod parity）
+# 范围：react only；additive。
+#
+# 执行：python pi-batch.py projects/iris-ui/vxe-grid-batch-u.yaml \
+#   --log-file logs/iris-ui-batch-u.log --retries 2
+
+git_commit: false
+decision_log: /home/u1/iris-ui/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      You are preparing the baseline for iris-ui vxe-grid batch U (zoom +
+      group collapse + title node + visibleMethod). Monorepo: /home/u1/iris-ui.
+
+      Read:
+      1. /home/u1/iris-ui/packages/react/src/primitives/table/Table.tsx —
+         the toolbar render block (buttons area), the group rows render
+         (data-iris-group-row from batch M), the header title render (both
+         flat + grouped), displayColumns (columnVisibility filter).
+      2. /home/u1/iris-ui/packages/react/src/primitives/table/props.ts +
+         types.ts — IrisTableColumn (title: string), toolbar, the groupBy
+         column option (batch M).
+
+      Write a markdown baseline to the output path:
+      - proposed iris design (react only, additive):
+        a) zoomConfig?: { enabled?: boolean } — when enabled, the toolbar
+           renders a zoom button (data-iris-table-toolbar-zoom) after the
+           built-ins; clicking toggles a zoomed state: the root container
+           gets data-iris-zoomed + fixed positioning (position: fixed; inset:
+           0; z-index: var(--iris-z-modal, 2000); background:
+           var(--iris-background)) so the table fills the viewport;
+           Esc or the button toggles back; i18n table.zoom / table.unzoom
+           (en + zh)
+        b) group collapse (batch M group rows): the group header row
+           (data-iris-group-row) becomes clickable when the table has a
+           group column: clicking toggles the group's collapsed state; a
+           caret (▸/▾) at the row start; collapsed groups hide their rows
+           (and their group summary row) until expanded; state is internal
+           (a Set of collapsed group keys); groups collapse independently
+           (initial: all expanded)
+        c) IrisTableColumn.title: string | import('react').ReactNode — the
+           header title render accepts a ReactNode (flat + grouped +
+           headerTooltip content uses String(title) when it is a string
+           else ''); sorting/filtering unaffected; titlePrefix/Suffix still
+           render around it
+        d) visibleMethod?: (column: IrisTableColumn<Row>) => boolean —
+           when provided, displayColumns additionally filters columns where
+           visibleMethod(column) === false (AND-ed with columnVisibility);
+           evaluated on every render (reactive)
+      - file map + tests
+      Do NOT modify source files.
+    output: /home/u1/iris-ui/docs/vxe-grid/batch-u-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Implement iris-ui vxe-grid batch U (zoom + group collapse + title
+          node + visibleMethod) in /home/u1/iris-ui, per
+          /home/u1/iris-ui/docs/vxe-grid/batch-u-baseline.md. Read it first,
+          then AGENTS.md.
+
+          HARD CONSTRAINTS:
+          - Core framework-free; React only; additive only.
+          - No dist/tgz/node_modules/manifest.json edits.
+          - Test files ≤500 lines; ≤4 changed files + tests.
+          - MANIFEST SCANNER HYGIENE: function-type props on ONE line; export
+            new types from index.ts.
+          - CSS uses --iris-* tokens only.
+          - TIME BUDGET: (1) title ReactNode (light); (2) visibleMethod
+            (light); (3) zoom (light-medium); (4) group collapse
+            (light-medium). All light — finish all.
+
+          IMPLEMENT:
+          1. title ReactNode (types.ts + Table.tsx):
+             - IrisTableColumn.title: string | import('react').ReactNode
+               (keep backward compat — string still works)
+             - header title render: {col.title} directly (works for both);
+               headerTooltip content: typeof col.title === 'string' ?
+               col.title : undefined; titlePrefix/Suffix wrap as today;
+               column settings menu (batch S customConfig) label:
+               typeof col.title === 'string' ? col.title : '' (or a
+               fallback like String(col.key) — check what it does today and
+               keep it)
+          2. visibleMethod (props.ts + Table.tsx):
+             - visibleMethod?: (column: IrisTableColumn<Row>) => boolean
+               (single line)
+             - displayColumns: after the columnVisibility filter, also
+               filter where visibleMethod?.(col) === false (only when
+               visibleMethod is provided)
+          3. zoom (props.ts + Table.tsx + styles.ts + i18n):
+             - zoomConfig?: { enabled?: boolean } (single line)
+             - toolbar: when zoomConfig?.enabled, render a zoom button
+               (data-iris-table-toolbar-zoom) after the batch button (or
+               built-ins); onClick toggles zoomed state
+             - zoomed: root gets data-iris-zoomed="true" + inline styles
+               (position: fixed; inset: 0; zIndex: var(--iris-z-modal,
+               2000); background: var(--iris-background); overflow: auto) —
+               apply via a style spread on the root; Esc keydown (window
+               listener while zoomed) toggles off; the toolbar zoom button
+               label swaps (i18n table.zoom / table.unzoom)
+             - i18n en + zh
+          4. group collapse (Table.tsx):
+             - internal state: collapsedGroups (Set<string>, useState)
+             - the group header row gets onClick (when a group column
+               exists): toggle the group key in the set; render a caret
+               (▸ collapsed / ▾ expanded) at the row start
+               (data-iris-group-caret); the group's rows + group summary
+               row are skipped when the group is collapsed
+             - groups render their header row always (collapsed groups show
+               the caret + value + count)
+          5. Tests (new zoom-groupcollapse-title.test.tsx):
+             - title ReactNode renders in the header
+             - visibleMethod hides columns reactively
+             - zoom button toggles data-iris-zoomed; Esc exits
+             - group collapse: click the group header hides the group rows
+               (+ summary), caret flips, re-click restores
+
+          VERIFY:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm --filter @iris-ui-kit/react typecheck`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react lint` (0 errors)
+          - `python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json` → 0 violations
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm gen:manifest`
+            (regenerate + commit — ALWAYS)
+          Report: files changed, tests added, counts, unfinished items.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-u-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are the adversarial reviewer for iris-ui batch U (zoom + group
+          collapse + title node + visibleMethod). Read batch-u-baseline.md
+          and batch-u-adapt.md, inspect.
+
+          Check:
+          1. title ReactNode: renders flat + grouped; string compat; tooltip
+             guard; settings menu label
+          2. visibleMethod: AND-ed with columnVisibility; reactive; no
+             visibleMethod → unchanged
+          3. zoom: button toggles; fixed positioning + z-index; Esc exits;
+             toolbar layout intact
+          4. group collapse: click toggles rows + summary hidden; caret;
+             state independent per group; selection/editing of visible rows
+             unaffected
+          5. additive only; manifest hygiene (check:manifest); core
+             framework-free; CSS tokens
+          Run verification commands (react test/typecheck/lint, audit,
+          check:manifest). Write verdict markdown: PASS or FAIL with numbered
+          findings (severity, file:line, fix). Do NOT modify files.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-u-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Gate stage for iris-ui batch U. Read the review verdict
+          /home/u1/iris-ui/docs/vxe-grid/batch-u-review.md.
+
+          If PASS: run the full repo gate:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm turbo run test typecheck lint build --concurrency=2`
+          - audit → 0; gen:manifest + check:manifest
+          - Update /home/u1/iris-ui/docs/vxe-grid-comparison.md: mark batch U
+            rows (zoomConfig / group collapse / title node / visibleMethod)
+            done (react).
+          - Commit: `git add -A -- . ':!apps/ssr-solidstart/.vinxi' && git
+            commit -m "feat(table): vxe-grid 批 U——zoom 最大化/分组折叠/title 节点/visibleMethod（react only）"`
+          Report commit hash and final test counts.
+
+          If FAIL with concrete fixes: apply fixes, rerun, full gate, commit.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-u-gate.md

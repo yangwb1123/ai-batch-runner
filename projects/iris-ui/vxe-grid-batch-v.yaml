@@ -1,0 +1,207 @@
+# iris-ui vxe-grid 批 V：proxy 方法族 + 编辑/全选/滚动事件
+#
+# 目标（深度盘点后的真实剩余缺口）：
+# 1. proxy 方法族（vxe grid proxy parity）：loadData / reloadData /
+#    commitProxy / getProxyInfo——handle 目前只有 refetch
+# 2. 编辑激活/关闭事件：onEditStart / onEditClosed（vxe edit-actived/
+#    edit-closed parity；onCellEdit 已有=提交时）
+# 3. 全选变化事件：onSelectAllChange（vxe checkbox-all-change parity）
+# 4. 滚动事件：onScroll（表格滚动位置，vxe scroll parity）
+# 范围：react only；additive。
+#
+# 执行：python pi-batch.py projects/iris-ui/vxe-grid-batch-v.yaml \
+#   --log-file logs/iris-ui-batch-v.log --retries 2
+
+git_commit: false
+decision_log: /home/u1/iris-ui/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      You are preparing the baseline for iris-ui vxe-grid batch V (proxy
+      methods + edit/select-all/scroll events). Monorepo: /home/u1/iris-ui.
+
+      Read:
+      1. /home/u1/iris-ui/packages/react/src/primitives/table/Table.tsx —
+         the IrisTableHandle object (refetch method, commitRowList,
+         externalDataRef), the proxy bridge (proxyRef.current =
+         createRemoteTableSource — its API: request/setParams/refetch/
+         getState), the edit flow (beginEdit, cellEdit store: startEdit/
+         commitEdit/cancelEdit — find where an edit session starts/ends),
+         the header select-all checkbox onChange (toggleAll), and the root
+         scroll handlers (column virtualization onScroll).
+      2. /home/u1/iris-ui/packages/react/src/primitives/table/props.ts —
+         onCellEdit / onSelectionChange / IrisTableHandle shape.
+      3. /home/u1/iris-ui/packages/core/src/remote-table.ts — the
+         createRemoteTableSource API surface.
+
+      Write a markdown baseline to the output path:
+      - proposed iris design (react only, additive):
+        a) IrisTableHandle additions:
+           - loadData(rows: Row[]): void — proxy mode: push the rows as the
+             current page data WITHOUT a query (vxe loadData parity): write
+             through commitRowList and sync the proxy state if possible
+             (remote-table has a setData? check — if not, write liveData
+             only and document)
+           - reloadData(): void — proxy mode: refetch the current params
+             (same as refetch; keep both names, refetch is the alias)
+           - commitProxy(params?: Partial<...>): void — proxy mode:
+             setParams + request with the given overrides (vxe commitProxy
+             parity)
+           - getProxyInfo(): { page: number; pageSize: number; total:
+             number; loading: boolean; error: Error | null } | null —
+             from proxyRef.getState() (null when no proxy)
+        b) events (props single-lines; params via named exported
+           interfaces where inline objects would appear):
+           - onEditStart?: (params: { row: Row; column:
+             IrisTableColumn<Row>; rowIndex: number }) => void — fired when
+             an edit session starts (beginEdit)
+           - onEditClosed?: (params: { row: Row; column:
+             IrisTableColumn<Row>; rowIndex: number; value: unknown;
+             cancelled: boolean }) => void — fired when a session commits
+             (value) or cancels (cancelled: true) — hook the cellEdit store
+             transitions (find the right observation point: the store state
+             — editing → null transitions; or wrap commitEdit/cancelEdit)
+           - onSelectAllChange?: (checked: boolean | 'indeterminate',
+             keys: Array<string | number>) => void — fired from the header
+             select-all checkbox (allSelected/someSelected computed values)
+           - onScroll?: (params: { scrollTop: number; scrollLeft: number })
+             => void — fired from the root scroll handler (the column
+             virtualization onScroll already tracks scrollLeft; add
+             scrollTop + the callback; non-virtual mode: attach a scroll
+             listener to the root when onScroll is provided)
+      - file map + tests
+      Do NOT modify source files.
+    output: /home/u1/iris-ui/docs/vxe-grid/batch-v-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Implement iris-ui vxe-grid batch V (proxy methods + events) in
+          /home/u1/iris-ui, per
+          /home/u1/iris-ui/docs/vxe-grid/batch-v-baseline.md. Read it first,
+          then AGENTS.md.
+
+          HARD CONSTRAINTS:
+          - Core framework-free; React only; additive only.
+          - No dist/tgz/node_modules/manifest.json edits.
+          - Test files ≤500 lines; ≤4 changed files + tests; props.ts is at
+            474/500 — move any new interfaces to types.ts if it would
+            exceed 500.
+          - MANIFEST SCANNER HYGIENE: function-type props on ONE line; inline
+            object params use named exported interfaces (IrisTableEditStartParams,
+            IrisTableEditClosedParams, IrisTableScrollParams — exported);
+            export new types from index.ts.
+          - CSS uses --iris-* tokens only.
+
+          IMPLEMENT:
+          1. handle methods (types.ts + Table.tsx):
+             - add loadData/reloadData/commitProxy/getProxyInfo to
+               IrisTableHandle (single-line type entries)
+             - loadData: commitRowList(rows) (liveData channel); if the
+               proxy controller has a data-set path use it (check
+               createRemoteTableSource — if it has none, document that the
+               proxy state total stays unchanged until the next query)
+             - reloadData: proxyRef.current?.refetch() (alias of refetch)
+             - commitProxy: proxyRef.current?.setParams(overrides) (fires
+               the request; setParams already exists)
+             - getProxyInfo: proxyRef.current?.getState() mapped to the
+               shape (null when no proxy)
+          2. events (props.ts + types.ts + Table.tsx):
+             - onEditStart: in beginEdit — fire with { row, column,
+               rowIndex } (after cellEdit.startEdit)
+             - onEditClosed: observe the edit session end — the simplest
+               reliable point: wrap commitEdit and cancelEdit (fire with
+               value + cancelled: false/true; commitEdit needs the committed
+               value — read it from the cellEdit store after commit:
+               getDraft or a getter on the store; check the store API and
+               use the committed value)
+             - onSelectAllChange: in the header checkbox onChange (toggleAll
+               call site) — fire with (allSelected ? true : someSelected ?
+               'indeterminate' : false, [...displaySelection])
+             - onScroll: root scroll — the existing column-virtualization
+               onScroll handler extends to also call onScroll with
+               { scrollTop, scrollLeft }; when NOT virtualized and onScroll
+               is provided, attach a scroll listener on the root (useEffect
+               + cleanup)
+          3. Tests (new proxy-methods-events.test.tsx):
+             - loadData writes rows (rendered) without a query call (mock
+               query, assert not called)
+             - reloadData refetches (query called again)
+             - commitProxy queries with overrides
+             - getProxyInfo returns page/pageSize/total; null without proxy
+             - onEditStart fires on begin; onEditClosed fires on commit
+               (value) and cancel (cancelled: true)
+             - onSelectAllChange fires from the header checkbox with the
+               state
+             - onScroll fires with scrollTop/scrollLeft (virtual + non-virtual)
+
+          VERIFY:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm --filter @iris-ui-kit/react typecheck`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react lint` (0 errors)
+          - `python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json` → 0 violations
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm gen:manifest`
+            (regenerate + commit — ALWAYS)
+          Report: files changed, tests added, counts, unfinished items.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-v-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are the adversarial reviewer for iris-ui batch V (proxy methods
+          + events). Read batch-v-baseline.md and batch-v-adapt.md, inspect.
+
+          Check:
+          1. loadData: no query fired; rows render; doc notes the total
+             caveat
+          2. reloadData/commitProxy: correct controller calls
+          3. getProxyInfo: correct state mapping; null without proxy
+          4. onEditStart/onEditClosed: fire at the right transitions;
+             committed value correct; cancelled flag; no double-fire
+          5. onSelectAllChange: state value correct (true/indeterminate/
+             false); keys correct
+          6. onScroll: both virtual + non-virtual paths; no leak (cleanup)
+          7. additive only; manifest hygiene (check:manifest); core
+             framework-free; CSS tokens; props.ts ≤500
+          Run verification commands (react test/typecheck/lint, audit,
+          check:manifest). Write verdict markdown: PASS or FAIL with numbered
+          findings (severity, file:line, fix). Do NOT modify files.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-v-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Gate stage for iris-ui batch V. Read the review verdict
+          /home/u1/iris-ui/docs/vxe-grid/batch-v-review.md.
+
+          If PASS: run the full repo gate:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm turbo run test typecheck lint build --concurrency=2`
+          - audit → 0; gen:manifest + check:manifest
+          - Update /home/u1/iris-ui/docs/vxe-grid-comparison.md: mark batch V
+            rows (proxy 方法族 / 编辑事件 / 全选事件 / 滚动事件) done (react).
+          - Commit: `git add -A -- . ':!apps/ssr-solidstart/.vinxi' && git
+            commit -m "feat(table): vxe-grid 批 V——proxy 方法族/编辑全选滚动事件（react only）"`
+          Report commit hash and final test counts.
+
+          If FAIL with concrete fixes: apply fixes, rerun, full gate, commit.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-v-gate.md

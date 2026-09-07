@@ -1,0 +1,124 @@
+# Iris Grid Core continuation: Svelte column order channel on current HEAD
+git_commit: false
+decision_log: /tmp/iris-grid-column-order-svelte-1787902100/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      Prepare a factual baseline only for a narrow Svelte-only Iris UI Grid
+      continuation in /tmp/iris-grid-column-order-svelte-1787902100, based on
+      current HEAD 61c97ee3. Core/grid already owns order and Svelte's useGrid
+      bridge exposes order methods, but IrisTable currently accepts no public
+      columnOrder channel (its persisted-state type is intentionally inert).
+      Vue just accepted the equivalent additive channel; React is the
+      behavioral reference. Read AGENTS.md, docs/grid-core-refactor.md, current
+      Svelte IrisTable/props/types/columnDrag and persistence paths, React
+      order tests, Vue's accepted implementation, and manifest.
+
+      Do not modify source. Specify the smallest safe scope: public
+      `columnOrder?: string[]`, Svelte `onColumnOrderChange` callback, one
+      per-table Grid Core columns model, known order keys first, unknown and
+      duplicate keys ignored, omitted keys retain source-relative order, and
+      undefined/empty restores source order. Preserve parent-owned ordinary
+      columnDrag/no-op semantics; if controlled flat drag can safely emit the
+      order proposal through the same model, define exact rejection behavior.
+      Preserve grouped/visibility/filter/sort/formula/summary/responsive/
+      virtual/SSR/hydration behavior. No pinning, no core changes, no arch
+      baseline changes.
+    output: /tmp/iris-grid-column-order-svelte-1787902100/docs/vxe-grid/batch-order-svelte-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /tmp/iris-grid-column-order-svelte-1787902100
+        prompt: |
+          Implement the Svelte-only columnOrder continuation in this isolated
+          worktree according to
+          /tmp/iris-grid-column-order-svelte-1787902100/docs/vxe-grid/batch-order-svelte-baseline.md.
+          Read it first and then AGENTS.md. Reuse the same per-table
+          useGridCore/useGridColumns feature already used for visibility and
+          widths; do not create a second model or mutate caller columns.
+
+          HARD CONSTRAINTS:
+          - Svelte adapter source, focused client/SSR/hydration tests/config,
+            generator-produced manifest outputs if the public API changes, and
+            concise grid docs only. Do not modify React/Vue/Solid/core,
+            plugin/app source, pnpm-lock, dist/tgz/node_modules, or
+            scripts/arch-baseline.json.
+          - Additive API only. Controlled `columnOrder` is authoritative,
+            inbound replacement is silent, and removal/empty restores source
+            order. Preserve unknown/duplicate/order-relative semantics,
+            grouped top-level behavior, all downstream projections, Svelte
+            rune/SSR/hydration determinism, and existing columnDrag
+            callback/no-movement behavior.
+          - Any local drag proposal must not mutate Core or emit an order event
+            when no explicit order owner exists; controlled rejection remains
+            non-optimistic. Do not name a `$state` variable `state`. Test files
+            <=500 lines; no weakened/skipped tests.
+          - No hard-coded colors, Tailwind, CSS-in-JS, innerHTML, core edits,
+            or architecture baseline edits. Do not hand-edit manifest files.
+          - Do not commit.
+
+          VERIFY in the worktree:
+          - env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/svelte test
+          - env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/svelte typecheck
+          - env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/svelte lint
+          - env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/svelte build
+          - python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json
+          - git diff --check
+
+          Report exact files and client/SSR/hydration/focused counts. Do not
+          commit.
+        output: /tmp/iris-grid-column-order-svelte-1787902100/docs/vxe-grid/batch-order-svelte-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /tmp/iris-grid-column-order-svelte-1787902100
+        prompt: |
+          Adversarially review the Svelte columnOrder continuation. Read the
+          baseline and adapt report under
+          /tmp/iris-grid-column-order-svelte-1787902100/docs/vxe-grid/, inspect
+          the actual diff against current HEAD and compare with React and the
+          accepted Vue bridge. Do not modify source.
+
+          Check one Core/model identity, controlled authority/silent sync,
+          source-order restoration, known/unknown/duplicate keys, grouped
+          top-level projection, columnDrag parent ownership/no-op and
+          controlled rejection, visibility and all render/summary/responsive/
+          virtual paths, no source mutation, Svelte runes/SSR/hydration,
+          manifest hygiene, <=500-line tests, and no baseline changes. Run
+          focused/full client+SSR/hydration tests, typecheck, lint, build,
+          manifest/spec audit and diff check. Write PASS or FAIL with numbered
+          severity/file:line findings and concrete fixes; do not modify source.
+        output: /tmp/iris-grid-column-order-svelte-1787902100/docs/vxe-grid/batch-order-svelte-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /tmp/iris-grid-column-order-svelte-1787902100
+        prompt: |
+          Gate the Svelte columnOrder continuation. Read
+          /tmp/iris-grid-column-order-svelte-1787902100/docs/vxe-grid/batch-order-svelte-review.md.
+          If PASS, rerun the full Svelte test/typecheck/lint/build suites,
+          SSR and hydration, spec audit, `pnpm check:manifest`, and
+          `git diff --check`; confirm scripts/arch-baseline.json is unchanged.
+          Update docs/grid-core-refactor.md with one concise factual entry if
+          accepted. Do not modify other frameworks/core/apps, weaken tests, or
+          commit. If FAIL has concrete fixes, apply only those in this isolated
+          worktree, rerun all gates, and report final PASS/FAIL, exact files,
+          counts, manifest status, and ratchet limitations.
+        output: /tmp/iris-grid-column-order-svelte-1787902100/docs/vxe-grid/batch-order-svelte-gate.md

@@ -6,9 +6,13 @@ from __future__ import annotations
 import json
 import sys
 
+import pytest
+
 from pbatch.assessor import assess_main, prescription
-from pbatch.product import (format_product, product_manifest,
-                            productization_level, scenario_questions)
+from pbatch.product import (format_product, format_product_brief, product_brief,
+                            product_manifest, productization_level,
+                            scenario_questions)
+from pbatch.product_cli import product_main
 
 
 def test_level_local_tool():
@@ -169,3 +173,93 @@ def test_domain_for_routes_product_and_generic():
     assert domain_for("写个内部小工具脚本，解析日志") == "generic"
     assert domain_for("写一个订单创建接口，含支付审批，生产，go") == "backend"
     assert domain_for("生成一个登录页面 tsx") == "frontend_ui"
+
+
+def test_product_brief_l0_keeps_product_structure_out():
+    brief = product_brief("写个内部小工具脚本")
+    assert brief["productization"]["level"] == "L0_local_feature"
+    assert brief["status"] == "不适用"
+    assert brief["direction"]["status"] == "不适用"
+    assert brief["user_story"]["status"] == "不适用"
+    assert brief["decomposition"]["status"] == "不适用"
+    assert brief["confirmation_questions"] == []
+    rendered = format_product_brief(brief)
+    assert "禁止产品化结构" in rendered
+    assert rendered.count("禁止产品化结构") == 1
+
+
+def test_product_brief_contains_forward_product_artifact():
+    brief = product_brief("做一个多租户审批平台，支持登录和审批流程")
+    assert brief["productization"]["level"] == "L2_platform_capability"
+    assert brief["direction"]["target_user"] == "待确认"
+    assert brief["user_story"]["i_want"]
+    assert brief["state_machine"]["status"] == "候选，待确认"
+    assert any(state["id"] == "recoverable_failure"
+               for state in brief["state_machine"]["states"])
+    assert len(brief["decomposition"]["features"]) == 3
+    assert brief["decomposition"]["features"][0]["stories"][0]["tasks"]
+    assert all(item["status"] == "待确认"
+               for item in brief["confirmation_questions"])
+    assert any("权限/RBAC" in item["rule"]
+               for item in brief["business_rules"])
+    assert "asset_root" not in brief["productization"]
+    rendered = format_product_brief(brief)
+    assert "重试或恢复" in rendered
+    assert rendered.count("权限/RBAC") == 1
+    assert "未开始 --开始主流程→ 进行中" in rendered
+
+
+def test_product_brief_billing_is_a_question_not_a_feature():
+    brief = product_brief("做一个商业化 SaaS 产品，订阅计费")
+    titles = [feature["title"] for feature in brief["decomposition"]["features"]]
+    assert not any("计费" in title or "订阅" in title for title in titles)
+    billing = [item for item in brief["business_rules"]
+               if item["source"] == "计费/订阅"]
+    guardrails = [item for item in brief["business_rules"]
+                  if item["kind"] == "guardrail"]
+    assert billing and all(item["status"] == "待确认" for item in billing)
+    assert guardrails and all(item["status"] == "必须遵守"
+                              for item in guardrails)
+
+
+def test_product_brief_detects_signal_after_display_excerpt():
+    brief = product_brief("说明 " * 100 + "商业化登录产品")
+    assert brief["productization"]["level"] == "L3_product_feature"
+    assert len(brief["requirement"]) <= 241
+
+
+def test_product_cli_json_and_output_file(tmp_path, capsys):
+    assert product_main(["--json", "做一个开源登录产品"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["schema_version"] == "product-brief/v1"
+    assert "asset_root" not in payload["productization"]
+    output = tmp_path / "brief.md"
+    assert product_main(["--output", str(output), "做一个登录产品"]) == 0
+    assert "# 产品方向简报" in output.read_text(encoding="utf-8")
+    assert not list(tmp_path.glob("brief.md.*.tmp"))
+
+
+def test_product_brief_rejects_empty_and_oversized_input(monkeypatch):
+    from pbatch import product_direction
+    with pytest.raises(ValueError, match="must not be empty"):
+        product_brief("  \n  ")
+    monkeypatch.setattr(product_direction.config, "INPUT_MAX_BYTES", 8)
+    with pytest.raises(ValueError, match="exceeds 8 bytes"):
+        product_brief("多租户产品")
+
+
+def test_product_cli_rejects_ambiguous_input_and_symlink_output(tmp_path):
+    source = tmp_path / "requirement.md"
+    source.write_text("做一个登录产品", encoding="utf-8")
+    with pytest.raises(SystemExit) as ambiguous:
+        product_main(["--file", str(source), "另一个产品"])
+    assert ambiguous.value.code == 2
+
+    outside = tmp_path / "outside.md"
+    outside.write_text("keep", encoding="utf-8")
+    link = tmp_path / "brief.md"
+    link.symlink_to(outside)
+    with pytest.raises(SystemExit) as symlinked:
+        product_main(["-o", str(link), "做一个登录产品"])
+    assert symlinked.value.code == 2
+    assert outside.read_text(encoding="utf-8") == "keep"

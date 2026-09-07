@@ -9,13 +9,25 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
-from pbatch import config, runner
+import pytest
+
+from pbatch import config, runner, tui_backend_structured
 from pbatch.lock import acquire_lock, release_lock
 from pbatch.tui_backend import TUIBackend
+from pbatch.tui_protocol import RuntimeEvent
 
 
 def _runtime_event(kind, **payload):
     return SimpleNamespace(kind=kind, payload=payload)
+
+
+def _typed_event(seq, kind, **payload):
+    return RuntimeEvent(
+        event_id=f"evt_backend_{seq}", seq=seq,
+        occurred_at=f"2026-08-23T12:00:{seq:02d}Z",
+        workspace_id="ws_backend", session_id="ses_backend",
+        run_id="run_backend", turn_id="turn_backend",
+        actor_id="agent_main", kind=kind, payload=payload)
 
 
 class FakeProc:
@@ -332,6 +344,10 @@ def test_structured_turn_projects_typed_events_and_returns_success(tmp_path):
         _runtime_event("command.completed", item_id="cmd-1", command="pytest",
                        exit_code=0),
         _runtime_event("file.changed", changes=[{"path": "pbatch/tui.py"}]),
+        _runtime_event("plan.updated", item_id="plan-1", items=[
+            {"text": "inspect", "completed": True},
+            {"text": "implement", "status": "in_progress"},
+        ]),
         _runtime_event("usage.updated", usage={"input_tokens": 10,
                                                 "output_tokens": 4,
                                                 "total_tokens": 14}),
@@ -351,17 +367,158 @@ def test_structured_turn_projects_typed_events_and_returns_success(tmp_path):
     assert result.session_id == "structured-session"
     assert adapter.closed
     kinds = [kind for kind, _text in events]
-    for kind in ("command", "command-output", "file", "usage", "stdout"):
+    for kind in ("command", "command-output", "file", "plan", "usage", "stdout"):
         assert kind in kinds
     command = next(json.loads(text) for kind, text in events
                    if kind == "command" and '"phase":"completed"' in text)
     assert command["command"] == "pytest" and command["exit_code"] == 0
     outputs = [text for kind, text in events if kind == "command-output"]
     assert outputs and all(len(text.encode("utf-8")) <= 2 * 1024 for text in outputs)
+    plan = next(json.loads(text) for kind, text in events if kind == "plan")
+    assert plan == {
+        "item_id": "plan-1", "status": "", "items": [
+            {"text": "inspect", "completed": True},
+            {"text": "implement", "status": "in_progress"},
+        ], "truncated": False,
+    }
     usages = [json.loads(text) for kind, text in events if kind == "usage"]
     assert usages[0]["total_tokens"] == 14
     assert backend.snapshot()["status"] == "succeeded"
     assert not (tmp_path / ".pi-batch.lock").exists()
+
+
+def test_structured_result_replaces_completed_items_without_losing_siblings(
+        tmp_path):
+    callbacks = []
+    adapter = FakeStructuredAdapter(FakeProc([
+        _runtime_event("message.started", item_id="m1"),
+        _runtime_event("message.delta", item_id="m1", text="draft"),
+        _runtime_event("message.completed", item_id="m1", text="first"),
+        _runtime_event("message.started", item_id="m2"),
+        _runtime_event("message.completed", item_id="m2", text="second"),
+        _runtime_event("turn.completed"),
+    ]))
+    backend = TUIBackend(
+        lambda kind, text: callbacks.append((kind, text)),
+        cwd=str(tmp_path), agent="codex", memory_mode="off",
+        session_id="multi-message")
+
+    result = backend.run_turn_structured(
+        "render messages", adapter_factory=lambda: adapter)
+
+    assert result.success
+    assert result.stdout == "first\n\nsecond"
+    assert ("stdout", "draft") in callbacks
+    assert ("stdout-replace", "first") in callbacks
+    assert ("stdout", "\n\nsecond") in callbacks
+
+
+def test_structured_callback_can_replace_a_draft_with_empty_completion(tmp_path):
+    callbacks = []
+    adapter = FakeStructuredAdapter(FakeProc([
+        _runtime_event("message.delta", item_id="m1", text="draft"),
+        _runtime_event("message.completed", item_id="m1", text=""),
+        _runtime_event("turn.completed"),
+    ]))
+    backend = TUIBackend(
+        lambda kind, text: callbacks.append((kind, text)),
+        cwd=str(tmp_path), agent="codex", memory_mode="off",
+        session_id="empty-message")
+
+    result = backend.run_turn_structured(
+        "clear draft", adapter_factory=lambda: adapter)
+
+    assert result.success and result.stdout == ""
+    assert callbacks.count(("stdout", "draft")) == 1
+    assert callbacks.count(("stdout-replace", "")) == 1
+
+
+def test_structured_plan_projection_is_bounded_and_drops_unknown_fields(tmp_path):
+    events = []
+    items = [{
+        "text": "界" * 500, "status": "in_progress", "completed": False,
+        "approval.requested": True,
+    } for _index in range(80)]
+    adapter = FakeStructuredAdapter(FakeProc([
+        _runtime_event("plan.updated", item_id="p" * 500, items=items),
+        _runtime_event("turn.completed"),
+    ]))
+    backend = TUIBackend(
+        lambda kind, text: events.append((kind, text)), cwd=str(tmp_path),
+        agent="codex", memory_mode="off", session_id="bounded-plan")
+
+    result = backend.run_turn_structured(
+        "project plan", adapter_factory=lambda: adapter)
+
+    assert result.success
+    notices = [json.loads(text) for kind, text in events if kind == "plan"]
+    assert len(notices) == 1
+    notice = notices[0]
+    assert len(notice["item_id"].encode("utf-8")) <= 128
+    assert len(notice["items"]) == 64 and notice["truncated"] is True
+    assert all(len(item["text"].encode("utf-8")) <= 256
+               for item in notice["items"])
+    assert all("approval.requested" not in item for item in notice["items"])
+
+
+def test_structured_event_sink_receives_raw_events_without_callback_duplicates(
+        tmp_path):
+    callbacks, raw_events = [], []
+    adapter = FakeStructuredAdapter(FakeProc([
+        _typed_event(1, "command.started", item_id="cmd-1", command="pytest"),
+        _typed_event(2, "message.delta", text="typed answer"),
+        _typed_event(3, "turn.completed", elapsed_ms=4),
+    ]))
+    backend = TUIBackend(
+        lambda kind, text: callbacks.append((kind, text)), cwd=str(tmp_path),
+        agent="codex", memory_mode="off", session_id="raw-events")
+    backend.set_runtime_event_sink(raw_events.append)
+
+    result = backend.run_turn_structured(
+        "use raw events", adapter_factory=lambda: adapter)
+
+    assert result.success and result.stdout == "typed answer"
+    assert [event.kind for event in raw_events] == [
+        "command.started", "message.delta", "turn.completed",
+        "workspace.snapshot",
+    ]
+    workspace = raw_events[-1]
+    assert workspace.seq == 0
+    assert workspace.payload["phase"] == "after"
+    assert workspace.payload["delta"]["changed"] is False
+    assert not {"command", "stdout", "usage", "file", "plan"}.intersection(
+        kind for kind, _text in callbacks)
+    assert [text for kind, text in callbacks if kind == "status"] == [
+        "running", "succeeded"]
+
+
+def test_runtime_event_sink_can_detach_but_not_replace_during_turn(tmp_path):
+    backend = TUIBackend(cwd=str(tmp_path), agent="codex", memory_mode="off")
+    backend.set_runtime_event_sink(lambda _event: None)
+    with backend._state_lock:
+        backend._running = True
+
+    backend.set_runtime_event_sink(None)
+    with pytest.raises(RuntimeError, match="during a turn"):
+        backend.set_runtime_event_sink(lambda _event: None)
+
+    with backend._state_lock:
+        backend._running = False
+
+
+def test_default_codex_adapter_applies_model_and_rejects_provider(tmp_path):
+    backend = SimpleNamespace(
+        cwd=str(tmp_path), model="gpt-test", provider="")
+    adapter = tui_backend_structured._new_adapter(None, backend)
+    try:
+        assert adapter._argv_prefix == (
+            "codex", "exec", "--approve-for-me", "--model", "gpt-test", "--json")
+    finally:
+        adapter.close()
+
+    backend.provider = "unmapped-provider"
+    with pytest.raises(ValueError, match="provider override is unsupported"):
+        tui_backend_structured._new_adapter(None, backend)
 
 
 def test_structured_turn_resumes_previous_provider_thread(tmp_path):
@@ -391,12 +548,31 @@ def test_structured_turn_resumes_previous_provider_thread(tmp_path):
 
     second = backend.run_turn_structured("second turn", adapter_factory=factory)
     assert second.success
+    assert adapters[0].turn_request["run_id"] != adapters[1].turn_request["run_id"]
+    assert all(adapter.turn_request["run_id"].startswith("tui-")
+               for adapter in adapters)
     assert adapters[1].resume_requests == [{
         "provider_session_id": "thread-1",
         "session_id": "multi-turn",
         "workspace_id": str(tmp_path),
     }]
     assert adapters[1].session_calls == 0
+
+
+def test_new_session_clears_structured_provider_thread(tmp_path):
+    adapter = FakeStructuredAdapter(
+        FakeProc([_runtime_event("turn.completed", elapsed_ms=5)]),
+        provider_session_id="thread-old")
+    backend = TUIBackend(cwd=str(tmp_path), agent="codex", memory_mode="off",
+                         session_id="session-old")
+    assert backend.run_turn_structured(
+        "first", adapter_factory=lambda: adapter).success
+    assert backend.provider_thread_id == "thread-old"
+
+    backend.new_session("fresh", session_id="session-fresh")
+
+    assert backend.provider_thread_id == ""
+    assert backend.session_id == "session-fresh"
 
 
 def test_structured_resume_failure_falls_back_to_fresh_session(tmp_path):

@@ -1,0 +1,204 @@
+# iris-ui vxe-grid 批 K：row 编辑模式 + 批 J Medium 修复
+#
+# 目标：
+# 1. row 编辑模式（vxe edit-config mode='row' parity）：点击可编辑行 →
+#    整行进入编辑（所有 editable 列同时显示编辑器，行级提交/取消）
+# 2. 修复批 J review 的 2 个 Medium：
+#    M1 Tab 编辑导航在 async 校验（editRules Promise）时吞掉导航
+#    M2 lazyChildrenRef 数据刷新后不失效（缓存遮蔽新数据）
+# 范围：react only；additive。
+#
+# 执行：python pi-batch.py projects/iris-ui/vxe-grid-batch-k.yaml \
+#   --log-file logs/iris-ui-batch-k.log --retries 2
+
+git_commit: false
+decision_log: /home/u1/iris-ui/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      You are preparing the baseline for iris-ui vxe-grid batch K (row edit
+      mode + batch J medium fixes). Monorepo: /home/u1/iris-ui.
+
+      Read:
+      1. /home/u1/iris-ui/docs/vxe-grid/batch-j-review.md — findings M1
+         (Tab swallowed by async editRules validation — commitEdit returns
+         false for Promises, core cell-edit.ts ~131) and M2 (lazyChildrenRef
+         never invalidated on data refresh).
+      2. /home/u1/iris-ui/packages/react/src/primitives/table/Table.tsx —
+         the edit machinery (editCtxRef, beginEdit/cancelEdit/commitEdit,
+         cellEdit.createCellEdit options incl. onCommit/validate, the editing
+         render per cell), the editConfig prop (trigger/mode?).
+      3. /home/u1/iris-ui/packages/core/src/cell-edit.ts — the commit flow
+         (async validate path, onCommit timing).
+      4. /home/u1/iris-ui/packages/react/src/primitives/table/props.ts —
+         IrisTableEditConfig (trigger/showAsterisk/autoClear).
+
+      Write a markdown baseline to the output path:
+      - vxe semantics: edit-config mode 'cell' (default) vs 'row' — row mode
+        highlights the row and opens editors in every editable column
+        simultaneously; a row-level confirm/cancel applies to the whole row;
+        edit-closed fires per cell
+      - proposed iris design (react only, additive):
+        a) editConfig gains `mode?: 'cell' | 'row'` (default 'cell' — no
+           behavior change); row mode: clicking an editable ROW (any cell in
+           a row with ≥1 editable column) opens ALL editable columns of that
+           row in edit state (each cell keeps its own draft/validate/commit
+           through the existing cellEdit session — one shared session per
+           column cell id); row gets data-iris-row-editing; Escape cancels
+           the whole row; Enter commits the focused editor; blur on the LAST
+           editor commits the row; the row's cells commit independently
+           through the existing machinery (each onCommit writes back)
+        b) M1 fix: Tab navigation with async validation — when the current
+           commit is pending (Promise), defer the navigation until the
+           validation settles: on commit resolve, move to the next editable
+           column; if validation fails, STAY (no navigation) and keep the
+           editor open with the error. Implement via a pending-nav ref that
+           the commit resolution path checks.
+        c) M2 fix: invalidate lazyChildrenRef when the data reference
+           changes (in the liveData sync effect or a dedicated effect keyed
+           on data / proxyState.data) — cached lazy children are dropped so
+           fresh getSubRows children render; loaded keys remain loadable
+           again (caret reappears)
+      - file map + tests
+      Do NOT modify source files.
+    output: /home/u1/iris-ui/docs/vxe-grid/batch-k-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Implement iris-ui vxe-grid batch K (row edit mode + 2 medium fixes)
+          in /home/u1/iris-ui, per
+          /home/u1/iris-ui/docs/vxe-grid/batch-k-baseline.md. Read it first,
+          then AGENTS.md.
+
+          HARD CONSTRAINTS:
+          - Core framework-free; React only; additive only (editConfig.mode
+            defaults to 'cell' — zero behavior change without it).
+          - No dist/tgz/node_modules/manifest.json edits.
+          - Test files ≤500 lines; ≤5 changed files + tests.
+          - MANIFEST SCANNER HYGIENE: function-type props on ONE line; export
+            new types from index.ts.
+          - CSS uses --iris-* tokens only.
+          - TIME BUDGET: (1) M1+M2 fixes (light); (2) row edit mode (heavy).
+            If low on time, finish the fixes + the row-mode render, then tests.
+
+          IMPLEMENT:
+          1. M2 fix (Table.tsx): clear lazyChildrenRef when the data source
+             reference changes — in the existing liveData sync effect (where
+             lastExternalRef updates) or a sibling effect keyed on the same
+             deps; clear BOTH lazyChildrenRef and the loading set.
+          2. M1 fix (Table.tsx): pending Tab navigation —
+             - add a ref pendingNavRef: { dir: 1 | -1; row; col; k; idx } |
+               null
+             - the Tab handler: commitEdit(); determine whether the commit is
+               async (how? — the validate path returns a Promise; the
+               simplest robust approach: always stash the nav intent and let
+               the onCommit/validate-settled path perform it; for SYNC
+               commits perform it immediately — check how cellEdit exposes
+               sync-vs-async: validateEditRulesAsync is used — the commit
+               calls the validate; if editRules has an async validator the
+               commit is pending. Prefer: perform the nav immediately for
+               sync commits (the common case, keeps Tab snappy) and stash
+               for async (resolved in the commit-settled path when validation
+               passed — i.e. where the editor error state is cleared / after
+               the async validate resolves). Inspect the createCellEdit flow
+               to find the correct hook point (maybe a validate-settled
+               callback or onCommit after async).
+             - when the pending nav executes: beginEdit(nextCol) if found;
+               validation failure → drop the pending nav (stay, error shown)
+          3. Row edit mode (props.ts + Table.tsx):
+             - IrisTableEditConfig gains mode?: 'cell' | 'row' (single line)
+             - row mode: clicking a cell in a row with ≥1 editable column
+               begins editing the WHOLE row: for each editable column, start
+               a cellEdit session with that column's cell id (same beginEdit
+               path per column); data-iris-row-editing on the row; cells not
+               editable render normally; the editing render for each column
+               uses the existing editor UI (text/number/select/textarea per
+               column)
+             - commit semantics: Enter in any editor commits THAT column
+               (existing per-cell commit); Escape cancels the WHOLE row (all
+               sessions); blur on the last editable column commits that
+               column (do NOT auto-commit other columns — per-cell commit,
+               vxe row mode commits each edited cell; document this)
+             - clicking another row while editing: commit the current row's
+               editors (or cancel? — vxe: click elsewhere commits; keep it:
+               commit each open session) then start editing the new row
+             - toolbar/sort/filter interactions keep working (editing row
+               sessions are per-cell — no global modal state)
+          4. Tests (new row-edit-mode.test.tsx):
+             - row mode: click a cell → all editable columns show editors;
+               typing in one commits only that column; Escape cancels all;
+               data-iris-row-editing present
+             - clicking another row commits the current row's edits and opens
+               the new row
+             - M1: async editRules + Tab — validation resolves → editor moves
+               to the next column; validation rejects → stays with error
+             - M2: lazy tree + data refresh → cached children dropped, fresh
+               getSubRows children render
+
+          VERIFY:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm --filter @iris-ui-kit/react typecheck`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/react lint` (0 errors)
+          - `python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json` → 0 violations
+          Report: files changed, tests added, counts, unfinished items.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-k-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are the adversarial reviewer for iris-ui batch K (row edit mode
+          + M1/M2 fixes). Read batch-k-baseline.md and batch-k-adapt.md,
+          inspect the implementation.
+
+          Check:
+          1. row mode: all editable columns open together; per-cell commit;
+             Escape cancels all; row switch commits previous; click-with-no-
+             editable-columns does nothing; cell mode unchanged (default)
+          2. M1: async-validate Tab defers and lands on success, stays on
+             failure; sync Tab still immediate; no focus loss
+          3. M2: data refresh drops lazy cache; reload re-seeds; no stale
+             children
+          4. additive only; manifest hygiene; core framework-free; CSS tokens
+          Run verification commands (react test/typecheck/lint, audit). Write
+          verdict markdown: PASS or FAIL with numbered findings (severity,
+          file:line, fix). Do NOT modify files.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-k-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Gate stage for iris-ui batch K. Read the review verdict
+          /home/u1/iris-ui/docs/vxe-grid/batch-k-review.md.
+
+          If PASS: run the full repo gate:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm turbo run test typecheck lint build --concurrency=2`
+          - audit → 0; `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm gen:manifest`
+          - Update /home/u1/iris-ui/docs/vxe-grid-comparison.md: mark batch K
+            rows (row edit mode / Tab async fix / lazy cache fix) done (react).
+          - Commit: `git add -A -- . ':!apps/ssr-solidstart/.vinxi' && git
+            commit -m "feat(table): vxe-grid 批 K——row 编辑模式 + Tab 异步校验/懒加载缓存修复（react only）"`
+          Report commit hash and final test counts.
+
+          If FAIL with concrete fixes: apply fixes, rerun, full gate, commit.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-k-gate.md

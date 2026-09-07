@@ -9,7 +9,7 @@ agent:
   # The CLI binary invoked for every task. Must accept:
   #   <bin> -p PROMPT [--model M] [--provider P] [--thinking T] [--tools T] [--exclude-tools T]
   bin: pi
-  default_model: ""     # empty = the agent's own default
+  default_model: "gpt-5.6-luna:max"
   default_timeout: 1500  # seconds, per task (aligned with pi httpIdleTimeoutMs)
   default_workers: 4    # parallel mode default worker count
   # Agent argv adapter. A string is one argv token; []/"" disables an
@@ -35,6 +35,10 @@ agent:
   # error_patterns:
   #   - "rate.?limit"
   #   - "^(?i)error:"
+  # provider_error_patterns is the narrower health subset used by the shared
+  # circuit breaker. It wins over error_patterns; when omitted, a legacy
+  # custom error_patterns list remains compatible except for built-in
+  # request/banner-only signatures.
   # Per-agent overrides (win over the global agent.* keys): claude/codex/
   # gemini have different session-flag syntax and failure signatures.
   agents:
@@ -52,6 +56,9 @@ agent:
       # precede the subcommand; the {prompt} placeholder makes these
       # session-led layouts (prompt emitted where it sits, not after bin).
       capture_thread_id: true
+      # Explicit stdout trust contract. The runner parses every record
+      # fail-closed and projects only the final completed agent message.
+      output_protocol: codex-jsonl
       session_flags:
         start: ["exec", "--approve-for-me", "{prompt}"]
         continue: ["exec", "--approve-for-me", "resume", "{session}", "{prompt}"]
@@ -71,6 +78,11 @@ agent:
         - "insufficient_quota|quota exceeded"
         - "rate.?limit_?error|rate.?limit exceeded"
         - "codex: "
+      # Do not let the broad `codex: ` artifact-rejection banner poison
+      # provider health for every Codex-local CLI diagnostic.
+      provider_error_patterns:
+        - "insufficient_quota|quota exceeded"
+        - "rate.?limit_?error|rate.?limit exceeded"
     claude:
       # Claude print mode (-p) suits interactive handoff and scripted runs.
       argument_flags:
@@ -116,14 +128,15 @@ limits:
   per_second: 0        # max agent invocations per second (0 = unlimited)
   # Provider 级熔断（T17a）：连续 N 次 provider 失败签名（quota/rate/
   # auth/network，跨任务累计）→ 指数退避冷却，冷却中任务先等待；
-  # 任一成功重置。7×24 无人值守防 provider 系统性故障空转。
+  # 同一 provider 任一成功重置其窗口；不同 provider/agent 互不串扰。
+  # 7×24 无人值守防 provider 系统性故障空转。
   provider_breaker:
     threshold: 5          # 连续失败数（0 = 关闭）
     base_cooldown: 60     # 首次冷却秒（×2 退避）
     max_cooldown: 900     # 单段冷却上限；超出后任务明确失败
 
   burst: 1             # token bucket capacity
-  providers: {}        # per-provider overrides, e.g. {openai: {per_second: 2}}
+  providers: {}        # provider -> rate, e.g. {openai: 2, local: 0}; 0 = unlimited
   # Campaign isolated worktrees share this state through PBATCH_RATE_LIMIT_FILE.
   # The campaign command sets it automatically; direct runners may set the env.
 
@@ -149,6 +162,18 @@ memory:
   index_line_max_bytes: 262144
   # Compact metadata at the append boundary; raw Pi sessions are retained.
   index_max_bytes: 16777216
+
+# Trusted RuntimeEvent audit stream used to rebuild disposable TUI
+# projections.  Each logical session is isolated by the same
+# tenant/project/sensitivity boundary as progressive memory.
+tui:
+  journal_enabled: true
+  journal_max_bytes: 16777216
+  # Command cards keep a small event/timeline preview. Larger typed command
+  # output is retained privately under data_dir and exposed as ArtifactRef.
+  command_artifact_max_bytes: 2097152
+  command_artifact_store_max_bytes: 67108864
+  command_artifact_max_files: 256
 
 # Raw session files remain owned by Pi and are never rewritten. These bounds
 # govern only coordinator scans/rotation decisions.
@@ -423,4 +448,3 @@ model_routing:
     enabled: true                # 配额见底时降级（保护性成本控制）
     remaining_ratio_threshold: 0.25    # 剩余 < 25% 时最高可用档降一级
     min_tier: low
-

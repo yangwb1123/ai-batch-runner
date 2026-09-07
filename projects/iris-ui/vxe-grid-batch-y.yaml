@@ -1,0 +1,191 @@
+# iris-ui vxe-grid 批 Y：vue 适配器功能对齐第二批
+#
+# 目标：继续 vue 功能对齐（批 X 之后）。范围：
+# 1. columnVisibility / filters（列显隐 + 客户端筛选）
+# 2. seq / spanMethod / columnDrag（序号列 / 单元格合并 / 列拖拽）
+# 3. rowDrag（行拖拽排序——core createSortable 已有）
+# 4. 代理方法族（loadData/reloadData/commitProxy/getProxyInfo——
+#    vue 通过 expose）
+# 后续批 Z 再做：懒加载树/removeRows/Tab 导航/行编辑模式/customConfig/
+# zoom/layouts/visibleMethod（react-only 剩余）。
+#
+# 执行：python pi-batch.py projects/iris-ui/vxe-grid-batch-y.yaml \
+#   --log-file logs/iris-ui-batch-y.log --retries 2
+
+git_commit: false
+decision_log: /home/u1/iris-ui/docs/vxe-grid/DECISIONS.md
+
+stages:
+  - name: baseline
+    from_prompt: |
+      You are preparing the baseline for iris-ui vxe-grid batch Y (vue
+      parity round 2). Monorepo: /home/u1/iris-ui.
+
+      Read:
+      1. /home/u1/iris-ui/packages/vue/src/primitives/table/Table.ts — the
+         CURRENT vue table (post batch X: proxyConfig/formConfig/multiSort/
+         toolbar; find the data pipeline, the header render, the body cell
+         render, the selection column).
+      2. /home/u1/iris-ui/packages/core/src/sortable.ts (createSortable),
+         cell-edit.ts (setCellValue) — core controllers to bridge.
+      3. /home/u1/iris-ui/packages/react/src/primitives/table/Table.tsx —
+         react reference semantics for columnVisibility (displayColumns),
+         filters (filteredData memo), seq (idx + seqStartIndex), spanMethod
+         (occupied set), columnDrag + rowDrag (createSortable bridge).
+      4. /home/u1/iris-ui/packages/vue/src/primitives/table/types.ts —
+         current prop surface.
+
+      Write a markdown baseline to the output path:
+      - proposed vue design (framework-idiomatic, thin bridge over core):
+        a) columnVisibility?: Record<string, boolean> +
+           onColumnVisibilityChange? — displayColumns computed filters
+           hidden columns from every render path (header/body/summary)
+        b) filters?: Record<string, string> — client-side substring filter
+           in the filtered-data computed (case-insensitive, '' ignored);
+           OR-match filterValues? — SKIP filterValues for vue (batch Z)
+        c) seq?: boolean + seqStartIndex? — leading sequence column;
+           spanMethod?: (params) => { rowspan?; colspan? } — occupied-set
+           merge in the body cell render; columnDrag?: boolean — header
+           drag reorder via core createSortable (mirror the react bridge:
+           pointer handlers on header cells, move-over → closestCenter,
+           end → reorder columns)
+        d) rowDrag?: boolean — row drag via createSortable (row handle +
+           container pointer events, mirror react batch 2)
+        e) expose (vue defineExpose): loadData(rows) / reloadData() /
+           commitProxy(params?) / getProxyInfo() — bridge the batch-X proxy
+           controller (createRemoteTableSource); loadData writes the local
+           rows ref without a query
+      - file map + tests
+      Do NOT modify source files.
+    output: /home/u1/iris-ui/docs/vxe-grid/batch-y-baseline.md
+    mode: serial
+
+  - name: adapt
+    from_outputs: baseline
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Implement iris-ui vxe-grid batch Y (vue parity round 2 —
+          columnVisibility/filters/seq/spanMethod/columnDrag/rowDrag/proxy
+          methods) in /home/u1/iris-ui, per
+          /home/u1/iris-ui/docs/vxe-grid/batch-y-baseline.md. Read it first,
+          then AGENTS.md.
+
+          HARD CONSTRAINTS:
+          - Core framework-free; vue bridge only (no reimplementation of
+            controller logic in vue); do NOT touch react/solid/svelte.
+          - Additive props only. No dist/tgz/node_modules/manifest.json edits.
+          - Test files ≤500 lines; ≤4 changed files + tests.
+          - MANIFEST SCANNER HYGIENE: single-line function props; named
+            exported interfaces for inline object params; export new types
+            from the vue table index.
+          - CSS uses --iris-* tokens only.
+          - TIME BUDGET: (1) columnVisibility + filters + seq (light);
+            (2) spanMethod (light-medium); (3) columnDrag + rowDrag
+            (medium — the createSortable bridge is the fiddly part); (4)
+            expose methods (light). Order accordingly; if low, finish 1+2+4
+            and leave drag for batch Z with a handoff note.
+
+          IMPLEMENT (mirror the react reference semantics):
+          1. columnVisibility (types + Table.ts):
+             - prop + event; displayColumns computed: safeColumns filtered
+               by visibility (false hides); every render path uses
+               displayColumns (header/body/summary)
+          2. filters (types + Table.ts):
+             - prop; the filtered-data computed applies substring
+               case-insensitive matching ('' entries ignored) over
+               displayColumns; combines with formConfig values (batch X)
+               if both exist (AND)
+          3. seq + seqStartIndex (types + Table.ts):
+             - leading sequence column before selection (data-iris-table-
+               cell="__seq"); value idx + seqStartIndex
+          4. spanMethod (types + Table.ts):
+             - (params: { rowIndex; columnIndex }) => { rowspan?; colspan? }
+               | null; occupied-set skip across rows (mirror react: clear
+               the set once per body render pass, mark occupied cells)
+          5. columnDrag (types + Table.ts):
+             - header cells get pointer handlers (createSortable bridge —
+               mirror the react implementation: press → threshold →
+               moveOver by closestCenter using ref-synced rects → end →
+               reorder the columns array via onColumnOrderChange or internal
+               order state; grouped headers NOT supported — document)
+          6. rowDrag (types + Table.ts):
+             - row handle (data-iris-row-drag-handle) + container pointer
+               events; createSortable bridge; end → reorder the rows
+               (through the local rows ref + onDataChange if provided)
+          7. expose (Table.ts):
+             - defineExpose: loadData/reloadData/commitProxy/getProxyInfo —
+               bridge the batch-X proxy controller (createRemoteTableSource);
+               loadData writes the local rows ref without a query
+          8. Tests (new table/parity-y.test.ts):
+             - columnVisibility hides columns; filters substring
+             - seq renders idx+start; spanMethod merges + occupied skip
+             - columnDrag reorders (pointer simulation); rowDrag reorders
+             - expose methods: loadData without query; reloadData queries
+               again; getProxyInfo shape
+
+          VERIFY:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm --filter @iris-ui-kit/vue typecheck`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/vue test`
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm --filter
+            @iris-ui-kit/vue lint` (0 errors)
+          - `python /home/u1/ai-batch-runner/projects/iris-ui/scripts/iris-ui-spec.py
+            --mode all --json` → 0 violations
+          - `env COREPACK_ENABLE_PROJECT_SPEC=0 corepack pnpm gen:manifest`
+            (regenerate + commit — ALWAYS)
+          Report: files changed, tests added, counts, what is left for batch
+          Z (explicit handoff list).
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-y-adapt.md
+
+  - name: review
+    from_outputs: adapt
+    mode: serial
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          You are the adversarial reviewer for iris-ui batch Y (vue parity
+          round 2). Read batch-y-baseline.md and batch-y-adapt.md, inspect
+          the vue implementation against the react reference semantics.
+
+          Check:
+          1. columnVisibility: every render path filtered; controlled event
+          2. filters: substring semantics; combines with form values
+          3. seq/spanMethod: merge occupied-set correctness; seq start
+          4. columnDrag/rowDrag: createSortable bridge (threshold,
+             closest-center, reorder); grouped header untouched; cleanup
+          5. expose methods: no query on loadData; proxy state mapping
+          6. core framework-free; additive; manifest hygiene; CSS tokens
+          Run verification commands (vue typecheck/test/lint, audit,
+          check:manifest). Write verdict markdown: PASS or FAIL with numbered
+          findings (severity, file:line, fix). Do NOT modify files.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-y-review.md
+
+  - name: gate
+    from_outputs: review
+    mode: serial
+    validate: |
+      python {tool_root}/projects/iris-ui/scripts/iris-ui-spec.py --mode all --json
+    tasks:
+      - cwd: /home/u1/iris-ui
+        prompt: |
+          Gate stage for iris-ui batch Y (vue parity round 2). Read the
+          review verdict /home/u1/iris-ui/docs/vxe-grid/batch-y-review.md.
+
+          If PASS: run the full repo gate:
+          - `cd /home/u1/iris-ui && env COREPACK_ENABLE_PROJECT_SPEC=0
+            corepack pnpm turbo run test typecheck lint build --concurrency=2`
+          - audit → 0; gen:manifest + check:manifest
+          - Update /home/u1/iris-ui/docs/vxe-grid-comparison.md: mark batch Y
+            rows (vue: 列显隐/筛选/序号/合并/列拖拽/行拖拽/代理方法) done (vue)
+            and refresh the remaining-gaps list.
+          - Commit: `git add -A -- . ':!apps/ssr-solidstart/.vinxi' && git
+            commit -m "feat(table): vxe-grid 批 Y——vue 适配器功能对齐二（列显隐/筛选/序号/合并/拖拽/代理方法）"`
+          Report commit hash and final test counts.
+
+          If FAIL with concrete fixes: apply fixes, rerun, full gate, commit.
+        output: /home/u1/iris-ui/docs/vxe-grid/batch-y-gate.md
