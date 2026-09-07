@@ -1,0 +1,68 @@
+# Source-first migration campaign for the remaining SVERP APS/quality work.
+# The coordinator re-plans every round; only one direction is implemented at a
+# time so approved source changes land on the target branch in order.
+name: sverp-source-first-porting
+
+discovery:
+  roots:
+    - apps/web/src/pages/aps
+    - apps/web/src/pages/quality
+    - apps/web/src/pages/pchs
+  exclude:
+    - node_modules
+    - dist
+    - .git
+    - .pi-batch
+    - docs
+    - testdata
+    - generated
+  max_depth: 2
+  fallback_top_level: false
+
+analysis:
+  jobs: 4
+  retries: 2
+  candidate_limit: 3
+  prompt: |
+    Analyze the target module '{module}' in sverpweb-stable as the next
+    source-first migration slice. Compare the target implementation with the
+    reference repository at /home/dwp/workspace/job/sverp-front and its
+    documented/API evidence. Read docs/route-migration.md and the target
+    AGENTS.md before proposing work.
+
+    Return ONLY a JSON array with at most {candidate_limit} directions, sorted
+    by value. Each direction must be exactly one independently implementable
+    feature point that is demonstrably present in the reference source or a
+    stable reference API and missing/incomplete in the target. Every object
+    must contain title, problem, value (1-10), risk_reduction (1-10), effort
+    (1-10), confidence (1-10), evidence (array of target/reference paths or
+    symbols), and acceptance (array of testable checks).
+
+    Do not propose generic refactors, visual preferences, speculative APIs,
+    production integrations without a configured non-production source, or
+    unsupported features. Do not claim parity merely because a route exists.
+    If no source-supported migration gap remains in this module, return [].
+    Preserve permissions, CSRF, optimistic concurrency, sourceStatus and
+    truthful no-op semantics. If a finding belongs to @iris-ui-kit/vue,
+    append it only after the JSON array as IRIS-UI-FINDINGS: [...]; never
+    implement an Iris defect in sverpweb-stable.
+
+selection:
+  max_directions: 1
+  minimum_score: 0
+
+implementation:
+  pipeline: .pi-batch/sverp/aps-porting-pipeline.yaml
+  requirement_stage: requirements
+  concurrency: 1
+  timeout: 14400
+
+state:
+  output_dir: .pi-batch/aps-porting
+  state_file: .pi-batch/aps-porting/state.jsonl
+  summary_file: .pi-batch/aps-porting/SUMMARY.md
+  line_max_bytes: 262144
+
+estimates:
+  analysis_minutes: 3
+  pipeline_minutes: 30
