@@ -142,7 +142,7 @@ def test_project_scan_includes_css_for_numeric_iris_spacing(tmp_path):
         tmp_path,
         {"src/styles/app.css": ".editor { gap: var(--iris-space-4); }\n"},
     )
-    result = _run("--dir", str(tmp_path), "--mode", "spacing", "--json")
+    result = _run("--dir", str(tmp_path), "--all", "--json")
     assert result.returncode == 1
     payload = json.loads(result.stdout)
     assert payload["files_scanned"] == 1
