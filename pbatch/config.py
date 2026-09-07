@@ -379,6 +379,9 @@ _LIMITS_CFG = _section("limits")
 
 AGENT_BIN = _string_setting(_AGENT_CFG, "bin", "pi", allow_empty=False)
 AGENT_DEFAULT_MODEL = _string_setting(_AGENT_CFG, "default_model", "")
+# Invocation-level CLI override. It is intentionally empty by default so
+# task/stage YAML thinking settings retain their historical precedence.
+AGENT_THINKING_OVERRIDE = ""
 AGENT_DEFAULT_TIMEOUT = _int_setting(_AGENT_CFG, "default_timeout", 900, 1)
 AGENT_DEFAULT_WORKERS = _int_setting(_AGENT_CFG, "default_workers", 4, 1)
 

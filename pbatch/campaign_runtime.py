@@ -15,6 +15,7 @@ def _agent_args(args: argparse.Namespace) -> list[str]:
     values = ["--agent-bin", args.agent_bin, "--memory-mode", args.memory_mode,
               "--stream-output", args.stream_output]
     for flag, value in (("--model", args.model), ("--provider", args.provider),
+                        ("--thinking", getattr(args, "thinking", "")),
                         ("--timeout", args.timeout)):
         if value:
             values.extend([flag, str(value)])

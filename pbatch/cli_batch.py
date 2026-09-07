@@ -220,6 +220,9 @@ def _apply_task_overrides(args, tasks) -> None:
     if args.provider:
         for t in tasks:
             t.provider = args.provider
+    if getattr(args, "thinking", ""):
+        for t in tasks:
+            t.thinking = args.thinking
     if args.timeout:
         for t in tasks:
             t.timeout = args.timeout
@@ -374,7 +377,7 @@ def _write_sidecars(args, tasks: list, results: list, cli_validate: str) -> None
         if r.success and t.output:
             eff = t.validate if t.validate is not None else cli_validate
             write_sidecar(str(t.output_path()), t.prompt, eff, t.model,
-                          t.provider, t.workdir())
+                          t.provider, t.workdir(), t.thinking)
 
 def _batch_git_baseline(args, tasks: list):
     if not (args.git_commit and not args.no_git_commit):

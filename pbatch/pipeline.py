@@ -170,7 +170,8 @@ def _task_prompt(task_def: dict, input_content: str, input_stem: str, input_path
                  .replace("{input_path}", input_path)
                  .replace("{prompt}", original_prompt))
 def _expected_fp(prompt: str, out: str, validate_cmd: str, model: str,
-                 provider: str, fp_mode: bool, workdir: str = "") -> Optional[str]:
+                 provider: str, fp_mode: bool, workdir: str = "",
+                 thinking: str = "") -> Optional[str]:
     """T9: fingerprint for a reuse candidate when --reuse-fingerprint is on
     (None otherwise); a mismatch regenerates the artifact. model/provider
     are the TASK's EFFECTIVE values (overrides included) — hashing the raw
@@ -178,7 +179,8 @@ def _expected_fp(prompt: str, out: str, validate_cmd: str, model: str,
     records the executed task's values (round-4 finding M6)."""
     if not fp_mode:
         return None
-    return reuse_fp(prompt, out, validate_cmd or "", model, provider, workdir)
+    return reuse_fp(prompt, out, validate_cmd or "", model, provider, workdir,
+                    thinking)
 
 def _task_from_def(task_def: dict, prompt: str, output_path: str, model_override: str = "",
                    timeout_override: int = 0, stage: Optional[Stage] = None) -> Task:
@@ -240,7 +242,7 @@ def _aggregate_tasks(stage: Stage, prev_outputs: list, model_override: str = "",
         out_resolved = str(task.output_path()) if task.output else ""
         effective_validate = task.validate if task.validate is not None else validate_cmd
         fp = _expected_fp(task.prompt, out_resolved, effective_validate, task.model,
-                          task.provider, fingerprint_mode, task.workdir())
+                          task.provider, fingerprint_mode, task.workdir(), task.thinking)
         if _maybe_reuse_task(stage, task, out_resolved, output_path,
                               effective_validate, reuse_legacy, fp, reuse, reused):
             continue
@@ -277,7 +279,7 @@ def _stage_from_prompt_tasks(stage: Stage, reuse: bool, model_override: str, tim
     # written after success matches the reuse-check fingerprint.
     out_resolved = str(task.output_path()) if task.output else ""
     fp = _expected_fp(task.prompt, out_resolved, validate_cmd, task.model,
-                      task.provider, fingerprint_mode, task.workdir())
+                      task.provider, fingerprint_mode, task.workdir(), task.thinking)
     if reuse and reuse_decision(out_resolved, validate_cmd, task.workdir(),
                                 reuse_legacy, fp):
         log.info("REUSE: %s (reused+validated)", stage.output)
@@ -323,7 +325,7 @@ def _stage_from_dir_tasks(stage: Stage, reuse: bool, model_override: str, timeou
             task.timeout = timeout_override
         prepare_task_context(task, [fpath.resolve()], strict=False)
         fp = _expected_fp(task.prompt, str(out_path), validate_cmd, task.model,
-                          task.provider, fingerprint_mode, task.workdir())
+                          task.provider, fingerprint_mode, task.workdir(), task.thinking)
         if reuse and reuse_decision(str(out_path), validate_cmd, str(fpath.parent), reuse_legacy, fp):
             log.info("REUSE: %s (reused+validated)", out_path.name)
             reused.append(str(out_path))
@@ -372,7 +374,7 @@ def _stage_from_outputs_tasks(stage: Stage, stage_outputs: dict, reuse: bool, mo
             out_resolved = str(task.output_path()) if task.output else ""
             effective_validate = task.validate if task.validate is not None else validate_cmd
             fp = _expected_fp(task.prompt, out_resolved, effective_validate, task.model,
-                              task.provider, fingerprint_mode, task.workdir())
+                              task.provider, fingerprint_mode, task.workdir(), task.thinking)
             if _maybe_reuse_task(stage, task, out_resolved, output_path,
                                   effective_validate, reuse_legacy, fp, reuse, reused):
                 continue
@@ -508,7 +510,8 @@ def _write_stage_sidecars(results: list, stage_validate: str) -> None:
         if r.success and r.task.output:
             eff = r.task.validate if r.task.validate is not None else stage_validate
             write_sidecar(str(r.task.output_path()), r.task.prompt, eff,
-                          r.task.model, r.task.provider, r.task.workdir())
+                          r.task.model, r.task.provider, r.task.workdir(),
+                          r.task.thinking)
 
 def _log_stage_completion(stage: Stage, done: int, total_tasks: int) -> None:
     log.info("")

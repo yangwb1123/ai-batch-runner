@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .campaign_models import CampaignSettings, Direction
 from .campaign_state import digest, tool_digest, tree_digest
+from . import config
 from .evolution import load_constitution
 from .meta import _extract_json_array
 from .models import Task, TaskResult
@@ -200,6 +201,7 @@ def analysis_fingerprint(root: Path, settings: CampaignSettings, module: str,
         "prompt": task.prompt,
         "model": task.model,
         "provider": task.provider,
+        "thinking": config.AGENT_THINKING_OVERRIDE or task.thinking,
         "planning_history": _planning_history(root),
         "tool": tool_digest(),
     })

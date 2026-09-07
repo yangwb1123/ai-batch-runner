@@ -170,6 +170,8 @@ def _add_batch_args(p: argparse.ArgumentParser) -> None:
                         "set agent.bin in pi-batch.yaml to change the default)")
     p.add_argument("--model", default="",
                    help="default model override for all tasks")
+    p.add_argument("--thinking", default="",
+                   help="default thinking level override for all tasks (e.g. max)")
     p.add_argument("--route-model", action="store_true",
                    help="T14: 按任务难度自动路由 model（模型路由表 + 每日配额降级；"
                         "仅补未显式指定 model 的任务）")
@@ -477,6 +479,7 @@ def _dispatch_subcommand() -> bool:
 
 def _wire_agent(args) -> None:
     config.AGENT_BIN = args.agent_bin
+    config.AGENT_THINKING_OVERRIDE = args.thinking
     config.MEMORY_MODE = args.memory_mode
     config.STREAM_OUTPUT = args.stream_output
 

@@ -72,6 +72,7 @@ def direction_fingerprint(root: Path, settings: CampaignSettings, direction: Dir
         "repository": snapshot,
         "model": model,
         "provider": provider,
+        "thinking": config.AGENT_THINKING_OVERRIDE,
     })
 
 

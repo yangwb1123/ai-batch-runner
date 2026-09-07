@@ -46,6 +46,19 @@ def test_direction_score_id_and_implementation_contract():
     assert direction.implementable is True
 
 
+def test_campaign_parser_and_child_args_carry_thinking_override():
+    from pbatch.campaign_exec import _agent_args
+
+    args = build_campaign_parser().parse_args([
+        "--thinking", "max", "--model", "gpt-5.6-luna",
+        "--provider", "openai-codex",
+    ])
+    assert args.thinking == "max"
+    assert "--thinking" in _agent_args(args)
+    values = _agent_args(args)
+    assert values[values.index("--thinking") + 1] == "max"
+
+
 def test_campaign_runtime_shares_breaker_with_isolated_worktrees(monkeypatch, tmp_path):
     from pbatch import campaign_exec, metering, ratelimit
     args = SimpleNamespace(

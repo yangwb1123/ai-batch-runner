@@ -334,7 +334,7 @@ def _run_role_task(item, validate_cmd: str, session_name: str, reuse: bool,
         return role, result
     output = str(task.output_path())
     expected = (reuse_fp(task.prompt, output, validate_cmd, task.model,
-                         task.provider, task.workdir())
+                         task.provider, task.workdir(), task.thinking)
                 if fingerprint_mode else None)
     if reuse and reuse_decision(
             output, validate_cmd, task.workdir(), reuse_legacy, expected):
@@ -348,7 +348,7 @@ def _run_role_task(item, validate_cmd: str, session_name: str, reuse: bool,
             result.reason = "validation failed"
         elif fingerprint_mode:
             write_sidecar(output, task.prompt, validate_cmd, task.model,
-                          task.provider, task.workdir())
+                          task.provider, task.workdir(), task.thinking)
     record_task(result)
     return role, result
 

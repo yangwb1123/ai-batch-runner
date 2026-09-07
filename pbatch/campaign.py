@@ -54,6 +54,8 @@ def build_campaign_parser() -> argparse.ArgumentParser:
     parser.add_argument("--agent-bin", default=config.AGENT_BIN)
     parser.add_argument("--model", default="")
     parser.add_argument("--provider", default="")
+    parser.add_argument("--thinking", default="",
+                        help="reasoning level override for every campaign agent (e.g. max)")
     parser.add_argument("--timeout", type=int, default=0)
     parser.add_argument("--retries", type=int, help="analysis retries")
     parser.add_argument("--retry-delay", type=float, default=10)

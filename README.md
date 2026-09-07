@@ -274,6 +274,10 @@ pi-batch tasks.yaml --max-rounds 0 --round-delay 60
 # Repository campaign: inspect the plan, then analyze and implement Top N directions
 pi-batch campaign --dry-run
 pi-batch campaign --max-directions 2 --reuse --retry-failed
+# 24x7 incremental campaign: concurrent analysis/meta roles, bounded provider policy,
+# and max reasoning (implementation remains worktree/commit governed)
+pi-batch campaign --rounds 0 --round-delay 120 --jobs 4 --max-directions 1 \
+  --model gpt-5.6-luna --provider openai-codex --thinking max --reuse --retry-failed
 ```
 
 ### Interactive terminal UI

@@ -227,6 +227,7 @@ def _agent_args(args: argparse.Namespace) -> list[str]:
     values = ["--agent-bin", args.agent_bin, "--memory-mode", args.memory_mode,
               "--stream-output", args.stream_output]
     for flag, value in (("--model", args.model), ("--provider", args.provider),
+                        ("--thinking", getattr(args, "thinking", "")),
                         ("--timeout", args.timeout)):
         if value:
             values.extend([flag, str(value)])
@@ -278,6 +279,7 @@ def _print_plan(context: CampaignContext, modules: list[str]) -> None:
 def _wire_runtime(args: argparse.Namespace) -> None:
     from . import metering, ratelimit
     config.AGENT_BIN = args.agent_bin
+    config.AGENT_THINKING_OVERRIDE = getattr(args, "thinking", "")
     config.MEMORY_MODE = args.memory_mode
     config.STREAM_OUTPUT = args.stream_output
     metering.EVENTS_FILE = args.events_file

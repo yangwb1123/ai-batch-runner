@@ -131,7 +131,9 @@ class Task:
     def to_cmd(self, session_flags: Optional[list] = None) -> list[str]:
         return config.build_agent_argv(
             self.agent or config.AGENT_BIN, self.prompt, model=self.model,
-            provider=self.provider, thinking=self.thinking, tools=self.tools,
+            provider=self.provider,
+            thinking=config.AGENT_THINKING_OVERRIDE or self.thinking,
+            tools=self.tools,
             exclude_tools=self.exclude_tools, session_flags=session_flags)
 
     def workdir(self) -> str:

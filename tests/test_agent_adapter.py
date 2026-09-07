@@ -32,6 +32,17 @@ def test_agent_argv_merges_global_and_per_agent_flags(monkeypatch):
     assert config.agent_prompt_index("codex") == 1
 
 
+def test_task_argv_honors_invocation_thinking_override(monkeypatch):
+    _adapter_config(monkeypatch)
+    from pbatch.models import Task
+
+    monkeypatch.setattr(config, "AGENT_THINKING_OVERRIDE", "max")
+    command = Task(prompt="do work").to_cmd()
+
+    assert "--thinking" in command
+    assert command[command.index("--thinking") + 1] == "max"
+
+
 def test_agent_extra_args_appended_after_session_flags(monkeypatch):
     _adapter_config(monkeypatch)
     monkeypatch.setattr(config, "_AGENTS_CFG", {

@@ -212,14 +212,17 @@ def parallel_output_conflict(mode: str, tasks: list,
 
 
 def fingerprint(prompt: str, output: str, validate_cmd: Optional[str],
-                model: str = "", provider: str = "", workdir: str = "") -> str:
-    """sha256 of the canonical task inputs (T9 / decision D1): prompt,
-    output path, effective gate spec, and model/provider routing."""
+                model: str = "", provider: str = "", workdir: str = "",
+                thinking: str = "") -> str:
+    """sha256 of canonical task inputs (T9 / decision D1), including the
+    effective reasoning level so a max-thinking run cannot reuse an artifact
+    produced with a different invocation policy."""
     resolved = str(_resolved_output(output, workdir))
     state_cwd = workdir or str(Path(resolved).parent)
     repo_state = _repository_state(state_cwd, resolved)
+    effective_thinking = thinking or config.AGENT_THINKING_OVERRIDE
     canon = json.dumps([prompt, resolved, validate_cmd, model, provider,
-                        repo_state],
+                        effective_thinking, repo_state],
                        sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
@@ -228,7 +231,7 @@ def reuse_fingerprint(task, validate_cmd: Optional[str]) -> str:
     """Fingerprint for a Task object (T9), used by the single-batch
     reuse path."""
     return fingerprint(task.prompt, str(task.output_path()), validate_cmd,
-                       task.model, task.provider, task.workdir())
+                       task.model, task.provider, task.workdir(), task.thinking)
 
 
 def sidecar_path(output: str) -> Path:
@@ -236,17 +239,20 @@ def sidecar_path(output: str) -> Path:
 
 
 def write_sidecar(output: str, prompt: str, validate_cmd: Optional[str],
-                  model: str = "", provider: str = "", workdir: str = "") -> None:
+                  model: str = "", provider: str = "", workdir: str = "",
+                  thinking: str = "") -> None:
     """Persist the artifact's input fingerprint next to it (frozen format
     version 1; only written under --reuse-fingerprint)."""
     resolved = str(_resolved_output(output, workdir))
+    effective_thinking = thinking or config.AGENT_THINKING_OVERRIDE
     meta = {
         "version": 1,
         "fingerprint": fingerprint(prompt, resolved, validate_cmd, model,
-                                   provider, workdir),
+                                   provider, workdir, effective_thinking),
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "model": model,
         "provider": provider,
+        "thinking": effective_thinking,
     }
     try:
         sidecar_path(resolved).write_text(json.dumps(meta, ensure_ascii=False),
