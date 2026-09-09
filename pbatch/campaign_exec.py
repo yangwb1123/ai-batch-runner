@@ -22,6 +22,7 @@ from .campaign_analysis import (analysis_fingerprint, build_analysis_task,
                                 discover_modules, parse_directions,
                                 run_analysis_tasks, select_directions)
 from .campaign_models import CampaignSettings, Direction
+from .campaign_merge import record_campaign_outcomes
 from .campaign_preflight import (_preflight_collect_specs,
                                  _preflight_run_one, _preflight_validators,
                                  _provider_breaker_admission,
@@ -197,21 +198,9 @@ def _implement(context: CampaignContext, items: list[tuple[Direction, Path, str]
         outcomes = [_run_direction_safe(context, direction, analysis)
                     for direction, analysis, _ in items]
     fingerprints = {direction.direction_id: fp for direction, _, fp in items}
-    for outcome in outcomes:
-        dirty_evidence = outcome.dirty_evidence or []
-        if (outcome.status == PipelineStatus.PASSED and not outcome.clean_commit
-                and not dirty_evidence):
-            dirty_evidence = ["repository state evidence unavailable"]
-        _event(context, outcome.direction.module, outcome.direction.direction_id,
-               outcome.direction.title, outcome.status, fingerprints[outcome.direction.direction_id],
-               outcome.evidence, outcome.reason, outcome.elapsed,
-               {"branch": outcome.branch, "commit": outcome.commit,
-                "head_commit": outcome.commit,
-                "baseline_commit": outcome.baseline_commit,
-                "clean_commit": outcome.clean_commit,
-                "dirty_evidence": dirty_evidence,
-                "dirty_digest": outcome.dirty_digest})
+    record_campaign_outcomes(context, outcomes, fingerprints, _event)
     return outcomes
+
 
 def _run_direction_safe(context: CampaignContext, direction: Direction,
                         analysis: Path):
