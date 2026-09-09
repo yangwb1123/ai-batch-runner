@@ -48,7 +48,8 @@ class TestScanFiles(unittest.TestCase):
         suffix at any depth."""
         tmp = Path(tempfile.mkdtemp())
         _make_tree(tmp, ("sub/deep/build/x.py", "vendor/pkg.egg-info/x.py",
-                         "vendor/pkg.egg-info/deep/x.py", "src/ok.py"))
+                         "vendor/pkg.egg-info/deep/x.py", ".pi-batch/work/x.py",
+                         "src/ok.py"))
         self.assertEqual(_rels(tmp), ["src/ok.py"])
 
     def test_sorted_ordering_across_dirs(self):

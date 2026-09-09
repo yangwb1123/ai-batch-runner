@@ -1,65 +1,69 @@
 [
   {
-    "title": "Fix nested-function double-counting in complexity gates (outer wrapper inherits inner closure's score)",
-    "problem": "checks/complexity.py collects nested defs via _functions() (ast.walk over the whole tree) and then cyclomatic()/cognitive() also walk the full node subtree — so a wrapper function's score includes the bodies of its nested closures, while the closure itself is scored again separately. Verified empirically: `def outer(): def inner(): if a: if b: if c: ...` yields outer cyclomatic=4/cognitive=6 even though outer's own body is a single return, and inner scores 4/6 too. This diverges from gocyclo/gocognit semantics (nested functions scored as separate units) and produces false-positive gate failures on wrappers/decorator factories, which pressures teams to widen the blunt substring ignore_patterns (checks/config.py:is_ignored) and mask real complexity.",
-    "value": 8,
-    "risk_reduction": 7,
+    "title": "Validate exact staged blobs and fail closed in pre-commit",
+    "problem": "Verified at committed HEAD: `.githooks/pre-commit` enumerates staged paths but the checkers read working-tree files, skip missing paths, and ignore Git/checker return codes. Proposed impact: staged content can be bypassed or checker failures can appear successful.",
+    "value": 10,
+    "risk_reduction": 10,
+    "effort": 4,
+    "confidence": 10,
+    "score": 7.2,
+    "status": "proposed",
+    "evidence": [
+      ".githooks/pre-commit:15-36",
+      "checks/filesize.py:check_file",
+      "checks/style.py:check_file",
+      "docs/CHECKS_REGISTRY.md:60-67"
+    ],
+    "acceptance": [
+      "A staged failing blob is rejected even when the working-tree copy is valid; the inverse passes.",
+      "A staged file deleted from the working tree is still checked from the index.",
+      "Git failures, checker nonzero exits, stderr-only failures, and renamed Python files fail closed with diagnostics.",
+      "No-staged-Python behavior and existing checks tests remain green."
+    ]
+  },
+  {
+    "title": "Fail closed when shared scan discovery cannot traverse an authored directory",
+    "problem": "Verified at committed HEAD: `checks.config.scan_files()` calls `os.walk()` without an error callback. Proposed failure mode: traversal errors can silently omit authored directories, leaving filesize, complexity, and style with an incomplete manifest.",
+    "value": 9,
+    "risk_reduction": 9,
     "effort": 3,
     "confidence": 9,
+    "score": 6.6,
+    "status": "proposed",
     "evidence": [
-      "checks/complexity.py:73-79",
-      "checks/complexity.py:48-52",
-      "checks/complexity.py:82-89",
-      "checks/complexity.py:93-117",
-      "checks/config.py:165-167",
-      "checks/test_complexity.py:9-14"
+      "checks/config.py:scan_files",
+      "checks/filesize.py:run",
+      "checks/complexity.py:run",
+      "checks/style.py:run",
+      "cli.py:_aggregate",
+      "checks/test_config.py:TestScanFiles"
     ],
     "acceptance": [
-      "New regression test in checks/test_complexity.py: a wrapper function containing a nested complex closure scores cyclomatic==1 and cognitive==0 while the inner closure scores its own branches (no double count)",
-      "python -m pytest checks/test_complexity.py passes (49 checks/ tests stay green)",
-      "python cli.py check-complexity still exits 0 on the current repo tree (no new ignore_patterns entries needed)"
+      "A hermetic traversal-error fixture for an existing authored directory causes discovery and each applicable gate to fail with a directory-specific diagnostic.",
+      "`cli.py check` remains fail closed while reporting subsequent gate results.",
+      "Directory pruning, deterministic ordering, empty-root behavior, and existing scan tests remain unchanged."
     ]
   },
   {
-    "title": "Add machine-readable --json output to the four harness gates (cli.py check --json)",
-    "problem": "The four gates (filesize/complexity/root-policy/style) only print human text and return an exit code (cli.py:37-67), while every other checker in the repo emits structured JSON (scripts/check-ui-spec.py --json, check-frontend-quality.py --json, check-knowledge-freshness.py --json, all registered as pi-batch.yaml validators) and pbatch/gate_fix.py consumes structured findings for the auto-fix loop. The harness gates therefore cannot feed automated fix loops, campaign scoring, rejected-artifact diagnostics, or LLM validators configured as 'python cli.py check' (pi-batch.yaml 'quick') — they get only free-form stdout.",
-    "value": 7,
-    "risk_reduction": 6,
-    "effort": 3,
-    "confidence": 8,
+    "title": "Make the pre-push harness include a bounded H0 self-test",
+    "problem": "Verified at committed HEAD: `.githooks/pre-push` invokes `cli.py harness`, while `cmd_harness()` delegates only to G1-G4; `Makefile:harness` additionally runs H0. `cmd_check_test()` also launches unittest discovery without a timeout. Proposed impact: pre-push can be falsely green or hang indefinitely.",
+    "value": 8,
+    "risk_reduction": 8,
+    "effort": 4,
+    "confidence": 9,
+    "score": 5.8,
+    "status": "proposed",
     "evidence": [
-      "cli.py:37-67",
-      "checks/filesize.py:44-53",
-      "checks/complexity.py:118-126",
-      "checks/style.py:60-64",
-      "checks/root_files.py:34-42",
-      "pi-batch.yaml:123",
-      "pi-batch.yaml:131-133"
+      ".githooks/pre-push:7-12",
+      "cli.py:cmd_check_test",
+      "cli.py:cmd_harness",
+      "Makefile:harness",
+      "tests/test_gate_cli.py::test_cmd_check_runs_all_gates_and_harness_delegates"
     ],
     "acceptance": [
-      "python cli.py check --json emits a single parseable JSON document (per-gate violation list with file:line and kind, plus counts) and preserves the exit code semantics",
-      "New regression test in checks/test_config.py (or a new checks/test_cli_json.py) asserts the JSON schema: one key per gate, values are arrays of strings",
-      "python cli.py check without --json produces byte-identical human output (backward compatible)"
-    ]
-  },
-  {
-    "title": "Validate engineering.yaml values with actionable errors naming the offending key",
-    "problem": "Malformed config values crash get_config() with bare ValueError/TypeError (verified: max_lines: '500 lines' -> ValueError, max_cyclomatic: 'high' -> ValueError, max_files: null -> TypeError) because _load_* in checks/config.py call int() unguarded. Via cli.py the crash is swallowed into 'ERROR: {name} crashed: ...' without naming the key; invoked directly it is a raw traceback. Since engineering.yaml is documented as the ONLY file users edit when porting cli.py + checks/ to another project (engineering.yaml header, checks/README), the first failure mode new adopters hit is an undiagnosable one — the fail-closed exit code is preserved, but the diagnostic is poor.",
-    "value": 6,
-    "risk_reduction": 5,
-    "effort": 2,
-    "confidence": 8,
-    "evidence": [
-      "checks/config.py:96-113",
-      "checks/config.py:83-93",
-      "cli.py:29-34",
-      "engineering.yaml:1-8",
-      "checks/README.md:1-12"
-    ],
-    "acceptance": [
-      "New test: engineering.yaml with filesize.max_lines: '500 lines' yields an error naming 'filesize.max_lines' (not a bare ValueError traceback)",
-      "New test: python cli.py check with a bad engineering.yaml prints 'ERROR: filesize gate config: filesize.max_lines must be an integer' and exits 1 (fail closed preserved)",
-      "Valid engineering.yaml parses to byte-identical Config values as today (no behavior change)"
+      "The pre-push harness runs all four gates plus H0, and any failure returns nonzero.",
+      "A hanging self-test and its child processes are terminated by a bounded deadline with an actionable diagnostic.",
+      "Normal self-tests complete successfully, leave no orphan processes, and existing CLI dispatch tests remain green."
     ]
   }
 ]

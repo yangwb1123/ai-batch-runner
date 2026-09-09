@@ -74,11 +74,11 @@ class TestCheckFile(unittest.TestCase):
 
     def test_run_scan_excludes_generated_dirs(self):
         """AC2: run() discovery never lists .py under build/, dist/,
-        *.egg-info/, .git/, __pycache__/, logs/ — the scan list is exactly
+        *.egg-info/, .git/, __pycache__/, logs/, .pi-batch/ — the scan list is exactly
         the authored tree (src/ok.py). A 600-line file under logs/ is the
         any-excluded-dir representative and must not fail run()."""
         tmp = Path(tempfile.mkdtemp())
-        for kind in ("build", "dist", ".git", "__pycache__", "logs"):
+        for kind in ("build", "dist", ".git", "__pycache__", "logs", ".pi-batch"):
             d = tmp / kind
             d.mkdir()
             (d / "x.py").write_text("x = 1\n", encoding="utf-8")

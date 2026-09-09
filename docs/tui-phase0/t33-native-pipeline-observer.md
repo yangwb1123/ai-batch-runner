@@ -16,8 +16,9 @@ bounded RuntimeEvent stream for:
 - gate verdicts;
 - bounded `pipeline.checkpoint` stage-boundary facts carrying completed/next stage
   indices, task counts and `next_stage`/`retry_stage` diagnostic resume boundary.
-  The TUI exposes the latest typed boundary as `view.pipeline_checkpoint`; these
-  facts are recovery evidence only and never authorize replay or execution.
+  The TUI exposes the latest typed boundary as `view.pipeline_checkpoint`; stage
+  order and completion counters are monotonic within a turn. These facts are
+  recovery evidence only and never authorize replay or execution.
 
 The existing execution and gate code remains authoritative. The observer is
 attached through a context-local bridge, so ordinary pipeline calls have no new

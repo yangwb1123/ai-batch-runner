@@ -35,6 +35,17 @@ def test_pipeline_checkpoint_projection_rejects_inconsistent_boundaries():
         projection.validate(bad)
 
 
+def test_pipeline_checkpoint_projection_rejects_stage_order_regression():
+    events = []
+    observer = NativePipelineObserver(events.append, "/tmp/project")
+    observer.pipeline_checkpoint("first", 1, 2, True)
+    observer.pipeline_checkpoint("second", 1, 2, True)
+    projection = PipelineCheckpointProjection()
+    projection.consume(events[0])
+    with pytest.raises(ValueError, match="stage order regressed"):
+        projection.validate(events[1])
+
+
 def test_deterministic_preflight_plan_contains_only_explicit_pipeline_bounds(tmp_path):
     stage = Stage(
         name="review", cwd=str(tmp_path), from_dir="inputs",

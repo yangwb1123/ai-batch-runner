@@ -150,7 +150,8 @@ def repo_root() -> Path:
 # Directory segments excluded from gate scan discovery (matched at any depth,
 # exact segment name — not substring). Mirrors engineering.yaml's declared
 # scope: "quality rules apply to the code we author here".
-DEFAULT_EXCLUDED_SEGMENTS = ("build", "dist", ".git", "__pycache__", "logs")
+DEFAULT_EXCLUDED_SEGMENTS = (
+    "build", "dist", ".git", "__pycache__", "logs", ".pi-batch")
 DEFAULT_EXCLUDED_SUFFIXES = (".egg-info",)   # matches ai_batch_runner.egg-info
 
 
