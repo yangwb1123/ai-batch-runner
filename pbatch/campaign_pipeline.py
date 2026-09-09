@@ -50,6 +50,10 @@ class PipelineOutcome:
     clean_commit: str = ""
     dirty_evidence: list[str] | None = None
     dirty_digest: str = ""
+    merge_status: str = ""
+    merge_reason: str = ""
+    merge_commit: str = ""
+    merge_evidence: list[str] | None = None
 
 
 def direction_fingerprint(root: Path, settings: CampaignSettings, direction: Direction,
