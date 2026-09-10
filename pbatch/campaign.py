@@ -84,6 +84,15 @@ def _add_round_args(parser: argparse.ArgumentParser) -> None:
         "--round-commit", action="store_true",
         help="commit all non-ignored changes after each round; commit errors "
              "fail the campaign")
+    parser.add_argument("--auto-merge", action="store_true",
+                        help="review passed isolated branches, run the merge gate, and merge "
+                             "them into this repository")
+    parser.add_argument("--merge-gate", default="",
+                        help="required bounded test/gate command for --auto-merge")
+    parser.add_argument("--merge-squash", action="store_true",
+                        help="squash each reviewed isolated branch when auto-merging")
+    parser.add_argument("--merge-wait-lock", type=int, default=0, metavar="MINUTES",
+                        help="wait for the repository merge lock in auto-merge mode")
 
 
 def _add_metering_args(parser: argparse.ArgumentParser) -> None:
@@ -120,6 +129,11 @@ def load_settings(root: Path, args: argparse.Namespace) -> CampaignSettings:
     _apply_overrides(settings, args)
     settings.validate()
     _validate_runtime_args(args)
+    if args.auto_merge:
+        if not args.merge_gate.strip():
+            raise ValueError("--auto-merge requires --merge-gate")
+        if settings.pipeline_concurrency < 2:
+            raise ValueError("--auto-merge requires --parallel-pipelines >= 2")
     _validate_paths(root, settings)
     return settings
 
@@ -128,7 +142,8 @@ def _validate_runtime_args(args: argparse.Namespace) -> None:
     values = {"timeout": args.timeout, "retry-delay": args.retry_delay,
               "budget-max": args.budget_max, "daily-budget": args.daily_budget,
               "round-delay": args.round_delay, "rate-limit": args.rate_limit,
-              "rate-burst": args.rate_burst}
+              "rate-burst": args.rate_burst,
+              "merge-wait-lock": getattr(args, "merge_wait_lock", 0)}
     invalid = [name for name, value in values.items()
                if not math.isfinite(float(value)) or value < 0]
     if args.rounds < 0:

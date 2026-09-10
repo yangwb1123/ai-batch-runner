@@ -43,6 +43,16 @@ def test_bare_strict_flag_scans_current_directory(tmp_path):
     assert "quality: OK" in result.stdout
 
 
+def test_generated_worktree_files_are_not_scanned(tmp_path):
+    artifacts = tmp_path / ".pi-batch" / "worktrees"
+    artifacts.mkdir(parents=True)
+    (artifacts / "generated.py").write_text(
+        "def too_big():\n" + "    x = 1\n" * 60 + "\n", encoding="utf-8")
+    result = _run_quality([str(tmp_path)])
+    assert result.returncode == 0
+    assert "generated.py" not in result.stdout
+
+
 def test_long_function_reported(tmp_path):
     bad = tmp_path / "bad.py"
     lines = ["def big():"]

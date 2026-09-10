@@ -1,73 +1,68 @@
-All three directions are now independently verified. Notably, the pre-existing analysis file's top claim (parallel mode ignores `--retries`) is factually wrong — `run_parallel` and `_run_parallel_one` implement retries with validator-feedback and `min_interval`, covered by tests at tests/test_pi_batch.py:425-482.
-
-```json
 [
   {
-    "title": "Parallel batch executor has no output-path collision detection; the wave/conflict scheduler in waves.py is never wired in",
-    "problem": "run_parallel submits tasks to a plain ThreadPoolExecutor in submission order with no check that two tasks write the same output path (or one task's output inside another's cwd): a tasks.yaml/stdin batch where two tasks share an output races last-write-wins with no lock or fail-closed rejection, silently corrupting a deliverable under 7x24 unattended operation. Meanwhile the conflict/dependency machinery built for exactly this (plan_waves/_conflicts/rank_nodes/assign_agents in waves.py) has zero production importers — it is exercised only by unit tests (test_runtime_governance.py, test_final_formulas.py, test_tools_health.py, test_decision_states.py) and fabric_sched.TaskNode is constructed only by device-fabric modules, never by the batch runner. Meta role outputs are collision-safe (sanitized names + per-plan dedupe), which makes the gap in the plain parallel batch path the notable exception.",
-    "value": 8,
-    "risk_reduction": 8,
+    "title": "Canonicalize and bound multi-instance lock declarations",
+    "problem": "Lock conflict checks compare raw output strings, while actual task paths normalize cwd and '..'; equivalent paths such as docs/a/../shared.md and docs/shared.md are admitted as disjoint. The preflight source scan also uses unbounded Path.read_text.",
+    "value": 9,
+    "risk_reduction": 9,
     "effort": 4,
-    "confidence": 9,
+    "confidence": 10,
+    "score": 6.6,
     "evidence": [
-      "pbatch/runner.py:935 (run_parallel: ThreadPoolExecutor, no output-path uniqueness check)",
-      "pbatch/runner.py:956 (pool.submit in submission order, no conflict/dependency ordering)",
-      "pbatch/runner.py:886 (_run_parallel_one: retry loop but no collision guard)",
-      "pbatch/cli_batch.py:496 (parallel dispatch passes no conflict validation)",
-      "pbatch/waves.py:49 (_conflicts write-set conflict logic, zero production callers)",
-      "pbatch/waves.py:56 (plan_waves, only imported by tests/test_runtime_governance.py:21)",
-      "pbatch/meta.py:392 (meta roles already dedupe sanitized output names — plain batch path does not)",
-      "tests/test_pi_batch.py:425 (parallel retry tests exist; none covers output collisions)"
+      "pbatch/cli.py:_planned_outputs",
+      "pbatch/lock.py:_payload",
+      "pbatch/lock.py:_parallel_declarations",
+      "pbatch/models.py:Task.output_path",
+      "tests/test_lock_domain.py::test_cli_planned_outputs_scan",
+      "tests/test_lock_domain.py::test_overlapping_outputs_refuse_with_paths"
     ],
     "acceptance": [
-      "new test: run_parallel with two tasks sharing one output path fails closed at scheduling time (no agent invoked, clear error) or is explicitly serialized with a warning",
-      "new test: run_parallel accepts an optional wave plan and co-schedules only non-conflicting tasks (conflicting tasks never run concurrently)",
-      "new test in tests/test_runtime_governance.py: plan_waves output, when fed to run_parallel, preserves all deliverable contents (no last-write-wins)",
-      "make ci passes"
+      "Equivalent relative, absolute, and '..' output paths conflict and return LOCK_EXIT_CODE.",
+      "Oversized, invalid-UTF8, symlinked, or FIFO source files cannot bypass bounded preflight or hang it.",
+      "Existing genuinely disjoint declarations remain eligible for parallel execution."
     ]
   },
   {
-    "title": "Memory index (.pi-batch/memory/sessions.index.jsonl) is append-only with no file-level retention: unbounded growth under 7x24 operation",
-    "problem": "append_event/_safe_append append a record for every task, gate, stage, campaign and session_import event with no total-size cap, rotation or archival — only a per-line bound (index_line_max_bytes) exists. Every subsequent execute-mode prompt's memory manifest is built from this ever-growing file, and find()/ingest_sessions scan it (ingest re-scans all Pi session files on every invocation). In this repo the index is already 338558 bytes / 354 lines and grows with every run; on long-running 7x24 batches and campaigns it will eventually slow recent/find/ingest and inflate every prompt's manifest scan window. events.py already demonstrates the intended pattern (EVENT_FILE_MAX=16MiB hard read cap) that memory.py lacks.",
-    "value": 7,
-    "risk_reduction": 6,
-    "effort": 3,
-    "confidence": 8,
+    "title": "Prevent artifact writes through symlinked parent directories",
+    "problem": "Artifact saving checks only whether the final unresolved output component is a symlink, then resolves ancestors and creates temporary files under the resolved parent. A symlinked parent can therefore redirect both validated and unvalidated artifacts, including sidecars, outside the intended path.",
+    "value": 9,
+    "risk_reduction": 9,
+    "effort": 4,
+    "confidence": 10,
+    "score": 6.6,
     "evidence": [
-      "pbatch/memory.py:316 (_safe_append: unbounded append, no file cap or rotation)",
-      "pbatch/memory.py:73 (append_event: every task/gate/stage event appended unconditionally)",
-      "pbatch/memory.py:238 (ingest_sessions re-scans all Pi session *.jsonl on each call)",
-      "pbatch/config.py:319 (only per-line MEMORY_INDEX_LINE_MAX_BYTES; no file-level key)",
-      ".pi-batch/memory/sessions.index.jsonl (338558 bytes, 354 lines, growing in this repo)",
-      "pbatch/events.py:18 (EVENT_FILE_MAX = 16MiB bounded-read precedent memory.py lacks)"
+      "pbatch/runner.py:_output_path_is_symlink",
+      "pbatch/runner.py:save_result",
+      "pbatch/runner.py:_save_validated",
+      "pbatch/reuse.py:_atomic_write_sidecar",
+      "pbatch/models.py:Task.output_path",
+      "tests/test_local_fixes.py::test_symlink_output_refused"
     ],
     "acceptance": [
-      "new test in tests/test_memory.py: appending beyond a new memory.index_max_bytes config value triggers rotation/archival and the index file stays under the cap",
-      "new test: recent/find return correct top-k results after rotation (no duplicate or lost records)",
-      "new test: ingest_sessions is idempotent after rotation (no duplicate session_import records)",
-      "documented config key in pi-batch.yaml memory section; make ci passes"
+      "Symlinked ancestor directories are rejected by both save paths and sidecar writes.",
+      "A race replacing an output component with a symlink cannot modify an external sentinel.",
+      "Normal nested regular-file outputs and existing final-symlink tests remain green."
     ]
   },
   {
-    "title": "Provider rate limiter is per-process: campaign --parallel-pipelines N subprocesses each get a fresh token bucket, bypassing limits",
-    "problem": "ratelimit.py keeps its buckets in a module-level in-memory dict, so the configured limits.per_second/burst constrain only agent invocations inside the one coordinator process. Campaign parallel implementation spawns one independent `pi-batch.py` subprocess per direction (separate worktree/log), each with its own fresh full burst; with N parallel pipelines and burst B the provider can receive N×B near-simultaneous requests — exactly the thundering-herd the limiter exists to prevent. The advisory-only limiter gives false assurance of global throttling in the repository's most aggressive concurrency mode; the resulting 429s are only absorbed downstream by failure-signature retries.",
-    "value": 6,
-    "risk_reduction": 6,
-    "effort": 5,
-    "confidence": 8,
+    "title": "Preserve declaration order for parallel stage evidence",
+    "problem": "runner_parallel._collect appends results in as_completed order. pipeline_native then builds stage outputs from that order, although evidence.combine_outputs promises declared ordering. Completion timing can therefore change aggregate prompts, downstream inputs, and reuse fingerprints.",
+    "value": 8,
+    "risk_reduction": 7,
+    "effort": 2,
+    "confidence": 10,
+    "score": 6.15,
     "evidence": [
-      "pbatch/ratelimit.py:38 (_BUCKETS module-level in-memory dict, per process)",
-      "pbatch/ratelimit.py:54 (configure() clears buckets at startup — each subprocess starts with a full burst)",
-      "pbatch/campaign_pipeline.py:335 (spawns `python pi-batch.py <pipeline> --reuse ...` subprocess per direction)",
-      "pbatch/campaign_pipeline.py:309 (parallel futures across worktrees — concurrent subprocesses)",
-      "pbatch/campaign_exec.py:250 (parallel_ready gating enables this mode)",
-      "pi-batch.yaml limits section (per_second/burst documented as process-wide only)"
+      "pbatch/runner_parallel.py:_collect",
+      "pbatch/pipeline_native.py:_outputs",
+      "pbatch/pipeline.py:_execute_stage_tasks",
+      "pbatch/evidence.py:combine_outputs",
+      "tests/test_parallel_plan.py::test_parallel_wave_plan_barrier_preserves_last_writer",
+      "tests/test_pi_batch.py::test_aggregate_merges_upstream_outputs"
     ],
     "acceptance": [
-      "new test: two ratelimit module instances (simulating two subprocesses) started in the same second can both acquire burst tokens — demonstrating the gap, then a shared file/daemon-backed limiter makes the second instance wait",
-      "integration test: campaign --parallel-pipelines 2 with limits.per_second=1 and a recording provider mock observes at most 1 in-flight request across both subprocesses",
-      "documentation update: limits section states cross-process semantics; make ci passes"
+      "Parallel results are returned in original task order despite differing completion times.",
+      "Mixed reused and newly generated outputs retain declaration order in downstream evidence.",
+      "Live result callbacks may remain completion-ordered while aggregate prompts are deterministic."
     ]
   }
 ]
-```

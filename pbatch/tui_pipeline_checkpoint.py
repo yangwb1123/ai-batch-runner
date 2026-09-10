@@ -57,6 +57,7 @@ class PipelineCheckpointProjection:
                 "stage_index", "stage_total", "completed_stages",
                 "next_stage_index", "task_count", "successful_tasks")}
         _validate_counts(counts)
+        _validate_progression(self._snapshot, counts)
         if payload["resume_boundary"] not in {"next_stage", "retry_stage"}:
             raise ValueError("pipeline checkpoint resume boundary is invalid")
         for name in ("success", "cancelled"):
@@ -104,6 +105,18 @@ def _count(value: Any, label: str) -> int:
             or value < 0 or value > _MAX_INDEX):
         raise ValueError(f"pipeline checkpoint {label} is invalid")
     return value
+
+
+def _validate_progression(snapshot: PipelineCheckpointSnapshot,
+                         counts: dict[str, int]) -> None:
+    if not snapshot.event_id:
+        return
+    if counts["stage_total"] != snapshot.stage_total:
+        raise ValueError("pipeline checkpoint stage total changed")
+    if counts["stage_index"] <= snapshot.stage_index:
+        raise ValueError("pipeline checkpoint stage order regressed")
+    if counts["completed_stages"] < snapshot.completed_stages:
+        raise ValueError("pipeline checkpoint completion regressed")
 
 
 def _validate_counts(counts: dict[str, int]) -> None:

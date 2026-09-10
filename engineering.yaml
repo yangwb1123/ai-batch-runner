@@ -11,7 +11,7 @@
 # code we author here: cli.py, checks/, and anything new.
 #
 # Gate scan discovery excludes generated dirs: build/ dist/ *.egg-info/
-# .git/ __pycache__/ logs/ (see checks/config.py:scan_files).
+# .git/ __pycache__/ logs/ .pi-batch/ (see checks/config.py:scan_files).
 
 project:
   name: ai-batch-runner
@@ -51,6 +51,15 @@ filesize:
     - "pbatch/tui_followups.py"  # TUI followups（519 lines, within quality.py 1000 budget）
     - "pbatch/tui_journal.py"    # TUI 日志页（1000 lines, quality.py 预算上限内；内聚单域，不硬拆）
     - "pbatch/tui_sessions.py"   # TUI 会话视图（751 lines, within quality.py 1000 budget）
+    - "pbatch/meta.py"            # meta 编排器（522 lines, within quality.py 1000-line budget）
+    - "pbatch/review.py"          # review 编排层（501 lines, within quality.py 1000-line budget）
+    - "pbatch/tui_approvals.py"   # TUI 审批视图（504 lines, within quality.py 1000-line budget）
+    - "pbatch/tui_changes.py"     # TUI 变更视图（535 lines, within quality.py 1000-line budget）
+    - "pbatch/tui_model_controls.py" # TUI 模型控制（687 lines, within quality.py 1000-line budget）
+    - "pbatch/tui_model_picker.py" # TUI 模型选择（505 lines, within quality.py 1000-line budget）
+    - "pbatch/tui_native.py"      # TUI 原生事件层（877 lines, within quality.py 1000-line budget）
+    - "pbatch/tui_projection_ui.py" # TUI 投影 UI（679 lines, within quality.py 1000-line budget）
+    - "pbatch/tui_timeline.py"    # TUI 时间线（661 lines, within quality.py 1000-line budget）
     - "pi-batch.py"       # upstream-synced entry shim
     - "ai/run-review.py"  # upstream-synced runner
     - "tests/"            # regression suite files

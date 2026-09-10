@@ -16,6 +16,7 @@ Exit code 0 when no violations; 1 otherwise. Used as a validator:
 from __future__ import annotations
 
 import ast
+import os
 import sys
 from pathlib import Path
 
@@ -27,6 +28,21 @@ MIN_DUP_STMTS = 8
 # Files that predate the budgets and are scheduled for splitting; the
 # scanner reports their overruns but does not fail the run on them.
 _LEGACY_OVERRUN_FILES = {"pi-batch.py"}
+# Runtime/build trees are not authored source. Keep directory discovery
+# bounded even when a campaign leaves many external worktree copies here.
+_EXCLUDED_SEGMENTS = {".git", ".pi-batch", "__pycache__", "build", "dist", "logs"}
+_EXCLUDED_SUFFIXES = (".egg-info",)
+
+
+def _iter_python_files(root: Path):
+    """Yield authored Python files below *root* without entering artifacts."""
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = sorted(
+            d for d in dirnames
+            if d not in _EXCLUDED_SEGMENTS and not d.endswith(_EXCLUDED_SUFFIXES))
+        for name in sorted(filenames):
+            if name.endswith(".py"):
+                yield Path(dirpath) / name
 
 
 def _complexity(node: ast.AST) -> int:
@@ -147,7 +163,7 @@ def main(argv: list[str]) -> int:
         return 1
     total = 0
     for t in targets:
-        files = sorted(t.rglob("*.py")) if t.is_dir() else [t]
+        files = list(_iter_python_files(t)) if t.is_dir() else [t]
         for f in files:
             if any(f.resolve().is_relative_to(ex) for ex in excludes):
                 continue
