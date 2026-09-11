@@ -14,7 +14,10 @@
 set -euo pipefail
 
 ROOT="${1:?repo root required}"
-RUNNER_ROOT="${PBATCH_SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+# PBATCH_SCRIPT_DIR selects the project config and may therefore point at the
+# target repository. Resolve shared scripts from this script's distribution
+# root instead; PBATCH_TOOL_ROOT is an explicit override for installed assets.
+RUNNER_ROOT="${PBATCH_TOOL_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 BASE="${PBATCH_GATE_BASE:-HEAD}"
 FRONT_CHECK="$RUNNER_ROOT/scripts/check-frontend-quality.py"
 BACK_CHECK="$RUNNER_ROOT/scripts/check-backend-quality.py"

@@ -295,6 +295,13 @@ validators:
   # (races, debounce policy, state placement) go to the engineering review
   # roles and ui-specs/engineering/defect-patterns.md.
   uiquality: "python {tool_root}/scripts/check-frontend-quality.py --dir {ui_scan_dir} --strict --json -o {report_root}/ui/refactor/quality.json"
+  # SVERP project engineering gate: changed-file hard errors plus the
+  # repository's API/Web typecheck, test, and build gate. It is guarded by
+  # requires_any so unrelated projects do not accidentally run SVERP checks.
+  engineering:
+    cmd: "bash {tool_root}/scripts/sverp/check-engineering-gate.sh {cwd}"
+    scope: repo
+    requires_any: [apps/api/package.json, apps/web/package.json]
   # Project-wide BACKEND engineering gate (gofmt -l style): over-engineering
   # signals (single-implementation interfaces, Base classes, fuzzy names),
   # god-service signals, scattered status assignment, domain->infra imports

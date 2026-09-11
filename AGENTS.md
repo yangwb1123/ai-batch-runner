@@ -60,6 +60,8 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `agent-engineering/*.yaml` + `pbatch/org.py` + `docs/AGENT_ORGANIZATION.md` | AI 软件工程组织规范：17 个流程节点岗位说明书（职责/输入/输出/检查规则/禁止事项/最佳实践/失败案例/自动检测/Review Checklist），`pi-batch org check` 校验完整性；`org gate --log` 注入 {log}，残留占位符 fail closed（campaign 实战修复） |
 | `pbatch/capabilities.py` + `docs/ARCHITECTURE.md` | Capability Registry（命令驱动→能力驱动）+ Agent OS 内核冻结（分层架构/ABI 契约/复杂度预算） |
 | `pbatch/campaign*.py` | 项目级模块发现、方向选择、状态/指纹、流水线与 worktree 隔离；分析 prompt 自动注入项目宪法与历史已拒方向（L6/L10 防重复建议，snaplink 630 行 state 中 `DIRECTION_REJECTED: duplicate` 的直接对策） |
+| `pbatch/migrate.py` | source-first 项目对比、迁移契约、证据状态、依赖波次、升级/预算预演（只读） |
+| `pbatch/studio.py` | Project Studio 设计账本：业务需求→产品/领域/UX/架构/数据/API→实施 DAG 的结构化 artifact 校验与推进预演（只读） |
 | `pbatch/cli.py` | 命令行：参数解析、main、轮循环、单批/流水线分发 |
 | `quality.py` | 代码组织质量扫描器（纯标准库）：函数 ≤50 行、复杂度 ≤15、文件 ≤1000 行 |
 | `ai/run-review.py` | 十阶段评审 runner（`--all`/`--resume`/共享会话/验证门禁） |
@@ -71,7 +73,7 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `tests/` | 1200+ 个回归测试（`make ci`，另含 42 个 eval 规则回归用例） |
 | `docs/SPEC_SYSTEM.md` | 规范体系总览：资产分层/注册表/决策链/门禁/角色/沉淀闭环/克制原则 |
 | `docs/` | 机制文档（`RUNNING_247.md`、`AUTOMATION_WORKFLOW_SUMMARY.md` 等） |
-| `pi-batch.yaml` | 声明式配置：agent 二进制、会话标志、31 个验证器（含 `pyquality`、`refusalcheck`、`baseline`、`authority`、`evidence`、`nongoal`、`changebudget`） |
+| `pi-batch.yaml` | 声明式配置：agent 二进制、会话标志、32 个验证器（含 `engineering`、`pyquality`、`refusalcheck`、`baseline`、`authority`、`evidence`、`nongoal`、`changebudget`） |
 
 **可移植性**：把 `pi-batch.py`（薄壳）+ `pbatch/` 目录 + `pi-batch.yaml`
 复制到其他项目即可用；配置查找顺序为入口脚本旁 → 包目录 → 工作目录。
