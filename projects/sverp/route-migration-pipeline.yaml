@@ -63,8 +63,7 @@ stages:
   - name: implement
     from_outputs: plan
     validate: |
-      bash {tool_root}/scripts/sverp/check-no-dist-edit.sh {cwd},
-      bash {tool_root}/scripts/sverp/check-sverpweb.sh {cwd}
+      engineering
     tasks:
       - prompt: |
           You are the code implementer for sverpweb-stable. Read
@@ -133,8 +132,7 @@ stages:
     # （带 check-sverpweb 门禁）→ 修复报告折回证据重新裁决，最多 2 轮
     gate_fix_rounds: 2
     gate_fix_validate: |
-      bash {tool_root}/scripts/sverp/check-no-dist-edit.sh {cwd},
-      bash {tool_root}/scripts/sverp/check-sverpweb.sh {cwd}
+      engineering
     tasks:
       - prompt: |
           You are the migration gatekeeper. Read {input_content} (plan,

@@ -69,10 +69,9 @@ stages:
       - adversarial_review
       - design_gate
     aggregate: true
-    # source-first 红线 + sverpweb 全门禁
+    # 工程门禁：变更文件硬错误 + source-first + sverpweb 全门禁
     validate: |
-      bash {tool_root}/scripts/sverp/check-no-dist-edit.sh {cwd},
-      bash {tool_root}/scripts/sverp/check-sverpweb.sh {cwd}
+      engineering
     tasks:
       - prompt: |
           Read the repository's AGENTS.md and the approved evidence below.
