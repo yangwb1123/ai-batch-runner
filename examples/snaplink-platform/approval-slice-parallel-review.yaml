@@ -1,0 +1,90 @@
+# Concurrent, read-only review fan-out for the isolated sverpweb approval slice.
+# The reports are written in the target worktree so the repair agent can use
+# them; source changes are not permitted in these tasks.
+git_commit: false
+
+decision_log: /home/dwp/ai-batch-runner/docs/snaplink-platform/phase5/DECISIONS.md
+
+stages:
+  - name: parallel_review
+    mode: parallel
+    workers: 3
+    tasks:
+      - prompt: |
+          You are the security, authority, and provenance reviewer for the
+          isolated approval-only slice. Use only the read tool; do not use
+          bash, write, or edit and do not change any repository. Inspect the
+          target worktree:
+          /home/dwp/workspace/job/sverpweb-stable-platform-workflow
+
+          Read the latest gate report:
+          /home/dwp/ai-batch-runner/docs/snaplink-platform/phase5/code-gate.md
+          and the governing phase-4 contracts under
+          /home/dwp/ai-batch-runner/docs/snaplink-platform/. Inspect the
+          current workflow, purchase, HTTP context, authority, audit, and
+          changed tests. Look specifically for tenant binding, actor type and
+          human-approver enforcement, initiator/on-behalf-of/approver
+          provenance, missing request identity, CSRF/idempotency, legacy
+          direct-write bypasses, and self-approval. Report only concrete
+          source-level findings with file and symbol evidence, plus verified
+          invariants and tests that should be added. Do not treat local tests
+          as proof of external authority or production evidence.
+
+          Return concise Markdown with exactly these headings:
+          ## Review Result
+          ## Verified Invariants
+          ## Blocking Findings
+          ## Regression Tests
+          ## External Evidence
+      - prompt: |
+          You are the persistence, migration, and audit-outbox reviewer for
+          the isolated approval-only slice. Use only the read tool; do not use
+          bash, write, or edit and do not change any repository. Inspect the
+          target worktree:
+          /home/dwp/workspace/job/sverpweb-stable-platform-workflow
+
+          Read the latest gate report and the phase-4 persistence and audit
+          integration documents under
+          /home/dwp/ai-batch-runner/docs/snaplink-platform/. Inspect all
+          current persistence, purchase, workflow migration, audit migration,
+          sqlite-outbox, governance transport/client, and related tests. Check
+          fresh and legacy migration replay, canonical checksums and the
+          previous-algorithm bridge, tenant backfill overlays, foreign keys,
+          append-only/unique constraints, same-connection transaction
+          ownership, rollback, stable event identity, receipt proof fields,
+          delivery state, retry/DLQ behavior, redaction and bounded payloads.
+          Identify only concrete defects with file and symbol evidence. Never
+          invent governance fields or claim live receipt evidence.
+
+          Return concise Markdown with exactly these headings:
+          ## Review Result
+          ## Verified Invariants
+          ## Blocking Findings
+          ## Regression Tests
+          ## External Evidence
+      - prompt: |
+          You are the workflow/API boundary and compatibility reviewer for the
+          isolated sverpweb approval-only slice. Use only the read tool; do not
+          use bash, write, or edit and do not change any repository. Inspect
+          the target worktree:
+          /home/dwp/workspace/job/sverpweb-stable-platform-workflow
+
+          Read the latest code gate and governing documents under
+          /home/dwp/ai-batch-runner/docs/snaplink-platform/. Inspect the full
+          changed diff and tests for the workflow application service, typed
+          purchase port/adapter, routes, request context, app wiring, legacy
+          compatibility, and web client. Verify approved is not execution,
+          disabled commands do not write, workflow has no purchase SQL or
+          database handle, optimistic versions and idempotency are enforced,
+          request identity is required for critical commands, and old routes
+          cannot bypass the new path in a configured tenant. Look for hidden
+          fixture-only assumptions and inconsistent test contracts. Report
+          concrete findings only; do not ask for unavailable remote proof as a
+          code defect.
+
+          Return concise Markdown with exactly these headings:
+          ## Review Result
+          ## Verified Invariants
+          ## Blocking Findings
+          ## Regression Tests
+          ## External Evidence

@@ -1,0 +1,10 @@
+git_commit: false
+decision_log: /home/dwp/ai-batch-runner/docs/snaplink-platform/phase5/DECISIONS.md
+
+stages:
+  - name: fix_migration_restart
+    from_prompt: '@/home/dwp/ai-batch-runner/examples/snaplink-platform/prompts/fix-migration-restart-v1.md'
+    output: docs/workflow/phase1-migration-restart-fix-report.md
+    cwd: /home/dwp/workspace/job/sverpweb-stable-platform-workflow
+    agent: pi
+    mode: serial

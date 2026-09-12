@@ -1,0 +1,342 @@
+{
+  "requirement": {
+    "original_prompt": "构建可伸缩、弹性、插件化且高内聚低耦合的平台架构，支持企业申请审批、共享资产、权限、审计、埋点以及自动化和Agent操作，并使用ai-batch-runner推进实现。",
+    "interpreted_goal": "先冻结跨仓库的通用Workflow、权限、资产、审计、Telemetry、Agent和Plugin契约，再以sverpweb采购申请审批作为受控第一垂直切片，保持当前单租户约束并为后续独立扩展和弹性部署提供边界。",
+    "user_roles": [
+      "采购申请人",
+      "部门审批人",
+      "财务审批人",
+      "平台管理员",
+      "审计与合规人员",
+      "服务自动化",
+      "受限Agent执行者"
+    ],
+    "success_outcome": "申请、审批、执行、通知、审计、撤销和补偿能够通过统一operation/workflow链路追踪；后端权限和租户隔离有效；Agent不能越权；首切片可通过单仓库门禁和组合契约测试。"
+  },
+  "scope": {
+    "type": "composition",
+    "priority": {
+      "p0": [
+        "冻结ExecutionContext、租户和部门引用契约",
+        "冻结Workflow/Approval/Execution/Compensation v1边界",
+        "sverpweb采购审批首切片保持approved与executed分离",
+        "关键业务变更使用durable outbox并接入snaplink-audit-governance",
+        "Snaplink、组织和资源服务执行后端权限和撤销",
+        "Agent使用限租户、限资源、限动作、短时Capability Grant",
+        "当前sverpweb继续单租户，不宣称已完成共享多租户"
+      ],
+      "p1": [
+        "部门和财务顺序审批、超时、拒绝、取消和补偿",
+        "资产引用与aero-vault ACL边界",
+        "OTel Trace、流程指标和操作时间线关联",
+        "Profile、Plugin Manifest、lock和inventory契约",
+        "组合E2E覆盖审计、撤销、恢复和Agent行为"
+      ],
+      "p2": [
+        "会签、或签和复杂审批路由",
+        "Agent执行低风险已批准动作",
+        "外部typed RPC插件和独立Workflow Worker",
+        "跨租户显式资产授权"
+      ],
+      "p3": [
+        "通用Workflow独立服务拆分",
+        "多租户sverpweb共享实例",
+        "插件市场和第三方UI扩展生态",
+        "跨地域流程和资源调度"
+      ]
+    }
+  },
+  "scenario": {
+    "entry": "用户在sverpweb创建采购草稿并提交，服务端从Snaplink解析身份/租户，从组织服务解析稳定department_id，生成ProcessInstance和WorkItem。",
+    "preconditions": [
+      "Snaplink身份、会话、租户上下文和提交权限有效",
+      "department_id与tenant_id可由服务端解析，不能只依赖部门名称",
+      "采购请求schema、审批策略版本和幂等键有效",
+      "业务本地数据库能够在同一事务中写入状态和audit outbox",
+      "附件asset_id（如有）属于当前租户并由aero-vault确认"
+    ],
+    "happy_path": [
+      "申请人提交采购申请，业务状态和流程状态进入待审批",
+      "创建部门审批WorkItem并记录审批资格快照",
+      "金额/风险策略触发财务审批时创建第二个WorkItem",
+      "审批决定全部通过后，流程进入execution_pending/approved",
+      "sverpweb以expected_version和idempotency_key执行purchase.request.confirm",
+      "Execution成功后才进入executed/completed",
+      "关键事件经Outbox投递至audit-governance，通知经aero-im异步发送"
+    ],
+    "failure_paths": [
+      "身份、租户、组织或资源授权失败时fail_closed，不创建或不推进关键流程",
+      "审批拒绝或超时后关闭待办并进入rejected/expired",
+      "关键字段改变导致旧审批失效并重新路由",
+      "业务命令失败时按界限重试，超限转人工或补偿",
+      "审计远程投递失败时保留本地durable outbox并重试，不静默丢失",
+      "通知失败只影响delivery status，不改变审批和执行真值",
+      "Agent Grant撤销后未来工具调用必须失败"
+    ],
+    "follow_up": [
+      "通过audit-governance operation timeline核对申请、审批和执行",
+      "对已执行副作用按领域补偿契约恢复，不能篡改原始审计事件",
+      "撤销用户、部门、Capability或流程后重新验证未来访问",
+      "通过suite契约和组合E2E后再扩展会签、外部插件和多租户"
+    ]
+  },
+  "capabilities": {
+    "existing": [
+      "snaplink的OIDC、Token、tenant context、role和authorization check",
+      "aero-id的organization、department、position和membership模型",
+      "aero-vault的文件、对象、ACL、分享、版本和恢复基础",
+      "snaplink-audit-governance的事件接入、不可变账本、操作时间线、WORM、恢复审批和回放",
+      "sverpweb的采购申请、审批状态和审计Outbox基础",
+      "aero-im的通知投递和delivery status",
+      "snaplink-console与iris-ui的管理视图和路由投影基础",
+      "sso-server已有的Profile、静态模块、外部typed plugin和lock参考"
+    ],
+    "extend": [
+      "sverpweb的独立Workflow状态和Outbox关键事件语义",
+      "Snaplink的workflow/approval权限映射和Agent委托上下文",
+      "aero-id的稳定department_id和membership事件契约",
+      "audit actor provenance、delegation、Agent和workflow字段",
+      "各服务的OTel operation/workflow/run关联和流程指标",
+      "sverpweb与Vault之间的asset reference而非重复ACL",
+      "Profile/Plugin manifest、capability closure和inventory"
+    ],
+    "create": [
+      "通用Workflow Contract v1",
+      "ProcessDefinition、ProcessInstance、WorkItem、ApprovalDecision、Execution和Compensation schema",
+      "purchase-approval@v1首个流程定义",
+      "amount/risk approval policy port",
+      "typed purchase domain command contract",
+      "Agent task Capability Grant、撤销和fencing contract",
+      "跨仓库failure matrix、compatibility matrix和组合E2E契约"
+    ],
+    "excluded": [
+      "第一阶段创建独立workflow仓库",
+      "sverpweb共享实例多租户迁移",
+      "任意Go .so、任意脚本或任意远程代码插件",
+      "Agent自动批准付款、删除、ACL修改或跨租户共享",
+      "把Workflow塞入user、ACL或audit表",
+      "一次性迁移所有历史FileShareStore关系",
+      "用审计回放直接修改业务状态"
+    ]
+  },
+  "ownership": {
+    "primary_project": "sverpweb-stable",
+    "collaborating_projects": [
+      "snaplink",
+      "aero-id",
+      "snaplink-audit-governance"
+    ],
+    "unaffected_projects": [
+      "aero-vault",
+      "aero-im",
+      "snaplink-console",
+      "iris-ui"
+    ],
+    "data_sources_of_truth": {
+      "identity_tenant_session": "snaplink",
+      "organization_department_membership": "aero-id",
+      "purchase_request_and_order": "sverpweb-stable",
+      "workflow_first_slice": "sverpweb-stable",
+      "asset_acl_share_version": "aero-vault",
+      "notification_delivery": "aero-im",
+      "audit_ledger_and_governance": "snaplink-audit-governance",
+      "technical_trace_and_metrics": "OpenTelemetry and platform observability"
+    }
+  },
+  "integration": {
+    "synchronous_calls": [
+      "sverpweb-stable -> snaplink: validate tenant, identity and workflow approval capability",
+      "sverpweb-stable -> aero-id: resolve department_id and approval membership through bounded adapter",
+      "sverpweb-stable -> aero-vault: validate referenced asset_id only when an attachment is part of the command"
+    ],
+    "async_events": [
+      "governance.workflow.created@v1",
+      "governance.workflow.submitted@v1",
+      "governance.workflow.status-changed@v1",
+      "governance.workitem.created@v1",
+      "governance.approval.recorded@v1",
+      "governance.execution.started@v1",
+      "governance.execution.completed@v1",
+      "governance.execution.failed@v1",
+      "governance.compensation.requested@v1",
+      "governance.capability.revoked@v1",
+      "vault.asset.linked@v1",
+      "im.notification.requested@v1"
+    ],
+    "workflows": [
+      "purchase-approval@v1: submit -> department approval -> optional finance approval -> execution -> completion",
+      "purchase-compensation@v1: execution failure or post-execution correction -> compensation decision -> domain compensation",
+      "agent-assist@v1: agent suggestion -> optional human decision -> bounded execution"
+    ],
+    "optional_dependencies": [
+      "aero-im notification adapter",
+      "Agent Runtime",
+      "OTel exporter",
+      "external storage/search/plugin adapters"
+    ],
+    "failure_policies": {
+      "authorization": "fail_closed",
+      "tenant_context": "fail_closed",
+      "organization_resolution": "fail_closed",
+      "asset_reference": "fail_closed",
+      "audit": "durable_async",
+      "audit_outbox_local_write": "fail_closed",
+      "audit_governance_delivery": "durable_async",
+      "notification": "best_effort_async",
+      "workflow_worker": "local_queue",
+      "domain_execution": "retry_async",
+      "agent_runtime": "degrade",
+      "agent_high_risk_command": "fail_closed",
+      "otel_export": "degrade",
+      "external_plugin": "manifest_defined"
+    }
+  },
+  "changes": {
+    "apis": [
+      "Preserve existing sverpweb purchase API shape and add server-derived operation_id, workflow_instance_id and idempotency semantics",
+      "Add typed purchase.request.submit/approve/reject/cancel/confirm/compensate command contract",
+      "Add workflow status and work item read model for user and operator progress",
+      "Add bounded organization department/membership adapter contract",
+      "Add capability grant validation and revocation context to Agent task execution",
+      "Reuse audit-governance events ingest and receipt APIs"
+    ],
+    "events": [
+      "governance.workflow.created@v1",
+      "governance.workflow.submitted@v1",
+      "governance.workflow.status-changed@v1",
+      "governance.workitem.created@v1",
+      "governance.workitem.expired@v1",
+      "governance.approval.recorded@v1",
+      "governance.execution.started@v1",
+      "governance.execution.completed@v1",
+      "governance.execution.failed@v1",
+      "governance.compensation.requested@v1",
+      "governance.compensation.completed@v1",
+      "governance.capability.revoked@v1",
+      "vault.asset.linked@v1",
+      "audit.event.written@v1",
+      "account.department.changed@v1",
+      "platform.operation.denied@v1"
+    ],
+    "permissions": [
+      "governance.workflow.start",
+      "governance.workflow.read",
+      "governance.workflow.approve",
+      "governance.workflow.cancel",
+      "governance.workflow.compensate",
+      "platform.purchase.submit",
+      "platform.purchase.execute",
+      "account.department.read",
+      "vault.asset.read",
+      "vault.asset.share",
+      "audit.event.write",
+      "audit.operation.read",
+      "platform.agent.execute",
+      "platform.agent.revoke"
+    ],
+    "schemas": [
+      "ExecutionContext v1",
+      "Workflow Contract v1",
+      "PurchaseApprovalDefinition v1",
+      "ApprovalPolicySnapshot v1",
+      "AgentCapabilityGrant v1",
+      "AuditActorProvenance v1",
+      "PluginManifest and ProfileLock v1",
+      "tenant_id + department_id organization reference v1"
+    ],
+    "migrations": [
+      "sverpweb workflow_definitions table",
+      "sverpweb workflow_instances table",
+      "sverpweb workflow_work_items table",
+      "sverpweb workflow_approval_decisions table",
+      "sverpweb workflow_executions and workflow_compensations tables",
+      "sverpweb operation/workflow/idempotency indexes",
+      "sverpweb audit outbox actor and workflow provenance fields",
+      "transitional department_id fields with unresolved mapping state"
+    ],
+    "configurations": [
+      "workflow definition and policy version registry",
+      "audit critical-event durable mode and ledger acknowledgment policy",
+      "Agent grant limits, expiration, resource scope and kill switch",
+      "Profile minimal/full/production module selection",
+      "Plugin manifest lock, digest, signature and compatibility window",
+      "per-tenant workflow, Agent, queue and audit budgets",
+      "OTel exporter and bounded telemetry labels"
+    ],
+    "ui": [
+      "sverpweb purchase progress: draft, pending approval, approved pending execution, executing, completed, rejected, cancelled and compensating",
+      "separate approval and execution evidence in user and operator views",
+      "operator timeline link by operation_id and workflow_instance_id",
+      "permission-aware route projection without using UI hiding as authorization",
+      "future console governance view only through existing management/audit APIs"
+    ]
+  },
+  "quality": {
+    "security_requirements": [
+      "tenant_id is server-derived and client-supplied tenant fields cannot switch context",
+      "department identity uses tenant_id + department_id; names are display-only",
+      "all mutating commands run backend authorization and expected-version checks",
+      "Agent permissions are down-scoped intersections and short-lived",
+      "Agent cannot self-approve, self-elevate or modify its own grant",
+      "high-risk delete, ACL, cross-tenant and recovery actions require explicit policy/approval",
+      "audit payloads exclude credentials, tokens and raw sensitive content",
+      "external plugins use declared capabilities, process isolation and production mTLS/signatures"
+    ],
+    "compatibility_requirements": [
+      "existing sverpweb purchase API remains readable during expand/contract migration",
+      "workflow definition and event schemas are versioned and immutable per running instance",
+      "old consumers can ignore new optional fields safely",
+      "audit-governance v1 ingest remains compatible or receives a backwards-compatible event schema",
+      "minimal does not require full external infrastructure",
+      "production is a real policy/profile and not only a full alias",
+      "each repository remains independently buildable and passes its own hard gates"
+    ],
+    "observability_requirements": [
+      "operation_id, workflow_instance_id, execution_run_id and trace_id propagate across sync and async boundaries",
+      "audit records allow/deny, approval, execution, revocation and recovery outcomes",
+      "metrics cover workflow age, SLA, retries, failures, queue depth, audit lag and Agent revocation",
+      "high-cardinality identifiers are kept out of unbounded metrics labels",
+      "audit and telemetry remain separate evidence classes"
+    ],
+    "test_plan": [
+      "unit tests for workflow transitions, SoD, approval policy, idempotency, version conflict and compensation",
+      "contract tests for Snaplink authorization, aero-id organization, audit ingest, asset reference and plugin manifest",
+      "integration test for sverpweb transaction plus durable outbox plus audit-governance ledger",
+      "integration test for department membership changes and immediate permission re-evaluation",
+      "Agent tests for grant scope, expiration, cancellation, fencing and self-approval rejection",
+      "composition E2E for purchase submit -> department -> finance -> execution -> audit timeline",
+      "negative E2E for tenant spoofing, name-based department mapping, rejection, timeout and notification failure",
+      "Profile tests proving minimal/full/production inventory and dependency differences"
+    ],
+    "deployment_order": [
+      "approve contracts and change manifest in the main platform repository",
+      "add sverpweb workflow bounded module and expand/contract migrations",
+      "add Snaplink workflow/approval permission mapping",
+      "freeze and consume aero-id stable department reference contract",
+      "switch critical sverpweb events to durable audit outbox",
+      "run existing aero-vault and aero-im adapters without changing their ownership",
+      "run single-tenant composition E2E and audit/telemetry verification",
+      "only then enable Agent execution and external typed plugins",
+      "production rollout after mTLS, WORM, KMS, HA and recovery gates pass"
+    ],
+    "rollback_plan": [
+      "stop new workflow instance creation while keeping existing definition versions readable",
+      "keep legacy purchase API read mapping during workflow migration",
+      "disable Agent grants and revoke active runs before plugin rollback",
+      "retain all audit events and replay only through idempotent consumers",
+      "use domain compensation commands for executed side effects",
+      "do not restore by editing audit records or blindly rewinding business rows",
+      "preserve unresolved department mappings for manual reconciliation"
+    ]
+  },
+  "open_risks": [
+    "sverpweb remains single-tenant and cannot be made shared-instance safe by only adding tenant_id to workflow tables",
+    "current sverpweb FileShareStore and aero-vault ACL synchronization can create duplicate permission authority",
+    "current best-effort audit callers need critical-path durable outbox enforcement",
+    "aero-id organization API/event availability and stable ID contract need final approval",
+    "Agent revocation latency must be bounded for already-issued capabilities",
+    "audit actor provenance may require a backward-compatible audit-governance schema extension",
+    "generic Workflow extraction should not happen before the sverpweb vertical slice demonstrates stable boundaries",
+    "plugin signatures, provenance, SBOM and production key management are not yet a single cross-repository release gate"
+  ]
+}

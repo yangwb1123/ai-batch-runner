@@ -31,6 +31,8 @@ DESCRIPTIONS = {
     "eval": "规则系统回归套件",
     "check": "工程质量自检（quality + 注册表 schema）",
     "advance": "自推进迭代引擎（逐轮续跑）",
+    "migrate": "项目对比/迁移计划/升级预演（source-first contract）",
+    "studio": "项目设计账本（业务/领域/UX/架构/API/计划 DAG）",
     "ps": "运行注册表（谁在跑什么）",
     "retro": "事故复盘",
     "health": "六层维护可观测性报告",

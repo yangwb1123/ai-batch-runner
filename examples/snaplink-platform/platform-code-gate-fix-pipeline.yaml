@@ -1,0 +1,10 @@
+git_commit: false
+decision_log: /home/dwp/ai-batch-runner/docs/snaplink-platform/phase5/DECISIONS.md
+
+stages:
+  - name: fix_code_gate_blockers
+    from_prompt: '@/home/dwp/ai-batch-runner/examples/snaplink-platform/prompts/fix-code-gate-blockers-v2.md'
+    output: docs/phase1-code-gate-fix-report.md
+    cwd: /home/dwp/workspace/job/sverpweb-stable-platform-workflow
+    agent: pi
+    mode: serial

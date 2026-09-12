@@ -1,0 +1,305 @@
+# 平台总体架构推进流水线
+#
+# 目标：使用 ai-batch-runner 将总体架构需求编译为可审查的跨仓库契约，
+# 再由人工批准后的 change manifest 驱动分仓实施。
+# 本流水线只产出 phase3 下的决策工件，不修改业务仓库代码。
+#
+# 运行：
+#   python pi-batch.py examples/snaplink-platform/platform-architecture-pipeline.yaml --dry-run
+#   python pi-batch.py examples/snaplink-platform/platform-architecture-pipeline.yaml \
+#     --retries 3 --log-file logs/platform-architecture.log
+
+# 不自动提交当前主仓库，避免覆盖已有未提交修改。
+git_commit: false
+decision_log: docs/snaplink-platform/phase3/DECISIONS.md
+
+stages:
+  - name: intake
+    from_prompt: |
+      You are the platform architecture intake agent. Read the original
+      requirement at @docs/snaplink-platform/requirements/platform-architecture.md
+      and the reference architecture at
+      @docs/snaplink-platform/PLATFORM_ARCHITECTURE.md.
+
+      Do not design implementation details yet. Do not call write, edit, or
+      bash tools. Return the complete artifact text in your final response;
+      the runner will save it. Produce a grounded Markdown intake with exactly
+      these headings:
+      ## Interpreted Goal
+      ## Actors and Responsibilities
+      ## Required Scope
+      ## Explicit Non-Goals
+      ## Evidence and Unknowns
+
+      Separate Verified, Transitional, Proposed and Missing facts. Do not
+      invent a new repository unless the reference documents require it.
+      Keep the first implementation slice bounded: generic workflow contract
+      and purchase approval in sverpweb, with existing platform services reused.
+    output: docs/snaplink-platform/phase3/01-intake.md
+    mode: serial
+
+  - name: scenario
+    from_outputs: intake
+    mode: serial
+    tasks:
+      - prompt: |
+          You are the enterprise process scenario architect. Read {input_content},
+          docs/snaplink-platform/PLATFORM_ARCHITECTURE.md and
+          examples/snaplink-platform/platform-map.yaml.
+
+          Do not call write, edit, or bash tools. Return only the complete
+          artifact text in your final response; the runner will save it.
+          Model the full first vertical slice, not just endpoints:
+          ## Actors and Trust Boundaries
+          ## Entry and Preconditions
+          ## Purchase Request Happy Path
+          ## Department and Finance Approval Variants
+          ## Automation and Agent Variants
+          ## Shared Asset and Audit Side Scenario
+          ## Failure, Timeout, Rejection and Retry Paths
+          ## Revocation, Compensation and Recovery
+          ## User-visible Progress and Operator Evidence
+          ## Tenant Isolation Scenarios
+
+          Include human, service, automation and agent actors. Distinguish
+          approved from executed, audit from telemetry, and cancellation from
+          compensation. Every scenario must state the source of truth and
+          the expected audit evidence. Do not claim sverpweb is multi-tenant.
+        output: docs/snaplink-platform/phase3/02-scenario.md
+
+  - name: capability_discovery
+    from_outputs: scenario
+    mode: serial
+    tasks:
+      - prompt: |
+          You are the capability architect. Read {input_content},
+          examples/snaplink-platform/platform-map.yaml and the reference
+          documents under docs/snaplink-platform.
+
+          Do not call write, edit, or bash tools. Return only the complete
+          artifact text in your final response; the runner will save it.
+          First identify capabilities without project names. Then produce:
+          ## Required Capabilities
+          ## Existing Capabilities and Evidence
+          ## Capability Map
+          ## Reuse / Adapt / Extend / Create / Exclude Decisions
+          ## Capability Boundaries
+          ## Missing Contracts
+
+          Map every capability to an exact project name from platform-map.yaml.
+          Prefer reuse over adapter, adapter over extension, extension over a
+          new generic capability, and a new project only when unavoidable.
+          The generic Workflow capability should initially be a bounded module
+          and contract in the sverpweb first slice; mark future extraction as
+          Proposed rather than inventing an unregistered project.
+        output: docs/snaplink-platform/phase3/03-capabilities.md
+
+  - name: composition_design
+    from_outputs: capability_discovery
+    aggregate: true
+    mode: serial
+    tasks:
+      - prompt: |
+          You are the system composition architect. Read {input_content},
+          examples/snaplink-platform/platform-map.yaml,
+          docs/snaplink-platform/PLATFORM_ARCHITECTURE.md and
+          docs/snaplink-platform/COMBINATION_MODEL.md.
+
+          Do not call write, edit, or bash tools. Return only the complete
+          artifact text in your final response; the runner will save it.
+          Produce exactly these Markdown headings:
+          ## Primary Project
+          ## Collaborating Projects
+          ## Unaffected Projects
+          ## Data Sources of Truth
+          ## Plugin and Module Composition
+          ## Synchronous Calls
+          ## Async Events and Outbox
+          ## Workflow Boundaries
+          ## Permission and Capability Boundaries
+          ## Audit and Telemetry Boundaries
+          ## Agent and Automation Boundaries
+          ## Optional Dependencies and Failure Policies
+          ## Forbidden Dependencies
+          ## Elasticity and Partitioning
+
+          Select exactly one primary project for the first slice. Do not
+          declare a project collaborating merely because it is a read-only
+          existing dependency. Keep synchronous chains at most 3 hops. The
+          design must explicitly explain how audit-governance records facts
+          without becoming the business state source, and how Agent grants
+          are revoked. No direct database access or name-based department
+          mapping.
+        output: docs/snaplink-platform/phase3/04-composition.md
+
+  - name: change_design
+    from_outputs: composition_design
+    aggregate: true
+    mode: serial
+    tasks:
+      - prompt: |
+          You are the cross-repository contract architect. Read {input_content},
+          the original requirement, and all relevant reference documents under
+          docs/snaplink-platform.
+
+          Do not call write, edit, or bash tools. Return only the complete
+          artifact text in your final response; the runner will save it.
+          Produce a bounded implementation plan with exactly these headings:
+          ## API and RPC Changes
+          ## Process and Approval Schema
+          ## Asset and Permission Schema
+          ## Audit Event Changes
+          ## Telemetry and Trace Changes
+          ## Agent Capability Changes
+          ## Database Migrations
+          ## Plugin Manifest and Profile Changes
+          ## UI and Route Changes
+          ## Compatibility and Versioning
+          ## Deployment Order
+          ## Rollback, Revocation and Recovery Plan
+          ## Failure Matrix
+          ## Test Plan
+
+          Include typed commands, operation context, idempotency, aggregate
+          versions, workflow definition versions, approval authority snapshots,
+          compensation commands and audit outbox. Do not create a shared
+          database or put business workflow into ACL/audit tables. Use event
+          names matching <domain>.<resource>.<action>@vN and permissions
+          matching lowercase dotted names with at least three segments; use
+          known domains from the existing decision validator.
+        output: docs/snaplink-platform/phase3/05-changes.md
+
+  - name: adversarial_review
+    from_outputs: change_design
+    aggregate: true
+    meta: true
+    role_dir: prompts
+    output_dir: docs/snaplink-platform/phase3/reviews
+    max_iterations: 2
+    max_roles_per_iteration: 4
+    relevance_enabled: true
+    relevance_min_score: 2
+    mode: serial
+
+  - name: decision_summary
+    from_outputs:
+      - composition_design
+      - change_design
+      - adversarial_review
+    aggregate: true
+    mode: serial
+    validate_cmd: "python {cwd}/examples/snaplink-platform/scripts/check-decision-summary.py {output} --map {cwd}/examples/snaplink-platform/platform-map.yaml"
+    tasks:
+      - prompt: |
+          You are the final decision synthesizer. Do not call write, edit, or
+          bash tools. Return only the raw JSON artifact in your final response;
+          the runner will save it. Read {input_content} and
+          docs/snaplink-platform/PLATFORM_ARCHITECTURE.md.
+
+          Output ONLY raw JSON. No markdown fence, no commentary. The first
+          character must be { and the last must be }.
+
+          Use EXACTLY this schema:
+          {"requirement": {"original_prompt": "", "interpreted_goal": "",
+            "user_roles": [], "success_outcome": ""},
+           "scope": {"type": "project|integration|composition",
+            "priority": {"p0": [], "p1": [], "p2": [], "p3": []}},
+           "scenario": {"entry": "", "preconditions": [], "happy_path": [],
+            "failure_paths": [], "follow_up": []},
+           "capabilities": {"existing": [], "extend": [], "create": [],
+            "excluded": []},
+           "ownership": {"primary_project": "", "collaborating_projects": [],
+            "unaffected_projects": [], "data_sources_of_truth": {}},
+           "integration": {"synchronous_calls": [], "async_events": [],
+            "workflows": [], "optional_dependencies": [],
+            "failure_policies": {}},
+           "changes": {"apis": [], "events": [], "permissions": [],
+            "schemas": [], "migrations": [], "configurations": [], "ui": []},
+           "quality": {"security_requirements": [],
+            "compatibility_requirements": [], "observability_requirements": [],
+            "test_plan": [], "deployment_order": [], "rollback_plan": []},
+           "open_risks": []}
+
+          Project names MUST match platform-map.yaml exactly. The first
+          implementation primary project should normally be sverpweb-stable;
+          do not invent an unregistered workflow repository. Every mutating
+          integration needs a failure_policies entry.
+
+          permissions MUST be lowercase dotted names with at least three
+          segments and a known first domain. Use names such as
+          governance.workflow.approve, governance.workflow.start,
+          vault.asset.read, vault.asset.share, audit.event.write.
+          events MUST match <domain>.<resource>.<action>@vN, such as
+          governance.workflow.submitted@v1 or vault.asset.restored@v1.
+          No Chinese, spaces, comments, parentheses or explanations inside
+          permission/event names.
+
+          collaborating_projects and unaffected_projects must have zero
+          overlap. A read-only existing consumer is unaffected unless it
+          requires a code or contract change. Include explicit risks for the
+          current single-tenant sverpweb, transitional local FileShareStore,
+          audit best-effort callers, and Agent revocation latency.
+        output: docs/snaplink-platform/phase3/summary.json
+
+  - name: decision_gate
+    from_outputs:
+      - decision_summary
+      - composition_design
+      - change_design
+      - adversarial_review
+    aggregate: true
+    gate: true
+    mode: serial
+    tasks:
+      - prompt: |
+          You are the independent architecture gatekeeper. Do not call write,
+          edit, or bash tools. Return only the complete gate artifact in your
+          final response; the runner will save it. Read {input_content} and
+          verify:
+          1. The summary passed mechanical schema validation.
+          2. Exactly one primary project is selected and it owns the first
+             business change.
+          3. Workflow is separate from identity, ACL, asset and audit state.
+          4. Every service has a source of truth and no direct database access
+             crosses project boundaries.
+          5. Permissions, Agent grants and tenant context are fail-closed.
+          6. Audit-governance receives durable evidence but does not mutate
+             business state.
+          7. Approval and execution are separate; cancellation and compensation
+             are explicit; irreversible actions are marked.
+          8. Automation and Agent actions identify initiator, executor, grant,
+             workflow and approval where applicable.
+          9. Profile/plugin choices are real and do not imply arbitrary dynamic
+             code loading.
+          10. Current sverpweb single-tenant constraints are not silently
+              bypassed.
+          11. Failure policies, deployment order, rollback and test evidence
+              are complete.
+
+          End with exactly one line:
+          VERDICT: PASS - <why this bounded contract is ready for human approval>
+          or
+          VERDICT: FAIL - <blocking issues>
+        output: docs/snaplink-platform/phase3/gate.md
+
+  - name: approval_note
+    from_outputs: decision_gate
+    aggregate: true
+    mode: serial
+    tasks:
+      - prompt: |
+          You are the release coordinator. Do not call write, edit, or bash
+          tools. Return only the complete approval artifact in your final
+          response; the runner will save it. Read {input_content} and the
+          generated decision summary. Produce a Markdown approval note with:
+          ## Change ID
+          ## First Slice
+          ## Affected Repositories
+          ## Human Approval Required
+          ## Implementation Handoff
+          ## Evidence and Gate Status
+
+          Use a change ID in the form COMPOSE-YYYY-NNN. State explicitly that
+          this is a proposal until a human approves it and that implementation
+          must use a validated change manifest and each repository's own CI.
+        output: docs/snaplink-platform/phase3/APPROVAL.md

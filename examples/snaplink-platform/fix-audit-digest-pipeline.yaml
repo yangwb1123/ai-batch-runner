@@ -1,0 +1,10 @@
+git_commit: false
+decision_log: /home/dwp/ai-batch-runner/docs/snaplink-platform/phase5/DECISIONS.md
+
+stages:
+  - name: fix_audit_digest
+    from_prompt: '@/home/dwp/ai-batch-runner/examples/snaplink-platform/prompts/fix-audit-digest-v1.md'
+    output: docs/workflow/phase1-audit-digest-fix-report.md
+    cwd: /home/dwp/workspace/job/sverpweb-stable-platform-workflow
+    agent: pi
+    mode: serial

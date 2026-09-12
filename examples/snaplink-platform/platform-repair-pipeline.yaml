@@ -1,0 +1,10 @@
+git_commit: false
+decision_log: /home/dwp/ai-batch-runner/docs/snaplink-platform/phase5/DECISIONS.md
+
+stages:
+  - name: repair_approval_slice
+    from_prompt: '@/home/dwp/ai-batch-runner/examples/snaplink-platform/prompts/repair-approval-slice.md'
+    output: docs/workflow/phase1-repair-report.md
+    cwd: /home/dwp/workspace/job/sverpweb-stable-platform-workflow
+    agent: pi
+    mode: serial

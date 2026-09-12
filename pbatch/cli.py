@@ -393,6 +393,8 @@ _SUBCOMMANDS: dict[str, str] = {
     "eval": "eval:eval_main",
     "check": "selfcheck:check_main",
     "advance": "advance:advance_main",
+    "migrate": "migrate:migrate_main",
+    "studio": "studio:studio_main",
     "ps": "registry:ps_main",
     "retro": "retro:retro_main",
     "health": "health:health_main",

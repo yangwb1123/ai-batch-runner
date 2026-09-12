@@ -1,0 +1,83 @@
+# Top-level task batch used with --mode parallel. Each task is read-only on
+# source and writes a distinct review report in the isolated target worktree.
+tasks:
+  - prompt: |
+      You are the security, authority, and provenance reviewer for the
+      isolated approval-only slice. Use only the read tool; do not use bash,
+      write, or edit and do not change any repository. Inspect:
+      /home/dwp/workspace/job/sverpweb-stable-platform-workflow
+
+      Read the latest gate:
+      /home/dwp/ai-batch-runner/docs/snaplink-platform/phase5/code-gate.md
+      and the governing phase-4 contracts under
+      /home/dwp/ai-batch-runner/docs/snaplink-platform/. Inspect workflow,
+      purchase, HTTP context, authority, audit, and changed tests. Check
+      tenant binding, actor type/human approver enforcement,
+      initiator/on-behalf-of/approver provenance, request identity, CSRF,
+      idempotency, legacy direct-write bypasses, and self-approval. Report
+      concrete source-level findings with file/symbol evidence and focused
+      regression tests. Do not treat local tests as external authority proof.
+
+      Return concise Markdown with exactly:
+      ## Review Result
+      ## Verified Invariants
+      ## Blocking Findings
+      ## Regression Tests
+      ## External Evidence
+    output: /home/dwp/workspace/job/sverpweb-stable-platform-workflow/docs/workflow/parallel-security-review.md
+    cwd: /home/dwp/workspace/job/sverpweb-stable-platform-workflow
+    tools: read
+    validate: ""
+  - prompt: |
+      You are the persistence, migration, and audit-outbox reviewer for the
+      isolated approval-only slice. Use only the read tool; do not use bash,
+      write, or edit and do not change any repository. Inspect:
+      /home/dwp/workspace/job/sverpweb-stable-platform-workflow
+
+      Read the latest gate and phase-4 persistence/audit documents under
+      /home/dwp/ai-batch-runner/docs/snaplink-platform/. Inspect persistence,
+      purchase/workflow/audit migrations, sqlite-outbox, governance
+      transport/client, and tests. Check fresh and legacy replay, canonical
+      checksums and prior-algorithm compatibility, tenant backfill overlays,
+      foreign keys, append-only/unique constraints, same-connection
+      transaction/rollback, stable event identity, receipt proof, delivery
+      state, retry/DLQ, redaction, and bounded payloads. Identify concrete
+      defects with file/symbol evidence; never invent governance fields or
+      claim live receipt evidence.
+
+      Return concise Markdown with exactly:
+      ## Review Result
+      ## Verified Invariants
+      ## Blocking Findings
+      ## Regression Tests
+      ## External Evidence
+    output: /home/dwp/workspace/job/sverpweb-stable-platform-workflow/docs/workflow/parallel-persistence-review.md
+    cwd: /home/dwp/workspace/job/sverpweb-stable-platform-workflow
+    tools: read
+    validate: ""
+  - prompt: |
+      You are the workflow/API boundary and compatibility reviewer for the
+      isolated approval-only slice. Use only the read tool; do not use bash,
+      write, or edit and do not change any repository. Inspect:
+      /home/dwp/workspace/job/sverpweb-stable-platform-workflow
+
+      Read the latest code gate and governing documents under
+      /home/dwp/ai-batch-runner/docs/snaplink-platform/. Inspect the complete
+      changed workflow application, typed purchase port/adapter, routes,
+      request context, app wiring, legacy compatibility, web client, and
+      tests. Verify approved is not execution, disabled commands do not
+      write, workflow has no purchase SQL/database handle, optimistic
+      versions/idempotency and request identity are enforced, and configured
+      tenants cannot use legacy direct writes. Report concrete findings only,
+      distinguishing code defects from unavailable external proof.
+
+      Return concise Markdown with exactly:
+      ## Review Result
+      ## Verified Invariants
+      ## Blocking Findings
+      ## Regression Tests
+      ## External Evidence
+    output: /home/dwp/workspace/job/sverpweb-stable-platform-workflow/docs/workflow/parallel-boundary-review.md
+    cwd: /home/dwp/workspace/job/sverpweb-stable-platform-workflow
+    tools: read
+    validate: ""

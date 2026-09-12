@@ -81,7 +81,7 @@ pbatch = ["README.md", "role_keywords.yaml", "task_keywords.yaml"]
 "share/ai-batch-runner/backend-specs" = ["backend-specs/*.md", "backend-specs/*.yaml"]
 "share/ai-batch-runner/backend-specs/design-intelligence" = ["backend-specs/design-intelligence/*.md"]
 "share/ai-batch-runner/evolution-specs" = ["evolution-specs/*.md", "evolution-specs/*.yaml"]
-"share/ai-batch-runner/docs" = ["docs/ENGINEERING_PHILOSOPHY.md"]
+"share/ai-batch-runner/docs" = ["docs/ENGINEERING_PHILOSOPHY.md", "docs/MIGRATION_ENGINE.md", "docs/PROJECT_STUDIO.md", "docs/CAMPAIGN_SELF_REPAIR.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "checks"]

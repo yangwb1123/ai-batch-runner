@@ -1,0 +1,246 @@
+{
+  "change_id": "COMPOSE-2026-018",
+  "primary_project": "sverpweb-stable",
+  "status": "BLOCKED",
+  "blockers": [
+    {
+      "id": "GATE-V2-07",
+      "owner": "sverpweb-stable; snaplink-audit-governance",
+      "evidence": "gate-v2 verification #7 and 03-audit-integration.md A-20 state that the outbox is not connected and contract, receipt, and end-to-end evidence is missing.",
+      "resolution": "Implement the same-SQLite transaction-aware outbox and POST relay; register source, client, schemas, and retention policy; attach A-01–A-19 contract and receipt evidence."
+    },
+    {
+      "id": "GATE-V2-09",
+      "owner": "sverpweb-stable; platform architecture; operations",
+      "evidence": "gate-v2 verification #9 and 04-operations-acceptance.md state that concrete deployment, compatibility, failure, rollback, recovery, migration, and test evidence is not supplied.",
+      "resolution": "Execute and attach deployment, artifact, migration, rollback, backup/restore, fault, and acceptance-test evidence."
+    },
+    {
+      "id": "PERSISTENCE-EXECUTION",
+      "owner": "sverpweb-stable",
+      "evidence": "01-persistence-design.md marks target tables and migrations Proposed, states that migration execution is Missing, and identifies inline schema changes as Transitional.",
+      "resolution": "Implement checksum migrations and additive backfill/cutover; produce baseline, tenant, ownership, concurrency, idempotency, atomicity, query-plan, and legacy-data reports."
+    },
+    {
+      "id": "AUTHORITY-CONTRACTS",
+      "owner": "snaplink; aero-id; sverpweb-stable",
+      "evidence": "Tenant extraction, authoritative department/membership contracts, and complete actor, initiator, executor, grant, and policy fixtures are marked Missing in 01-persistence-design.md and 03-audit-integration.md.",
+      "resolution": "Supply active authority contracts and executed tenant, membership, authorization, provenance, and segregation-of-duties acceptance tests."
+    },
+    {
+      "id": "RECOVERY-RETENTION",
+      "owner": "sverpweb-stable; operations; snaplink-audit-governance; security/business owner",
+      "evidence": "01-persistence-design.md marks backup, restore, disaster-recovery runbooks, and privacy/legal retention policy Missing; 04-operations-acceptance.md requires measured recovery evidence.",
+      "resolution": "Approve retention/legal-hold policy and execute restore, reconciliation, rollback, and recovery rehearsals with ownership and RPO/RTO evidence."
+    },
+    {
+      "id": "ARTIFACT-PROVENANCE",
+      "owner": "sverpweb-stable; platform architecture",
+      "evidence": "04-operations-acceptance.md requires manifest, lock, digest, signature, SBOM, and inventory validation, but supplies no executed startup/build result.",
+      "resolution": "Publish artifact provenance and execute unsigned, unlocked, digest-mismatch, and inventory-mismatch startup rejection tests."
+    },
+    {
+      "id": "ROUTE-INPUT-SEMANTICS",
+      "owner": "sverpweb-stable; aero-id",
+      "evidence": "Quantity semantics and authoritative finance/risk inputs are unknown; 02-workflow-transitions.md requires ambiguous routing to fail closed.",
+      "resolution": "Confirm amount, currency, quantity, and policy contracts, or keep finance routing disabled and reject unknown inputs."
+    }
+  ],
+  "persistence": {
+    "tables": [
+      "purchase_requests — current table verified; tenant/version target shape proposed.",
+      "purchase_request_status_history — proposed append-only purchase history.",
+      "workflow_definitions, workflow_instances, workflow_work_items, workflow_work_item_candidates, workflow_approval_decisions — proposed workflow-owned tables.",
+      "workflow_instance_history, workflow_work_item_history — proposed append-only workflow histories.",
+      "operation_idempotency — proposed command idempotency table.",
+      "audit_outbox, audit_outbox_attempts, audit_outbox_receipts — proposed local audit delivery tables.",
+      "schema_migrations — proposed checksum migration ledger.",
+      "workflow_executions, workflow_execution_attempts, workflow_compensations — deferred contracts; not evidenced as created."
+    ],
+    "transaction_boundaries": [
+      "Create: purchase row, purchase history, idempotency record, and audit_outbox row commit atomically in BEGIN IMMEDIATE (specified, not executed).",
+      "Submit/approve/reject: purchase port, workflow-owned state, histories, decisions, idempotency, and outbox commit locally without network calls (specified, not executed).",
+      "Execution: persist intent and lease before the external/domain call; finalize or reconcile using the stable execution key after commit (target contract; execution is disabled in the approval-only scope).",
+      "Relay: post-commit lease/CAS, governance POST, receipt validation, retry, or DLQ (specified; relay evidence missing)."
+    ],
+    "migration_steps": [
+      "Capture backup, schema fingerprint, row/status counts, and PRAGMA integrity_check (required, not evidenced).",
+      "Add tenant/version/provenance compatibility columns and versioned workflow, idempotency, outbox, attempt, receipt, and migration-ledger tables.",
+      "Backfill one explicitly configured tenant, version 1, created_by, updated_at, and legacy_imported history; quarantine ambiguous pending rows.",
+      "Seed immutable purchase-approval definition version 1 and add tenant-scoped indexes.",
+      "Switch commands to application services and typed ports, then switch reads to explicit projections and disable direct setStatus.",
+      "Apply Contract only after compatibility verification; preserve additive schema on rollback and restore to a new database file when needed."
+    ],
+    "open_questions": [
+      "Actual SQLite path, row counts, deployed schema fingerprint, migration mechanism, backup procedure, busy timeout, and transaction-duration limits.",
+      "Server-side tenant extraction and the single configured production tenant.",
+      "Authoritative aero-id department, membership, position, amount, currency, and policy contracts.",
+      "Quantity semantics for transitional qty TEXT.",
+      "Whether execution and compensation are enabled in this change; 01 describes approval-only scope while 02 defines a broader target.",
+      "Approved retention, legal hold, privacy erasure, and anonymization policy."
+    ]
+  },
+  "workflow": {
+    "states": [
+      "PurchaseRequest: draft → pending_approval → approved|rejected; target transitions are specified, not implementation evidence.",
+      "WorkflowInstance: waiting → approved → executable → execution_pending → executing → executed → completed.",
+      "Failure branches: execution_pending/executing → failed; uncertain effects → compensation_pending; compensation_pending → compensated|failed.",
+      "Cancellation/expiry branches: waiting|approved|executable|execution_pending → cancelled where no effect is verified; waiting → expired.",
+      "WorkItem: pending → claimed → approved|rejected|expired|cancelled; expired claims may return to pending.",
+      "compensation_pending is canonical; ambiguous compensating is prohibited."
+    ],
+    "commands": [
+      "Approval-only first slice: purchase.request.create, purchase.request.submit, workflow.approval.decide, and purchase approve/reject operations are specified; activation is not evidenced.",
+      "workflow.workitem.claim and purchase.request.amend are specified; no execution evidence is supplied.",
+      "workflow.execution.confirm, workflow.execution.dispatch, and purchase.command.execute are target commands; execute is disabled in 01.",
+      "workflow.execution.cancel and purchase.request.cancel are specified cancellation commands.",
+      "workflow.compensation.request, purchase.command.compensate, workflow.recovery.reconcile, purchase.command.fail, and purchase.command.recover are specified/deferred; implementation is not evidenced."
+    ],
+    "events": [
+      "purchase.request.created@v1",
+      "purchase.request.submitted@v1",
+      "purchase.request.approved@v1",
+      "purchase.request.rejected@v1",
+      "purchase.request.amended@v1",
+      "purchase.request.cancelled@v1",
+      "purchase.request.executed@v1",
+      "purchase.request.execution-failed@v1",
+      "purchase.request.compensated@v1",
+      "purchase.request.reconciled@v1",
+      "workflow.instance.created@v1",
+      "workflow.instance.waiting@v1",
+      "workflow.instance.approved@v1",
+      "workflow.instance.rejected@v1",
+      "workflow.instance.expired@v1",
+      "workflow.instance.cancelled@v1",
+      "workflow.instance.executable@v1",
+      "workflow.instance.execution-pending@v1",
+      "workflow.instance.executing@v1",
+      "workflow.instance.executed@v1",
+      "workflow.instance.failed@v1",
+      "workflow.instance.compensation-pending@v1",
+      "workflow.instance.compensated@v1",
+      "workflow.instance.completed@v1",
+      "workflow.workitem.created@v1",
+      "workflow.workitem.claimed@v1",
+      "workflow.workitem.released@v1",
+      "workflow.workitem.approved@v1",
+      "workflow.workitem.rejected@v1",
+      "workflow.workitem.expired@v1",
+      "workflow.workitem.cancelled@v1",
+      "workflow.approval.recorded@v1",
+      "workflow.approval.invalidated@v1",
+      "workflow.execution.confirmed@v1",
+      "workflow.execution.created@v1",
+      "workflow.execution.started@v1",
+      "workflow.execution.succeeded@v1",
+      "workflow.execution.failed@v1",
+      "workflow.execution.effect-unknown@v1",
+      "workflow.execution.reconciled@v1",
+      "workflow.execution.cancelled@v1",
+      "workflow.compensation.requested@v1",
+      "workflow.compensation.succeeded@v1",
+      "workflow.compensation.failed@v1",
+      "audit.receipt.ledgered@v1"
+    ],
+    "approval_rules": [
+      "Sequential department approval followed by conditional finance approval; unknown or ambiguous policy input rejects submission.",
+      "Candidates are snapshots; membership, position, grant, tenant, policy, and authorization are rechecked at claim and decision time.",
+      "Requester cannot approve; department and finance approvers must be distinct; approvers cannot confirm the command; Agents are suggestion-only.",
+      "Key-field amendment increments approval_epoch, invalidates active old work items, and requires fresh approval.",
+      "Every command requires server-derived tenant, expected versions, centralized transitions, idempotency, immutable history, and local outbox insertion."
+    ],
+    "compensation_rules": [
+      "Cancellation means verified no side effect; an uncertain or successful effect cannot be cancelled.",
+      "Unknown effect transitions to compensation_pending and blocks new execution keys.",
+      "Compensation uses a separately authorized typed command and stable original execution identity.",
+      "Original execution and audit facts remain immutable; compensation success is not evidenced by local state alone.",
+      "01 defers side-effect and compensation machinery for the approval-only slice."
+    ]
+  },
+  "audit": {
+    "ingest_path": "Selected target, not connected: SQLite business transaction → SQLite audit_outbox → Bun relay → POST /api/v1/events?wait_for=ledgered. Current governance client is GET-only.",
+    "schema_version": "Proposed event schema_version 1 with explicit schema_id; distinct from local AuditEvent schemaVersion 1, OpenAPI v1, and protobuf snaplink.audit.v1. Active registration is not evidenced.",
+    "outbox_contract": "Business state, histories, idempotency completion, and bounded redacted audit_outbox rows commit in the same SQLite transaction. Stable event_id, event_key, canonical payload, and idempotency_key persist across relay retries. Target schema and relay are proposed, not deployed evidence.",
+    "receipt_contract": "Advance accepted, ledgered, indexed, or archived only from a matching governance receipt. HTTP 202 alone is insufficient. Validate event_id, tenant_id, idempotency_key, status, timestamps, stream_id, sequence, and hash.",
+    "missing_evidence": [
+      "Tenant-scoped source registration for sverpweb-stable and exact signed OAuth client binding.",
+      "Active per-tenant event schemas and enforcement of required nested provenance/payload fields.",
+      "Authenticated POST/RPC ingest configuration and successful negative tenant tests.",
+      "Implemented transaction-aware sink, same-database relay, lease reclaim, retry, and DLQ evidence.",
+      "Real accepted/ledgered receipt, operation timeline, event query, integrity verification, and archive/WORM evidence.",
+      "Approved classification, retention, legal-hold, redaction, and payload-size policy."
+    ]
+  },
+  "operations": {
+    "failure_cases": [
+      "Missing or mismatched tenant: reject before resource lookup or writes.",
+      "Authorization, membership, grant, or revocation dependency failure: fail closed for high-risk commands.",
+      "SQLite lock, corruption, or disk exhaustion: bounded retry with the same key, then 503 with no partial state.",
+      "Outbox insertion failure: roll back business state, histories, idempotency, and outbox atomically.",
+      "Governance outage, timeout, 429, or 5xx: preserve pending row and retry unchanged event identity.",
+      "Governance 400/403/404/409/422: preserve original event and move to dead_letter.",
+      "Duplicate command or delivery: replay identical result; changed digest/content conflicts.",
+      "Worker crash, lease race, or unknown effect: reconcile the stable execution ID; use compensation_pending when uncertain.",
+      "Migration checksum, artifact signature, lock, or inventory mismatch: keep service non-ready.",
+      "Notification or OTel outage: degrade telemetry/notification only; never alter business or audit facts."
+    ],
+    "runbooks": [
+      "Outbox and audit incident handling is specified in 04-operations-acceptance.md but not executed.",
+      "Agent revocation and worker fencing runbook is specified but not evidenced.",
+      "Migration, compatibility rollback, backup restore, and reconciliation runbooks are specified; execution evidence is missing.",
+      "Cancellation, compensation, recovery, DLQ replay, and receipt-integrity procedures are specified; no operational rehearsal is supplied."
+    ],
+    "tests": [
+      "No implementation or test command was run for the read-only persistence design.",
+      "V-01–V-07: definition immutability, tenant isolation, scoped queries, and ownership boundary.",
+      "V-08–V-20: idempotency, routing, membership, authorization, SoD, approval, and concurrency.",
+      "V-21–V-33: amendment, confirmation, execution, cancellation, effect uncertainty, compensation, and recovery.",
+      "V-34–V-40: outbox atomicity, governance outage, stable relay identity, receipt honesty, redaction, and replay.",
+      "V-41–V-48: backup/restore, audit replay, query limits, migration/backfill, disabled commands, and full activation.",
+      "A-01–A-20: active ingest, schema, receipt, retry/DLQ, integrity, redaction, rollback, and end-to-end audit evidence."
+    ],
+    "definition_of_ready": [
+      "Approved single-tenant sverpweb-stable scope with no new workflow repository, database, or runtime plugin host.",
+      "Reviewed persistence, workflow, authorization, audit, migration, rollback, recovery, and compensation contracts.",
+      "Active Snaplink, aero-id, audit-governance source/schema, authentication, retention, and legal-hold contracts with test fixtures.",
+      "Implemented transaction-aware SQLite outbox/relay and executable failure-injection plan.",
+      "Executed high-risk fixtures and tests with honest executed/passed/failed/not_executed results."
+    ],
+    "definition_of_done": [
+      "API, workflow worker, and relay deploy with valid tenant and verified static artifact provenance.",
+      "Approval follows purchase-approval@v1 with separate ownership, versions, histories, idempotency, and SoD.",
+      "Business mutation and local outbox are atomically committed; relay preserves identity and validates real governance receipts.",
+      "Cancellation, effect uncertainty, compensation, revocation, fencing, migration, rollback, backup restore, and reconciliation pass.",
+      "A signed release evidence bundle contains deployment, schema, test, audit receipt, integrity, recovery, and rollback evidence."
+    ]
+  },
+  "ownership": {
+    "collaborating_projects": [
+      "snaplink",
+      "aero-id",
+      "snaplink-audit-governance",
+      "aero-vault",
+      "aero-im"
+    ],
+    "unaffected_projects": [
+      "snaplink-console",
+      "iris-ui"
+    ],
+    "sources_of_truth": {
+      "scope_and_ownership": "examples/snaplink-platform/platform-map.yaml; docs/snaplink-platform/phase3/gate-v2.md",
+      "persistence": "docs/snaplink-platform/phase4/01-persistence-design.md",
+      "workflow": "docs/snaplink-platform/phase4/02-workflow-transitions.md",
+      "audit": "docs/snaplink-platform/phase4/03-audit-integration.md",
+      "operations": "docs/snaplink-platform/phase4/04-operations-acceptance.md"
+    }
+  },
+  "risks": [
+    "Phase-4 documents specify target behavior but do not evidence implemented code, migrations, executed tests, deployed relay, or governance receipts.",
+    "The current best-effort AuditEventSink and GET-only client cannot satisfy the atomic outbox or ledger receipt gate.",
+    "The approval-only scope in 01 differs from the broader execution/compensation target in 02 and 04; activation boundaries require explicit approval.",
+    "Missing tenant, organization, quantity, retention, and active governance contracts can cause fail-closed submission or prevent production readiness.",
+    "Database restore cannot undo ledgered audit facts or external effects; recovery must use typed reconciliation or compensation commands.",
+    "Unverified artifact provenance or migration compatibility could permit unsafe startup or bypass critical outbox writes."
+  ]
+}

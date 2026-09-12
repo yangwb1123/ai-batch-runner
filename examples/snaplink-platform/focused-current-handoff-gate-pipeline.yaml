@@ -1,0 +1,10 @@
+git_commit: false
+decision_log: /home/dwp/ai-batch-runner/docs/snaplink-platform/phase5/DECISIONS.md
+
+stages:
+  - name: focused_current_handoff_gate
+    from_prompt: '@/home/dwp/ai-batch-runner/examples/snaplink-platform/prompts/focused-current-handoff-gate-v1.md'
+    output: docs/snaplink-platform/phase5/focused-current-code-gate.md
+    cwd: /home/dwp/ai-batch-runner
+    agent: pi
+    mode: serial

@@ -75,6 +75,10 @@ MANUAL = {
     "runner": ("device", "medium", "控制地址", "设备 Runner"),
     "campaign": ("planning", "medium", "模块列表", "方向/实现流水线"),
     "advance": ("planning", "low", "仓库", "违规维度/批次"),
+    "migrate": ("planning", "medium", "source/target + migration/v1 manifest",
+                 "evidence diff / dependency waves / rehearsal metrics"),
+    "studio": ("planning", "medium", "project + studio/v1 artifact DAG",
+                "design artifact validation / readiness / rehearsal metrics"),
 }
 
 

@@ -1,0 +1,10 @@
+git_commit: false
+decision_log: /home/dwp/ai-batch-runner/docs/snaplink-platform/phase5/DECISIONS.md
+
+stages:
+  - name: next_approval_slice_task
+    from_prompt: '@/home/dwp/ai-batch-runner/examples/snaplink-platform/prompts/next-approval-slice-task.md'
+    output: docs/workflow/phase1-next-task-report.md
+    cwd: /home/dwp/workspace/job/sverpweb-stable-platform-workflow
+    agent: pi
+    mode: serial

@@ -1,0 +1,53 @@
+change_id: COMPOSE-2026-018
+title: Generic workflow, purchase approval, governed agent execution and platform composition contract
+primary_project: sverpweb-stable
+affected_projects:
+  - sverpweb-stable
+  - snaplink
+  - aero-id
+  - snaplink-audit-governance
+unaffected_projects:
+  - aero-vault
+  - aero-im
+  - snaplink-console
+  - iris-ui
+contracts:
+  produced_events:
+    - governance.workflow.created@v1
+    - governance.workflow.submitted@v1
+    - governance.workflow.status-changed@v1
+    - governance.workitem.created@v1
+    - governance.approval.recorded@v1
+    - governance.execution.started@v1
+    - governance.execution.completed@v1
+    - governance.execution.failed@v1
+    - governance.compensation.requested@v1
+    - governance.capability.revoked@v1
+  consumed_events:
+    - account.department.changed@v1
+    - vault.asset.linked@v1
+failure_policy:
+  authorization: fail_closed
+  audit: durable_async
+  notification: best_effort_async
+  organization: fail_closed
+  asset_reference: fail_closed
+  agent_high_risk: fail_closed
+  workflow_worker: local_queue
+  domain_execution: retry_async
+compatibility:
+  backward_compatible: true
+  migration: expand_migrate_contract
+  sverpweb_multi_tenant: false
+tests:
+  - pbatch mechanical decision-summary validation
+  - pbatch architecture contract and change-manifest validation
+  - sverpweb workflow state and approval unit tests
+  - sverpweb persistence design report before core migrations
+  - Snaplink permission and tenant-context contract tests
+  - aero-id department-id and membership contract tests
+  - audit-governance event schema and durable outbox contract tests
+  - purchase submit department finance execute composition e2e
+  - rejection timeout cancellation revocation and compensation e2e
+  - agent grant expiry cancellation fencing and self-approval negative tests
+  - minimal full production inventory compatibility tests

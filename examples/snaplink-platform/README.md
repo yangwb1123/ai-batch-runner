@@ -1,13 +1,16 @@
 # Snaplink 组合维护包（ai-batch-runner 全特性使用）
 
-6 个**独立产品**构成可组合套件：snaplink（认证授权 IdP）、snaplink-console
+基础六个**独立平台产品**构成可组合套件：snaplink（认证授权 IdP）、snaplink-console
 （管理端）、snaplink-audit-governance（审计事实源）、aero-id（账户域）、
-aero-vault（文件平台）、aero-im（消息/通知）。组合式架构与定位模型见
+aero-vault（文件平台）、aero-im（消息/通知）；`sverpweb-stable` 是本套件之外的 ERP
+首个业务实现项目，`iris-ui` 是 UI 基础设施，不改变领域数据归属。组合式架构与定位模型见
 `COMBINATION_MODEL.md`。
 
 - **场景分析与建议**：`../../docs/snaplink-platform/SCENARIO_ANALYSIS.md`（六件套）
   / `../../docs/snaplink-platform/ERP_SCENARIO_ANALYSIS.md`（ERP 接入场景，五轮对抗后终裁 PASS）
 - **组合式架构建议**：`../../docs/snaplink-platform/COMBINATION_MODEL.md`
+- **总体架构（Workflow/资产/审计/Agent/插件/弹性）**：`../../docs/snaplink-platform/PLATFORM_ARCHITECTURE.md`
+- **跨项目契约草案**：`../../docs/snaplink-platform/contracts/`
 - **多项目联动模型**：`../../docs/snaplink-platform/MULTI_REPO_OPERATIONS.md`
 - **全特性运营方案**：`../../docs/snaplink-platform/OPERATIONS_PLAN.md`
 - **组合仓库模板**：`suite-template/`（snaplink-suite 骨架，含 suite-check 门禁）
@@ -26,7 +29,14 @@ aero-vault（文件平台）、aero-im（消息/通知）。组合式架构与�
 | `erp-scenario-pipeline.yaml` | ERP 场景流水线：证据→分析→meta 对抗审查→修订（doccomplete 门禁防空壳）→复审→终裁门 | 主仓库（产提案） |
 | `scripts/check-doc-complete.py` | 交付物完整性门禁（防"自指空壳"：行数/关键节/自引用三重检查） | 主仓库（revision 阶段 validate_cmd） |
 | `requirement-pipeline.yaml` | 组合需求强制决策流水线：目标→场景→能力→组合→变更→决策摘要→决策门→批准 | 主仓库 |
+| `platform-architecture-pipeline.yaml` | 总体架构推进：Workflow、审批、资产、审计、Telemetry、Agent、Profile/Plugin 契约与首切片变更设计 | 主仓库 |
+| `platform-architecture-gate-pipeline.yaml` | 有界证据独立 Gate；避免 adversarial review 聚合超过 prompt 限制 | 主仓库 |
+| `platform-readiness-pipeline.yaml` | 根据 Gate blocker 生成持久化、Workflow 状态、审计 Outbox、运行与验收工件 | 主仓库 |
+| `platform-readiness-gate-pipeline.yaml` | 独立设计→代码交接 Gate；PASS 不代表生产验收 | 主仓库 |
+| `platform-implementation-pipeline.yaml` | 在独立 sverpweb worktree 实现首个 approval-only 切片 | 主仓库调度、目标仓库执行 |
+| `platform-repair-pipeline.yaml` / `platform-adversarial-review-pipeline.yaml` | 代码修复与对抗复核流水线 | 独立 sverpweb worktree |
 | `scripts/check-decision-summary.py` | 决策门机械校验器（9 组必填维度，fail closed） | 主仓库（决策门 validate_cmd） |
+| `scripts/check-architecture-contract.py` | Phase 3 架构契约、Manifest、项目边界和 Workflow/Agent/Audit 不变量门禁 | 主仓库（默认 fail closed；`--mechanical-only` 仅用于批准前检查） |
 | `scripts/check-change-manifest.py` | Change Manifest 门禁（跨仓库变更边界校验） | 主仓库 |
 | `prompts/requirement_interpreter.md` 等 | 组合角色模板（requirement_interpreter / capability_architect / composition_reviewer）+ role_keywords | 主仓库 meta 编排 |
 
@@ -50,19 +60,35 @@ python pi-batch.py examples/snaplink-platform/audit-onboarding-pipeline.yaml --d
 python pi-batch.py examples/snaplink-platform/requirement-pipeline.yaml \
   -p "管理员删除文件后通知所有者，并记录审计" --dry-run
 
-# 5. 人工批准后：Change Manifest 门禁
+# 5. 总体架构/通用 Workflow 首切片（先 dry-run，再运行）
+python pi-batch.py examples/snaplink-platform/platform-architecture-pipeline.yaml \
+  --agent-bin ./examples/snaplink-platform/scripts/pi-read-only.sh --dry-run
+python pi-batch.py examples/snaplink-platform/platform-architecture-pipeline.yaml \
+  --agent-bin ./examples/snaplink-platform/scripts/pi-read-only.sh \
+  --retries 3 --log-file logs/platform-architecture.log
+python examples/snaplink-platform/scripts/check-architecture-contract.py . \
+  --mechanical-only --json
+
+# 6. 设计交接 Gate 与 sverpweb 首切片（独立 worktree，不自动合并）
+python pi-batch.py examples/snaplink-platform/platform-readiness-gate-pipeline.yaml \
+  --agent-bin ./examples/snaplink-platform/scripts/pi-read-only.sh \
+  --model gpt-5.6-luna --thinking max
+python pi-batch.py examples/snaplink-platform/platform-implementation-pipeline.yaml \
+  --model gpt-5.6-luna --thinking max --no-lock
+
+# 7. 人工批准后：Change Manifest 门禁
 python examples/snaplink-platform/scripts/check-change-manifest.py \
   docs/snaplink-platform/decisions/change-manifest.yaml
 
-# 6. 每仓库同步 ai-batch-runner 后跑 campaign（先 dry-run）
+# 7. 每仓库同步 ai-batch-runner 后跑 campaign（先 dry-run）
 cp -r pbatch pi-batch.py pi-batch.yaml <目标仓库>/
 cd <目标仓库> && python pi-batch.py campaign --dry-run --modules "internal,cmd,migrations"
 
-# 7. 7×24 轮巡 + 看板
+# 8. 7×24 轮巡 + 看板
 bash examples/snaplink-platform/platform-status.sh
 bash examples/snaplink-platform/platform-247.sh 3 300
 
-# 8. ERP 场景：sverpweb-stable 接入建议（五轮对抗流水线，已终裁 PASS）
+# 9. ERP 场景：sverpweb-stable 接入建议（五轮对抗流水线，已终裁 PASS）
 #    完整证据链 docs/snaplink-platform/erp/；决策日志 decisions/erp-scenario.md
 python pi-batch.py examples/snaplink-platform/erp-scenario-pipeline.yaml --dry-run
 #    sverpweb-stable 的 campaign 配置/流水线模板已在仓库内（pi-batch-campaign.yaml）

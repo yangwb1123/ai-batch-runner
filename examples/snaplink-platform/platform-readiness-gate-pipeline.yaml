@@ -1,0 +1,64 @@
+# Independent gate for the design-to-code handoff.
+# PASS here means the implementation scope is bounded and reviewable; it does
+# not mean the product implementation or production acceptance has passed.
+
+git_commit: false
+decision_log: docs/snaplink-platform/phase4/DECISIONS.md
+
+stages:
+  - name: readiness_gate
+    from_prompt: |
+      You are the independent implementation-readiness gatekeeper. Use the
+      read tool to inspect:
+
+      docs/snaplink-platform/phase3/gate-v2.md
+      docs/snaplink-platform/phase4/01-persistence-design.md
+      docs/snaplink-platform/phase4/02-workflow-transitions.md
+      docs/snaplink-platform/phase4/03-audit-integration.md
+      docs/snaplink-platform/phase4/04-operations-acceptance.md
+      docs/snaplink-platform/phase4/readiness-summary.json
+      docs/snaplink-platform/contracts/WORKFLOW_CONTRACT_V1.md
+      docs/snaplink-platform/contracts/EXECUTION_CONTEXT_V1.md
+      docs/snaplink-platform/contracts/AUDIT_PROVENANCE_V1.md
+      examples/snaplink-platform/platform-map.yaml
+
+      Do not call write, edit, or bash tools. Return only the complete
+      Markdown gate artifact in your final response; the runner will save it.
+
+      This is a DESIGN-TO-CODE handoff gate, not a production acceptance gate.
+      It may PASS when the documents define a coherent, bounded first slice
+      and explicitly list implementation/evidence gaps. It must FAIL if there
+      is an unresolved ownership contradiction, a forbidden direct database or
+      ACL dependency, a client-selected tenant switch, an ambiguous
+      compensation state, an approval/execution collapse, an unbounded Agent
+      privilege, or an implementation plan that silently expands scope.
+
+      Verify:
+      1. Exactly one primary project is sverpweb-stable.
+      2. Workflow owns only workflow facts and calls a purchase command port.
+      3. The first code slice is approval-only unless execution is explicitly
+         enabled later; no side effect is implied by approved.
+      4. The current sverpweb single-tenant deployment is not misrepresented.
+      5. Tenant, department, actor and provenance checks are server-side and
+         fail closed; Agent capabilities are bounded and revocable.
+      6. The proposed local outbox is transactionally coupled, while the
+         document still honestly marks remote integration and receipts as
+         missing until executed.
+      7. The state vocabulary uses compensation_pending, not compensating.
+      8. Migration, rollback, recovery, test and artifact-provenance work is
+         concrete enough to become implementation tasks with owners.
+
+      Use exactly these headings:
+      ## Decision
+      ## Scope Approved for Code
+      ## Non-negotiable Invariants
+      ## Required Implementation Tasks
+      ## Evidence Still Required
+      ## Explicitly Not Approved
+      ## Handoff
+
+      End with exactly one non-bare line:
+      VERDICT: PASS - <bounded design-to-code handoff is ready>
+      or
+      VERDICT: FAIL - <blocking contradiction>
+    output: docs/snaplink-platform/phase4/gate-v3.md

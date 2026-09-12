@@ -296,10 +296,28 @@ pi-batch tasks.yaml --max-rounds 0 --round-delay 60
 # Repository campaign: inspect the plan, then analyze and implement Top N directions
 pi-batch campaign --dry-run
 pi-batch campaign --max-directions 2 --reuse --retry-failed
+
+# Source-first project comparison / migration / upgrade rehearsal (no code mutation)
+pi-batch migrate compare --source ../reference --target . --manifest migration.yaml --json
+pi-batch migrate plan --source ../reference --target . --manifest migration.yaml --json
+pi-batch migrate rehearse --source ../reference --target . --manifest migration.yaml --budget-minutes 180 --json
+pi-batch migrate upgrade --baseline ../old --target . --manifest migration.yaml --strict
+
+# Project Studio：业务→领域→产品→UX→架构→数据/API→实施 DAG
+pi-batch studio plan --project . --spec studio.yaml --json
+pi-batch studio validate --project . --spec studio.yaml --strict
+pi-batch studio rehearse --project . --spec studio.yaml --budget-minutes 240 --json
 # 24x7 incremental campaign: concurrent analysis/meta roles, bounded provider policy,
 # and max reasoning (implementation remains worktree/commit governed)
 pi-batch campaign --rounds 0 --round-delay 120 --jobs 4 --max-directions 1 \
   --model gpt-5.6-luna --provider openai-codex --thinking max --reuse --retry-failed
+
+# Bounded campaign self-repair: preserve failed edits, restore the clean
+# baseline, narrow the next retry, and stop after a stalled/recovery budget.
+# See docs/CAMPAIGN_SELF_REPAIR.md and examples/repository-campaign.yaml.
+pi-batch campaign --config examples/repository-campaign.yaml \
+  --rounds 0 --max-directions 1 --max-total-directions 1 \
+  --reuse --retry-failed
 
 # Parallel module collaboration from a dirty baseline (one external worktree per agent)
 pi-batch collab --root /path/to/project --plan /path/to/collab.yaml --dry-run

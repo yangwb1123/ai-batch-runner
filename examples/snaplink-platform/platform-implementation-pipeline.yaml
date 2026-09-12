@@ -1,0 +1,65 @@
+# First code slice after the design-to-code gate.
+# The target is an isolated sverpweb worktree; this pipeline must not touch
+# the dirty main worktree or any other project.
+
+git_commit: false
+decision_log: /home/dwp/ai-batch-runner/docs/snaplink-platform/phase5/DECISIONS.md
+
+stages:
+  - name: implement_approval_slice
+    from_prompt: '@/home/dwp/ai-batch-runner/examples/snaplink-platform/prompts/implement-approval-slice.md'
+    output: docs/workflow/phase1-implementation-report.md
+    cwd: /home/dwp/workspace/job/sverpweb-stable-platform-workflow
+    agent: pi
+    mode: serial
+
+  - name: verify_approval_slice
+    from_outputs: implement_approval_slice
+    mode: serial
+    tasks:
+      - prompt: |
+          You are the independent code reviewer and repair engineer. The
+          previous implementation report is supplied as {input_content}.
+          Work only in the current isolated sverpweb worktree. Do not call git
+          reset, git clean, git checkout, or modify files outside it. Do not
+          commit.
+
+          Read the report, inspect the complete git diff and the source of
+          every changed file. Re-read these governing contracts with the read
+          tool:
+          /home/dwp/ai-batch-runner/docs/snaplink-platform/phase4/gate-v3.md
+          /home/dwp/ai-batch-runner/docs/snaplink-platform/phase4/01-persistence-design.md
+          /home/dwp/ai-batch-runner/docs/snaplink-platform/phase4/02-workflow-transitions.md
+          /home/dwp/ai-batch-runner/docs/snaplink-platform/phase4/03-audit-integration.md
+          /home/dwp/ai-batch-runner/docs/snaplink-platform/contracts/WORKFLOW_CONTRACT_V1.md
+          /home/dwp/ai-batch-runner/docs/snaplink-platform/contracts/EXECUTION_CONTEXT_V1.md
+
+          Review and repair only this first approval-only slice. Verify that
+          Workflow has no purchase-table SQL or database handle, workflow
+          definitions are immutable/versioned, tenant/context and approval
+          authority are server-validated, requester/self-approval and stale
+          versions fail closed, approved is not executed, execution and
+          compensation are disabled without writes, and critical mutation plus
+          local outbox are atomic. Check migration repeatability, legacy data
+          compatibility, event naming, bounded payloads, idempotency and
+          notification/audit separation. Reject any direct cross-project
+          database assumption or made-up external authority API.
+
+          Run the relevant tests, typecheck and lint/build commands from the
+          repository package scripts. Fix only defects within this scope; do
+          not paper over failures by weakening checks. If a requirement is
+          not implementable from current authority contracts, retain a
+          fail-closed implementation and document it. Do not claim a remote
+          governance receipt unless a real test proves it.
+
+          Return only a concise Markdown verification report with exactly:
+          ## Review Result
+          ## Defects Fixed
+          ## Tests Executed
+          ## Remaining Failures
+          ## Evidence Still Required
+          ## Handoff Decision
+          The runner will save the report; do not write it yourself.
+        cwd: /home/dwp/workspace/job/sverpweb-stable-platform-workflow
+        tools: read,write,edit,bash
+        output: docs/workflow/phase1-verification-report.md

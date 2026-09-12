@@ -1,0 +1,10 @@
+git_commit: false
+decision_log: /home/dwp/ai-batch-runner/docs/snaplink-platform/phase5/DECISIONS.md
+
+stages:
+  - name: fix_migration_trace_audit_policy
+    from_prompt: '@/home/dwp/ai-batch-runner/examples/snaplink-platform/prompts/fix-migration-trace-audit-policy-v1.md'
+    output: docs/workflow/phase1-migration-trace-audit-policy-fix-report.md
+    cwd: /home/dwp/workspace/job/sverpweb-stable-platform-workflow
+    agent: pi
+    mode: serial

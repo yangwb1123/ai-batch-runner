@@ -138,10 +138,22 @@ projects:
       - aps-plan
       - pricing-quote
       - media-item-local
+      # First-slice workflow ownership (Proposed; workflow facts stay in this
+      # project until a future extraction is separately approved).
+      - workflow-definition
+      - workflow-instance
+      - workflow-work-item
+      - workflow-approval-decision
+      - workflow-execution
+      - workflow-compensation
     capabilities:
       - erp-bff
       - sso-login  # @snaplink/sso-client，已 Verified
       - audit-outbox  # 本地 outbox + HTTP publisher，目标未接 governance，已 Verified
+      - workflow-contract
+      - workflow-approval
+      - workflow-execution
+      - workflow-compensation
     integrations:
       authorization: AuthorizationProvider
       audit: AuditSink
@@ -172,6 +184,13 @@ data_ownership:
   session: snaplink
   role-binding: snaplink
   permission-catalog: snaplink
+  workflow-definition: sverpweb-stable
+  workflow-instance: sverpweb-stable
+  workflow-work-item: sverpweb-stable
+  workflow-approval-decision: sverpweb-stable
+  workflow-execution: sverpweb-stable
+  workflow-compensation: sverpweb-stable
+  agent-capability-grant: snaplink
   file-metadata: aero-vault
   share-link: aero-vault
   message: aero-im
@@ -184,6 +203,8 @@ dependency_rules:
   max_sync_chain: 3
   allowed_sync:
     - "business-service -> snaplink (authorization-check)"
+    - "sverpweb-stable -> aero-id (bounded department/membership reference)"
+    - "sverpweb-stable -> aero-vault (asset reference check only)"
     - "console-bff -> any service (management api)"
     - "service -> audit-governance (event-ingest, 仅异步允许)"
   forbidden:

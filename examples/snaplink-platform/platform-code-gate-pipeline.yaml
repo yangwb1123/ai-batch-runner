@@ -1,0 +1,49 @@
+# Read-only code gate for the isolated first slice. PASS is limited to code
+# handoff; live authority, governance, recovery and production evidence remain
+# separate gates.
+
+git_commit: false
+decision_log: docs/snaplink-platform/phase5/DECISIONS.md
+
+stages:
+  - name: code_handoff_gate
+    from_prompt: |
+      You are an independent code-handoff gatekeeper. Use only the read tool.
+      Do not call write, edit, or bash tools. Inspect the current isolated
+      target worktree:
+      /home/dwp/workspace/job/sverpweb-stable-platform-workflow
+
+      Read its git diff, all changed workflow/purchase/persistence/audit files,
+      tests and README/env changes. Compare them with:
+      /home/dwp/ai-batch-runner/docs/snaplink-platform/phase4/gate-v3.md
+      /home/dwp/ai-batch-runner/docs/snaplink-platform/phase4/01-persistence-design.md
+      /home/dwp/ai-batch-runner/docs/snaplink-platform/phase4/02-workflow-transitions.md
+      /home/dwp/ai-batch-runner/docs/snaplink-platform/phase4/03-audit-integration.md
+      /home/dwp/ai-batch-runner/docs/snaplink-platform/contracts/WORKFLOW_CONTRACT_V1.md
+      /home/dwp/ai-batch-runner/docs/snaplink-platform/contracts/EXECUTION_CONTEXT_V1.md
+      /home/dwp/ai-batch-runner/docs/snaplink-platform/contracts/AUDIT_PROVENANCE_V1.md
+
+      This gate evaluates only whether the implemented approval-only code is
+      safe to hand to a human reviewer. It must FAIL for a concrete code
+      defect, broken migration, direct workflow purchase SQL, unsafe tenant or
+      actor authority, approval/execution collapse, missing idempotency or
+      atomic outbox violation. It must not require live remote receipts to
+      PASS this code handoff, but must list those as evidence still required.
+      Do not be fooled by passing tests: inspect SQL, transaction ownership,
+      identifiers and compatibility paths directly. Use compensation_pending,
+      never compensating. The current deployment must remain single-tenant and
+      execution/compensation/recovery must remain disabled.
+
+      Use exactly these headings:
+      ## Decision
+      ## Verified Code Invariants
+      ## Findings
+      ## Evidence Still Required
+      ## Explicitly Not Approved
+      ## Handoff
+
+      End with exactly one non-bare line:
+      VERDICT: PASS - <code handoff is safe for human review>
+      or
+      VERDICT: FAIL - <blocking code defect>
+    output: docs/snaplink-platform/phase5/code-gate.md
