@@ -49,7 +49,19 @@ analysis:
 
 selection:
   max_directions: 1
+  max_total_directions: 1  # one bounded implementation at a time
   minimum_score: 0
+
+# Failed attempts are preserved and restored before a retry. This keeps an
+# unattended campaign from repeatedly analyzing or building on dirty source.
+recovery:
+  enabled: true
+  max_attempts: 1
+  restore_on_failure: true
+  narrow_scope: true
+  max_roles_per_iteration: 2
+  allow_failed_roles: 1
+  stop_after_stalled_rounds: 2
 
 implementation:
   pipeline: examples/repository-campaign-pipeline.yaml

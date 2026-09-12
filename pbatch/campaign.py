@@ -13,6 +13,7 @@ from .campaign_models import CampaignSettings
 from .campaign_paths import (campaign_config_path as _campaign_config_path,
                              validate_paths as _validate_paths)
 from .campaign_state import StateStore, git_snapshot
+from .campaign_recovery import update_round_recovery
 from .config import log, yaml
 from .text_io import read_text_bounded
 
@@ -33,6 +34,8 @@ def build_campaign_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default="examples/repository-campaign.yaml")
     parser.add_argument("--modules", default="", help="comma-separated module directories")
     parser.add_argument("--max-directions", type=int)
+    parser.add_argument("--max-total-directions", type=int,
+                        help="global cap across all modules (0 = per-module quota)")
     parser.add_argument("--top-only", action="store_true")
     parser.add_argument("--skip-passed", action="store_true")
     parser.add_argument("--reuse", action="store_true")
@@ -143,6 +146,7 @@ def _validate_runtime_args(args: argparse.Namespace) -> None:
               "budget-max": args.budget_max, "daily-budget": args.daily_budget,
               "round-delay": args.round_delay, "rate-limit": args.rate_limit,
               "rate-burst": args.rate_burst,
+              "max-total-directions": getattr(args, "max_total_directions", 0) or 0,
               "merge-wait-lock": getattr(args, "merge_wait_lock", 0)}
     invalid = [name for name, value in values.items()
                if not math.isfinite(float(value)) or value < 0]
@@ -157,6 +161,8 @@ def _validate_runtime_args(args: argparse.Namespace) -> None:
 def _apply_overrides(settings: CampaignSettings, args: argparse.Namespace) -> None:
     if args.max_directions is not None:
         settings.max_directions = args.max_directions
+    if args.max_total_directions is not None:
+        settings.max_total_directions = args.max_total_directions
     if args.top_only:
         settings.max_directions = 1
     if args.jobs is not None:
@@ -196,13 +202,22 @@ def run_campaign_loop(context: CampaignContext) -> int:
     rounds = context.args.rounds
     code = 0
     round_no = 1
+    stalled_rounds = 0
     while rounds == 0 or round_no <= rounds:
         label = str(rounds) if rounds else "∞"
         log.info("\n========== CAMPAIGN ROUND %d/%s ==========", round_no, label)
         _refresh_repository_snapshot(context)
+        context.round_progress = 0
+        context.recovery_blocked = False
         result = run_campaign(context)
         if result and code == 0:
             code = result
+        stalled_rounds, stop_reason = update_round_recovery(
+            context, stalled_rounds)
+        if stop_reason:
+            log.error("%s", stop_reason)
+            code = 4
+            break
         if context.args.round_commit and not _round_commit(context, round_no):
             code = code or 1
         if rounds > 0 and round_no >= rounds:

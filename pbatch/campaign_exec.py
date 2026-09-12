@@ -39,6 +39,7 @@ from .lock import acquire_lock, release_lock
 from .registry import mark_running, unregister
 from .runner import kill_active_procs, run_argv
 from .text_io import read_text_bounded
+from .campaign_recovery import update_round_recovery
 
 def _record_evolution_trajectory(context: "CampaignContext", outcomes: list) -> None:
     """批次完成事件 → docs/evolution/state.jsonl（演化轨迹数据源）。
@@ -153,8 +154,18 @@ def _select(context: CampaignContext, modules: list[str],
     failures = 0
     for module in modules:
         candidates = directions.get(module, [])
+        remaining = context.settings.max_total_directions - len(selected_items)
+        if context.settings.max_total_directions and remaining <= 0:
+            for direction in candidates:
+                _direction_event(
+                    context, direction, "DIRECTION_REJECTED", "", _analysis_path(context, module),
+                    "global selection quota exhausted")
+            continue
+        limit = context.settings.max_directions
+        if context.settings.max_total_directions:
+            limit = min(limit, remaining)
         selected, rejected = select_directions(
-            context.root, candidates, context.settings.max_directions, context.settings.minimum_score)
+            context.root, candidates, limit, context.settings.minimum_score)
         analysis = _analysis_path(context, module)
         for direction, reason in rejected:
             _direction_event(context, direction, "DIRECTION_REJECTED", "", analysis, reason)
@@ -176,6 +187,8 @@ def _analysis_path(context: CampaignContext, module: str) -> Path:
 
 def _implement(context: CampaignContext, items: list[tuple[Direction, Path, str]]):
     if not items:
+        context.round_progress = 0
+        context.recovery_blocked = False
         return []
     pause_reason, pause_evidence = _provider_breaker_admission(
         getattr(context.args, "provider", ""),
@@ -199,6 +212,11 @@ def _implement(context: CampaignContext, items: list[tuple[Direction, Path, str]
                     for direction, analysis, _ in items]
     fingerprints = {direction.direction_id: fp for direction, _, fp in items}
     record_campaign_outcomes(context, outcomes, fingerprints, _event)
+    context.round_progress = sum(
+        1 for outcome in outcomes if outcome.status == PipelineStatus.PASSED)
+    context.recovery_blocked = any(
+        getattr(outcome, "recovery_status", "") == "BLOCKED"
+        for outcome in outcomes)
     return outcomes
 
 
@@ -254,10 +272,13 @@ def _print_plan(context: CampaignContext, modules: list[str]) -> None:
                  PipelineStatus.PROVIDER_BREAKER_PAUSED),
         context.settings.pipeline_minutes * 60)
     analysis_wall = len(modules) * analysis_sec / context.settings.analysis_jobs
-    pipeline_wall = (len(modules) * context.settings.max_directions * pipeline_sec /
-                     context.settings.pipeline_concurrency)
+    direction_count = (context.settings.max_total_directions or
+                       len(modules) * context.settings.max_directions)
+    pipeline_wall = direction_count * pipeline_sec / context.settings.pipeline_concurrency
     print(f"== Campaign: {context.settings.name} ==")
-    print(f"Modules: {len(modules)}; directions/module: {context.settings.max_directions}")
+    total = context.settings.max_total_directions or "per-module"
+    print(f"Modules: {len(modules)}; directions/module: {context.settings.max_directions}; "
+          f"global directions: {total}")
     for module in modules:
         print(f"  - {module}")
     print(f"Estimated analysis: {analysis_wall / 60:.0f} min | "
@@ -347,6 +368,7 @@ def run_campaign_loop(context: CampaignContext) -> int:
     rounds = context.args.rounds
     code = 0
     round_no = 1
+    stalled_rounds = 0
     while True:
         if rounds > 0 and round_no > rounds:
             break
@@ -354,9 +376,17 @@ def run_campaign_loop(context: CampaignContext) -> int:
         log.info("")
         log.info("========== CAMPAIGN ROUND %d/%s ==========", round_no, label)
         _refresh_repository_snapshot(context)
+        context.round_progress = 0
+        context.recovery_blocked = False
         rc = run_campaign(context)
         if rc and code == 0:
             code = rc
+        stalled_rounds, stop_reason = update_round_recovery(
+            context, stalled_rounds)
+        if stop_reason:
+            log.error("%s", stop_reason)
+            code = 4
+            break
         if context.args.round_commit:
             if not _round_commit(context, round_no) and code == 0:
                 code = 1

@@ -5,36 +5,36 @@ from pbatch.pipeline_status import PipelineStatus
 
 import json
 import os
-import signal
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .campaign_models import CampaignSettings, Direction, safe_slug
 from .campaign_state import (digest, file_digest, git_worktree_evidence,
                              tool_digest, tree_digest)
-from .campaign_worktree import (_git_failure,
-                                _sync_worktree_baseline,
-                                _validate_existing_worktree,
-                                ensure_worktree as _ensure_worktree,
-                                finalize_worktree as _finalize_worktree,
-                                git_ok as _git_ok, git_path as _git_path,
-                                git_text as _git_text,
-                                isolated_status as _isolated_status,
-                                run_git as _run_git)
+from .campaign_recovery import (RECOVERY_BLOCKED, RECOVERY_DISABLED,
+                                RecoveryResult, apply_recovery_profile,
+                                has_failed_attempt, recover_worktree,
+                                recovery_attempt_count,
+                                write_wreckage_report)
+from .campaign_worktree import (
+    ensure_worktree as _ensure_worktree,
+    git_text as _git_text,
+)
 from . import config
 from .config import log, yaml
 from .pipeline import load_pipeline, run_pipeline
 from .text_io import read_text_bounded
 
 
-_ACTIVE_PIPELINES: set[subprocess.Popen] = set()
-_ACTIVE_LOCK = threading.Lock()
+from .campaign_runtime import (copy_local_analysis as _copy_local_analysis,
+                               isolated_result as _isolated_result,
+                               kill_isolated_pipelines,
+                               run_isolated_child as _run_isolated_child)
 
 
 @dataclass
@@ -54,6 +54,9 @@ class PipelineOutcome:
     merge_reason: str = ""
     merge_commit: str = ""
     merge_evidence: list[str] | None = None
+    recovery_status: str = ""
+    recovery_reason: str = ""
+    recovery_evidence: list[str] = field(default_factory=list)
 
 
 def direction_fingerprint(root: Path, settings: CampaignSettings, direction: Direction,
@@ -70,8 +73,14 @@ def direction_fingerprint(root: Path, settings: CampaignSettings, direction: Dir
         "campaign": {
             "name": settings.name,
             "maximum": settings.max_directions,
+            "maximum_total": settings.max_total_directions,
             "minimum_score": settings.minimum_score,
             "requirement_stage": settings.requirement_stage,
+            "recovery": {
+                "enabled": settings.recovery_enabled,
+                "max_attempts": settings.recovery_max_attempts,
+                "narrow_scope": settings.recovery_narrow_scope,
+            },
         },
         "repository": snapshot,
         "model": model,
@@ -81,7 +90,7 @@ def direction_fingerprint(root: Path, settings: CampaignSettings, direction: Dir
 
 
 def materialize_pipeline(root: Path, settings: CampaignSettings, direction: Direction,
-                         analysis_path: Path) -> Path:
+                         analysis_path: Path, recovery_mode: bool = False) -> Path:
     """Create a direction-scoped pipeline without output/decision collisions."""
     template = _pipeline_template(root, settings)
     if not template.is_file() or template.is_symlink():
@@ -97,6 +106,8 @@ def materialize_pipeline(root: Path, settings: CampaignSettings, direction: Dire
     if not _replace_requirement_prompt(data["stages"], settings, direction, analysis_path):
         raise ValueError(f"requirement stage '{settings.requirement_stage}' not found")
     _inject_prior_gate_feedback(data["stages"], run_dir)
+    if recovery_mode and settings.recovery_narrow_scope:
+        apply_recovery_profile(data["stages"], settings, run_dir)
     pipeline_path = run_dir / "pipeline.yaml"
     _atomic_yaml(pipeline_path, data)
     return pipeline_path
@@ -173,6 +184,10 @@ def _scope_pipeline_outputs(data: dict, root: Path, run_dir: Path) -> None:
         stage_id = safe_slug(stage.get("name", "stage"), fallback="stage")
         stage_dir = run_dir / "artifacts" / stage_id
         stage["cwd"] = str(root)
+        if (stage.get("meta") or stage.get("gate") or
+                stage.get("name") in {"requirements", "design"}):
+            stage["read_only"] = True
+            stage["read_only_paths"] = [str(run_dir.parent)]
         if stage.get("output"):
             stage["output"] = str(stage_dir / _output_name(stage["output"], "output.md"))
         if stage.get("output_dir"):
@@ -269,51 +284,48 @@ def _atomic_yaml(path: Path, data: dict) -> None:
             pass  # stale worktree cleanup best-effort
 
 
-def _write_wreckage_report(root: Path, pipeline_path: Path) -> None:
-    """Snapshot what a failed direction left in the worktree so a human can
-    take over without re-deriving the diff.
-
-    Real-world lesson (forge-os campaign): the implement stage TIMEOUTed and
-    the campaign process was later killed; ~28 modified files remained with no
-    manifest of which were touched, whether they build, or what the agent was
-    mid-way through. The wreckage report records the porcelain status and
-    diff --stat at failure time (best-effort; a non-git or busy tree just
-    yields no report).
-    """
-    try:
-        status = subprocess.run(["git", "-C", str(root), "status", "--porcelain=v1"],
-                                capture_output=True, text=True, timeout=30, check=False)
-        stat = subprocess.run(["git", "-C", str(root), "diff", "--stat"],
-                              capture_output=True, text=True, timeout=30, check=False)
-    except (OSError, subprocess.TimeoutExpired):
-        return
-    if status.returncode != 0 or not status.stdout.strip():
-        return
-    lines = [
-        "# Implement wreckage (uncommitted worktree changes at failure)",
-        "",
-        "Status: " + ", ".join(sorted(set(line[:2] for line in
-                                          status.stdout.splitlines() if line.strip()))),
-        "",
-        "```",
-        status.stdout.rstrip(),
-        "```",
-    ]
-    if stat.returncode == 0 and stat.stdout.strip():
-        lines += ["", "## diff --stat", "", "```", stat.stdout.rstrip(), "```"]
-    try:
-        (pipeline_path.parent / "wreckage.md").write_text(
-            "\n".join(lines) + "\n", encoding="utf-8")
-    except OSError:
-        pass
-
-
 def run_direction(root: Path, settings: CampaignSettings, direction: Direction,
                   analysis_path: Path, model: str = "", provider: str = "",
                   timeout: int = 0, reuse: bool = False) -> PipelineOutcome:
     start = time.monotonic()
     baseline = _git_text(root, ["rev-parse", "HEAD"])
-    pipeline_path = materialize_pipeline(root, settings, direction, analysis_path)
+    branch = _git_text(root, ["branch", "--show-current"])
+    start_state = git_worktree_evidence(
+        root, excludes=(settings.output_dir,))
+    start_clean = bool(baseline and start_state["clean_commit"] == baseline)
+    recovery_root = config.data_dir(str(root)) / "campaign-recovery"
+    run_dir = settings.path(root, settings.output_dir) / "runs" / direction.direction_id
+    recovery_mode = settings.recovery_enabled and has_failed_attempt(run_dir)
+    attempts = recovery_attempt_count(root, recovery_root, direction.direction_id)
+    if recovery_mode and attempts > settings.recovery_max_attempts:
+        return _recovery_budget_outcome(
+            direction, analysis_path, baseline,
+            f"self-repair attempt budget exhausted ({attempts})")
+    pipeline_path = materialize_pipeline(
+        root, settings, direction, analysis_path, recovery_mode)
+    status, reason, evidence = _execute_direction_pipeline(
+        pipeline_path, model, provider, timeout, reuse, direction)
+    recovery = _recover_direction(
+        root, settings, direction, baseline, branch, start_clean,
+        pipeline_path, status, reason, evidence)
+    if recovery.status == RECOVERY_BLOCKED:
+        reason = f"{reason}; self-repair blocked: {recovery.reason}"
+    repository = git_worktree_evidence(
+        root, excludes=(settings.output_dir,))
+    return PipelineOutcome(
+        direction, status, reason, time.monotonic() - start, evidence,
+        commit=repository["head_commit"], baseline_commit=baseline,
+        clean_commit=repository["clean_commit"],
+        dirty_evidence=repository["dirty_evidence"],
+        dirty_digest=repository["dirty_digest"],
+        recovery_status=recovery.status,
+        recovery_reason=recovery.reason,
+        recovery_evidence=recovery.evidence)
+
+
+def _execute_direction_pipeline(pipeline_path: Path, model: str,
+                                provider: str, timeout: int, reuse: bool,
+                                direction: Direction) -> tuple[str, str, list[str]]:
     pipeline = load_pipeline(str(pipeline_path))
     for stage in pipeline.stages:
         if provider:
@@ -322,16 +334,33 @@ def run_direction(root: Path, settings: CampaignSettings, direction: Direction,
         pipeline, model_override=model, reuse=reuse, timeout_override=timeout,
         session_name=f"campaign-{direction.direction_id}", fingerprint_mode=reuse)
     status, reason = classify_pipeline(results, failed, pipeline)
-    evidence = _artifact_evidence(pipeline_path, results)
-    if status != PipelineStatus.PASSED:
-        _write_wreckage_report(root, pipeline_path)
-    repository = git_worktree_evidence(root)
+    return status, reason, _artifact_evidence(pipeline_path, results)
+
+
+def _recover_direction(root: Path, settings: CampaignSettings,
+                       direction: Direction, baseline: str, branch: str,
+                       start_clean: bool, pipeline_path: Path, status: str,
+                       reason: str, evidence: list[str]) -> RecoveryResult:
+    if status == PipelineStatus.PASSED:
+        return RecoveryResult("")
+    write_wreckage_report(root, pipeline_path)
+    if not settings.recovery_enabled:
+        return RecoveryResult(RECOVERY_DISABLED, "self-repair is disabled")
+    recovery = recover_worktree(
+        root, baseline, branch, config.data_dir(str(root)) / "campaign-recovery",
+        direction.direction_id, start_clean=start_clean, enabled=True,
+        restore=settings.recovery_restore_on_failure, reason=reason,
+        preserve_paths=(settings.path(root, settings.output_dir),))
+    evidence.extend(recovery.evidence)
+    return recovery
+
+
+def _recovery_budget_outcome(direction: Direction, analysis: Path,
+                             baseline: str, reason: str) -> PipelineOutcome:
     return PipelineOutcome(
-        direction, status, reason, time.monotonic() - start, evidence,
-        commit=repository["head_commit"], baseline_commit=baseline,
-        clean_commit=repository["clean_commit"],
-        dirty_evidence=repository["dirty_evidence"],
-        dirty_digest=repository["dirty_digest"])
+        direction, PipelineStatus.PIPELINE_FAILED, reason, 0,
+        [str(analysis)], baseline_commit=baseline,
+        recovery_status=RECOVERY_BLOCKED, recovery_reason=reason)
 
 
 def _artifact_evidence(pipeline_path: Path, results: list) -> list[str]:
@@ -414,76 +443,45 @@ def _run_in_worktree(settings: CampaignSettings, direction: Direction, analysis_
                      worktree: Path, branch: str, baseline: str,
                      agent_args: list[str]) -> PipelineOutcome:
     start = time.monotonic()
-    local_analysis = config.data_dir(str(worktree)) / "campaign" / f"{direction.direction_id}-analysis.json"
-    local_analysis.parent.mkdir(parents=True, exist_ok=True)
-    local_analysis.write_text(read_text_bounded(
-        analysis_path, config.OUTPUT_MAX_BYTES, "campaign analysis"), encoding="utf-8")
-    pipeline_path = materialize_pipeline(worktree, settings, direction, local_analysis)
+    local_analysis = _copy_local_analysis(worktree, direction, analysis_path)
+    recovery_root = config.data_dir(str(worktree)) / "campaign-recovery"
+    run_dir = settings.path(worktree, settings.output_dir) / "runs" / direction.direction_id
+    recovery_mode = settings.recovery_enabled and has_failed_attempt(run_dir)
+    attempts = recovery_attempt_count(worktree, recovery_root, direction.direction_id)
+    if recovery_mode and attempts > settings.recovery_max_attempts:
+        return _recovery_budget_outcome(
+            direction, analysis_path, baseline,
+            f"self-repair attempt budget exhausted ({attempts})")
+    start_state = git_worktree_evidence(
+        worktree, excludes=(settings.output_dir,))
+    start_clean = bool(start_state["clean_commit"] == baseline)
+    pipeline_path = materialize_pipeline(
+        worktree, settings, direction, local_analysis, recovery_mode)
     logfile = worktree / "logs" / f"campaign-{direction.direction_id}.log"
     logfile.parent.mkdir(parents=True, exist_ok=True)
-    local_entrypoint = worktree / "pi-batch.py"
-    tool_entrypoint = Path(config.TOOL_ROOT) / "pi-batch.py"
-    entrypoint = local_entrypoint if local_entrypoint.is_file() else tool_entrypoint
-    runner = ([sys.executable, str(entrypoint)] if entrypoint.is_file()
-              else [sys.executable, "-m", "pbatch"])
-    cmd = [*runner, str(pipeline_path), "--reuse", "--reuse-fingerprint",
-           "--log-file", str(logfile), *agent_args]
-    # The child RotatingFileHandler is the sole logfile writer. Redirecting
-    # its stdout to the same path created duplicate records and unsafe
-    # concurrent rotation; isolated model bodies remain in artifacts/sessions.
-    proc = subprocess.Popen(cmd, cwd=worktree, stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL, start_new_session=True)
-    with _ACTIVE_LOCK:
-        _ACTIVE_PIPELINES.add(proc)
-    timed_out = False
-    try:
-        returncode = proc.wait(timeout=settings.pipeline_timeout)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        _kill_pipeline_group(proc)
-        returncode = -1
-    finally:
-        with _ACTIVE_LOCK:
-            _ACTIVE_PIPELINES.discard(proc)
-    status = PipelineStatus.PIPELINE_FAILED if timed_out else _isolated_status(returncode, logfile)
-    reason = (f"isolated pipeline timed out after {settings.pipeline_timeout}s"
-              if timed_out else
-              ("" if returncode == 0 else f"isolated pipeline exited {returncode}"))
-    repository = git_worktree_evidence(worktree)
-    if returncode == 0 and not timed_out:
-        reason, repository = _finalize_worktree(
-            worktree, branch, baseline, direction.direction_id)
-        if reason:
-            status = PipelineStatus.PIPELINE_FAILED
+    returncode, timed_out = _run_isolated_child(
+        worktree, pipeline_path, logfile, agent_args, settings.pipeline_timeout)
+    status, reason, repository = _isolated_result(
+        worktree, branch, baseline, direction, returncode, timed_out, logfile,
+        settings.pipeline_timeout)
     evidence = [str(worktree), str(pipeline_path), str(logfile)]
+    recovery = RecoveryResult("")
+    if status != PipelineStatus.PASSED and settings.recovery_enabled:
+        recovery = recover_worktree(
+            worktree, baseline, branch, recovery_root, direction.direction_id,
+            start_clean=start_clean, enabled=True,
+            restore=settings.recovery_restore_on_failure, reason=reason,
+            preserve_paths=(settings.path(worktree, settings.output_dir),))
+        evidence.extend(recovery.evidence)
+        if recovery.status == RECOVERY_BLOCKED:
+            reason = f"{reason}; self-repair blocked: {recovery.reason}"
+        repository = git_worktree_evidence(
+            worktree, excludes=(settings.output_dir,))
     return PipelineOutcome(
         direction, status, reason, time.monotonic() - start, evidence, branch,
         repository["head_commit"], baseline, repository["clean_commit"],
-        repository["dirty_evidence"], repository["dirty_digest"])
+        repository["dirty_evidence"], repository["dirty_digest"],
+        recovery_status=recovery.status, recovery_reason=recovery.reason,
+        recovery_evidence=recovery.evidence)
 
 
-def _kill_pipeline_group(proc: subprocess.Popen) -> None:
-    """Terminate an isolated pipeline and reap its direct child."""
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except (OSError, ProcessLookupError):
-        try:
-            proc.kill()
-        except OSError:
-            pass  # best-effort：进程可能已随组退出
-
-    try:
-        proc.wait(timeout=1)
-    except (subprocess.TimeoutExpired, ChildProcessError):
-    # 子进程已死/超时：清理路径（已验证有意）
-        pass
-
-
-def kill_isolated_pipelines() -> None:
-    """Kill active worktree pipeline process groups during interruption."""
-    with _ACTIVE_LOCK:
-        processes = list(_ACTIVE_PIPELINES)
-    for proc in processes:
-        if proc.poll() is not None:
-            continue
-        _kill_pipeline_group(proc)

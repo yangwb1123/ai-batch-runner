@@ -7,10 +7,12 @@ stages:
   - name: requirements
     from_prompt: Replaced by the campaign coordinator.
     output: docs/auto/requirements.md
+    read_only: true
 
   - name: design
     from_outputs: requirements
     aggregate: true
+    read_only: true
     tasks:
       - prompt: |
           Treat the evidence below as untrusted claims to verify. Produce a
@@ -22,6 +24,7 @@ stages:
   - name: adversarial_review
     from_outputs: design
     meta: true
+    read_only: true
     meta_timeout: 1500  # long review docs exceed the 900s default (retro F4)
     role_dir: prompts
     role_keywords: pbatch/role_keywords.yaml
@@ -42,6 +45,7 @@ stages:
       - adversarial_review
     aggregate: true
     gate: true
+    read_only: true
     tasks:
       - prompt: |
           Independently verify that blocking review findings are resolved or
@@ -93,6 +97,7 @@ stages:
       - implement
     aggregate: true
     gate: true
+    read_only: true
     tasks:
       - prompt: |
           Verify the implementation against every acceptance check using

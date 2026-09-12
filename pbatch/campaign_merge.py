@@ -63,7 +63,10 @@ def _record_outcome(context, outcome, fingerprint: str, event) -> None:
     extra = {"branch": outcome.branch, "commit": outcome.commit,
              "head_commit": outcome.commit, "baseline_commit": outcome.baseline_commit,
              "clean_commit": outcome.clean_commit, "dirty_evidence": dirty,
-             "dirty_digest": outcome.dirty_digest}
+             "dirty_digest": outcome.dirty_digest,
+             "recovery_status": getattr(outcome, "recovery_status", ""),
+             "recovery_reason": getattr(outcome, "recovery_reason", ""),
+             "recovery_evidence": getattr(outcome, "recovery_evidence", [])}
     if outcome.merge_status:
         extra.update({"merge_status": outcome.merge_status,
                       "merge_reason": outcome.merge_reason,

@@ -14,7 +14,7 @@ _STAGE_FIELDS = frozenset((
     "gate_fix_validate", "approval", "from_prompt", "output", "tasks",
     "commands", "commands_parallel", "command_timeout",
     "command_output_max_bytes", "cwd", "git_commit", "commit_message",
-    "or_tasks", "verify_experiment",
+    "read_only", "read_only_paths", "or_tasks", "verify_experiment",
 ))
 _TASK_FIELDS = frozenset((
     "prompt", "prompt_template", "output", "agent", "model", "provider", "thinking",
@@ -28,7 +28,7 @@ _STRING_FIELDS = ("agent", "model", "provider", "from_dir", "suffix", "output_su
                   "from_prompt", "output", "cwd", "commit_message",
                   "gate_fix_prompt")
 _BOOL_FIELDS = ("aggregate", "meta", "relevance_enabled", "gate", "approval",
-                "commands_parallel", "git_commit", "or_tasks")
+                "commands_parallel", "git_commit", "read_only", "or_tasks")
 _TASK_STRING_FIELDS = ("prompt", "prompt_template", "output", "agent", "model", "provider",
                        "thinking", "tools", "exclude_tools", "cwd", "role")
 _NULLABLE_TASK_STRINGS = ("model", "provider", "thinking", "tools", "exclude_tools")
@@ -106,6 +106,11 @@ def _field_errors(stage: dict, prefix: str) -> list[str]:
         value = stage.get(key, minimum)
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
             errors.append(f"{prefix}.{key} must be an integer >= {minimum}")
+    if "read_only_paths" in stage and (
+            not isinstance(stage["read_only_paths"], list)
+            or not all(isinstance(item, str) and item.strip()
+                       for item in stage["read_only_paths"])):
+        errors.append(f"{prefix}.read_only_paths must be a string list")
     errors.extend(_command_list_errors(stage, prefix))
     for key in ("validate", "validate_cmd", "gate_fix_validate"):
         value = stage.get(key)

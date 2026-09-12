@@ -63,6 +63,10 @@ class Stage:
     cwd: str = ""
     git_commit: bool = False
     commit_message: str = ""
+    # Review/design/gate stages may declare that source files must not change.
+    # Deliverable files remain allowed; the runner checks unexpected Git paths.
+    read_only: bool = False
+    read_only_paths: list[str] = field(default_factory=list)
     
     def to_dict(self):
         return {
@@ -95,6 +99,8 @@ class Stage:
             "cwd": self.cwd,
             "git_commit": self.git_commit,
             "commit_message": self.commit_message,
+            "read_only": self.read_only,
+            "read_only_paths": self.read_only_paths,
         }
 
 

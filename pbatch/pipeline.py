@@ -28,6 +28,7 @@ from .gate_contract import evaluate_gate_artifacts, gate_verdict as _gate_verdic
 from .meta import run_meta_stage
 from .repo_gates import (capture_stage_dirty_paths,
                          commit_stage_outputs as _git_commit_stage,
+                         read_only_violations,
                          run_stage_repo_validators)
 from .reuse import fingerprint as reuse_fp
 from .reuse import parallel_output_conflict, reuse_decision, write_sidecar
@@ -119,6 +120,8 @@ def _parse_stage_def(s: dict, global_git_commit: bool) -> Stage:
         cwd=s.get("cwd", ""),
         git_commit=s.get("git_commit", global_git_commit),
         commit_message=s.get("commit_message", ""),
+        read_only=s.get("read_only", False),
+        read_only_paths=list(s.get("read_only_paths", [])),
     )
 
 def _pipeline_resource_errors(data: dict) -> list[str]:
@@ -808,6 +811,18 @@ def _record_pipeline_stage(stage: Stage, results: list, stage_ok: bool,
             decision_log, stage.name, results, stage_ok, verdict)
 
 
+def _read_only_stage_ok(stage: Stage, outputs: list,
+                        git_baseline) -> bool:
+    if not stage.read_only:
+        return True
+    violations = read_only_violations(stage, outputs, git_baseline)
+    if violations:
+        log.error("READ-ONLY stage '%s' changed source paths: %s",
+                  stage.name, ", ".join(violations[:20]))
+        return False
+    return True
+
+
 def _run_pipeline_stage(stage: Stage, stage_outputs: dict, failed_stages: list,
                         model_override: str, reuse: bool, timeout_override: int,
                         session_mode: str, session_name: str, validate_cmd: str,
@@ -815,8 +830,9 @@ def _run_pipeline_stage(stage: Stage, stage_outputs: dict, failed_stages: list,
                         original_prompt: str, decision_log: str, retries: int = 0, retry_delay: float = 10.0,
                         backoff: float = 2.0, session_state: Optional[set] = None) -> tuple[bool, list]:
     """Execute, gate, optionally fix one stage; return (stop, results)."""
-    git_baseline = (capture_stage_dirty_paths(stage.cwd or os.getcwd())
-                    if stage.git_commit else None)
+    git_baseline = capture_stage_dirty_paths(
+        stage.cwd or os.getcwd(), stage.read_only_paths
+    ) if stage.git_commit or stage.read_only else None
     results, stage_ok = execute_stage(stage, stage_outputs, model_override, reuse,
                                       timeout_override, session_mode, session_name,
                                       validate_cmd, reuse_legacy, fingerprint_mode,
@@ -824,6 +840,7 @@ def _run_pipeline_stage(stage: Stage, stage_outputs: dict, failed_stages: list,
                                       retries=retries, retry_delay=retry_delay,
                                       backoff=backoff, git_baseline=git_baseline,
                                       session_state=session_state)
+    stage_ok = stage_ok and _read_only_stage_ok(stage, stage_outputs.get(stage.name, []), git_baseline)
     results = _include_reused_results(results, stage_outputs.get(stage.name, []))
     if not stage_ok:
         _mark_failed(failed_stages, stage.name)

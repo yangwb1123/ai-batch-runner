@@ -351,7 +351,8 @@ def test_markdown_headings_are_visible_but_not_implementable():
 
 
 def test_analysis_retry_removes_invalid_artifact(monkeypatch, tmp_path):
-    task = Task(prompt="analyze", output=str(tmp_path / "analysis.json"))
+    task = Task(prompt="analyze", output=str(tmp_path / "analysis.json"),
+                cwd=str(tmp_path))
     calls = []
 
     def fake_parallel(tasks, workers):
@@ -367,6 +368,9 @@ def test_analysis_retry_removes_invalid_artifact(monkeypatch, tmp_path):
     results = run_analysis_tasks([task], 1, 1, retry_delay=0, validator=valid)
     assert calls == [1, 1]
     assert results[str(task.output_path())].success is True
+    rejected = list((tmp_path / ".pi-batch" / "rejected").glob(
+        "analysis-*.rejected.json"))
+    assert rejected and rejected[0].read_text(encoding="utf-8") == "not json"
 
 
 def test_state_store_reuse_corrupt_tolerance_summary_and_history(tmp_path):

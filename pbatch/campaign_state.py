@@ -65,7 +65,8 @@ def git_snapshot(root: Path, excludes: tuple[str, ...] = ()) -> dict:
     return {"head": head.strip(), "dirty": digest([status, diff])}
 
 
-def git_worktree_evidence(root: Path, max_entries: int = 40) -> dict:
+def git_worktree_evidence(root: Path, max_entries: int = 40,
+                          excludes: tuple[str, ...] = ()) -> dict:
     """Return bounded, reviewable evidence for the current Git state.
 
     A successful pipeline may intentionally leave implementation changes
@@ -82,7 +83,8 @@ def git_worktree_evidence(root: Path, max_entries: int = 40) -> dict:
             detail += f": {result.stderr.strip()[:300]}"
         return {"head_commit": head, "clean_commit": "",
                 "dirty_evidence": [detail], "dirty_digest": digest(detail)}
-    lines = result.stdout.splitlines()
+    lines = _filtered_status(
+        result.stdout, (".pi-batch", *_relative_excludes(root, excludes))).splitlines()
     if not lines:
         return {"head_commit": head, "clean_commit": head,
                 "dirty_evidence": [], "dirty_digest": ""}
@@ -122,12 +124,28 @@ def tool_head() -> str:
     return (_git_output(root, ["rev-parse", "HEAD"]) or "not-a-git-repository").strip()
 
 
+def _relative_excludes(root: Path, excludes: tuple[str, ...]) -> tuple[str, ...]:
+    values = []
+    for value in excludes:
+        path = Path(value)
+        if path.is_absolute():
+            try:
+                path = path.resolve().relative_to(root.resolve())
+            except ValueError:
+                continue
+        values.append(path.as_posix())
+    return tuple(values)
+
+
 def _filtered_status(status: str, excludes: tuple[str, ...]) -> str:
     lines = []
+    excludes = tuple(dict.fromkeys((*excludes, ".pi-batch")))
     prefixes = tuple(item.rstrip("/") + "/" for item in excludes)
     for line in status.splitlines():
         path = line[3:].split(" -> ")[-1] if len(line) > 3 else ""
         if path in excludes or path.startswith(prefixes):
+            continue
+        if path == "docs/evolution/state.jsonl" and line[:2] == "??":
             continue
         lines.append(line)
     return "\n".join(lines)

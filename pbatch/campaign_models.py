@@ -101,6 +101,8 @@ class CampaignSettings:
     analysis_retries: int = 2
     candidate_limit: int = 3
     max_directions: int = 1
+    # Optional global cap; 0 preserves the historical per-module quota.
+    max_total_directions: int = 0
     minimum_score: float = 0
     output_dir: str = "docs/auto"
     state_file: str = "docs/auto/state.jsonl"
@@ -113,6 +115,15 @@ class CampaignSettings:
     worktree_root: str = ""  # 空 = data_dir/worktrees（PBATCH_DATA_DIR 感知）
     analysis_minutes: float = 3
     pipeline_minutes: float = 20
+    # Failed campaign attempts are preserved and restored before a retry.
+    # Disabled by default for compatibility; production campaigns should opt in.
+    recovery_enabled: bool = False
+    recovery_max_attempts: int = 1
+    recovery_restore_on_failure: bool = True
+    recovery_narrow_scope: bool = True
+    recovery_max_roles_per_iteration: int = 2
+    recovery_allow_failed_roles: int = 1
+    recovery_stop_after_stalled_rounds: int = 2
 
     def effective_worktree_root(self, root: Path) -> Path:
         """worktree 根：显式配置优先；空 = data_dir/worktrees（可移出项目）。"""
@@ -129,6 +140,7 @@ class CampaignSettings:
         implementation = _section(data, "implementation")
         state = _section(data, "state")
         estimates = _section(data, "estimates")
+        recovery = _section(data, "recovery")
         return cls(
             name=_string_value(data, "name", "repository-improvements"),
             roots=_string_list(discovery, "roots", cls.roots),
@@ -140,6 +152,8 @@ class CampaignSettings:
             analysis_retries=_int_value(analysis, "retries", 2),
             candidate_limit=_int_value(analysis, "candidate_limit", 3),
             max_directions=_int_value(selection, "max_directions", 1),
+            max_total_directions=_int_value(
+                selection, "max_total_directions", 0),
             minimum_score=_float_value(selection, "minimum_score", 0),
             output_dir=_string_value(state, "output_dir", "docs/auto"),
             state_file=_string_value(state, "state_file", "docs/auto/state.jsonl"),
@@ -152,6 +166,18 @@ class CampaignSettings:
             worktree_root=_string_value(implementation, "worktree_root", ""),
             analysis_minutes=_float_value(estimates, "analysis_minutes", 3),
             pipeline_minutes=_float_value(estimates, "pipeline_minutes", 20),
+            recovery_enabled=_bool_value(recovery, "enabled", False),
+            recovery_max_attempts=_int_value(recovery, "max_attempts", 1),
+            recovery_restore_on_failure=_bool_value(
+                recovery, "restore_on_failure", True),
+            recovery_narrow_scope=_bool_value(
+                recovery, "narrow_scope", True),
+            recovery_max_roles_per_iteration=_int_value(
+                recovery, "max_roles_per_iteration", 2),
+            recovery_allow_failed_roles=_int_value(
+                recovery, "allow_failed_roles", 1),
+            recovery_stop_after_stalled_rounds=_int_value(
+                recovery, "stop_after_stalled_rounds", 2),
         )
 
     def validate(self) -> None:
@@ -163,10 +189,20 @@ class CampaignSettings:
             "implementation.concurrency": self.pipeline_concurrency,
             "implementation.timeout": self.pipeline_timeout,
             "state.line_max_bytes": self.state_line_max_bytes,
+            "recovery.max_roles_per_iteration": self.recovery_max_roles_per_iteration,
         }
         invalid = [name for name, value in positive.items() if value < 1]
         if self.analysis_retries < 0:
             invalid.append("analysis.retries")
+        if self.max_total_directions < 0:
+            invalid.append("selection.max_total_directions")
+        if self.recovery_max_attempts < 0 or (
+                self.recovery_enabled and self.recovery_max_attempts < 1):
+            invalid.append("recovery.max_attempts")
+        if self.recovery_allow_failed_roles < 0:
+            invalid.append("recovery.allow_failed_roles")
+        if self.recovery_stop_after_stalled_rounds < 0:
+            invalid.append("recovery.stop_after_stalled_rounds")
         finite = {"selection.minimum_score": self.minimum_score,
                   "estimates.analysis_minutes": self.analysis_minutes,
                   "estimates.pipeline_minutes": self.pipeline_minutes}

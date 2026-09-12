@@ -7,13 +7,14 @@ import re
 import time
 from pathlib import Path
 
-from .campaign_models import CampaignSettings, Direction
+from .campaign_models import CampaignSettings, Direction, safe_slug
 from .campaign_state import digest, tool_digest, tree_digest
 from . import config
 from .evolution import load_constitution
 from .meta import _extract_json_array
 from .models import Task, TaskResult
 from .runner import run_parallel
+from .text_io import read_text_bounded
 from .triage import is_retryable
 
 _PLANNING_FAILURE_STATUSES = frozenset({
@@ -220,6 +221,26 @@ def _planning_history(root: Path) -> list[dict]:
             if row.get("status") in _PLANNING_FAILURE_STATUSES]
 
 
+def _preserve_invalid_analysis(task: Task) -> str:
+    """Keep a bounded invalid analysis for the next self-repair attempt."""
+    source = task.output_path()
+    if source is None or not source.is_file():
+        return ""
+    try:
+        text = read_text_bounded(source, config.OUTPUT_MAX_BYTES,
+                                 "invalid campaign analysis")
+        target = (config.data_dir(task.workdir()) / "rejected" /
+                  f"analysis-{safe_slug(source.stem)}-{time.time_ns()}.rejected.json")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+        log = config.log
+        log.warning("CAMPAIGN analysis rejected; preserved bounded artifact: %s", target)
+        return str(target)
+    except (OSError, ValueError) as exc:
+        config.log.warning("CAMPAIGN analysis rejection could not be preserved: %s", exc)
+        return ""
+
+
 def run_analysis_tasks(tasks: list[Task], jobs: int, retries: int,
                        retry_delay: float = 10, validator=None) -> dict[str, TaskResult]:
     """Run independent analyses in parallel and retry only failed tasks."""
@@ -231,8 +252,11 @@ def run_analysis_tasks(tasks: list[Task], jobs: int, retries: int,
         results = run_parallel(pending, jobs)
         for result in results:
             if result.success and validator and not validator(result):
+                preserved = _preserve_invalid_analysis(result.task)
                 result.success = False
                 result.reason = "analysis produced no structured directions"
+                if preserved:
+                    result.reason += f"; rejected artifact: {preserved}"
                 result.task.output_path().unlink(missing_ok=True)
             final[str(result.task.output_path())] = result
         pending = [result.task for result in results

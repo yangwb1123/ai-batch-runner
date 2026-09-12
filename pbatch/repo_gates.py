@@ -17,27 +17,49 @@ from .runner import _json_status, judge_verdict, run_argv, run_validation
 
 
 def _operational_path(path: str) -> bool:
-    return path == ".pi-batch" or path.startswith(".pi-batch/")
+    return (path == ".pi-batch" or path.startswith(".pi-batch/")
+            or path == "docs/evolution/state.jsonl")
 
 
-def _porcelain_paths(raw: str) -> frozenset[str]:
+def _porcelain_paths(raw: str, excludes: tuple[str, ...] = ()) -> frozenset[str]:
     """Parse ``git status --porcelain=v1 -z`` without losing odd names."""
     fields, paths, index = raw.split("\0"), set(), 0
+    excluded = tuple(item.rstrip("/") for item in excludes if item)
     while index < len(fields) and fields[index]:
         entry = fields[index]
         if len(entry) >= 4:
             status, path = entry[:2], entry[3:]
-            if not _operational_path(path):
+            if not _operational_path(path) and not _excluded_path(path, excluded):
                 paths.add(path)
             if ("R" in status or "C" in status) and index + 1 < len(fields):
                 index += 1
-                if fields[index] and not _operational_path(fields[index]):
+                if (fields[index] and not _operational_path(fields[index])
+                        and not _excluded_path(fields[index], excluded)):
                     paths.add(fields[index])
         index += 1
     return frozenset(paths)
 
 
-def capture_stage_dirty_paths(workdir: str) -> tuple[str, object]:
+def _excluded_path(path: str, excludes: tuple[str, ...]) -> bool:
+    return any(path == item or path.startswith(item + "/")
+               for item in excludes)
+
+
+def _relative_excludes(root: str, excludes: list[str]) -> tuple[str, ...]:
+    values = []
+    base = Path(root).resolve()
+    for value in excludes:
+        path = Path(value)
+        if path.is_absolute():
+            try:
+                path = path.resolve().relative_to(base)
+            except ValueError:
+                continue
+        values.append(path.as_posix())
+    return tuple(values)
+
+
+def capture_stage_dirty_paths(workdir: str, excludes: list[str] | tuple[str, ...] = ()) -> tuple[str, object]:
     """Snapshot dirty/staged/untracked paths relative to the repository root."""
     wd = workdir or os.getcwd()
     root_result = run_argv(["git", "rev-parse", "--show-toplevel"], wd, timeout=10)
@@ -50,7 +72,8 @@ def capture_stage_dirty_paths(workdir: str) -> tuple[str, object]:
     if not status.ok:
         log.warning("git dirty baseline failed; later stage commit will be refused")
         return root, None
-    return root, _porcelain_paths(status.stdout)
+    return root, _porcelain_paths(
+        status.stdout, _relative_excludes(root, list(excludes)))
 
 
 def _relative_repo_path(path: str, root: str, wd: str) -> str:
@@ -121,9 +144,37 @@ def _report_commit_failure(commit, paths: list, untracked: list, wd: str,
     return False
 
 
+def read_only_violations(stage, outputs: list, dirty_baseline) -> list[str]:
+    """Return source paths changed by a declared read-only stage.
+
+    A read-only stage must start clean so the path comparison is meaningful;
+    declared deliverables are allowed.  Unknown Git state is a violation,
+    never an implicit pass.
+    """
+    if dirty_baseline is None:
+        return ["read-only baseline unavailable"]
+    root, before = dirty_baseline
+    if not root and before == frozenset():
+        log.warning("read-only stage cannot observe source changes without Git; "
+                    "continuing for non-Git compatibility")
+        return []
+    if before is None or not root:
+        return ["read-only Git baseline unavailable"]
+    if before:
+        return ["read-only stage started with existing changes"]
+    end_root, after = capture_stage_dirty_paths(
+        stage.cwd or os.getcwd(), stage.read_only_paths)
+    if end_root != root or after is None:
+        return ["read-only Git state unavailable after stage"]
+    declared = {_relative_repo_path(path, root, stage.cwd or os.getcwd())
+                for path in outputs}
+    declared.discard("")
+    return sorted(set(after) - declared)
+
+
 def commit_stage_outputs(stage, outputs: list, dirty_baseline=None) -> bool:
     """Commit only stage outputs, preserving every pre-existing index entry."""
-    if not stage.git_commit:
+    if not stage.git_commit or stage.read_only:
         return True
     wd = stage.cwd or os.getcwd()
     if not run_argv(["git", "rev-parse", "--git-dir"], wd, timeout=10).ok:
