@@ -5,7 +5,6 @@ from pbatch.pipeline_status import PipelineStatus
 
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import time
@@ -33,15 +32,11 @@ from .campaign_worktree import (_git_failure,
 from . import config, metering
 from .config import log, yaml
 from .pipeline import load_pipeline, run_pipeline
-from .campaign_watchdog import (finish_lease, lease_file, prepare_lease,
-                                wait_for_pipeline)
 from .text_io import read_text_bounded
-
-
-from .campaign_runtime import (copy_local_analysis as _copy_local_analysis,
-                               isolated_result as _isolated_result,
-                               kill_isolated_pipelines,
+from .campaign_process import (kill_isolated_pipelines,
                                run_isolated_child as _run_isolated_child)
+from .campaign_pipeline_support import classify_pipeline, parallel_ready
+from .campaign_runtime import copy_local_analysis as _copy_local_analysis
 
 
 @dataclass
@@ -388,31 +383,6 @@ def _artifact_evidence(pipeline_path: Path, results: list) -> list[str]:
     return evidence
 
 
-def classify_pipeline(results: list, failed: list[str], pipeline) -> tuple[str, str]:
-    if not failed and all(result.success for result in results):
-        return PipelineStatus.PASSED, ""
-    failed_set = set(failed)
-    if any(stage.gate and stage.name in failed_set for stage in pipeline.stages):
-        return PipelineStatus.GATE_REJECTED, "gate verdict was not PASS"
-    if any(result.validation_ok is False for result in results):
-        return PipelineStatus.VALIDATION_FAILED, "engineering validator rejected an artifact"
-    return PipelineStatus.PIPELINE_FAILED, ", ".join(failed) or "one or more tasks failed"
-
-
-def parallel_ready(root: Path) -> tuple[bool, str]:
-    """Parallel implementation requires a clean Git worktree at campaign start."""
-    try:
-        proc = subprocess.run(["git", "-C", str(root), "status", "--porcelain"],
-                              capture_output=True, text=True, timeout=30, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return False, f"could not verify clean Git worktree: {exc}"
-    if proc.returncode != 0:
-        return False, "parallel pipelines require a Git repository"
-    if proc.stdout.strip():
-        return False, "parallel pipelines require a clean worktree before analysis"
-    return True, ""
-
-
 def run_directions_isolated(root: Path, settings: CampaignSettings,
                             items: list[tuple[Direction, Path]], jobs: int,
                             agent_args: list[str]) -> list[PipelineOutcome]:
@@ -445,48 +415,6 @@ def _safe_worktree_run(settings: CampaignSettings, direction: Direction, analysi
             direction, "PIPELINE_FAILED", str(exc), 0, [str(worktree)], branch,
             repository["head_commit"], baseline, repository["clean_commit"],
             repository["dirty_evidence"], repository["dirty_digest"])
-
-
-def _run_isolated_child(cmd: list[str], settings: CampaignSettings,
-                        direction: Direction, worktree: Path,
-                        pipeline_path: Path, logfile: Path) -> tuple[int, bool, bool, float]:
-    """Run one child with a lease, hard deadline, and progress watchdog."""
-    proc = subprocess.Popen(cmd, cwd=worktree, stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL, start_new_session=True)
-    with _ACTIVE_LOCK:
-        _ACTIVE_PIPELINES.add(proc)
-    lease_path = lease_file(worktree, direction.direction_id)
-    lease = {}
-    timed_out = False
-    stalled = False
-    no_progress_seconds = 0.0
-    try:
-        lease = prepare_lease(
-            lease_path, pid=proc.pid, direction_id=direction.direction_id,
-            worktree=worktree, pipeline=pipeline_path, logfile=logfile,
-            timeout=settings.pipeline_timeout,
-            no_progress_timeout=settings.pipeline_no_progress_timeout)
-        waited = wait_for_pipeline(
-            proc, logfile=logfile, pipeline=pipeline_path,
-            timeout=settings.pipeline_timeout,
-            no_progress_timeout=settings.pipeline_no_progress_timeout,
-            lease_path=lease_path, lease=lease)
-        returncode = waited.returncode
-        timed_out = waited.timed_out
-        stalled = waited.stalled
-        no_progress_seconds = waited.no_progress_seconds
-    except BaseException:
-        _kill_pipeline_group(proc)
-        raise
-    finally:
-        if lease:
-            finish_lease(
-                lease_path, lease,
-                "stalled" if stalled else "timed_out" if timed_out else "finished",
-                "no progress" if stalled else "hard timeout" if timed_out else "")
-        with _ACTIVE_LOCK:
-            _ACTIVE_PIPELINES.discard(proc)
-    return returncode, timed_out, stalled, no_progress_seconds
 
 
 def _run_in_worktree(settings: CampaignSettings, direction: Direction, analysis_path: Path,
