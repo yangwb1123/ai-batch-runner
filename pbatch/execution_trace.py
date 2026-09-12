@@ -43,7 +43,8 @@ def finish_task_result(result: TaskResult, task: Task, session_id: str,
         "task_finish" if result.success else "task_fail", task.prompt,
         result.reason, workdir, session_id or session_name, usage_before,
         run_id=result.run_id, task_id=result.task_id,
-        stage_id=result.stage_id, attempt=result.attempt, phase="execution")
+        stage_id=result.stage_id, attempt=result.attempt, phase="execution",
+        module=str(task.memory.get("module", "")))
     if config.AGENT_LEDGER_ENABLED:
         from .agent_ledger import record_result
         record_result(result, task, workdir)
@@ -58,7 +59,8 @@ def record_validation_event(result: TaskResult, task: Task) -> None:
         "task_validation_pass" if result.success else "task_validation_fail",
         task.prompt, result.reason, task.workdir(), result.session_name,
         task_id=result.task_id, stage_id=result.stage_id,
-        attempt=result.attempt, phase="validation")
+        attempt=result.attempt, phase="validation",
+        module=str(task.memory.get("module", "")))
     if not result.success and config.AGENT_LEDGER_ENABLED:
         from .agent_ledger import record_result
         record_result(result, task, task.workdir())

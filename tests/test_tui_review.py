@@ -15,6 +15,7 @@ from pbatch.tui_changes import TUIChangesScreen
 from pbatch.tui_completion import CompletionFact, CompletionSnapshot
 from pbatch.tui_findings import ReviewFinding, findings_snapshot
 from pbatch.tui_protocol import RuntimeCapabilities, RuntimeEvent, TurnState
+from pbatch.user_dirs import project_runtime_dir
 from pbatch.tui_review import (
     ReviewRuntimeScope,
     collect_review_fix_evidence,
@@ -190,7 +191,7 @@ def test_review_fix_evidence_requires_exact_terminal_runtime_identity(tmp_path):
 
     path = review_fix_output_path(tmp_path, context.fix_id)
     write_review_fix_evidence(path, evidence)
-    assert path.is_relative_to(tmp_path)
+    assert path.is_relative_to(project_runtime_dir(str(tmp_path)))
     assert "runtime events" in path.read_text(encoding="utf-8")
 
     mismatch = collect_review_fix_evidence(
@@ -232,7 +233,8 @@ def test_appserver_review_uses_runtime_events_and_associates_findings(tmp_path):
             assert app._runtime_view.run_id.startswith("review-run-")
             assert len(app._runtime_view.findings.findings) == 1
             assert app._runtime_view.findings.findings[0].file == "src/a.py"
-            reports = list((tmp_path / "docs" / "reviews").glob("review-*.md"))
+            reports = list((project_runtime_dir(str(tmp_path)) /
+                            "reviews").glob("review-*.md"))
             assert len(reports) == 1
             report = reports[0].read_text(encoding="utf-8")
             assert "src/a.py:7" in report
@@ -249,8 +251,8 @@ def test_appserver_review_uses_runtime_events_and_associates_findings(tmp_path):
             assert app._review_fix_evidence.associated
             assert app._review_fix_evidence.source_associated
             assert len(app._review_fix_evidence.completion.validations) == 1
-            fix_reports = list((tmp_path / "docs" / "reviews").glob(
-                "review-fix-*.md"))
+            fix_reports = list((project_runtime_dir(str(tmp_path)) /
+                               "reviews").glob("review-fix-*.md"))
             assert len(fix_reports) == 1
             fix_report = fix_reports[0].read_text(encoding="utf-8")
             assert "Source review association: yes" in fix_report
@@ -303,8 +305,8 @@ def test_findings_picker_fix_starts_an_ordinary_turn(tmp_path):
             assert not app._review_busy
             assert app._review_fix_evidence is not None
             assert app._review_fix_evidence.associated
-            reports = list((tmp_path / "docs" / "reviews").glob(
-                "review-fix-*.md"))
+            reports = list((project_runtime_dir(str(tmp_path)) /
+                            "reviews").glob("review-fix-*.md"))
             assert len(reports) == 1
             assert "Finding resolution: not claimed" in reports[0].read_text(
                 encoding="utf-8")
@@ -347,7 +349,8 @@ def test_tui_review_runs_read_only_and_persists_report(tmp_path):
             source = app.query_one("#conversation", Markdown).source
             assert "unsafe path" in source
             assert "Report:" in source
-            reports = list((tmp_path / "docs" / "reviews").glob("review-*.md"))
+            reports = list((project_runtime_dir(str(tmp_path)) /
+                            "reviews").glob("review-*.md"))
             assert len(reports) == 1
             assert "unsafe path" in reports[0].read_text(encoding="utf-8")
 

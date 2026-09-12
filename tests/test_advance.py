@@ -79,11 +79,11 @@ def test_scan_real_project_ui_clean(tmp_path, monkeypatch):
 
 
 def test_record_round_append(tmp_path, monkeypatch):
-    monkeypatch.setattr("pbatch.advance.STATE_DIR", tmp_path)
+    monkeypatch.setenv("PBATCH_DATA_DIR", str(tmp_path))
     scan = {"target": "x", "dimensions": {"ui_spacing": {"count": 3}}}
     record_round(scan, 1)
     record_round(scan, 2)
-    lines = (tmp_path / "state.jsonl").read_text(encoding="utf-8").splitlines()
+    lines = (tmp_path / "advance" / "state.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(lines) == 2
     assert json.loads(lines[0])["round"] == 1
     assert json.loads(lines[1])["round"] == 2
@@ -215,7 +215,9 @@ def test_advance_rejects_symlinked_state_parent(tmp_path, monkeypatch):
     (tmp_path / "docs").symlink_to(outside, target_is_directory=True)
     monkeypatch.setattr(advance, "scan_project",
                         lambda target: _scan(target, {"fe_errors": 1}))
-    assert advance_main(["--dir", str(tmp_path), "--max-rounds", "1"]) == 2
+    state_file = tmp_path / "docs" / "advance" / "state.jsonl"
+    assert advance_main(["--dir", str(tmp_path), "--max-rounds", "1",
+                         "--state-file", str(state_file)]) == 2
     assert not (outside / "advance" / "state.jsonl").exists()
 
 
@@ -285,7 +287,8 @@ def test_execute_repairs_highest_priority_batch_and_records_before_after(
     assert observed["round"] == 1
     assert (observed["args"].model, observed["args"].provider,
             observed["args"].timeout, observed["args"].retries) == ("m1", "p1", 9, 2)
-    state = tmp_path / "docs" / "advance" / "state.jsonl"
+    from pbatch import config
+    state = config.data_dir(str(tmp_path)) / "advance" / "state.jsonl"
     event = json.loads(state.read_text(encoding="utf-8"))
     assert event["round"] == 1
     assert event["before"]["total"] == 10
@@ -298,7 +301,8 @@ def test_execute_resumes_round_in_target_state_and_honors_override(
         tmp_path, monkeypatch):
     from pbatch import advance
 
-    default_state = tmp_path / "docs" / "advance" / "state.jsonl"
+    from pbatch import config
+    default_state = config.data_dir(str(tmp_path)) / "advance" / "state.jsonl"
     default_state.parent.mkdir(parents=True)
     default_state.write_text('{"round": 4}\ncorrupt\n', encoding="utf-8")
     scans = [_scan(str(tmp_path), {"fe_errors": 1}),
@@ -356,7 +360,8 @@ def test_execute_failure_is_nonzero_records_result_and_stops(
 
     assert code == 1
     assert calls == {"scan": 2, "agent": 1}
-    state = tmp_path / "docs" / "advance" / "state.jsonl"
+    from pbatch import config
+    state = config.data_dir(str(tmp_path)) / "advance" / "state.jsonl"
     events = [json.loads(line) for line in state.read_text().splitlines()]
     assert len(events) == 1
     expected = "AGENT_FAILED" if failure_kind == "agent" else "VALIDATION_FAILED"
@@ -379,7 +384,8 @@ def test_execute_stops_no_progress_instead_of_spinning(tmp_path, monkeypatch):
     assert advance_main(["--dir", str(tmp_path), "--execute",
                          "--max-rounds", "9"]) == 1
     assert calls == ["agent"]
-    state = tmp_path / "docs" / "advance" / "state.jsonl"
+    from pbatch import config
+    state = config.data_dir(str(tmp_path)) / "advance" / "state.jsonl"
     event = json.loads(state.read_text())
     assert event["execution"]["status"] == "NO_PROGRESS"
 

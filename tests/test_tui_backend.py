@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from pbatch import config, runner, tui_backend_structured
-from pbatch.lock import acquire_lock, release_lock
+from pbatch.lock import _lock_path, acquire_lock, release_lock
 from pbatch.tui_backend import TUIBackend
 from pbatch.tui_protocol import RuntimeEvent
 
@@ -198,7 +198,7 @@ def test_turn_respects_workspace_lock(tmp_path):
         result = backend.run_turn("do not start")
         assert not result.success and result.returncode == 5
         assert result.reason == "workspace is locked (exit 5)"
-        assert (tmp_path / ".pi-batch.lock").exists()
+        assert _lock_path(str(tmp_path)).exists()
     finally:
         release_lock(held)
     # v2: a different session name runs parallel (TUI usable next to a
@@ -222,7 +222,8 @@ def test_successful_turn_enters_scoped_memory_index(tmp_path):
     result = backend.run_turn("remember this turn")
 
     assert result.success
-    index = tmp_path / ".pi-batch" / "memory" / "sessions.index.jsonl"
+    from pbatch.user_dirs import project_runtime_dir
+    index = project_runtime_dir(str(tmp_path)) / "memory" / "sessions.index.jsonl"
     event = json.loads(index.read_text(encoding="utf-8").splitlines()[-1])
     assert event["type"] == "task" and event["status"] == "PASSED"
     assert event["session_id"] == "memory-session"

@@ -99,19 +99,26 @@ class CampaignSettings:
     analysis_prompt: str = DEFAULT_ANALYSIS_PROMPT
     analysis_jobs: int = 4
     analysis_retries: int = 2
+    analysis_batch_size: int = 0
+    analysis_budget_tokens: int = 0
+    analysis_token_estimate: int = 8_000
     candidate_limit: int = 3
     max_directions: int = 1
     # Optional global cap; 0 preserves the historical per-module quota.
     max_total_directions: int = 0
     minimum_score: float = 0
-    output_dir: str = "docs/auto"
-    state_file: str = "docs/auto/state.jsonl"
-    summary_file: str = "docs/auto/SUMMARY.md"
+    # Empty values use the private per-workspace runtime root.  Explicit
+    # paths remain supported for projects that intentionally version reports.
+    output_dir: str = ""
+    state_file: str = ""
+    summary_file: str = ""
     state_line_max_bytes: int = 256 * 1024
     pipeline_template: str = "examples/repository-campaign-pipeline.yaml"
     requirement_stage: str = "requirements"
     pipeline_concurrency: int = 1
     pipeline_timeout: int = 4 * 60 * 60
+    # 0 disables the evidence-based stall watchdog; the hard timeout remains.
+    pipeline_no_progress_timeout: int = 0
     worktree_root: str = ""  # 空 = data_dir/worktrees（PBATCH_DATA_DIR 感知）
     analysis_minutes: float = 3
     pipeline_minutes: float = 20
@@ -150,19 +157,24 @@ class CampaignSettings:
             analysis_prompt=_string_value(analysis, "prompt", DEFAULT_ANALYSIS_PROMPT),
             analysis_jobs=_int_value(analysis, "jobs", 4),
             analysis_retries=_int_value(analysis, "retries", 2),
+            analysis_batch_size=_int_value(analysis, "batch_size", 0),
+            analysis_budget_tokens=_int_value(analysis, "budget_tokens", 0),
+            analysis_token_estimate=_int_value(analysis, "token_estimate", 8_000),
             candidate_limit=_int_value(analysis, "candidate_limit", 3),
             max_directions=_int_value(selection, "max_directions", 1),
             max_total_directions=_int_value(
                 selection, "max_total_directions", 0),
             minimum_score=_float_value(selection, "minimum_score", 0),
-            output_dir=_string_value(state, "output_dir", "docs/auto"),
-            state_file=_string_value(state, "state_file", "docs/auto/state.jsonl"),
-            summary_file=_string_value(state, "summary_file", "docs/auto/SUMMARY.md"),
+            output_dir=_string_value(state, "output_dir", ""),
+            state_file=_string_value(state, "state_file", ""),
+            summary_file=_string_value(state, "summary_file", ""),
             state_line_max_bytes=_int_value(state, "line_max_bytes", 256 * 1024),
             pipeline_template=_string_value(implementation, "pipeline", "examples/repository-campaign-pipeline.yaml"),
             requirement_stage=_string_value(implementation, "requirement_stage", "requirements"),
             pipeline_concurrency=_int_value(implementation, "concurrency", 1),
             pipeline_timeout=_int_value(implementation, "timeout", 4 * 60 * 60),
+            pipeline_no_progress_timeout=_int_value(
+                implementation, "no_progress_timeout", 0),
             worktree_root=_string_value(implementation, "worktree_root", ""),
             analysis_minutes=_float_value(estimates, "analysis_minutes", 3),
             pipeline_minutes=_float_value(estimates, "pipeline_minutes", 20),
@@ -184,6 +196,7 @@ class CampaignSettings:
         positive = {
             "discovery.max_depth": self.max_depth,
             "analysis.jobs": self.analysis_jobs,
+            "analysis.token_estimate": self.analysis_token_estimate,
             "analysis.candidate_limit": self.candidate_limit,
             "selection.max_directions": self.max_directions,
             "implementation.concurrency": self.pipeline_concurrency,
@@ -192,6 +205,10 @@ class CampaignSettings:
             "recovery.max_roles_per_iteration": self.recovery_max_roles_per_iteration,
         }
         invalid = [name for name, value in positive.items() if value < 1]
+        for name, value in (("analysis.batch_size", self.analysis_batch_size),
+                            ("analysis.budget_tokens", self.analysis_budget_tokens)):
+            if value < 0:
+                invalid.append(name)
         if self.analysis_retries < 0:
             invalid.append("analysis.retries")
         if self.max_total_directions < 0:
@@ -203,6 +220,8 @@ class CampaignSettings:
             invalid.append("recovery.allow_failed_roles")
         if self.recovery_stop_after_stalled_rounds < 0:
             invalid.append("recovery.stop_after_stalled_rounds")
+        if self.pipeline_no_progress_timeout < 0:
+            invalid.append("implementation.no_progress_timeout")
         finite = {"selection.minimum_score": self.minimum_score,
                   "estimates.analysis_minutes": self.analysis_minutes,
                   "estimates.pipeline_minutes": self.pipeline_minutes}
@@ -213,6 +232,23 @@ class CampaignSettings:
             invalid.append("estimates.pipeline_minutes")
         if invalid:
             raise ValueError("invalid campaign values: " + ", ".join(invalid))
+
+    def runtime_path(self, root: Path) -> Path:
+        """Private campaign artifact root for this workspace."""
+        from .config import data_dir
+        return data_dir(str(root)) / "campaign"
+
+    def output_path(self, root: Path) -> Path:
+        """Resolve campaign output, defaulting outside the repository."""
+        return self.path(root, self.output_dir) if self.output_dir else self.runtime_path(root)
+
+    def state_path(self, root: Path) -> Path:
+        """Resolve the append-only campaign state file."""
+        return self.path(root, self.state_file) if self.state_file else self.runtime_path(root) / "state.jsonl"
+
+    def summary_path(self, root: Path) -> Path:
+        """Resolve the human-readable summary outside the repository by default."""
+        return self.path(root, self.summary_file) if self.summary_file else self.runtime_path(root) / "SUMMARY.md"
 
     def path(self, root: Path, value: str) -> Path:
         path = Path(value)

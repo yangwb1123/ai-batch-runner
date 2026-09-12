@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from pbatch import review
+from pbatch.user_dirs import project_runtime_dir
 
 
 FINDING_FIELDS = {"severity", "file", "line", "problem", "evidence", "fix_hint"}
@@ -181,11 +182,11 @@ def test_output_must_stay_within_cwd(tmp_path):
     assert not (tmp_path.parent / "escape.md").exists()
 
 
-def test_default_json_report_path_is_inside_docs_reviews(tmp_path):
+def test_default_json_report_path_is_inside_private_runtime(tmp_path):
     runner = _runner([_agent_message(json.dumps([_finding("low")]))])
     assert review.review_main(
         ["--uncommitted", "--json", "--cwd", str(tmp_path)], runner=runner) == 0
-    reports = list((tmp_path / "docs" / "reviews").glob("review-*.json"))
+    reports = list((project_runtime_dir(str(tmp_path)) / "reviews").glob("review-*.json"))
     assert len(reports) == 1
     payload = json.loads(reports[0].read_text(encoding="utf-8"))
     assert payload["report_path"] == str(reports[0])

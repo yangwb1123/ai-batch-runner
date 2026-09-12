@@ -70,13 +70,16 @@ def _paths(args: argparse.Namespace, parser: argparse.ArgumentParser) -> tuple[P
         parser.error(f"--cwd is not a directory: {cwd}")
     suffix = ".json" if args.json else ".md"
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    candidate = (Path(args.output).expanduser() if args.output else
-                 Path("docs") / "reviews" / f"review-fix-{stamp}{suffix}")
-    output = candidate.resolve() if candidate.is_absolute() else (cwd / candidate).resolve()
-    try:
-        output.relative_to(cwd)
-    except ValueError:
-        parser.error("--output must resolve inside --cwd")
+    if args.output:
+        candidate = Path(args.output).expanduser()
+        output = (candidate.resolve() if candidate.is_absolute()
+                  else (cwd / candidate).resolve())
+        try:
+            output.relative_to(cwd)
+        except ValueError:
+            parser.error("--output must resolve inside --cwd")
+    else:
+        output = config.data_dir(str(cwd)) / "reviews" / f"review-fix-{stamp}{suffix}"
     if args.custom is not None and not args.custom.strip():
         parser.error("--custom cannot be empty")
     return cwd, output

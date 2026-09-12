@@ -421,7 +421,7 @@ def _add_common_device_args(parser) -> None:
     parser.add_argument("--control", default="http://127.0.0.1:8765",
                         help="控制平面地址（默认 http://127.0.0.1:8765）")
     parser.add_argument("--state-dir", default="",
-                        help="设备密钥目录（默认 .pi-batch/devices）")
+                        help="设备密钥目录（默认用户级 runtime/devices）")
     parser.add_argument("--ca-file", default="",
                         help="HTTPS/mTLS 客户端信任 CA 文件")
     parser.add_argument("--cert-file", default="",

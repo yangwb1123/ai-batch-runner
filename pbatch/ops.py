@@ -63,7 +63,7 @@ def overview(data_dir: str) -> dict:
         "provider_breaker": breaker_status,
         "self_healing": {
             "rejected_artifacts_in": str(Path(data_dir) / "rejected"),
-            "note": "被拒产物有界摘录保留在 .pi-batch/rejected/ 供修复诊断；"
+            "note": "被拒产物有界摘录保留在用户级 runtime/rejected/ 供修复诊断；"
                     "--retries/--max-rounds/gate-fix 负责自动修复",
         },
     }
@@ -90,18 +90,22 @@ def runs(data_dir: str, agent: str = "", limit: int = 30) -> list[dict]:
 def _recent_log_lines(cwd: str, tail: int = 30) -> tuple[list, str]:
     target = _default_log_file(cwd) or ""
     if not target:
-        return [], "no --log-file log found under " + str(Path(cwd) / "logs")
+        return [], "no --log-file log found under " + str(config.data_dir(cwd) / "logs")
     lines, error = log_tail(target, tail=tail)
     return lines, error
 
 
 def _default_log_file(cwd: str) -> Optional[str]:
-    logs_dir = Path(cwd) / "logs"
-    if not logs_dir.is_dir():
-        return None
-    candidates = sorted(logs_dir.glob("*.log"), key=lambda p: p.stat().st_mtime,
-                        reverse=True)
-    return str(candidates[0]) if candidates else None
+    """Find the newest private log, with a read-only legacy fallback."""
+    directories = [config.data_dir(cwd) / "logs", Path(cwd) / "logs"]
+    for logs_dir in directories:
+        if not logs_dir.is_dir():
+            continue
+        candidates = sorted(logs_dir.glob("*.log"),
+                            key=lambda p: p.stat().st_mtime, reverse=True)
+        if candidates:
+            return str(candidates[0])
+    return None
 
 
 def log_tail(file: str, tail: int = 80, grep: str = "") -> tuple[list[str], str]:
@@ -156,29 +160,120 @@ def _runs_table(rows: list, esc, status_class: dict) -> str:
         for row in rows) or "<tr><td colspan=6>no runs yet</td></tr>"
 
 
-def report_html(data_dir: str, cwd: str) -> str:
-    summary = overview(data_dir)
-    rows = runs(data_dir, limit=50)
-    log_lines, _log_error = _recent_log_lines(cwd, tail=30)
-    status_class = {"succeeded": "ok", "failed": "bad", "rejected": "warn",
-                    "cancelled": "warn"}
+_MOBILE_PANEL_SCRIPT = """<script>
+const mobileControl=__ENABLED__;
+const mobileToken=new URLSearchParams(location.search).get('token')||'';
+const mobileApi=(path)=>path+(mobileToken?(path.includes('?')?'&':'?')+'token='+encodeURIComponent(mobileToken):'');
+const sessionSelect=document.getElementById('session-select');
+const sessionDetail=document.getElementById('session-detail');
+const sessionPrompt=document.getElementById('session-prompt');
+const sessionName=document.getElementById('session-name');
+const createButton=document.getElementById('session-create');
+const sendButton=document.getElementById('session-send');
+const cancelButton=document.getElementById('session-cancel');
+let selectedSession='';
+let selectedControllable=false;
+function updateControls() {
+  const enabled=mobileControl && selectedControllable;
+  sessionPrompt.disabled=!enabled;
+  sendButton.disabled=!enabled;
+  cancelButton.disabled=!enabled;
+}
+async function mobileJson(path, options) {
+  const response=await fetch(mobileApi(path), options||{});
+  const value=await response.json();
+  if (!response.ok) throw new Error(value.error||('HTTP '+response.status));
+  return value;
+}
+async function refreshSessions() {
+  try {
+    const value=await mobileJson('/api/sessions?limit=50');
+    const rows=value.sessions||[];
+    const previous=selectedSession;
+    sessionSelect.innerHTML='';
+    rows.forEach((row)=>{
+      const option=document.createElement('option');
+      option.value=row.session_id;
+      option.dataset.controllable=row.controllable?'1':'0';
+      option.textContent=(row.name||row.session_id)+' · '+(row.status||'unknown')+
+        (row.controllable?' · 可控':' · 只读');
+      sessionSelect.appendChild(option);
+    });
+    if (rows.some((row)=>row.session_id===previous)) sessionSelect.value=previous;
+    selectedSession=sessionSelect.value||'';
+    selectedControllable=sessionSelect.selectedOptions[0]?.dataset.controllable==='1';
+    updateControls();
+    await refreshDetail();
+  } catch (error) { sessionDetail.textContent='会话加载失败: '+error.message; }
+}
+async function refreshDetail() {
+  selectedSession=sessionSelect.value||selectedSession;
+  selectedControllable=sessionSelect.selectedOptions[0]?.dataset.controllable==='1';
+  updateControls();
+  if (!selectedSession) return;
+  try {
+    const value=await mobileJson('/api/sessions/'+encodeURIComponent(selectedSession));
+    sessionDetail.textContent=JSON.stringify(value,null,2).slice(-16000);
+  } catch (error) { sessionDetail.textContent='详情加载失败: '+error.message; }
+}
+sessionSelect.addEventListener('change',refreshDetail);
+if (mobileControl) {
+  createButton.addEventListener('click',async()=>{
+    createButton.disabled=true;
+    try {
+      await mobileJson('/api/sessions',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({name:sessionName.value})});
+      sessionName.value=''; await refreshSessions();
+    } catch (error) { alert(error.message); } finally { createButton.disabled=false; }
+  });
+  sendButton.addEventListener('click',async()=>{
+    if (!selectedSession||!sessionPrompt.value.trim()) return;
+    sendButton.disabled=true;
+    try {
+      await mobileJson('/api/sessions/'+encodeURIComponent(selectedSession)+'/turn',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({prompt:sessionPrompt.value})});
+      sessionPrompt.value=''; await refreshDetail();
+    } catch (error) { alert(error.message); } finally { sendButton.disabled=false; }
+  });
+  cancelButton.addEventListener('click',async()=>{
+    if (!selectedSession) return;
+    try { await mobileJson('/api/sessions/'+encodeURIComponent(selectedSession)+'/cancel',
+      {method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}); }
+    catch (error) { alert(error.message); }
+  });
+}
+refreshSessions();
+setInterval(refreshSessions,5000);
+</script></section>"""
 
-    def esc(value: object) -> str:
-        return html_mod.escape(str(value), quote=True)
 
-    rows_html = _runs_table(rows, esc, status_class)
-    log_escaped = esc("\n".join(log_lines) or
-                       _log_error or "(no --log-file log found)")
-    pb_label = _breaker_label(summary.get("provider_breaker") or {})
-    statuses = " ".join(
-        f"<span class='chip {status_class.get(k, '')}'>{esc(k)}={v}</span>"
-        for k, v in summary["status_counts"].items()) or "—"
-    agents = " ".join(
-        f"<span class='chip'>{esc(k)}={v}</span>"
-        for k, v in summary["by_agent"].items()) or "—"
+def _mobile_panel(control_enabled: bool) -> str:
+    """Return a dependency-free responsive session picker and command form."""
+    disabled = "" if control_enabled else " disabled"
+    note = ("指令已启用：只会发送到服务端创建的精确会话。"
+            if control_enabled else "当前为只读模式；启动 ops serve --control 才能发送指令。")
+    header = f"""<section id='mobile-control'>
+<h2>移动端会话</h2><p class='meta'>{note}</p>
+<select id='session-select' aria-label='session'><option>加载中…</option></select>
+<input id='session-name' placeholder='新会话名称（可选）'{disabled}>
+<button id='session-create'{disabled}>新建会话</button>
+<pre id='session-detail' class='session-detail'>选择会话查看详情</pre>
+<textarea id='session-prompt' rows='4' placeholder='发送指令…'{disabled}></textarea>
+<button id='session-send'{disabled}>发送指令</button>
+<button id='session-cancel'{disabled}>停止当前指令</button>
+"""
+    return header + _MOBILE_PANEL_SCRIPT.replace(
+        "__ENABLED__", "true" if control_enabled else "false")
+
+
+def _report_head(cwd: str, summary: dict, pb_label: str,
+                 statuses: str, agents: str) -> str:
+    """Render the bounded report header and responsive styles."""
+    name = html_mod.escape(str(Path(cwd).name), quote=True)
     return f"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>pi-batch ops · {esc(Path(cwd).name)}</title>
+<title>pi-batch ops · {name}</title>
 <style>
 body{{font-family:system-ui,sans-serif;margin:2rem;max-width:1100px}}
 h1{{font-size:1.3rem}} h2{{font-size:1rem;margin-top:2rem}}
@@ -191,20 +286,57 @@ tr.ok td:first-child{{}} tr.bad{{background:#fff3f3}} tr.warn{{background:#fff8e
 .meta{{color:#666;font-size:.85rem}}
 pre.log{{background:#f6f6f6;padding:.5rem;overflow-x:auto;font-size:.75rem;
 max-height:24em}}
+#mobile-control{{border:1px solid #ddd;border-radius:.6rem;padding:1rem;margin-top:1rem}}
+#mobile-control select,#mobile-control textarea{{display:block;width:100%;box-sizing:border-box;
+margin:.5rem 0;padding:.6rem;font:inherit}}#mobile-control button{{padding:.6rem .9rem;
+margin:.25rem .25rem .25rem 0}}.session-detail{{max-height:20em;overflow:auto;background:#f6f6f6;
+white-space:pre-wrap;word-break:break-word}}
 </style></head><body>
-<h1>pi-batch · 运营控制台 · {esc(Path(cwd).name)}</h1>
-<p class="meta">生成于 {esc(summary['generated_at'])} · 共 {summary['total']} 条 run
-· 被拒 {summary['rejected_count']}（自我修复诊断见 {esc(summary['self_healing']['rejected_artifacts_in'])}）</p>
+<h1>pi-batch · 运营控制台 · {name}</h1>
+<p class="meta">生成于 {html_mod.escape(str(summary['generated_at']))} · 共 {summary['total']} 条 run
+· 被拒 {summary['rejected_count']}（自我修复诊断见 {html_mod.escape(str(summary['self_healing']['rejected_artifacts_in']))}）</p>
 <p class="meta">Provider breaker: {pb_label}</p>
 <h2>状态分布</h2><div>{statuses}</div>
 <h2>按 Agent</h2><div>{agents}</div>
 <h2>最近 Runs（含重试 attempt）</h2>
-<table><thead><tr><th>时间</th><th>agent</th><th>状态</th><th>#</th><th>任务</th>
+"""
+
+
+def _report_tail(rows_html: str, log_escaped: str, mobile_panel: str) -> str:
+    """Render the bounded report tables and mobile control panel."""
+    return f"""<table><thead><tr><th>时间</th><th>agent</th><th>状态</th><th>#</th><th>任务</th>
 <th>产物</th></tr></thead><tbody>{rows_html}</tbody></table>
 <h2>运营日志（尾部，ops log / api/log 可过滤）</h2>
 <pre class="log">{log_escaped}</pre>
-<p class="meta">刷新本页即可看到最新状态（静态快照；实时推送为后续路线）。</p>
+{mobile_panel}
+<p class="meta">刷新本页即可看到最新状态；移动端会话每 5 秒轮询一次。</p>
 </body></html>"""
+
+
+def report_html(data_dir: str, cwd: str, *, control_enabled: bool = False) -> str:
+    summary = overview(data_dir)
+    rows = runs(data_dir, limit=50)
+    log_lines, _log_error = _recent_log_lines(cwd, tail=30)
+    status_class = {"succeeded": "ok", "failed": "bad", "rejected": "warn",
+                    "cancelled": "warn"}
+
+    def esc(value: object) -> str:
+        return html_mod.escape(str(value), quote=True)
+
+    rows_html = _runs_table(rows, esc, status_class)
+    log_escaped = esc("\n".join(log_lines) or
+                       _log_error or "(no --log-file log found)")
+    pb_label = html_mod.escape(
+        _breaker_label(summary.get("provider_breaker") or {}), quote=True)
+    statuses = " ".join(
+        f"<span class='chip {status_class.get(k, '')}'>{esc(k)}={v}</span>"
+        for k, v in summary["status_counts"].items()) or "—"
+    agents = " ".join(
+        f"<span class='chip'>{esc(k)}={v}</span>"
+        for k, v in summary["by_agent"].items()) or "—"
+    mobile_panel = _mobile_panel(control_enabled)
+    return _report_head(cwd, summary, pb_label, statuses, agents) + _report_tail(
+        rows_html, log_escaped, mobile_panel)
 
 
 # ── CLI ───────────────────────────────────────────────────────────────
@@ -307,13 +439,43 @@ def _cmd_report(args, cwd: str) -> int:
     out = Path(args.html)
     if not out.is_absolute():
         out = Path(cwd) / out
-    if Path(cwd).resolve() not in out.resolve().parents:
-        print(f"report path must stay inside cwd: {out}")
+    resolved = out.resolve()
+    allowed = (Path(cwd).resolve(), config.data_dir(cwd).resolve())
+    if not any(resolved == root or root in resolved.parents for root in allowed):
+        print(f"report path must stay inside cwd or runtime directory: {out}")
         return 2
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(report_html(_data_dir(cwd), cwd), encoding="utf-8")
     print(f"report written: {out} (open in a browser / phone)")
     return 0
+
+
+def _add_serve_args(parser) -> None:
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8731)
+    parser.add_argument("--token", default="")
+    parser.add_argument("--token-file", default="")
+    parser.add_argument("--control", action="store_true")
+    parser.add_argument("--agent", default=config.AGENT_BIN)
+    parser.add_argument("--model", default=config.AGENT_DEFAULT_MODEL)
+    parser.add_argument("--provider", default="")
+    parser.add_argument("--runtime", default="auto",
+                        choices=("auto", "pi", "pi-rpc", "codex", "codex-exec", "legacy"))
+    parser.add_argument("--control-timeout", type=int, default=900)
+    parser.add_argument("--max-sessions", type=int, default=4)
+    parser.add_argument("--tls-cert", default="")
+    parser.add_argument("--tls-key", default="")
+
+
+def _serve_argv(args) -> list[str]:
+    values = [f"--host={args.host}", f"--port={args.port}",
+              f"--token={args.token}", f"--token-file={args.token_file}",
+              f"--agent={args.agent}", f"--model={args.model}",
+              f"--provider={args.provider}", f"--runtime={args.runtime}",
+              f"--control-timeout={args.control_timeout}",
+              f"--max-sessions={args.max_sessions}",
+              f"--tls-cert={args.tls_cert}", f"--tls-key={args.tls_key}"]
+    return values + (["--control"] if args.control else [])
 
 
 def ops_main(argv: Optional[list[str]] = None) -> int:
@@ -334,24 +496,23 @@ def ops_main(argv: Optional[list[str]] = None) -> int:
     p = sub.add_parser("messages", help="session message 索引最近记录")
     p.add_argument("--limit", type=int, default=5)
     p = sub.add_parser("report", help="生成自包含 HTML 监控页")
-    p.add_argument("--html",
-                   default=str(Path("logs") / OPS_REPORT_NAME),
-                   help="输出路径（默认 ./logs/ops-report.html，须在 cwd 内）")
+    p.add_argument(
+        "--html", default="",
+        help="输出路径（默认用户级运行目录，不写入项目）")
     p = sub.add_parser("breaker", help="查看或显式复位 provider 熔断")
     p.add_argument("--provider", default="", help="provider 名称（不传则全部）")
     p.add_argument("--reset", action="store_true",
                    help="人工确认 provider 已恢复后清除熔断状态")
     p.add_argument("--json", action="store_true")
-    p = sub.add_parser("serve", help="只读 HTTP 监控服务（web/app 实时查看）")
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=8731)
-    p.add_argument("--token", default="")
+    p = sub.add_parser("serve", help="手机/浏览器监控；--control 开启受保护指令")
+    _add_serve_args(p)
     args = parser.parse_args(argv)
     cwd = os.getcwd()
+    if args.command == "report" and not args.html:
+        args.html = str(config.data_dir(cwd) / "ops" / OPS_REPORT_NAME)
     if args.command == "serve":
         from .ops_serve import serve_main
-        return serve_main([f"--host={args.host}", f"--port={args.port}",
-                           f"--token={args.token}"])
+        return serve_main(_serve_argv(args))
     handlers = {
         "overview": _cmd_overview,
         "runs": _cmd_runs,

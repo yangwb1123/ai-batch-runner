@@ -22,8 +22,18 @@ pi-batch -p "写一个订单接口，含支付审批，生产，go" --classify  
 pi-batch completion bash >> ~/.bashrc    # shell 补全（zsh 同理）
 ```
 
-从源码开发安装使用 `pip install -e ".[dev]"`。维护者发布流程见
-[`docs/RELEASING.md`](docs/RELEASING.md)。
+从源码开发安装使用 `pip install -e ".[dev]"`。维护者发布流程见 [`docs/RELEASING.md`](docs/RELEASING.md)。GitHub Release 会同时提供
+Linux/macOS/Windows 的单文件二进制（provider CLI 仍需单独安装）。
+
+手机查看会话和发送指令：
+
+```bash
+pi-batch ops serve --control --token-file ~/.config/pbatch/ops-token
+# 手机访问 http://<主机>:8731/?token=<token>；跨网络必须再配置 --tls-cert/--tls-key
+```
+
+默认只读；`--control` 只允许操作服务端启动时绑定的 workspace/agent，历史会话不可
+隐式 resume，详细边界见 [`docs/RELEASING.md`](docs/RELEASING.md)。
 
 构建 wheel 安装时会同时携带规则注册表、验证脚本、默认流水线、角色模板和
 评估集；`pi-batch health --json` 会检查分发资产是否完整。
@@ -35,11 +45,18 @@ pi-batch completion bash >> ~/.bashrc    # shell 补全（zsh 同理）
 | `~/.config/pbatch/settings.yaml` | 用户配置（跨项目偏好） |
 | `~/.cache/pbatch/` | 可丢弃缓存 |
 | `~/.local/share/pbatch/keys/` | 设备身份密钥（跨项目复用） |
-| `~/.local/share/pbatch/logs/` | 全局运行日志 |
+| `~/.local/share/pbatch/logs/` | 兼容的全局运行日志 |
+| `~/.codex/pbatch/projects/<workspace-id>/` | 默认项目运行态：会话、记忆、被拒诊断、campaign 报告/状态、worktree、日志、实例锁 |
 
-`PBATCH_HOME=~/.pbatch` 可统一收拢三目录。**配置分层**：
+运行态默认放在用户目录，不会因为执行目录是项目根目录而生成 `.md`、日志或
+`.pi-batch/` 数据。`PBATCH_RUNTIME_HOME` 可改变默认运行根；`PBATCH_DATA_DIR`
+或 `--data-dir` 可精确指定单个项目运行目录。升级时不会自动删除旧 checkout
+中的 `.pi-batch/`、`docs/auto/` 或 `logs/`，避免破坏未提交证据；确认后可人工迁移/清理。
+**配置分层**：
 CLI 参数 > 项目 `pi-batch.yaml` > 用户 settings.yaml > 内置默认。
-项目相关状态（会话/记忆/被拒产物）保留在项目内 `.pi-batch/`——随仓库共享。
+
+仓库中的 `docs/`、`prompts/`、规范资产等是发行包必需的只读资源；这里的隔离针对
+运行时生成物，不会删除或移动项目明确指定的交付物路径。
 
 配置变更建议先做只读核验：
 
@@ -135,8 +152,8 @@ exponential-backoff retries, and optional auto git-commit after each stage.
 > - T3 log rotation (`RotatingFileHandler`, `--log-max-bytes`/`--log-backups`)
 > - T4 single-instance lock (`pbatch/lock.py`, O_EXCL, stale detection, exit 5)
 > - T5 triage (`pbatch/triage.py`): circuit isolation (`--circuit-max`),
->   stall detection (`--stall-rounds`, exit 4), residue markers
->   (`.pi-batch/state/`), environment-class halt (shared validator stderr)
+>   stall detection (`--stall-rounds`, exit 4), residue markers in the
+>   private runtime `state/`, environment-class halt (shared validator stderr)
 > - tests: 12 more cases (42 total in `tests/test_local_fixes.py`)
 >
 > **Local fixes** (cost governance, T6-T8 per `docs/IMPLEMENTATION_PLAN_7x24_GOVERNANCE.md`):
@@ -182,12 +199,20 @@ exponential-backoff retries, and optional auto git-commit after each stage.
 > - `pi-batch.py campaign` discovers project modules, runs parallel structured
 >   analyses, scores/deduplicates evidence-backed directions, and executes the
 >   selected directions through a full SDLC pipeline.
-> - `docs/auto/state.jsonl` is the append-only source of truth; `SUMMARY.md` is
+> - campaign state/artifacts default to `~/.codex/pbatch/projects/<workspace-id>/campaign/`;
+>   `state.jsonl` is the append-only source of truth and `SUMMARY.md` is
 >   regenerated from it. Input fingerprints make `--reuse`/`--skip-passed`
 >   freshness-aware instead of trusting a non-empty Markdown file.
 > - analysis parallelism stays inside the lock-owning process. Parallel
 >   implementation uses one Git worktree, branch, output tree, decision log,
->   and run log per direction.
+>   and run log per direction, all outside the repository by default. Isolated
+>   children carry bounded process leases
+>   and can use an evidence-based no-progress watchdog without changing
+>   provider-side cancellation semantics.
+> - `--auto-resume-on-signal` is opt-in: SIGTERM stops child groups, preserves
+>   append-only state, and resumes the round loop after `--resume-delay`.
+>   The latest campaign summary includes bounded wall-time, retry, gate-ratio,
+>   token-per-successful-direction, stall, and concurrency-slot observations.
 > - meta stages score role templates with `pbatch/role_keywords.yaml`, inject
 >   matched-keyword evidence, deduplicate the model plan, and enforce
 >   `max_roles_per_iteration` at runtime.
@@ -307,10 +332,20 @@ pi-batch migrate upgrade --baseline ../old --target . --manifest migration.yaml 
 pi-batch studio plan --project . --spec studio.yaml --json
 pi-batch studio validate --project . --spec studio.yaml --strict
 pi-batch studio rehearse --project . --spec studio.yaml --budget-minutes 240 --json
+
+# Focused adaptive module plan: message/content relevance + observed telemetry.
+# No fixed token budget is invented; provider/daily invocation caps and the
+# campaign YAML batch template are used, while real input/output/total usage is
+# recorded for the next decision.
+pi-batch campaign --rounds 0 --reuse --retry-failed \
+  --focus "journal recovery" --analysis-batch-size 4
 # 24x7 incremental campaign: concurrent analysis/meta roles, bounded provider policy,
 # and max reasoning (implementation remains worktree/commit governed)
 pi-batch campaign --rounds 0 --round-delay 120 --jobs 4 --max-directions 1 \
   --model gpt-5.6-luna --provider openai-codex --thinking max --reuse --retry-failed
+# Optional isolated-pipeline watchdog and SIGTERM recovery. Both are opt-in:
+pi-batch campaign --rounds 0 --reuse --retry-failed \
+  --no-progress-timeout 7200 --auto-resume-on-signal --resume-delay 30
 
 # Bounded campaign self-repair: preserve failed edits, restore the clean
 # baseline, narrow the next retry, and stop after a stalled/recovery budget.
@@ -430,7 +465,7 @@ single-actor stop/steer action is offered.
 workspace-relative file/line in the read-only Changes inspector. Press `f` on a finding
 to start a normal, bounded agent turn that treats review text as untrusted data and
 follows the ordinary permission/validation path; it is not an automatic fixer and
-never marks the finding resolved. After the turn, a bounded `docs/reviews/review-fix-<id>.md`
+never marks the finding resolved. After the turn, a bounded user-level runtime `reviews/review-fix-<id>.md`
 report records only exact terminal RuntimeEvent associations and typed validation/gate/workspace
 facts; missing identity stays unavailable. `/completion` opens the current-turn evidence report
 and updates it in place:

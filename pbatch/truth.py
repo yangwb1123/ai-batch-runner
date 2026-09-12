@@ -4,7 +4,7 @@ Agent 的结论依赖其他结论：前提失效 → 依赖结论自动失效（
 superseded），相关计划标记需要重新规划，受影响的方案评分自动撤销。
 这比简单保存一份聊天历史可靠得多。
 
-状态持久化：追加式 JSONL（.pi-batch/truth.jsonl），崩溃安全；status
+状态持久化：追加式 JSONL（用户级 runtime/truth.jsonl），崩溃安全；status
 命令按日志回放重建（确定性）。
 
 Usage:

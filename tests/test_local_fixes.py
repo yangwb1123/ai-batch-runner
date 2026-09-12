@@ -588,8 +588,8 @@ class TestInstanceLock:
             "start": 1,       # ancient
             "host": "x", "argv": "y"}), encoding="utf-8")
         got = lock.acquire_lock(str(tmp_path))
-        assert got == stale  # stale broken, lock re-acquired
-        assert json.loads(stale.read_text(encoding="utf-8"))["pid"] == os.getpid()
+        assert got == lock._lock_path(str(tmp_path))
+        assert json.loads(got.read_text(encoding="utf-8"))["pid"] == os.getpid()
         lock.release_lock(got)
 
     def test_clean_exit_releases(self, tmp_path):

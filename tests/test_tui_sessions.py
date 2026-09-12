@@ -19,6 +19,7 @@ from pbatch.tui_backend_structured import (
 from pbatch.tui_appserver_support import EventQueue, RuntimeEventStream
 from pbatch.tui_controller import TUIEventController
 from pbatch.tui_journal import RuntimeEventJournal, RuntimeEventJournalError
+from pbatch.tui_native import NativePipelineObserver
 from pbatch.tui_protocol import RuntimeCapabilities, RuntimeEvent
 from pbatch.tui_runtime import (
     RuntimeInfo, RuntimeSession, RuntimeSessionPage, RuntimeSessionSummary,
@@ -316,6 +317,39 @@ def test_required_provider_fork_never_falls_back_to_resume_or_fresh(session_env)
     assert adapter.start_calls == 0
     assert adapter.resume_calls == 0
     assert backend.provider_fork_required
+
+
+def test_session_picker_native_view_opens_exact_read_only_journal(session_env):
+    journal = RuntimeEventJournal(str(session_env), "native-picker")
+    observer = NativePipelineObserver(
+        journal.append, str(session_env), session_id="native-picker",
+        run_id="native-picker-run", turn_id="native-picker-turn")
+    observer.start("picker", 0)
+    observer.finish(True)
+
+    class Backend:
+        cwd = str(session_env)
+        agent = "fake"
+        provider = ""
+
+        def run_turn(self, _prompt):
+            return "unused"
+
+    async def scenario():
+        app = PiBatchTUI(
+            TuiOptions(cwd=str(session_env), runtime="legacy"),
+            backend=Backend())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _submit(app, pilot, "/sessions")
+            await _wait_for_session_picker(app, pilot)
+            _select_session(app, "native-picker")
+            await pilot.press("v")
+            await pilot.pause()
+            assert app._runtime_view.session_id == "native-picker"
+            assert app._runtime_view.turn_state == "SUCCEEDED"
+            assert app.query_one("#composer", Input).disabled
+
+    _run(scenario())
 
 
 def test_tui_lists_and_resumes_completed_codex_session(session_env):

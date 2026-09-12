@@ -494,6 +494,7 @@ def test_init_cli_json_reports_all_created_paths(capsys, tmp_path, monkeypatch):
         "config": str(tmp_path / "home" / ".config"),
         "cache": str(tmp_path / "home" / ".cache"),
         "data": str(tmp_path / "home" / ".local" / "share"),
+        "runtime": str(tmp_path / "home" / "runtime"),
         "settings": str(tmp_path / "home" / ".config" / "settings.yaml"),
     }
     assert (tmp_path / "home" / ".config" / "settings.yaml").is_file()

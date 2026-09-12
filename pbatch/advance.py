@@ -12,7 +12,7 @@ Pipeline per execution round:
   3. PRIORITIZE: P0 -> P1 -> P2 batches, each with samples + suggested fix
   4. EXECUTE: only with --execute, ask one agent to repair the top batch
   5. VERIFY: run optional validators, rescan, and stop on no progress
-  6. RECORD: append before/after evidence to TARGET/docs/advance/state.jsonl
+  6. RECORD: append before/after evidence to the private runtime state file
 
 Usage:
     pi-batch advance --dir ../snaplink-console          # plan (no changes)
@@ -47,7 +47,7 @@ from .models import Task
 from .runner import (expand_command_placeholders, judge_verdict, run_serial,
                      run_validation)
 
-STATE_DIR = Path("docs/advance")
+STATE_DIR = Path("docs/advance")  # explicit/legacy project override only
 STATE_FILE = STATE_DIR / "state.jsonl"
 
 
@@ -144,7 +144,9 @@ def scan_project(target: str) -> dict:
 
 def record_round(scan: dict, round_no: int, state_file: Path | None = None) -> None:
     """Append one round's per-dimension state (resumable, append-only)."""
-    path = state_file or STATE_DIR / "state.jsonl"
+    path = state_file or (
+        config.data_dir(str(Path(scan["target"]).expanduser().resolve())) /
+        "advance" / "state.jsonl")
     entry = {
         "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "round": round_no,
@@ -157,10 +159,11 @@ def record_round(scan: dict, round_no: int, state_file: Path | None = None) -> N
 
 
 def _state_path(target: str, override: str = "") -> Path:
-    """Resolve default state inside the target; an override is cwd-relative."""
-    value = Path(override).expanduser() if override else (
-        Path(target).expanduser().resolve() / STATE_FILE)
-    return Path(os.path.abspath(value))
+    """Resolve default state outside the target; overrides stay explicit."""
+    if override:
+        value = Path(override).expanduser()
+        return Path(os.path.abspath(value))
+    return config.data_dir(str(Path(target).expanduser().resolve())) / "advance" / "state.jsonl"
 
 
 def _run_recorded_rounds(target: str, first_round: int,
@@ -412,7 +415,7 @@ def _build_parser():
     parser.add_argument("--round", type=int, default=None,
                         help="first round override (default: latest state round + 1)")
     parser.add_argument("--state-file", default="",
-                        help="state JSONL override (default: TARGET/docs/advance/state.jsonl)")
+                        help="state JSONL override (default: private runtime directory)")
     parser.add_argument("--agent-bin", default=config.AGENT_BIN)
     parser.add_argument("--model", default="")
     parser.add_argument("--provider", default="")

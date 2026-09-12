@@ -2,7 +2,7 @@
 
 AADM-D (`docs/AADM_DEVICE.md`) D1 批次：SSH inventory（~/.ssh/config 只读
 解析 + 静态配置）、SSH 远程只读探测（固定命令集、BatchMode、不可达也
-返回报告）、探测状态缓存（.pi-batch/devices/state.jsonl，追加式）、
+返回报告）、探测状态缓存（用户级 runtime/devices/state.jsonl，追加式）、
 Placement Dry-run（按 OS/架构/内存/能力/副作用等级筛选）。
 
 安全边界（AADM-D §6/§21/§23）：

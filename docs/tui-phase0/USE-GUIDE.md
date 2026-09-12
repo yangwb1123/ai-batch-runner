@@ -223,10 +223,10 @@ You:  刚才那次运行里 FileChange 涉及哪些文件？       ← 第二轮
 - review 入口在 headless（`pi-batch review` / `pi-batch review-fix`）与 TUI
   `/review` 均可用；TUI 默认运行独立只读 worker，支持
   `uncommitted`、`base BRANCH`、`commit SHA`、`custom TEXT` scope，并把有界报告
-  写入 `docs/reviews/`。显式 App Server runtime 使用 inline `review/start`，回收
+  写入用户级 runtime `reviews/`。显式 App Server runtime 使用 inline `review/start`，回收
   typed finding/message evidence 并绑定当前 session/run/turn；`/findings` 的 `f` 仍启动
   普通权限受控 turn，不自动提交或解析为已修复；结束后生成
-  `docs/reviews/review-fix-<id>.md`，仅 exact terminal RuntimeEvent 才关联 typed
+  用户级 runtime `reviews/review-fix-<id>.md`，仅 exact terminal RuntimeEvent 才关联 typed
   validation/gate/workspace evidence。finding 仍是审查意见，后续需显式重新 `/review`，
   不等同于工程门禁结果。
 - headless 侧全部能力不受 TUI 影响：`-p`、pipeline、campaign、isolate 等照常。

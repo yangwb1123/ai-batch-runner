@@ -131,14 +131,19 @@ def _fold_usage_line(raw: bytes, total: dict) -> None:
     if not isinstance(usage, dict):
         return
     for key, value in usage.items():
-        if isinstance(value, (int, float)):
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
             total[key] = total.get(key, 0) + value
+    cost = usage.get("cost")
+    if isinstance(cost, dict):
+        value = cost.get("total")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            total["cost_total"] = total.get("cost_total", 0) + value
 
 
 def record_event(event: str, task: str = "", detail: str = "", cwd: str = "",
                  session_name: str = "", usage_before: Optional[dict] = None,
                  *, run_id: str = "", task_id: str = "", stage_id: str = "",
-                 attempt: int = 0, phase: str = "") -> None:
+                 attempt: int = 0, phase: str = "", module: str = "") -> None:
     """Append one versioned JSONL event (best-effort, never raises).
 
     The original positional arguments remain compatible.  Trace fields are
@@ -156,6 +161,7 @@ def record_event(event: str, task: str = "", detail: str = "", cwd: str = "",
         "run_id": (run_id or RUN_ID)[:80],
         "task_id": str(task_id)[:80],
         "stage_id": str(stage_id)[:120],
+        "module": str(module)[:160],
         "attempt": max(0, int(attempt)),
         "phase": (phase or _event_phase(event))[:40],
         "task": task[:120],

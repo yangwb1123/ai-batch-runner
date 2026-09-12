@@ -1,8 +1,8 @@
 """Global run registry: who is running what, where, for how long.
 
 Shared-machine lesson (LESSONS.md D3): locks only tell you a repo is
-held, not WHO runs WHAT. Every pi-batch process registers itself under
-~/.pi-batch/runs/<pid>.json (one file per process — no cross-process
+held, not WHO runs WHAT. Every pi-batch process registers itself under the
+private user runtime `~/.codex/pbatch/runs/<pid>.json` (one file per process — no cross-process
 write contention), heartbeats its last activity every 60s via a daemon
 thread, and unregisters on exit. When the home directory is read-only,
 the registry deterministically falls back to a per-user runtime/temp
@@ -22,9 +22,11 @@ import threading
 import time
 from pathlib import Path
 
+from .user_dirs import pbatch_runtime_home
+
 HEARTBEAT_INTERVAL = 60  # seconds
 
-_REGISTRY_DIR = Path.home() / ".pi-batch" / "runs"
+_REGISTRY_DIR = pbatch_runtime_home() / "runs"
 _own_path: Path | None = None
 _heartbeat_stop = threading.Event()
 

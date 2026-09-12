@@ -74,6 +74,7 @@ def test_aging_boost_fairness():
 
 def test_health_governance_counts_shape(tmp_path, monkeypatch):
     monkeypatch.setattr(health, "ROOT", tmp_path)
+    monkeypatch.setenv("PBATCH_DATA_DIR", str(tmp_path / ".pi-batch"))
     (tmp_path / "docs" / "rules" / "drafts").mkdir(parents=True)
     (tmp_path / "docs" / "rules" / "drafts" / "D-1.yaml").write_text("x")
     state = tmp_path / ".pi-batch" / "devices"

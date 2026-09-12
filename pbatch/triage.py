@@ -8,8 +8,9 @@ broken provider or a poisoned task set:
 - Stall detection: K consecutive rounds (default 6) with no new successes
   and an unchanged failure set stop the loop (exit 4) instead of spinning
   forever under --max-rounds 0.
-- Residue markers: run_task writes a `.pi-batch/state/<key>.start` marker
-  while the agent runs; a marker surviving the process (SIGKILL) signals an
+- Residue markers: run_task writes a private-runtime
+  `state/<key>.start` marker while the agent runs; a marker surviving the
+  process (SIGKILL) signals an
   orphaned run, warned about and regenerated next round.
 - Environment classification: identical validator stderr across >=2 tasks
   in one round is an environment-class failure (e.g. a broken validator
@@ -126,7 +127,7 @@ def marker_info(path: Path) -> dict:
 
 def write_cmd_failure_diagnostics(cmd: str, exit_code: int, stderr: str,
                                   cmd_cwd: str) -> None:
-    """命令失败 → 有界诊断摘录 .pi-batch/rejected/（L4 反馈闭环：
+    """命令失败 → 有界诊断摘录到用户级 runtime/rejected/（L4 反馈闭环：
     人工/重试可诊断验证实验到底拒绝了什么）。"""
     try:
         from .config import data_dir

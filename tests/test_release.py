@@ -11,7 +11,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 CHECK = ROOT / "tools" / "check-release.py"
+BINARY_BUILDER = ROOT / "tools" / "build-binary.py"
 RELEASE_ERRORS = runpy.run_path(str(CHECK))["release_errors"]
+BINARY_MODULE = runpy.run_path(str(BINARY_BUILDER))
 ACTION_PINS = {
     "actions/checkout": (
         "d23441a48e516b6c34aea4fa41551a30e30af803", "v6.1.0"
@@ -107,6 +109,26 @@ def test_release_check_does_not_accept_entry_point_text_in_a_comment(
     errors = RELEASE_ERRORS("v1.2.3", tmp_path)
 
     assert any("console entry point pi-batch" in error for error in errors)
+
+
+def test_binary_builder_contains_platform_assets_without_source_checkout_at_runtime() -> None:
+    args = BINARY_MODULE["_add_data_args"](ROOT)
+    joined = " ".join(args)
+    assert "share/ai-batch-runner" in joined
+    assert "share/ai-batch-runner/scripts" in joined
+    assert "share/ai-batch-runner/ui-specs" in joined
+    assert BINARY_MODULE["binary_label"]()
+
+
+def test_release_workflow_builds_and_publishes_platform_binaries() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8")
+    assert "build-binaries:" in workflow
+    assert "release-assets:" in workflow
+    assert '.[binary]' in workflow
+    assert "gh release upload" in workflow
+    for target in ("linux-x86_64", "macos-x86_64", "macos-arm64", "windows-x86_64"):
+        assert target in workflow
 
 
 def test_release_workflow_uses_oidc_and_a_protected_environment() -> None:

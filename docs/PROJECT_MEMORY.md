@@ -45,9 +45,13 @@
 |---|---|---|
 | `pi-batch impact --task "..." [--code DIR]` | **变更影响分析**：受影响面（数据库/API/前端/权限/安全/性能）→ 风险 → 需要角色 → 工作等级 → 变化成本 → 相关 ADR | 需求 → Change Impact Report |
 | `pi-batch adr new|list|get|find|supersede` | **决策记忆库**：结构化 ADR（decision/context/alternatives/rejected reasons/status 状态机） | 决策 → docs/adr/ADR-### |
-| `pi-batch project init|facts|index|show|verify` | **项目状态记忆**：facts（已确认事实带来源）/architecture/decisions 索引/constraints | 记忆文件 → 健康报告 |
+| `pi-batch project init|facts|index|show|verify` | **项目状态记忆**：facts（已确认事实带来源）/architecture/decisions 索引/constraints | 默认用户级 runtime；`--dir` 可显式写项目 → 健康报告 |
 | `pi-batch reflect`（已有） | 反思纠查（12 维度 + 假设审计） | 决策链 → findings → learn/truth 闭环 |
 | `pi-batch profile`（已有） | L0-L3 路由（增量调度的基础） | 需求 → 模式/风险/自主性 |
+
+默认 `project` 状态写入用户级 runtime，避免在仓库生成 `.yaml`；需要把它作为
+项目知识随仓库保存时显式指定目录，例如
+`pi-batch project init --dir .ai/project-memory`。
 
 ## 3. 关键原则
 

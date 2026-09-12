@@ -1,6 +1,6 @@
 """Residue marker warnings (split from cli_batch.py for line budget).
 
-`.pi-batch/markers` 残留扫描：被杀的 runner 会留下孤儿标记，下一轮启动
+用户级 runtime/markers 残留扫描：被杀的 runner 会留下孤儿标记，下一轮启动
 前警告并可选清理。
 """
 

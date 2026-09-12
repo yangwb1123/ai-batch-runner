@@ -29,7 +29,7 @@ def fake_agent(tmp_path):
 # ── aero-id 维护周期 R5e 复盘的三个修复 ──────────────────────────────
 # 1) gate 的 FAIL 裁决永不复用（裁决绑定仓库状态，fingerprint 看不见代码变化）
 # 2) from_prompt / 任务模板支持 {prompt} 注入原始任务提示（-p --classify 路由主路径）
-# 3) 验证器拒绝时保留有界摘录到 .pi-batch/rejected/（诊断可见性，输出路径零残留）
+# 3) 验证器拒绝时保留有界摘录到用户级 runtime/rejected/（诊断可见性，输出路径零残留）
 
 
 @pytest.fixture()
@@ -197,7 +197,7 @@ def test_task_template_injects_original_prompt(tmp_path, fake_agent):
 
 def test_rejected_excerpt_saved_for_diagnosis(tmp_path, fake_agent):
     """A validator-rejected artifact keeps a bounded excerpt under
-    .pi-batch/rejected/ (diagnostics only) while the output path stays
+    the private runtime/rejected/ directory (diagnostics only) while the output path stays
     clean — the aero-id completion-gate diagnosis finding."""
     mod = load_batch()
     mod.config.AGENT_BIN = str(fake_agent)
@@ -206,7 +206,8 @@ def test_rejected_excerpt_saved_for_diagnosis(tmp_path, fake_agent):
                              validate_cmd="exit 7")
     assert results[0].success is False
     assert not output.exists()          # zero residue at the deliverable path
-    rej = tmp_path / ".pi-batch" / "rejected"
+    from pbatch.user_dirs import project_runtime_dir
+    rej = project_runtime_dir(str(tmp_path)) / "rejected"
     assert rej.is_dir()
     files = list(rej.glob("*.rejected.md"))
     assert len(files) == 1

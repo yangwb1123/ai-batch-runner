@@ -31,6 +31,7 @@
 | `selfcheck.py` | `pi-batch check` 自检（quality + schema + eval） |
 | `memory*.py` / `index_io.py` | 渐进式 message memory：有界索引、按需 recent/find/read |
 | `campaign*.py` | 项目级模块发现、方向选择、worktree 隔离流水线 |
+| `ops.py` / `ops_serve.py` / `mobile_control.py` | 有界运行监控、响应式手机会话查看、token/TLS 保护的服务端控制会话与异步 prompt |
 | `registry.py` | 规则注册表（learn 产物并入） |
 | `retro.py` | 复盘记录 |
 | `pipeline_status.py` | **结果状态常量集**（PASSED/GATE_REJECTED/VALIDATION_FAILED/PIPELINE_FAILED）——集中定义防拼写漂移 |
@@ -38,7 +39,7 @@
 ## 设计决策（ADR 摘要）
 
 - **fail-closed**：坏 YAML/JSON/负数/NaN 在创建日志或子进程前以退出码 2 拒绝
-- **失败零产物**：拒绝/验证失败的结果不留文件；被拒产物保留有界摘录到 `.pi-batch/rejected/`
+- **失败零产物**：拒绝/验证失败的结果不留文件；被拒产物保留有界摘录到用户级 runtime `rejected/`
 - **证据有界注入**：`evidence.max_bytes`（64KiB）+ `max_sources`（64）
 - **门禁守护**：`make ci`（502 测试）+ `quality.py --strict` + 3 个检查器自扫描
 - **检查器适用域**：designintelligence/backendexperience/knowledge 面向业务服务代码；

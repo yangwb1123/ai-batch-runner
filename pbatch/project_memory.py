@@ -1,7 +1,7 @@
 """Project Memory — 软件系统状态记忆（工程知识循环的存储层）.
 
-Agent 不应每次从零理解项目：`.ai/project-memory/` 保存系统的**状态**
-而非文档——facts（已确认事实）/ decisions（ADR 索引）/ architecture
+Agent 不应每次从零理解项目：用户级 runtime 的 `project-memory/` 保存系统的
+**状态**而非文档——facts（已确认事实）/ decisions（ADR 索引）/ architecture
 （边界与禁止项）/ constraints（工程宪法引用）。事实与推理分层：facts
 = Confirmed（有证据），assumptions 归 profile/truth 管理。
 
@@ -24,7 +24,17 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-MEMORY_DIR = Path(".ai") / "project-memory"
+_LEGACY_MEMORY_DIR = Path(".ai") / "project-memory"
+MEMORY_DIR = _LEGACY_MEMORY_DIR  # 兼容显式/测试覆盖
+
+
+def _default_memory_dir() -> Path:
+    """Return private project memory, preserving explicit legacy overrides."""
+    from .config import data_dir
+    current = Path(MEMORY_DIR)
+    if current != _LEGACY_MEMORY_DIR:
+        return current
+    return data_dir() / "project-memory"
 
 # 记忆骨架：文件 → 用途。
 SKELETON = {
@@ -52,7 +62,7 @@ def _read_yaml(path: Path) -> dict:
 
 
 def init_memory(memory_dir: Optional[Path] = None) -> list:
-    memory_dir = memory_dir or MEMORY_DIR
+    memory_dir = memory_dir or _default_memory_dir()
     """初始化记忆骨架（只创建缺失文件，不覆盖已有）。"""
     created = []
     for name, content in SKELETON.items():
@@ -66,7 +76,7 @@ def init_memory(memory_dir: Optional[Path] = None) -> list:
 
 def add_fact(statement: str, source: str = "",
              memory_dir: Optional[Path] = None) -> Path:
-    memory_dir = memory_dir or MEMORY_DIR
+    memory_dir = memory_dir or _default_memory_dir()
     """登记一个已确认事实（带来源——事实/推理分层）。"""
     from .config import yaml
     path = memory_dir / "facts.yaml"
@@ -82,9 +92,10 @@ def add_fact(statement: str, source: str = "",
     return path
 
 
-def index_adrs(memory_dir: Path = MEMORY_DIR,
+def index_adrs(memory_dir: Optional[Path] = None,
               adr_dir: Optional[Path] = None) -> Path:
     """重建 decisions.yaml 索引（ADR 库快捷视图，防记忆过期）。"""
+    memory_dir = memory_dir or _default_memory_dir()
     from .adr import ADR_DIR, load_adrs
     from .config import yaml
     adr_dir = adr_dir or ADR_DIR
@@ -102,7 +113,7 @@ def index_adrs(memory_dir: Path = MEMORY_DIR,
 
 def memory_report(memory_dir: Optional[Path] = None,
                   adr_dir: Optional[Path] = None) -> dict:
-    memory_dir = memory_dir or MEMORY_DIR
+    memory_dir = memory_dir or _default_memory_dir()
     """记忆健康报告：骨架完整性 + ADR 索引 + 事实数。"""
     from .adr import ADR_DIR, load_adrs
     adr_dir = adr_dir or ADR_DIR
@@ -124,35 +135,57 @@ def memory_report(memory_dir: Optional[Path] = None,
     }
 
 
-def project_main(argv: Optional[list] = None) -> int:
-    """`pi-batch project init|show|verify|facts`。"""
+def _cli_memory_dir(args: argparse.Namespace) -> Path:
+    """Resolve an explicit project-memory directory or the private default."""
+    value = str(getattr(args, "dir", "") or "").strip()
+    return Path(value).expanduser().resolve() if value else _default_memory_dir()
+
+
+def _add_memory_dir(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--dir", default="",
+        help="memory directory (default: private workspace runtime; explicit paths may be project-local)")
+
+
+def _project_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pi-batch.py project",
         description="Project Memory：软件系统状态记忆（工程知识循环）")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("init", help="初始化记忆骨架（不覆盖已有）")
-    sub.add_parser("show", help="展示当前记忆状态")
+    p_init = sub.add_parser("init", help="初始化记忆骨架（不覆盖已有）")
+    _add_memory_dir(p_init)
+    p_show = sub.add_parser("show", help="展示当前记忆状态")
+    _add_memory_dir(p_show)
     p_facts = sub.add_parser("facts", help="登记一个已确认事实")
+    _add_memory_dir(p_facts)
     p_facts.add_argument("--statement", required=True)
     p_facts.add_argument("--source", default="")
     p_index = sub.add_parser("index", help="重建 decisions.yaml 索引（ADR 库）")
+    _add_memory_dir(p_index)
     p_verify = sub.add_parser("verify", help="记忆健康检查")
+    _add_memory_dir(p_verify)
     p_verify.add_argument("--json", action="store_true")
-    args = parser.parse_args(argv)
+    return parser
+
+
+def project_main(argv: Optional[list] = None) -> int:
+    """`pi-batch project init|show|verify|facts`。"""
+    args = _project_parser().parse_args(argv)
+    memory_dir = _cli_memory_dir(args)
     if args.command == "init":
-        created = init_memory()
+        created = init_memory(memory_dir)
         print(f"project memory initialized: {len(created)} 个文件"
               + ("" if created else "（已存在）"))
         raise SystemExit(0)
     if args.command == "facts":
-        path = add_fact(args.statement, args.source)
+        path = add_fact(args.statement, args.source, memory_dir)
         print(f"fact recorded: {path}")
         raise SystemExit(0)
     if args.command == "index":
-        path = index_adrs()
+        path = index_adrs(memory_dir)
         print(f"decisions index rebuilt: {path}")
         raise SystemExit(0)
-    report = memory_report()
+    report = memory_report(memory_dir)
     if args.command == "verify":
         if args.json:
             print(json.dumps(report, ensure_ascii=False, indent=2))

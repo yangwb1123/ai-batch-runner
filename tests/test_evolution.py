@@ -679,15 +679,16 @@ def test_advance_denylist_glob_semantics():
 
 
 def test_campaign_records_evolution_trajectory(tmp_path, monkeypatch):
-    """campaign 完成事件沉淀到 docs/evolution/state.jsonl（轨迹数据源）。"""
+    """campaign 完成事件沉淀到用户级 evolution/state.jsonl（轨迹数据源）。"""
     from types import SimpleNamespace
+    from pbatch import config
     from pbatch.campaign_exec import _record_evolution_trajectory
 
     outcome = SimpleNamespace(module="lib/api", direction="审计读路径",
                               status="PASSED")
     context = SimpleNamespace(root=tmp_path)
     _record_evolution_trajectory(context, [outcome])
-    state = tmp_path / "docs" / "evolution" / "state.jsonl"
+    state = config.data_dir(str(tmp_path)) / "evolution" / "state.jsonl"
     assert state.is_file()
     line = json.loads(state.read_text(encoding="utf-8"))
     assert line["event"] == "campaign_done"
@@ -756,14 +757,15 @@ def test_evolution_track_cli(tmp_path):
 
 
 def test_verify_failure_writes_diagnostics(tmp_path):
-    """verify_experiment 失败 → 有界诊断文件（.pi-batch/rejected/）。"""
+    """verify_experiment 失败 → 用户级 runtime 中的有界诊断文件。"""
+    from pbatch import config
     from pbatch.models import Stage
     from pbatch.pipeline import _run_stage_commands
 
     stage = Stage(name="v", cwd=str(tmp_path),
                   verify_experiment=[sys.executable + " -c 'import sys; sys.exit(7)'"])
     assert _run_stage_commands(stage) is False
-    rejected = tmp_path / ".pi-batch" / "rejected"
+    rejected = config.data_dir(str(tmp_path)) / "rejected"
     files = list(rejected.glob("verify-cmd-*.txt")) if rejected.is_dir() else []
     assert files
     text = files[0].read_text(encoding="utf-8")

@@ -145,8 +145,8 @@ def init_main(argv: Optional[list] = None) -> int:
         print()
         print("分层（高优先）：CLI 参数 > 项目 pi-batch.yaml > "
               "~/.config/pbatch/settings.yaml > 内置默认")
-        print("项目相关状态（会话/记忆/被拒产物）保留在项目内 .pi-batch/ ——"
-              "随仓库共享；用户级目录只放跨项目数据。")
+        print("运行时状态（会话/记忆/被拒诊断/campaign 报告与日志）默认写入 "
+              "~/.codex/pbatch/projects/<workspace>，不污染项目仓库。")
         print("迁移设备密钥：旧项目内 devices/keys 请用 `pi-batch devices "
               "keymigrate` 导入。")
     raise SystemExit(0)
@@ -180,12 +180,12 @@ def clean_main(argv: Optional[list] = None) -> int:
         prog="pi-batch.py clean",
         description="清空用户级缓存（保留配置与设备密钥）")
     parser.add_argument("--all", action="store_true",
-                        help="连同 ~/.config/pbatch 与设备密钥一起清除")
+                        help="连同配置、设备密钥和 ~/.codex/pbatch runtime 一起清除")
     parser.add_argument("--yes", action="store_true", help="跳过确认")
     args = parser.parse_args(argv)
     cache = user_dirs.pbatch_cache_home()
     if args.all and not args.yes:
-        reply = input(f"将删除 {cache} 及配置/密钥目录。确认? [y/N] ").strip().lower()
+        reply = input(f"将删除 {cache} 及配置/密钥/runtime 目录。确认? [y/N] ").strip().lower()
         if reply not in ("y", "yes"):
             print("clean: aborted")
             raise SystemExit(1)
@@ -193,7 +193,8 @@ def clean_main(argv: Optional[list] = None) -> int:
         shutil.rmtree(cache)
     if args.all:
         for path in (user_dirs.pbatch_config_home(),
-                     user_dirs.pbatch_data_home()):
+                     user_dirs.pbatch_data_home(),
+                     user_dirs.pbatch_runtime_home()):
             if path.exists():
                 shutil.rmtree(path)
     print(f"clean: {'all user dirs' if args.all else 'cache'} removed")
@@ -261,7 +262,8 @@ def _doctor_checks() -> list:
     checks.append(("设备密钥", True,
                    f"{key_count} 个（{keys}）" if key_count else "无（serve 前生成）"))
     import os
-    lock = Path(".pi-batch.lock")
+    from .lock import _lock_path
+    lock = _lock_path(os.getcwd())
     checks.append(("实例锁", not lock.exists(),
                    "空闲" if not lock.exists() else "另一实例运行中"))
     return checks

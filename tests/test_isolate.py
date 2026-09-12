@@ -222,13 +222,16 @@ def test_isolate_protected_mode_rejects_auto_merge(repo, tmp_path):
 
 
 def test_isolate_copy_memory(repo):
-    """--copy-memory：主目录 .pi-batch/ 延续到 worktree。"""
-    (repo / ".pi-batch").mkdir()
-    (repo / ".pi-batch" / "memory").write_text("{}", encoding="utf-8")
+    """--copy-memory：主目录 runtime 数据延续到 worktree。"""
+    from pbatch.user_dirs import project_runtime_dir
+    source = project_runtime_dir(str(repo))
+    source.mkdir(parents=True)
+    (source / "memory").write_text("{}", encoding="utf-8")
     result = _isolate(repo, "-b", "task-h", "--copy-memory", "--",
                       "-p", "test", "--dry-run")
     assert result.returncode == 0, result.stderr
-    assert (repo.parent / "repo-task-h" / ".pi-batch" / "memory").is_file()
+    assert (project_runtime_dir(str(repo.parent / "repo-task-h")) /
+            "memory").is_file()
 
 
 def test_isolate_copy_memory_uses_local_data_dir(repo, tmp_path, monkeypatch):
@@ -251,8 +254,10 @@ def test_isolate_copy_memory_uses_local_data_dir(repo, tmp_path, monkeypatch):
     monkeypatch.setattr(isolate.subprocess, "run", capture_child_env)
     worktree = repo.parent / "repo-task-copy-env"
     assert isolate.run_isolated(repo, "task-copy-env", worktree, ["--dry-run"], True) == 0
-    assert (worktree / ".pi-batch" / "memory" / "marker").is_file()
-    assert seen["env"]["PBATCH_DATA_DIR"] == str(worktree / ".pi-batch")
+    from pbatch.user_dirs import project_runtime_dir
+    runtime = project_runtime_dir(str(worktree))
+    assert (runtime / "memory" / "marker").is_file()
+    assert seen["env"]["PBATCH_DATA_DIR"] == str(runtime)
 
 
 def test_isolate_without_copy_does_not_inherit_external_data_dir(
@@ -277,9 +282,11 @@ def test_isolate_without_copy_does_not_inherit_external_data_dir(
     worktree = repo.parent / "repo-task-local-env"
     assert isolate.run_isolated(
         repo, "task-local-env", worktree, ["--dry-run"], False) == 0
-    assert seen["env"]["PBATCH_DATA_DIR"] == str(worktree / ".pi-batch")
+    from pbatch.user_dirs import project_runtime_dir
+    runtime = project_runtime_dir(str(worktree))
+    assert seen["env"]["PBATCH_DATA_DIR"] == str(runtime)
     assert seen["env"]["PBATCH_DATA_DIR"] != str(external)
-    assert not (worktree / ".pi-batch" / "marker").exists()
+    assert not (runtime / "marker").exists()
 
 
 def test_copy_memory_queries_remain_visible_across_worktree_scope(
@@ -353,12 +360,13 @@ def test_data_dir_env_moves_runtime_state(tmp_path, monkeypatch):
     assert not (tmp_path / ".pi-batch").exists()
 
 
-def test_data_dir_default_is_project_local(tmp_path, monkeypatch):
-    """默认（无 env/CLI）：data_dir = cwd/.pi-batch（兼容现状）。"""
+def test_data_dir_default_is_private_runtime(tmp_path, monkeypatch):
+    """默认（无 env/CLI）：data_dir 位于用户级 workspace runtime。"""
     from pbatch import config
     monkeypatch.delenv("PBATCH_DATA_DIR", raising=False)
     config.set_data_dir_override("")
-    assert config.data_dir(str(tmp_path)) == (tmp_path / ".pi-batch").resolve()
+    from pbatch.user_dirs import project_runtime_dir
+    assert config.data_dir(str(tmp_path)) == project_runtime_dir(str(tmp_path))
 
 
 def test_data_dir_cli_flag_runs_clean(tmp_path):
@@ -442,7 +450,8 @@ def _commit_agent(root, script_body):
 
 
 def _session_ledger(repo) -> list:
-    ledger = repo / ".pi-batch" / "sessions.jsonl"
+    from pbatch.config import data_dir
+    ledger = data_dir(str(repo)) / "sessions.jsonl"
     if not ledger.exists():
         return []
     return [json.loads(line) for line in

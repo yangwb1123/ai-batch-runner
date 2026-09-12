@@ -33,11 +33,36 @@ from . import config
 from .config import log, yaml
 from .relevance import _keyword_hit
 from .rule_matcher import LEVELS, detect_scale, load_registry
+from .memory_io import reverse_lines
 from .text_io import read_text_bounded
 
 REGISTRY_PATH = "evolution-specs/rules.yaml"
 CONSTITUTION_REL = "docs/evolution/constitution.yaml"
-STATE_REL = "docs/evolution/state.jsonl"
+STATE_REL = "docs/evolution/state.jsonl"  # legacy read fallback
+
+
+def _runtime_state_path(root: Path) -> Path:
+    """Return the private evolution event ledger for one workspace."""
+    return config.data_dir(str(root)) / "evolution" / "state.jsonl"
+
+
+def _state_paths(root: Path) -> tuple[Path, ...]:
+    """Return runtime and legacy ledgers, without silently dropping history."""
+    runtime = _runtime_state_path(root)
+    legacy = root / STATE_REL
+    paths = []
+    if runtime.is_file():
+        paths.append(runtime)
+    if legacy.is_file() and legacy != runtime:
+        paths.append(legacy)
+    return tuple(paths)
+
+
+def _state_read_path(root: Path) -> Path:
+    """Return the preferred ledger path for diagnostics and compatibility."""
+    paths = _state_paths(root)
+    return paths[0] if paths else _runtime_state_path(root)
+
 
 # 反例信号 → 命中的信号名（注册表 signals 节内声明，此处是引擎内置语义）。
 _COUNTER_SIGNALS = {"exploration", "prototype", "quick"}
@@ -322,25 +347,25 @@ def classify_trigger(text: str) -> str:
 
 
 def _collect_events(state: Path, max_events: int) -> list:
-    """有界行缓冲读取 state.jsonl 尾部事件。"""
+    """有界倒序读取 state.jsonl 尾部事件。"""
+    if max_events <= 0 or not state.is_file():
+        return []
     events = []
-    if not state.is_file():
-        return events
     try:
-        with state.open(encoding="utf-8") as handle:
-            tail = list(handle)[-max_events:]
+        for line in reverse_lines(state, maximum=256 * 1024):
+            if line is None or not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and row.get("event"):
+                events.append(row)
+                if len(events) >= max_events:
+                    break
     except OSError:
-        return events
-    for line in tail:
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(row, dict) and row.get("event"):
-            events.append(row)
-    return events
+        return []
+    return list(reversed(events))
 
 
 def _summarize_events(events: list) -> dict:
@@ -367,12 +392,16 @@ def _summarize_events(events: list) -> dict:
 
 
 def track_evolution(root: Path, max_events: int = 2000) -> dict:
-    """演化轨迹分析：读 docs/evolution/state.jsonl（事件）→ 时间线 +
+    """演化轨迹分析：读用户级 evolution/state.jsonl（事件）→ 时间线 +
     触发源分类 + 状态分布 + 模块热度 + 拒绝模式。有界行缓冲。
 
     数据源事件：init / override / check / campaign_done（追加式）。
     """
-    events = _collect_events(root / STATE_REL, max_events)
+    events = []
+    for state in _state_paths(root):
+        events.extend(_collect_events(state, max_events))
+    events.sort(key=lambda row: str(row.get("ts") or ""))
+    events = events[-max_events:]
     if not events:
         return {"events": [], "summary": {"total": 0}}
     summary = _summarize_events(events)
@@ -516,7 +545,7 @@ def _init_constitution(root: Path) -> Path:
 
 
 def _append_state(root: Path, event: dict) -> None:
-    state = root / STATE_REL
+    state = _runtime_state_path(root)
     state.parent.mkdir(parents=True, exist_ok=True)
     with state.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(
@@ -637,7 +666,7 @@ def _self_review_lines(registry: dict, overrides: dict) -> list:
 
 
 def _cmd_report(args: argparse.Namespace) -> int:
-    """规律命中/豁免/stale 报告（从注册表 + 宪法 + state.jsonl）。
+    """规律命中/豁免/stale 报告（从注册表 + 宪法 + runtime state.jsonl）。
     --self-review 列出可挑战项（规律自身可被挑战，restraint.md §5）。"""
     root = Path(args.dir).resolve()
     constitution = load_constitution(root)
@@ -653,11 +682,14 @@ def _cmd_report(args: argparse.Namespace) -> int:
                          f"({record.get('ts', '')})")
     if args.self_review:
         lines.extend(_self_review_lines(registry, overrides))
-    state = root / STATE_REL
-    if state.is_file():
-        events = [json.loads(line) for line in state.open(encoding="utf-8")
-                  if line.strip()]
-        lines.append(f"\nstate events: {len(events)} (docs/evolution/state.jsonl)")
+    states = _state_paths(root)
+    if states:
+        events = []
+        for state in states:
+            events.extend(_collect_events(state, 2000))
+        events.sort(key=lambda row: str(row.get("ts") or ""))
+        events = events[-2000:]
+        lines.append(f"\nstate events: {len(events)} ({_state_read_path(root)})")
         if args.self_review:
             overrides_events = [e for e in events if e.get("event") == "override"]
             lines.append(f"override 事件: {len(overrides_events)}")

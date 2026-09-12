@@ -28,7 +28,7 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `pbatch/classifier.py` / `task_keywords.yaml` | 任务类型判断器：执行前双语关键词判定，前端→前端实现流水线、后端→后端实现流水线（`classifier.frontend_pipeline` / `backend_pipeline`，均为 plan→implement+门禁→对抗审查→gate 结构），`--classify` / `classify` 子命令，零 LLM 成本 |
 | `pbatch/rule_matcher.py` / `ui-specs/rules.yaml` | 规则匹配器：按 scale（demo/standard/production）× page_type × risk 三轴算法式筛选适用规范；**双向校验**——算法 manifest 与 LLM 独立选择对比裁决（`rules --summary/--llm-json/--llm-prompt`），必选规则不可被 LLM 跳过（fail closed）；三域注册表（frontend/backend/product，`product-specs/rules.yaml` 按 productization_level L1+ 路由，L0 克制不加载） |
 | `pbatch/isolate.py` + `pbatch/session_merge.py` | **worktree 隔离执行 + session 自动合并**（`isolate` 子命令，多任务并行 / session 驱动的标准模式）：一个 SSH 会话 = 一个 worktree——自动 `git worktree add` 独立分支、子进程在隔离目录执行（锁按 cwd 天然隔离、运行数据各自独立）；默认提示人工合并回主分支，`--auto-merge` 时由本进程充当 Merge Controller：根仓库锁内 fetch → rebase 最新主分支 → 验证门禁（`--gate`，默认探测 Makefile ci target）→ 合并（`--no-ff` 保留 checkpoint 或 `--squash`）→ 清理；`--wait-minutes` 排队（合并队列 = 根锁，忙时 exit 5）；账本 data_dir/sessions.jsonl 状态机（CREATED→RUNNING→REBASING→VALIDATING→MERGING→MERGED / ABORTED/CONFLICT/TEST_FAILED/NO_GATE/QUEUE_REFUSED/DIRTY/READY），`isolate sessions` 查询；`--copy-memory` 延续主目录会话；fail closed（非 git/分支已存在/目录非空/目标在仓库内/无任务参数 → exit 2；合并被阻 → exit 6 保留现场） |
-| `pbatch/config.py` `data_dir` | **运行时数据目录**（`--data-dir` / env `PBATCH_DATA_DIR`）：记忆索引/被拒产物/worktrees/设备状态/错误预算/流程工件/反思账本默认在项目内 `.pi-batch/`，可整体移到项目外（如 `~/data/pbatch/<project>/`）——运行状态不污染项目代码结构；多实例运行默认启用：锁按"产物/会话冲突"而非无脑互斥——同名 session 或产物路径重叠才拒绝（exit 5 并列出重叠路径），声明了不相交产物的实例并行运行；未声明产物的实例（stdin/动态）保持互斥；`--run-domain` 强制独立域、`--wait-lock`排队、`--no-lock` 绕过；活锁永不强破（防 split-brain） |
+| `pbatch/config.py` `data_dir` | **运行时数据目录**（`--data-dir` / env `PBATCH_DATA_DIR`）：记忆索引/被拒产物/worktrees/设备状态/错误预算/流程工件/反思账本默认在 `~/.codex/pbatch/projects/<workspace-id>/`，不污染项目代码结构；`PBATCH_RUNTIME_HOME` 可改变用户级根目录；多实例运行默认启用：锁按"产物/会话冲突"而非无脑互斥——同名 session 或产物路径重叠才拒绝（exit 5 并列出重叠路径），声明了不相交产物的实例并行运行；未声明产物的实例（stdin/动态）保持互斥；`--run-domain` 强制独立域、`--wait-lock`排队、`--no-lock` 绕过；活锁永不强破（防 split-brain） |
 | `pbatch/evolution.py` / `evolution-specs/` | **第四域：实战规律引擎**（归纳自 snaplink-console / iris-ui 实战）：项目形态分类（契约驱动/平台/面向产品/探索）→ 规律分级路由（invariant 硬执行 / contract-policy 可豁免 / suggestion 只注入）；**探索豁免**（spike 任务自动降级，创新不被锁死）；项目宪法（`docs/evolution/constitution.yaml`：明确不做/变更预算/豁免留痕）——**assess 处方携带宪法块、advance 批次剔除 denylist 文件、campaign 分析注入宪法+已拒方向（L10 防重复）并沉淀批次轨迹事件**；**`evolution track` 演化路径分析**（轨迹事件 → 触发源分类/状态分布/模块热度/被拒收敛信号 → TRACK.md）；门禁五件套——`baseline`（L1 基线先行）、`authority`（L2 权威源分层，禁发明接口）、`evidence`（L7 证据纪律）、`nongoal`（L6 明确不做 fail closed）、`changebudget`（L9 变更预算）；`learn promote --registry evolution` 沉淀闭环（强制 samples/confidence）；eval 第四域回归（10 用例） |
 | `pbatch/advance.py` | 自推进迭代引擎（`advance` 子命令）：扫描项目全部规范维度（UI 间距/颜色/样式、前端工程错误/N+1/复杂度、后端工程/架构）→ 按细颗粒度分批（P0 可恢复性 > P1 视觉 token > P2 架构）→ 状态记录（docs/advance/state.jsonl）逐轮可续 |
 | `pbatch/assessor.py` | 需求评估器（`assess` 子命令）：资深经验式评审——8 维需求完整性检查、规模信号（S/M/L）克制处方（"企业登录页"不会全量上规则）、缺失维度建议、刻意未选用清单、**产品化分级评估**（L0-L3）、**工作流风险分级**（L0 直改 / L1 标准 / L2 高风险对抗 / L3 平台产品） |
@@ -55,7 +55,7 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `pbatch/fabric*.py`（含 `fabric_ledger` / `fabric_lifecycle` / `fabric_outbox` / `fabric_task_store` / `fabric_checkpoint_store`） | 设备感知执行织网 D0-D6：ExecutionTarget 抽象、SSH 受控执行、Runner+控制平面（Lease/Fencing/对账）、任务级 Capability Grant（设备/任务/目录/数据级别/有效期，Runner 执行前验票）、`/task/start` fencing 握手与提交者/执行设备主体授权、显式 TLS/mTLS 与证书指纹绑定、ExecutionEvidence digest/环境摘要校验、设备/任务/尝试维度幂等资源账本、LOST 尝试、显式设备生命周期与调度硬过滤、Runner 证据离线缓冲/重放、控制面任务与 Checkpoint 快照恢复、调度/迁移/检查点/投机执行/预算上限/退役吊销/联邦配额与策略 |
 | `docs/AADM.md` / `AADM_RUNTIME.md` / `AADM_GOVERNANCE.md` / `AADM_DEVICE.md` | AADM 四文档：理论模型 / 运行时内核 / 治理模型 / 设备织网（全部机制已落地，见各文档映射表 ✅） |
 | `pbatch/reflect.py` + `docs/REFLECTION.md` | Reflection Engine（Critic Layer）：12 维度二阶审视 + 假设审计 + 反方验证 + 知识提取，发现对接 truth/learn/eval 闭环 |
-| `pbatch/impact.py` + `adr.py` + `project_memory.py` + `docs/PROJECT_MEMORY.md` | 工程知识循环：Change Impact 增量路由（受影响面→角色→工作等级→变化成本）、ADR 决策记忆库（状态机+决策缓存查询）、Project Memory（facts/架构/索引，防记忆过期） |
+| `pbatch/impact.py` + `adr.py` + `project_memory.py` + `docs/PROJECT_MEMORY.md` | 工程知识循环：Change Impact 增量路由（受影响面→角色→工作等级→变化成本）、ADR 决策记忆库（状态机+决策缓存查询）、Project Memory（facts/架构/索引，默认用户级 runtime，显式 `--dir` 才写项目，防记忆过期） |
 | `pbatch/refactor.py` + `docs/REFACTORING.md` | God File 重构分析器：度量（行数/圈复杂度分级）→ 职责识别（SRP）→ 模式信号（Strategy/DI/AOP）→ 迁移计划（测试保护→渐进提取→知识更新） |
 | `agent-engineering/*.yaml` + `pbatch/org.py` + `docs/AGENT_ORGANIZATION.md` | AI 软件工程组织规范：17 个流程节点岗位说明书（职责/输入/输出/检查规则/禁止事项/最佳实践/失败案例/自动检测/Review Checklist），`pi-batch org check` 校验完整性；`org gate --log` 注入 {log}，残留占位符 fail closed（campaign 实战修复） |
 | `pbatch/capabilities.py` + `docs/ARCHITECTURE.md` | Capability Registry（命令驱动→能力驱动）+ Agent OS 内核冻结（分层架构/ABI 契约/复杂度预算） |
@@ -128,8 +128,8 @@ agent 回复**不是正确输出时一律不落盘**：
 - stdout/stderr 以固定 8KiB 字符块排空；即使 agent 输出超长无换行单行，
   也不会在 `OUTPUT_MAX_BYTES` 截断判断前由 `readline()` 全量载入内存
 - 拒绝 = 无产物文件；任务失败 → 可自动重试/下轮重跑
-- 被拒产物保留**有界摘录**（默认 64KiB）到任务 cwd 的
-  `.pi-batch/rejected/<name>-<时间戳>.rejected.md` 并在日志指出路径——
+- 被拒产物保留**有界摘录**（默认 64KiB）到用户级 runtime 的
+  `rejected/<name>-<时间戳>.rejected.md` 并在日志指出路径——
   交付物路径保持零残留，但人工/重试可诊断"验证器到底拒绝了什么"
   （aero-id 维护 R5 复盘修复：completion 门禁两次拒绝均无明细可查）
 - 并行批次在调度前拒绝重复输出、嵌套输出，以及不同 `cwd` 之间的输出目录包含关系
@@ -206,7 +206,7 @@ provider 原生会话证据，不进入产物或终端正文流。
 
 Pi 原始 JSONL message 保持不变；runner 为新任务分配可追踪的 session id，并把
 任务、验证器、Gate、Campaign、失败、产物和归档路径写入追加式轻量索引：
-`.pi-batch/memory/sessions.index.jsonl`。索引只保存脱敏摘要、哈希和路径，不复制
+用户级 runtime `memory/sessions.index.jsonl`。索引只保存脱敏摘要、哈希和路径，不复制
 完整 message；Manifest/recent/read 从文件尾按块读取，find 流式扫描且只保留
 Top-K，均不会先把全部历史装入内存；异常超长索引记录由
 `memory.index_line_max_bytes`（默认 256KiB）拒绝或跳过；索引文件还受
@@ -382,8 +382,9 @@ bash scripts/full-auto.sh --skip-passed --max-directions 2
 - 分析输出必须是结构化 JSON：问题、价值/风险降低/成本/置信度、现有
   文件或符号证据、可测试验收标准；旧 Markdown 标题仅作为 Proposed 展示，
   不直接进入实现
-- `docs/auto/state.jsonl` 是追加式事实源；`SUMMARY.md` 每次从状态重建，
-  不参与恢复判断；状态读取使用有限行缓冲，复用判断缓存每个方向的最新事件，
+- campaign 默认将追加式事实源写入 `~/.codex/pbatch/projects/<workspace-id>/campaign/state.jsonl`；
+  `SUMMARY.md` 每次从状态重建，不参与恢复判断；显式 `state.*` 配置才写回项目。
+  状态读取使用有限行缓冲，复用判断缓存每个方向的最新事件，
   单条记录受 Campaign `state.line_max_bytes`（默认 256KiB）约束
 - fingerprint 包含模块内容、仓库快照、分析 prompt、方向、pipeline、角色
   模板、runner 配置和 model/provider；只有 fingerprint 相同的 PASS 才复用
@@ -416,6 +417,11 @@ bash scripts/full-auto.sh --skip-passed --max-directions 2
 | 韧性 | 失败签名拒绝落盘、`--reuse` 断点续跑、`--retries`、7×24 轮循环 |
 
 ## 3. 命令速查
+
+除非显式传入项目内的 `--output`/`--log-file`/配置路径，运行态文件默认写入
+`~/.codex/pbatch/projects/<workspace-id>/`。下方为兼容旧部署保留的
+`logs/...` 显式示例；发行/无人值守部署应改用用户级 runtime 路径，或省略
+`--log-file` 使用无文件日志。
 
 ```bash
 # 一键自检（安装/改规则后验证环境）：quality + 注册表 schema + eval 套件
@@ -654,7 +660,7 @@ pi-batch retro --failures-only logs/ --actions                 # 自动改进动
 pi-batch impact --task "需求" --code src                        # 变更影响分析（增量路由）
 pi-batch adr new --title "文件存储用 MinIO" --decision "MinIO"   # 决策记忆
 pi-batch adr find "文件存储"                                    # 决策缓存查询
-pi-batch project init|facts|index|verify                       # 项目状态记忆
+pi-batch project init|facts|index|verify                       # 默认用户级项目状态记忆；--dir 可显式写入项目
 pi-batch refactor --file src/service.py                       # God File 重构分析
 pi-batch org check|flow|show [NODE]                        # 工程组织规范（17 节点）
 pi-batch org prompt NODE                                    # 岗位说明书→角色注入
@@ -674,9 +680,10 @@ pi-batch clean [--all]                                   # 清用户级缓存（
 pi-batch completion bash|zsh >> ~/.bashrc                # shell 补全（注册表驱动）
 pi-batch devices keymigrate                              # 旧项目内密钥 → 用户级（跨项目复用）
 # 分层：CLI > 项目 pi-batch.yaml > ~/.config/pbatch/settings.yaml > 默认
-# 边界：项目相关状态（会话/记忆/被拒产物）默认在项目内 .pi-batch/（随仓库共享）；
-#       不想污染项目代码结构时，--data-dir DIR / env PBATCH_DATA_DIR 把运行状态
-#       整体移到项目外（如 ~/data/pbatch/<project>/）；多实例默认并行（产物/会话冲突才拒绝，见组件表 data_dir 行）
+# 边界：项目运行状态默认在 ~/.codex/pbatch/projects/<workspace-id>/；
+#       --data-dir DIR / env PBATCH_DATA_DIR 可精确指定运行目录；
+#       只有显式指定的交付物/项目知识文档才写回项目；多实例默认并行
+#       （产物/会话冲突才拒绝，见组件表 data_dir 行）
 pi-batch profile "多租户 SaaS..." --json                   # 反事实推理（预留建议）
 pi-batch check [--steps org,capabilities]                  # 全面自检（7 门禁聚合）
 pi-batch probe "任务" [--budget-tokens N]                     # Dry-run 标准输出（区间+置信度；预算不足→infeasible）

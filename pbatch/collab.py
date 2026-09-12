@@ -24,7 +24,8 @@ from typing import Optional, Sequence
 from . import config
 from .config import log, yaml
 from .isolate import SCOPE_BLOCKED_EXIT, _repo_root
-from .lock import acquire_lock, release_lock
+from .lock import (_default_lock_path, _lock_path, acquire_lock,
+                   release_lock)
 from .text_io import read_text_bounded
 from .worktree_slice import (git_head, normalize_patterns, path_matches,
                              worktree_digest)
@@ -294,7 +295,8 @@ def _report_results(results: Sequence[AgentResult]) -> None:
 
 def _source_lock_present(root: Path) -> bool:
     """Do not take over a source tree already carrying its runtime lock."""
-    return (root / ".pi-batch.lock").exists()
+    return (_default_lock_path(str(root)).exists() or
+            _lock_path(str(root)).exists())
 
 
 def _acquire_coordinator_lock(root: Path, worktree_root: Path):

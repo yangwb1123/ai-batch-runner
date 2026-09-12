@@ -417,7 +417,7 @@ def reflect_main(argv: Optional[list] = None) -> int:
                         help="执行证据（运行结果/测试输出——Critic 只信证据）")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--save", action="store_true",
-                        help="追加到 .pi-batch/reflections.jsonl")
+                        help="追加到用户级 runtime/reflections.jsonl")
     args = parser.parse_args(argv)
     report = reflect_on(args.task, args.code, args.evidence, args.mode)
     if args.save:

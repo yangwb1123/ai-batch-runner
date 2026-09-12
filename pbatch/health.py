@@ -92,7 +92,9 @@ def _spec_counts(root: Optional[Path] = None) -> dict:
     backend = len(list((ASSET_ROOT / "backend-specs").rglob("*.md")))
     drafts = len(list((project_root / "docs" / "rules" / "drafts").glob("*.yaml")))
     rounds = 0
-    state = project_root / "docs" / "advance" / "state.jsonl"
+    state = config.data_dir(str(project_root)) / "advance" / "state.jsonl"
+    if not state.exists():
+        state = project_root / "docs" / "advance" / "state.jsonl"
     if state.exists():
         try:
             rounds = sum(1 for _ in state.open(encoding="utf-8"))

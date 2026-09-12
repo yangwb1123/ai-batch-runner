@@ -38,6 +38,6 @@ scope 选择、结构化 finding 展示和报告落盘，`/findings` 可把安�
 跳转到只读 Changes hunk。显式 App Server runtime 现在使用 inline `review/start`，
 并回收有界 message/typed finding evidence；“修复此 finding”仍只启动普通 turn，
 不自动修改或标记 finding resolved。普通 fix turn 结束后会生成 workspace 内的
-`docs/reviews/review-fix-<id>.md`；只有 exact terminal RuntimeEvent scope 才会关联
+用户级 runtime `reviews/review-fix-<id>.md`；只有 exact terminal RuntimeEvent scope 才会关联
 source review、fix turn、validation、gate 与 authoritative workspace evidence，缺失
 或不匹配时 fail closed 并明确标为 unavailable。后续仍需显式重新 `/review`。

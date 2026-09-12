@@ -153,7 +153,7 @@ ACTION_RULES = {
 
 
 def _reflection_actions() -> list:
-    """聚合 .pi-batch/reflections.jsonl：重复发现 → 动作（闭环）。"""
+    """聚合用户级 runtime/reflections.jsonl：重复发现 → 动作（闭环）。"""
     from .config import data_dir
     path = data_dir() / "reflections.jsonl"
     if not path.exists():

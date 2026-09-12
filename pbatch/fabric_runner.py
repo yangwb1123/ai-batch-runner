@@ -5,7 +5,7 @@
 对账。断线自动重连（指数退避），审批未通过时持续等待。
 
 设备身份：首次运行生成密钥文件（device_id + HMAC secret），
-`.pi-batch/devices/keys/<name>.json`（权限 0600）。device_id 由 secret
+用户级 runtime 的 `devices/keys/<name>.json`（权限 0600）。device_id 由 secret
 派生 —— 注册后即密码学身份（AADM-D §7 的 D3 形态；证书化留待 D3b）。
 
 CLI：`pi-batch devices runner --control HOST:PORT --name NAME

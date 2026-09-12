@@ -1,7 +1,7 @@
 """Pinned context (AADM-G §19): 不可压缩上下文分层.
 
 Pinned：安全规则、用户硬约束、公共接口契约、关键验收标准、禁止状态——
-**不允许被摘要丢失**。机制：`.pi-batch/pinned.md`（或配置的额外文件）
+**不允许被摘要丢失**。机制：用户级 runtime 的 `pinned.md`（或配置的额外文件）
 中的内容总是完整注入；Retrievable 可摘要但保留来源指针；Ephemeral 完成
 后丢弃。
 
@@ -35,7 +35,7 @@ def _default_pinned_path(root: Path) -> Path:
 
 
 def pinned_sources(cwd: str = "", extra_files: Optional[list] = None) -> list:
-    """Pinned 源文件：默认 .pi-batch/pinned.md + 额外文件（存在的才返回）。"""
+    """Pinned 源文件：默认用户级 runtime/pinned.md + 额外文件。"""
     root = Path(cwd or ".")
     candidates = [_default_pinned_path(root)]
     candidates += [Path(path) if Path(path).is_absolute() else root / path
