@@ -151,14 +151,21 @@ def _report_working_tree_residue(context) -> None:
 
 
 _HEARTBEAT_SECONDS = 300
+_HEARTBEAT_THREAD = None
+_HEARTBEAT_LOCK = threading.Lock()
 
 
 def _start_heartbeat() -> None:
-    """Start a low-noise daemon heartbeat for long-running campaigns."""
-    def beat() -> None:
-        while True:
-            time.sleep(_HEARTBEAT_SECONDS)
-            log.info("CAMPAIGN HEARTBEAT: alive after %s", time.strftime("%H:%M:%S"))
+    """Start one low-noise daemon heartbeat per coordinator process."""
+    global _HEARTBEAT_THREAD
+    with _HEARTBEAT_LOCK:
+        if _HEARTBEAT_THREAD is not None and _HEARTBEAT_THREAD.is_alive():
+            return
+        def beat() -> None:
+            while True:
+                time.sleep(_HEARTBEAT_SECONDS)
+                log.info("CAMPAIGN HEARTBEAT: alive after %s", time.strftime("%H:%M:%S"))
 
-    threading.Thread(
-        target=beat, name="campaign-heartbeat", daemon=True).start()
+        _HEARTBEAT_THREAD = threading.Thread(
+            target=beat, name="campaign-heartbeat", daemon=True)
+        _HEARTBEAT_THREAD.start()

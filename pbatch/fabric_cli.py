@@ -193,7 +193,7 @@ def _add_clock_skew_parser(sub) -> None:
     p_key = sub.add_parser("keymigrate",
                           help="旧项目内设备密钥 → 用户级目录（跨项目复用）")
     p_key.add_argument("--from", dest="src", default="",
-                       help="旧密钥目录（默认 .pi-batch/devices/keys）")
+                       help="旧密钥目录（默认兼容 .pi-batch/devices/keys）")
 
 
 def _cmd_clock_skew(args) -> None:

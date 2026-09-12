@@ -94,10 +94,12 @@ repository's executable tests and does not replace them.
   bilingual role index, the orchestrator sees scores plus matched keywords,
   and the runner enforces dedupe, `relevance_min_score`, and
   `max_roles_per_iteration` after parsing the untrusted plan.
-- Repository campaigns persist transitions in `docs/auto/state.jsonl`, derive
-  `SUMMARY.md`, and use content/routing fingerprints for `--reuse` and
-  `--skip-passed`. Analyses share the parent lock and run in an internal pool;
-  parallel implementations use separate Git worktrees and branches.
+- Repository campaigns persist transitions, `SUMMARY.md`, and reports under
+  the user-level runtime directory (`~/.codex/pbatch/projects/<workspace-id>/`
+  by default), and use content/routing fingerprints for `--reuse` and
+  `--skip-passed`. Explicit `output_dir`/artifact paths remain authoritative.
+  Analyses share the parent lock and run in an internal pool; parallel
+  implementations use separate Git worktrees and branches.
 - 24x7 operation: `--retries` retries failed tasks with
   exponential backoff (`--retry-delay`/`--retry-backoff`; rate-limit and
   network failures wait at least 30s), `--min-interval` throttles successful

@@ -5,7 +5,7 @@
 干预实验 → 结果 → 更新因果模型。
 
 Hypothesis 生命周期：unverified → supported / rejected / inconclusive。
-持久化：追加式 JSONL（.pi-batch/causality.jsonl），可回放。
+持久化：追加式 JSONL（用户级 runtime/causality.jsonl），可回放。
 
 Usage:
     pi-batch causal new --symptom "接口慢" --cause "缓存缺失" \\

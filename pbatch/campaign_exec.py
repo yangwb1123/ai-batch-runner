@@ -17,12 +17,13 @@ import sys
 import time
 from pathlib import Path
 
-from . import config
+from . import config, metering
 from .campaign_analysis import (analysis_fingerprint, build_analysis_task,
                                 discover_modules, parse_directions,
                                 run_analysis_tasks, select_directions)
 from .campaign_models import CampaignSettings, Direction
 from .campaign_merge import record_campaign_outcomes
+from .campaign_metrics import build_efficiency_metrics, execution_attempts
 from .campaign_preflight import (_preflight_collect_specs,
                                  _preflight_run_one, _preflight_validators,
                                  _provider_breaker_admission,
@@ -34,14 +35,21 @@ from .campaign_pipeline import (PipelineOutcome, direction_fingerprint,
 from .campaign_state import (StateStore, _git_output, git_snapshot,
                              git_worktree_evidence, tool_digest, tool_head,
                              write_summary)
+from .campaign_strategy import (no_pending_plan, plan_modules,
+                                read_module_signals, read_usage)
 from .config import log
 from .lock import acquire_lock, release_lock
 from .registry import mark_running, unregister
 from .runner import kill_active_procs, run_argv
 from .text_io import read_text_bounded
 
+
+class CampaignSignalInterrupt(KeyboardInterrupt):
+    """Coordinator-owned SIGTERM, distinct from an operator Ctrl-C."""
+
+
 def _record_evolution_trajectory(context: "CampaignContext", outcomes: list) -> None:
-    """批次完成事件 → docs/evolution/state.jsonl（演化轨迹数据源）。
+    """批次完成事件 → 用户级 evolution/state.jsonl（演化轨迹数据源）。
 
     每个方向一次追加事件 {event: campaign_done, module, direction,
     status}——后续 `evolution report`/轨迹分析按此重建项目演化路径
@@ -67,9 +75,13 @@ def run_campaign(context: CampaignContext) -> int:
     if not modules:
         log.error("CAMPAIGN: no modules found")
         return 1
+    plan = _campaign_plan(context, modules)
     if context.args.dry_run:
-        _print_plan(context, modules)
+        _print_plan(context, list(plan.selected), plan)
         return 0
+    if plan.blocked:
+        return _blocked_campaign(context, plan)
+    analysis_scope = set(plan.selected)
     pause_reason, pause_evidence = _provider_breaker_admission(
         getattr(context.args, "provider", ""),
         getattr(context.args, "agent_bin", ""))
@@ -78,15 +90,17 @@ def run_campaign(context: CampaignContext) -> int:
                PipelineStatus.PROVIDER_BREAKER_PAUSED, "", pause_evidence,
                reason=pause_reason)
         write_summary(context.store,
-                      context.settings.path(context.root, context.settings.summary_file),
+                      context.settings.summary_path(context.root),
                       context.settings.name)
         log.error("CAMPAIGN paused before analysis: %s", pause_reason)
         return 1
+    _event(context, "__campaign__", "__plan__", "", "CAMPAIGN_PLAN", "",
+           [], reason=plan.reason, extra={"strategy": plan.mapping()})
     _event(context, "__tool__", "__tool__", "", "TOOL_VERSION",
            tool_digest(), [tool_head()],
            reason="tool code digest (pbatch + pi-batch.py + pi-batch.yaml); "
                   "invalidates analysis/direction reuse when the tool changes")
-    directions, failures = _analyze_modules(context, modules)
+    directions, failures = _analyze_modules(context, modules, analysis_scope)
     selected, selection_failures = _select(context, modules, directions)
     failures += selection_failures
     _preflight_validators(context)
@@ -94,20 +108,33 @@ def run_campaign(context: CampaignContext) -> int:
     failures += sum(1 for outcome in outcomes if outcome.status != PipelineStatus.PASSED)
     _record_evolution_trajectory(context, outcomes)
     _report_working_tree_residue(context)
-    write_summary(context.store, context.settings.path(context.root, context.settings.summary_file),
+    write_summary(context.store, context.settings.summary_path(context.root),
                   context.settings.name)
     passed = sum(1 for outcome in outcomes if outcome.status == PipelineStatus.PASSED)
     log.info("CAMPAIGN complete: %d passed, %d failed", passed, failures)
     return 1 if failures else 0
 
-def _analyze_modules(context: CampaignContext, modules: list[str]) -> tuple[dict[str, list[Direction]], int]:
+def _blocked_campaign(context: CampaignContext, plan) -> int:
+    _event(context, "__campaign__", "__plan__", "", "CAMPAIGN_PLAN", "",
+           [], reason=plan.reason, extra={"strategy": plan.mapping()})
+    log.error("CAMPAIGN blocked by module strategy: %s", plan.reason)
+    write_summary(context.store,
+                  context.settings.summary_path(context.root),
+                  context.settings.name)
+    return 3
+
+
+def _analyze_modules(context: CampaignContext, modules: list[str],
+                     analysis_scope: set[str] | None = None) -> tuple[dict[str, list[Direction]], int]:
     tasks = {}
     fingerprints = {}
     directions = {}
     reuse = _reuse_enabled(context.args)
     for module in modules:
         task = build_analysis_task(context.root, context.settings, module,
-                                   context.args.model, context.args.provider, context.args.timeout)
+                                   context.args.model, context.args.provider,
+                                   context.args.timeout,
+                                   getattr(context.args, "focus", ""))
         fp = analysis_fingerprint(context.root, context.settings, module, context.snapshot, task)
         fingerprints[module] = fp
         if reuse and context.store.reusable(module, "__analysis__", fp, ("ANALYZED",)):
@@ -115,6 +142,8 @@ def _analyze_modules(context: CampaignContext, modules: list[str]) -> tuple[dict
             if parsed:
                 directions[module] = parsed
                 continue
+        if analysis_scope is not None and module not in analysis_scope:
+            continue
         _event(context, module, "__analysis__", "", "ANALYZING", fp, [str(task.output_path())])
         tasks[module] = task
     module_by_output = {str(task.output_path()): module for module, task in tasks.items()}
@@ -171,7 +200,8 @@ def _select(context: CampaignContext, modules: list[str],
     return selected_items, failures
 
 def _analysis_path(context: CampaignContext, module: str) -> Path:
-    task = build_analysis_task(context.root, context.settings, module)
+    task = build_analysis_task(context.root, context.settings, module,
+                               focus=getattr(context.args, "focus", ""))
     return task.output_path()
 
 def _implement(context: CampaignContext, items: list[tuple[Direction, Path, str]]):
@@ -189,6 +219,7 @@ def _implement(context: CampaignContext, items: list[tuple[Direction, Path, str]
             for direction, analysis, _ in items]
     for direction, analysis, fp in items:
         _direction_event(context, direction, "RUNNING", fp, analysis)
+    started = time.monotonic()
     if context.settings.pipeline_concurrency > 1:
         raw = [(direction, analysis) for direction, analysis, _ in items]
         outcomes = run_directions_isolated(context.root, context.settings, raw,
@@ -199,6 +230,17 @@ def _implement(context: CampaignContext, items: list[tuple[Direction, Path, str]
                     for direction, analysis, _ in items]
     fingerprints = {direction.direction_id: fp for direction, _, fp in items}
     record_campaign_outcomes(context, outcomes, fingerprints, _event)
+    events_file = getattr(context.args, "events_file", "") or metering.EVENTS_FILE
+    usage = read_usage(events_file, run_id=getattr(metering, "RUN_ID", ""))
+    attempts, retries = execution_attempts(
+        events_file, getattr(metering, "RUN_ID", ""))
+    metrics = build_efficiency_metrics(
+        outcomes, time.monotonic() - started,
+        context.settings.pipeline_concurrency, usage,
+        attempts=attempts, retries=retries)
+    _event(context, "__campaign__", "__metrics__", "", "CAMPAIGN_METRICS", "",
+           [events_file] if events_file else [],
+           reason="bounded round efficiency observation", extra={"metrics": metrics})
     return outcomes
 
 
@@ -244,9 +286,89 @@ def _direction_event(context: CampaignContext, direction: Direction, status: str
            status, fingerprint, [str(analysis)], reason)
 
 def _reuse_enabled(args: argparse.Namespace) -> bool:
-    return not args.force and (args.reuse or args.skip_passed or args.retry_failed)
+    return not getattr(args, "force", False) and (
+        getattr(args, "reuse", False) or getattr(args, "skip_passed", False)
+        or getattr(args, "retry_failed", False))
 
-def _print_plan(context: CampaignContext, modules: list[str]) -> None:
+def _campaign_plan(context: CampaignContext, modules: list[str]):
+    args = context.args
+    events_file = getattr(args, "events_file", "") or metering.EVENTS_FILE
+    usage = read_usage(events_file, run_id=getattr(metering, "RUN_ID", ""))
+    history = read_usage(events_file)
+    baseline = (history.observed_average or
+                context.settings.analysis_token_estimate)
+    pending = _pending_analysis_modules(context, modules)
+    focus = getattr(args, "focus", "")
+    if not pending:
+        return no_pending_plan(modules, focus=focus, usage=usage,
+                               token_estimate=context.settings.analysis_token_estimate,
+                               baseline_tokens=baseline)
+    cli_batch = getattr(args, "analysis_batch_size", None)
+    cli_budget = getattr(args, "analysis_budget_tokens", None)
+    batch_size = (context.settings.analysis_batch_size
+                  if cli_batch is None else cli_batch)
+    budget = (context.settings.analysis_budget_tokens
+              if cli_budget is None else cli_budget)
+    return plan_modules(
+        pending, focus=focus, batch_size=batch_size,
+        token_budget=budget, usage=usage,
+        token_estimate=context.settings.analysis_token_estimate,
+        priority=_strategy_priority(context.store),
+        signals=(read_module_signals(context.root, pending)
+                 if str(focus).strip() else {}),
+        max_calls=_available_invocations(), baseline_tokens=baseline)
+
+
+def _available_invocations() -> int | None:
+    limits = []
+    if metering.BUDGET_MAX:
+        limits.append(max(0, metering.BUDGET_MAX - metering.INVOCATIONS))
+    if metering.DAILY_BUDGET:
+        limits.append(max(0, metering.DAILY_BUDGET - metering.budget_spent_today()))
+    return min(limits) if limits else None
+
+
+def _pending_analysis_modules(context: CampaignContext,
+                              modules: list[str]) -> list[str]:
+    if not _reuse_enabled(context.args):
+        return list(modules)
+    pending = []
+    for module in modules:
+        task = build_analysis_task(context.root, context.settings, module,
+                                   context.args.model, context.args.provider,
+                                   context.args.timeout,
+                                   getattr(context.args, "focus", ""))
+        fingerprint = analysis_fingerprint(context.root, context.settings, module,
+                                           context.snapshot, task)
+        reusable = context.store.reusable(module, "__analysis__", fingerprint,
+                                          ("ANALYZED",))
+        if not reusable or not _parse_analysis_file(module, task):
+            pending.append(module)
+    return pending
+
+
+def _strategy_priority(store: StateStore) -> dict[str, int]:
+    """Prefer failures, then give untouched modules a coverage turn."""
+    priority: dict[str, int] = {}
+    urgent = {"ANALYSIS_FAILED": 20, "PIPELINE_FAILED": 10,
+              "GATE_REJECTED": 10, "VALIDATION_FAILED": 10}
+    for event in store.latest().values():
+        owner = str(event.get("campaign", ""))
+        if owner and owner != store.campaign:
+            continue
+        module = str(event.get("module", ""))
+        if not module:
+            continue
+        status = str(event.get("status", ""))
+        if event.get("direction_id") == "__analysis__" and status == "ANALYZED":
+            priority.setdefault(module, -100)
+        weight = urgent.get(status, 0)
+        if weight:
+            priority[module] = max(priority.get(module, 0), weight)
+    return priority
+
+
+def _print_plan(context: CampaignContext, modules: list[str], plan=None) -> None:
     analysis_sec = context.store.median_elapsed(("ANALYZED",), context.settings.analysis_minutes * 60)
     pipeline_sec = context.store.median_elapsed(
         (PipelineStatus.PASSED, PipelineStatus.GATE_REJECTED,
@@ -258,6 +380,16 @@ def _print_plan(context: CampaignContext, modules: list[str]) -> None:
                      context.settings.pipeline_concurrency)
     print(f"== Campaign: {context.settings.name} ==")
     print(f"Modules: {len(modules)}; directions/module: {context.settings.max_directions}")
+    if plan is not None:
+        usage = plan.usage
+        print(f"Strategy: {plan.reason}; estimated analysis tokens: {plan.estimated_tokens}")
+        print("Telemetry: calls=%d input=%d output=%d total=%d cost=$%.4f" %
+              (usage.calls, usage.input_tokens, usage.output_tokens,
+               usage.total_tokens, usage.cost_usd))
+        for warning in usage.diagnostics(plan.baseline_tokens or plan.estimated_tokens):
+            print("Telemetry warning: " + warning)
+        if plan.skipped:
+            print("Skipped modules: " + ", ".join(plan.skipped))
     for module in modules:
         print(f"  - {module}")
     print(f"Estimated analysis: {analysis_wall / 60:.0f} min | "
@@ -271,7 +403,10 @@ def _wire_runtime(args: argparse.Namespace) -> None:
     config.AGENT_THINKING_OVERRIDE = getattr(args, "thinking", "")
     config.MEMORY_MODE = args.memory_mode
     config.STREAM_OUTPUT = args.stream_output
-    metering.EVENTS_FILE = args.events_file
+    # Campaign telemetry is enabled by default in the runtime data directory;
+    # an explicit --events-file still provides an isolated ledger.
+    metering.EVENTS_FILE = args.events_file or str(
+        config.data_dir() / "campaign-events.jsonl")
     metering.WEBHOOK_URL = args.webhook
     metering.BUDGET_MAX = args.budget_max
     metering.DAILY_BUDGET = args.daily_budget
@@ -286,16 +421,16 @@ def _wire_runtime(args: argparse.Namespace) -> None:
     ratelimit.configure(per_second, burst, config.RATE_LIMIT_PROVIDERS,
                         os.environ["PBATCH_RATE_LIMIT_FILE"])
 
-def main(argv: list[str] | None = None) -> None:
+def _parse_campaign(argv: list[str] | None):
     # 惰性导入 CLI 层（campaign.py 在底部 re-export main——避免模块级循环）
-    from .campaign import (CampaignContext, _apply_overrides,  # noqa: F401
-                           _validate_runtime_args, build_campaign_parser,
-                           load_settings)
+    from .campaign import CampaignContext, build_campaign_parser, load_settings
     args = build_campaign_parser().parse_args(argv)
-    signal.signal(signal.SIGTERM, _campaign_sigterm)
     root = Path.cwd().resolve()
+    config.set_data_dir_override(args.data_dir)
     try:
         settings = load_settings(root, args)
+        if args.log_file is None:
+            args.log_file = str(config.data_dir(str(root)) / "logs" / "campaign.log")
         if not args.dry_run:
             preflight_errors = config.agent_preflight_errors(args.agent_bin)
             if preflight_errors:
@@ -308,6 +443,13 @@ def main(argv: list[str] | None = None) -> None:
     except ValueError as exc:
         log.error("CAMPAIGN config: %s", exc)
         raise SystemExit(2)
+    return root, args, settings
+
+
+def main(argv: list[str] | None = None) -> None:
+    from .campaign import CampaignContext
+    root, args, settings = _parse_campaign(argv)
+    signal.signal(signal.SIGTERM, _campaign_sigterm)
     _wire_runtime(args)
     if args.log_file and not args.dry_run:
         Path(args.log_file).parent.mkdir(parents=True, exist_ok=True)
@@ -315,8 +457,8 @@ def main(argv: list[str] | None = None) -> None:
                                                        backupCount=config.LOG_BACKUP_COUNT, encoding="utf-8")
         handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
         log.addHandler(handler)
-    store = StateStore(settings.path(root, settings.state_file),
-                       settings.state_line_max_bytes, settings.name)
+    store = StateStore(settings.state_path(root), settings.state_line_max_bytes,
+                       settings.name)
     excluded = _snapshot_excludes(root, settings, args)
     context = CampaignContext(root, settings, args, store, git_snapshot(root, excluded))
     _register_campaign_run(root, args)
@@ -328,14 +470,30 @@ def main(argv: list[str] | None = None) -> None:
         unregister()
         raise
     try:
-        code = run_campaign_loop(context)
-    except KeyboardInterrupt:
-        log.warning("CAMPAIGN interrupted; rerun with --reuse --retry-failed")
-        code = 130
+        code = _run_campaign_supervised(context)
     finally:
         release_lock(lock_path)
         unregister()
     raise SystemExit(code)
+
+def _run_campaign_supervised(context: CampaignContext) -> int:
+    """Optionally resume after SIGTERM without losing durable campaign state."""
+    auto_resume = bool(getattr(context.args, "auto_resume_on_signal", False))
+    delay = max(0.0, float(getattr(context.args, "resume_delay", 30)))
+    while True:
+        try:
+            return run_campaign_loop(context)
+        except CampaignSignalInterrupt:
+            if not auto_resume:
+                log.warning("CAMPAIGN interrupted; rerun with --reuse --retry-failed")
+                return 130
+            log.warning("CAMPAIGN interrupted; preserving state and resuming in %.0fs", delay)
+            if delay:
+                time.sleep(delay)
+        except KeyboardInterrupt:
+            log.warning("CAMPAIGN interrupted; rerun with --reuse --retry-failed")
+            return 130
+
 
 def run_campaign_loop(context: CampaignContext) -> int:
     """Run the campaign `--rounds` times (0 = infinite). Later rounds are
@@ -393,7 +551,7 @@ def _round_commit(context: CampaignContext, round_no: int) -> bool:
                   round_no, evidence["dirty_evidence"])
         return False
     msg = ("[pi-batch] campaign round %d: implemented directions "
-           "(see %s)" % (round_no, context.settings.summary_file))
+           "(see %s)" % (round_no, context.settings.summary_path(context.root)))
     add = run_argv(["git", "add", "-A"], str(root), timeout=30)
     if not add.ok:
         _log_round_commit_failure(root, round_no, "git add -A", add)
@@ -433,11 +591,12 @@ def _campaign_sigterm(signum, frame) -> None:
     log.warning("CAMPAIGN received SIGTERM; stopping active agents and pipelines")
     kill_active_procs()
     kill_isolated_pipelines()
-    raise KeyboardInterrupt()
+    raise CampaignSignalInterrupt()
 
 def _snapshot_excludes(root: Path, settings: CampaignSettings,
                        args: argparse.Namespace) -> tuple[str, ...]:
-    values = [settings.output_dir, str(settings.effective_worktree_root(root))]
+    values = [str(settings.output_path(root)),
+              str(settings.effective_worktree_root(root))]
     if args.log_file:
         log_path = Path(args.log_file)
         values.append(str(log_path if log_path.parent == Path(".") else log_path.parent))

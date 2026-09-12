@@ -21,7 +21,7 @@ The prompt labels review fields as untrusted data, requires inspecting current
 code, and asks for a minimal no-commit fix plus checks actually run. It uses the
 normal turn/runtime permissions and validation path; it is not an automatic
 fixer and never marks the finding resolved by itself. When that ordinary turn
-ends, TUI writes a bounded `docs/reviews/review-fix-<id>.md` report. It includes
+ends, TUI writes a bounded user-level runtime `reviews/review-fix-<id>.md` report. It includes
 source-review/fix-turn association only when the terminal RuntimeEvent identity
 matches exactly; validator, gate, and authoritative workspace facts are otherwise
 reported unavailable. A new `/review` is required to reassess the finding.

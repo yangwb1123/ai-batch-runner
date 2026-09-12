@@ -21,6 +21,10 @@ from pbatch import lock as lock_mod
 from pbatch.lock import LOCK_EXIT_CODE, acquire_lock, release_lock
 
 
+def _lock_file(root: Path) -> Path:
+    return lock_mod._lock_path(str(root))
+
+
 def _hold_lock(tmp_path: Path, domain: str = "", outputs=(),
               session_name: str = "") -> Path:
     """Acquire and keep the lock like a background instance would."""
@@ -75,7 +79,7 @@ def test_dirty_git_worktree_never_runs_parallel(tmp_path):
     (repo / "source.txt").write_text("dirty\n", encoding="utf-8")
     held = _hold_lock(repo, domain="batch-a", outputs=("docs/a.md",))
     try:
-        holder = json.loads((repo / ".pi-batch.lock").read_text())
+        holder = json.loads(_lock_file(repo).read_text())
         assert holder["worktree_dirty"] is True
         with pytest.raises(SystemExit) as exc:
             acquire_lock(repo, domain="batch-b", outputs=("docs/b.md",))
@@ -113,7 +117,7 @@ def test_different_named_domains_run_parallel(tmp_path):
     try:
         # parallel instance: no lock file, no exception
         assert acquire_lock(str(tmp_path), domain="batch-b") is None
-        holder = json.loads((tmp_path / ".pi-batch.lock").read_text())
+        holder = json.loads(_lock_file(tmp_path).read_text())
         assert holder["domain"] == "batch-a"  # holder lock untouched
     finally:
         release_lock(held)
@@ -181,7 +185,8 @@ def test_stale_default_lock_is_broken_even_vs_named_domain(tmp_path):
     """A dead holder is never 'parallel': it is stale and must be broken
     (parallel mode is only for live holders)."""
     held = _hold_lock(tmp_path)
-    holder = json.loads((tmp_path / ".pi-batch.lock").read_text())
+    holder = json.loads(_lock_file(tmp_path).read_text())
+    original_alive = lock_mod._alive
     lock_mod._alive = lambda pid: False  # simulate dead holder
     try:
         path = acquire_lock(str(tmp_path), domain="dev")
@@ -189,7 +194,7 @@ def test_stale_default_lock_is_broken_even_vs_named_domain(tmp_path):
         release_lock(path)
     finally:
         release_lock(held)
-        lock_mod._alive = lambda pid: pid != os.getpid() or True
+        lock_mod._alive = original_alive
 
 
 def test_existing_lock_tests_still_pass_with_domain_key(tmp_path):
@@ -197,7 +202,7 @@ def test_existing_lock_tests_still_pass_with_domain_key(tmp_path):
     pid/host/argv keep working."""
     held = _hold_lock(tmp_path)
     try:
-        holder = json.loads((tmp_path / ".pi-batch.lock").read_text())
+        holder = json.loads(_lock_file(tmp_path).read_text())
         assert holder["domain"] == "default"
         assert holder["pid"] == os.getpid()
     finally:

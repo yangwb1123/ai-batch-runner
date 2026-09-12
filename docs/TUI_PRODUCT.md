@@ -213,7 +213,7 @@ Finding 仍是审查意见，不等同于工程门禁结果；Enter 跳转只定
 标记为不可信数据，agent 必须先检查当前代码、最小化修改、不自动提交，并报告实际
 执行的检查。该动作复用普通 runtime 权限/validator，不是自动 fixer，也不会把 finding
 标记为 resolved。普通 fix turn 结束后，若存在 exact terminal RuntimeEvent，会生成
-`docs/reviews/review-fix-<id>.md` 有界证据报告，关联源 review/finding、fix turn、validation、gate
+用户级 runtime `reviews/review-fix-<id>.md` 有界证据报告，关联源 review/finding、fix turn、validation、gate
 和 authoritative workspace facts；缺少完整 typed scope 时明确标为 unavailable，不把 agent
 正文或退出提示升级为通过。后续必须显式重新 `/review` 才能重新评估 finding。
 `/completion` 打开独立只读 Completion overlay，并在活动 turn 中随 immutable
@@ -334,6 +334,8 @@ Actor Tree 见 [`t34-actor-tree.md`](tui-phase0/t34-actor-tree.md)。
 - journal 回归覆盖 durable-before-visible、可信前缀恢复、歧义只读、身份边界、
   容量耗尽和 session switch 原子性；
 - wheel 声明并安装 TUI 运行依赖，fresh install 后可从源码目录之外启动；
+- GitHub Release 构建并冒烟测试 Linux/macOS/Windows 单文件二进制，provider CLI 保持外部依赖；
+- `ops serve` 的手机会话列表、只读历史、token/TLS 边界和 `--control` 异步指令 API 有回归覆盖；
 - 现有完整 `make ci` 保持通过。
 
 ## 后续版本

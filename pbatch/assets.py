@@ -38,8 +38,11 @@ def _discover_tool_root() -> Path:
         return Path(override).expanduser().resolve()
     source = Path(__file__).resolve().parent.parent
     installed = Path(sys.prefix) / "share" / "ai-batch-runner"
+    frozen_root = getattr(sys, "_MEIPASS", "")
+    frozen = (Path(frozen_root) / "share" / "ai-batch-runner"
+              if frozen_root else None)
     markers = ("scripts", "ui-specs", "backend-specs", "examples", "evals")
-    for candidate in (source, installed, _distribution_asset_root()):
+    for candidate in (source, installed, frozen, _distribution_asset_root()):
         if candidate and all((candidate / marker).exists() for marker in markers):
             return candidate.resolve()
     return source

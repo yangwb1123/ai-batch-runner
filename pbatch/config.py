@@ -556,20 +556,26 @@ elif not isinstance(_MEMORY_AGENT_VALUE, (list, tuple)):
 MEMORY_AGENT_NAMES = tuple(str(value) for value in _MEMORY_AGENT_VALUE)
 # ── 运行时数据目录（data_dir）───────────────────────────────────────
 # 运行状态（记忆索引/被拒产物/worktrees/设备状态/预算/流程工件/反思）
-# 默认在项目内 .pi-batch/（随仓库共享）；--data-dir / PBATCH_DATA_DIR
-# 可整体移到项目外（如 ~/data/pbatch/<project>），避免污染项目代码结构。
-# 锁保持按 cwd（.pi-batch.lock），与数据位置解耦（单实例语义不变）。
+# 默认位于 ~/.codex/pbatch/projects/<workspace-id>/，不污染项目源码；
+# --data-dir / PBATCH_DATA_DIR 可显式指定兼容目录或共享运行根。
+# 锁仍按 cwd 保护工作区，与数据位置解耦（单实例语义不变）。
 _DATA_DIR_OVERRIDE = ""  # CLI --data-dir（进程级，优先于 env）
 
 
 def data_dir(cwd: str = "") -> Path:
-    """运行时数据根：CLI --data-dir > env PBATCH_DATA_DIR > cwd/.pi-batch。
-    env 每次读取（import 后设置也生效）。"""
+    """Return the private per-workspace runtime root.
+
+    Explicit CLI/environment overrides retain full control.  The default is a
+    stable directory under ``~/.codex/pbatch`` so sessions, rejected
+    diagnostics, journals, campaign state, logs and generated reports never
+    appear in the repository merely because the command was run there.
+    """
     override = _DATA_DIR_OVERRIDE or os.environ.get("PBATCH_DATA_DIR", "").strip()
     if override:
         return Path(override).expanduser().resolve()
-    base = Path(cwd).resolve() if cwd else Path.cwd()
-    return base / ".pi-batch"
+    from .user_dirs import project_runtime_dir
+    base = Path(cwd).resolve() if cwd else Path.cwd().resolve()
+    return project_runtime_dir(str(base))
 
 
 def set_data_dir_override(path: str) -> None:

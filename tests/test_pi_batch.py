@@ -805,7 +805,7 @@ def test_codex_thread_mapping_drives_second_headless_invocation(tmp_path, monkey
     mapping = provider_session_path(
         str(tmp_path), name, sid, str(agent))
     assert first.success
-    assert mapping.parent == tmp_path / ".pi-batch" / "sessions"
+    assert mapping.parent == __import__("pbatch").config.data_dir(str(tmp_path)) / "sessions"
     assert mapping.name.startswith("review_bad_name-")
     assert "/" not in mapping.name and ".." not in mapping.name
     assert mapping.read_text(encoding="utf-8") == thread_id

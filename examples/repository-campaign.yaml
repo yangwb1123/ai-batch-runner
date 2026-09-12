@@ -38,6 +38,13 @@ analysis:
   jobs: 4
   retries: 2
   candidate_limit: 3
+  # Adaptive controls. budget_tokens=0 means no hard-coded token quota:
+  # remaining provider invocation/daily caps and observed telemetry govern the
+  # next batch. batch_size is only the cold-start/config-template fallback.
+  # --focus can rank modules from the current task/request.
+  batch_size: 4
+  budget_tokens: 0
+  token_estimate: 8000
   prompt: |
     Analyze module '{module}' at {module_path} and its related interfaces in the repository.
     Return ONLY a JSON array with at most {candidate_limit} high-value improvement directions, sorted by value.
@@ -57,12 +64,14 @@ implementation:
   concurrency: 1
   # Hard wall-clock limit for each isolated direction pipeline.
   timeout: 14400
-  worktree_root: .pi-batch/worktrees
+  # Evidence-based stall watchdog (0 = disabled; hard timeout remains active).
+  # Set this below timeout only when the pipeline log/artifacts are expected to
+  # advance at that cadence; model thinking can legitimately be quiet.
+  no_progress_timeout: 0
+  # Empty by default: worktrees and campaign reports/state are kept under
+  # ~/.codex/pbatch/projects/<workspace>/ and never pollute the repository.
 
 state:
-  output_dir: docs/auto
-  state_file: docs/auto/state.jsonl
-  summary_file: docs/auto/SUMMARY.md
   line_max_bytes: 262144
 
 estimates:

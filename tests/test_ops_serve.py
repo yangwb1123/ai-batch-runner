@@ -64,6 +64,11 @@ def test_log_and_messages_endpoints(server, tmp_path):
         pass
     data = _get(server, f"/api/log?file={log_file}&grep=GATE")
     assert data["lines"] == ["GATE FAIL"]
+    outside = tmp_path.parent / "outside.log"
+    outside.write_text("secret\n", encoding="utf-8")
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        _get(server, f"/api/log?file={outside}")
+    assert exc.value.code == 400
     messages = _get(server, "/api/messages?limit=3")
     assert isinstance(messages["messages"], list)
 

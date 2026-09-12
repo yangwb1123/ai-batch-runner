@@ -122,8 +122,8 @@ def _add_logging_args(p: argparse.ArgumentParser) -> None:
         help="渐进式输出：默认常用（INFO）；-v 详细（DEBUG）")
     p.add_argument("--data-dir", default="",
                    help="运行时数据目录（记忆/被拒产物/worktrees/预算；"
-                        "默认项目内 .pi-batch/，可移到项目外如 ~/data/pbatch/"
-                        "<project>；env PBATCH_DATA_DIR 同效）")
+                        "默认 ~/.codex/pbatch/projects/<workspace>；"
+                        "env PBATCH_DATA_DIR 同效）")
     p.add_argument("--log-file", default="",
                    help="Append run log to FILE for 24x7 supervision (rotated)")
     p.add_argument("--log-max-bytes", type=int, default=config.LOG_MAX_BYTES,
@@ -143,7 +143,7 @@ def _add_memory_arg(p: argparse.ArgumentParser) -> None:
 def _add_lock_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--no-lock", action="store_true",
                    help="skip the single-instance lock (T4 escape hatch; "
-                        "PBATCH_LOCK_FILE moves it outside the workspace)")
+                        "default lock is in user runtime, PBATCH_LOCK_FILE overrides)")
     p.add_argument("--wait-lock", type=int, default=0, metavar="MINUTES",
                    help="queue behind a held lock: poll every 30s up to MINUTES "
                         "instead of exiting 5 (shared-machine workflows)")
@@ -297,7 +297,7 @@ def _record_fatal_exit(exc: BaseException, args) -> None:
     try:
         state = (Path(args.log_file).with_suffix(".exit.json")
                  if getattr(args, "log_file", "") else
-                 Path.cwd() / ".pi-batch" / "exit.json")
+                 config.data_dir() / "exit.json")
         state.parent.mkdir(parents=True, exist_ok=True)
         state.write_text(
             json.dumps({"exit": type(exc).__name__,

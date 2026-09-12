@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
-from . import review
+from . import config, review
 from .tui_completion import CompletionSnapshot, render_completion
 from .tui_findings import ReviewFinding
 from .tui_protocol import RuntimeEvent
@@ -129,15 +129,14 @@ def collect_review_fix_evidence(
 
 
 def review_fix_output_path(cwd: Path, fix_id: str) -> Path:
-    """Return a workspace-contained path for one bounded post-fix report."""
+    """Return a private runtime path for one bounded post-fix report."""
     if (not isinstance(fix_id, str) or not fix_id.startswith("fix-")
             or not fix_id[4:] or not all(char.isalnum() or char == "-"
                                          for char in fix_id[4:])):
         raise ValueError("invalid review fix id")
     root = Path(cwd).expanduser().resolve()
-    output = (root / "docs" / "reviews" / f"review-fix-{fix_id[4:]}.md").resolve()
-    output.relative_to(root)
-    return output
+    return (config.data_dir(str(root)) / "reviews" /
+            f"review-fix-{fix_id[4:]}.md")
 
 
 def render_review_fix_evidence(evidence: ReviewFixEvidence) -> str:
@@ -330,11 +329,12 @@ def parse_review_args(args: Sequence[str]) -> ReviewRequest:
 
 
 def review_output_path(cwd: Path) -> Path:
-    """Return a unique report path contained by the selected workspace."""
+    """Return a unique private runtime report path for the workspace."""
 
+    root = Path(cwd).expanduser().resolve()
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     suffix = uuid.uuid4().hex[:8]
-    return (cwd / "docs" / "reviews" / f"review-{stamp}-{suffix}.md").resolve()
+    return config.data_dir(str(root)) / "reviews" / f"review-{stamp}-{suffix}.md"
 
 
 def write_review_report(path: Path, payload: dict[str, Any], timed_out: bool) -> None:

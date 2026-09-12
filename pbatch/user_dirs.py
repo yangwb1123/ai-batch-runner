@@ -1,28 +1,31 @@
-"""用户级目录规范（XDG 兼容）——产品 CLI 的 ~/.pbatch 工作目录。
+"""用户级目录规范（XDG 兼容）——产品 CLI 的用户工作目录。
 
 分层（对齐 XDG Base Directory）：
 - config: ~/.config/pbatch/   （用户配置 settings.yaml）
 - cache:  ~/.cache/pbatch/    （可丢弃缓存：SSH 探测、规则缓存）
-- data:   ~/.local/share/pbatch/ （持久数据：设备密钥、设备状态、全局日志）
-- runtime: /tmp/pbatch-<uid>/ （运行时锁/套接字，无持久性）
+- data:   ~/.local/share/pbatch/ （设备密钥、设备状态、兼容全局日志）
+- runtime: ~/.codex/pbatch/   （按 workspace 隔离的会话、报告、日志、状态）
 
 兼容回退：XDG 变量未设置时按规范默认；显式环境变量
 PBATCH_CONFIG_HOME / PBATCH_CACHE_HOME / PBATCH_DATA_HOME 优先。
 另有统一 PBATCH_HOME（如 ~/.pbatch）——设置时三个目录都收拢到其下
 （老式单目录习惯）。
 
-原则：**项目相关状态留在项目内**（.pi-batch/：会话、memory 索引、被拒
-产物——团队共享、随仓库走）；用户级目录只放**跨项目**数据（设备身份、
-全局配置、可重建缓存）。
+原则：运行时状态（会话、memory 索引、被拒诊断、campaign 报告/日志）默认
+留在用户级 Codex 目录；只有用户明确指定的交付物/项目知识文档才写回项目。
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 from pathlib import Path
 
 # 环境变量（统一收拢用；未设置时走 XDG 规范）
 PBATCH_HOME_ENV = "PBATCH_HOME"
+PBATCH_RUNTIME_HOME_ENV = "PBATCH_RUNTIME_HOME"
+CODEX_HOME_ENV = "CODEX_HOME"
 XDG_CONFIG_HOME = "XDG_CONFIG_HOME"
 XDG_CACHE_HOME = "XDG_CACHE_HOME"
 XDG_DATA_HOME = "XDG_DATA_HOME"
@@ -64,11 +67,12 @@ def pbatch_data_home() -> Path:
 
 
 def ensure_user_dirs() -> dict:
-    """创建用户级目录骨架；返回 {config, cache, data} 路径。"""
+    """创建用户级目录骨架；返回配置、缓存、数据和 runtime 路径。"""
     dirs = {
         "config": pbatch_config_home(),
         "cache": pbatch_cache_home(),
         "data": pbatch_data_home(),
+        "runtime": pbatch_runtime_home(),
     }
     for path in dirs.values():
         path.mkdir(parents=True, exist_ok=True)
@@ -88,3 +92,36 @@ def keys_dir() -> Path:
 def global_logs_dir() -> Path:
     """全局运行日志（无项目时的兜底落点）。"""
     return pbatch_data_home() / "logs"
+
+
+def pbatch_runtime_home() -> Path:
+    """Return the private runtime root used by installed/binary releases.
+
+    Runtime artifacts belong beside Codex's user state, not in the target
+    repository.  ``PBATCH_RUNTIME_HOME`` is the explicit override; when
+    ``CODEX_HOME`` is configured we create a separate ``pbatch`` namespace
+    below it.  The default is ``~/.codex/pbatch``.
+    """
+    configured = os.environ.get(PBATCH_RUNTIME_HOME_ENV, "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    codex_home = os.environ.get(CODEX_HOME_ENV, "").strip()
+    if codex_home:
+        return (Path(codex_home).expanduser() / "pbatch").resolve()
+    unified = os.environ.get(PBATCH_HOME_ENV, "").strip()
+    if unified:
+        return (Path(unified).expanduser() / "runtime").resolve()
+    return (_home() / ".codex" / "pbatch").resolve()
+
+
+def project_runtime_dir(cwd: str = "") -> Path:
+    """Return a stable, private runtime directory for one workspace.
+
+    Only a bounded basename and a digest of the resolved workspace are used;
+    absolute project paths and user input are never copied into the filename.
+    """
+    root = Path(cwd or os.getcwd()).expanduser().resolve()
+    label = re.sub(r"[^A-Za-z0-9._-]+", "-", root.name).strip(".-")[:32]
+    label = label or "workspace"
+    digest = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:16]
+    return pbatch_runtime_home() / "projects" / f"{label}-{digest}"

@@ -33,7 +33,7 @@ for a specific question.
 - `--dry-run` renders the selected prompt without invoking an agent.
 - Live runs stream agent output to the terminal and persist it to
   `stage-NN.out.md` under the review output directory (default
-  `ai/reviews/<context>`; `--output-dir` overrides). Partial output may be
+  user-level runtime `ai-reviews/<context>`; `--output-dir` overrides). Partial output may be
   visible in the terminal, but rejected or failed stages leave no artifact.
 - `--all` runs stages in order and injects each completed stage's output into
   the paste-style variables of downstream stages (Stage 00 →

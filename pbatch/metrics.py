@@ -106,8 +106,9 @@ def _scan_memory_index() -> dict:
 
 
 def _count_run_registry() -> int:
-    """~/.pi-batch/runs 下的运行注册记录数（调度质量）。"""
-    runs_dir = Path.home() / ".pi-batch" / "runs"
+    """用户级 runtime runs 下的运行注册记录数（调度质量）。"""
+    from .user_dirs import pbatch_runtime_home
+    runs_dir = pbatch_runtime_home() / "runs"
     if not runs_dir.exists():
         return 0
     return sum(1 for path in runs_dir.iterdir() if path.suffix == ".json")
@@ -152,7 +153,7 @@ def metrics_report() -> dict:
     decided = memory["passed"] + memory["failed"]
     first_try = round(memory["passed"] / decided, 3) if decided else None
     runs = _count_run_registry()
-    advance_rounds = _count_lines(Path("docs") / "advance" / "state.jsonl")
+    advance_rounds = _count_lines(config.data_dir() / "advance" / "state.jsonl")
     truth_invalidated = _count_truth_invalidations()
     return {
         "result_quality": {

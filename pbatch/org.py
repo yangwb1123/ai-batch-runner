@@ -412,7 +412,7 @@ def _build_parser():
                        help="工作等级（缺省由 impact 判定）")
     p_run.add_argument("--json", action="store_true")
     p_run.add_argument("--save", action="store_true",
-                       help="落盘流程工件（.pi-batch/flows/）")
+                       help="落盘流程工件（用户级 runtime/flows/）")
     p_run.add_argument("--artifact", default="",
                        help="节点输出工件目录（下游输入，每节点一个 txt）")
     p_lesson = sub.add_parser("lesson", help="失败案例 → learn 沉淀建议")
@@ -447,7 +447,7 @@ def flows_dir(cwd: str = "") -> Path:
 
 
 def save_flow(report: dict) -> str:
-    """流程工件落盘（可审计、可续查）：.pi-batch/flows/<ts>-<slug>.json。"""
+    """流程工件落盘（可审计、可续查）：用户级 runtime/flows/<ts>-<slug>.json。"""
     return org_workflow.save_flow(report, flows_dir())
 
 

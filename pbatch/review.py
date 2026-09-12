@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence, TextIO
 
+from . import config
+
 
 AGENT_TEXT_MAX_BYTES = 256 * 1024
 EVENT_LINE_MAX_BYTES = 1024 * 1024
@@ -164,11 +166,12 @@ def _paths(args: argparse.Namespace, parser: argparse.ArgumentParser) -> tuple[P
     else:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         suffix = ".json" if args.json else ".md"
-        output = (cwd / "docs" / "reviews" / f"review-{stamp}{suffix}").resolve()
-    try:
-        output.relative_to(cwd)
-    except ValueError:
-        parser.error("--output must resolve inside --cwd")
+        output = config.data_dir(str(cwd)) / "reviews" / f"review-{stamp}{suffix}"
+    if args.output:
+        try:
+            output.relative_to(cwd)
+        except ValueError:
+            parser.error("--output must resolve inside --cwd")
     return cwd, output
 
 

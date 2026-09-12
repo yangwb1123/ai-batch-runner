@@ -31,6 +31,9 @@ dev = [
     "pytest-cov>=5.0",  # make coverage
     "wheel>=0.42",      # packaging regression gate must not silently skip
 ]
+binary = [
+    "pyinstaller>=6.0", # optional single-file release executable builder
+]
 
 # Install as a first-class CLI like pi/codex: `pip install .` then run
 # `pi-batch ...` anywhere; each project keeps its own pi-batch.yaml.

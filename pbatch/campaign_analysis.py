@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from .campaign_models import CampaignSettings, Direction
+from .memory_io import reverse_lines
 from .campaign_state import digest, tool_digest, tree_digest
 from . import config
 from .evolution import load_constitution
@@ -122,7 +123,7 @@ _MAX_REJECTED_INJECT = 12
 _STATE_LINE_SCAN = 2000
 
 
-def _evolution_context(root: Path) -> str:
+def _evolution_context(root: Path, state_path: Path | None = None) -> str:
     """项目宪法 + 历史已拒方向 → 分析 prompt 附加块（有界）。
 
     L6（明确不做）与 L10（决策记忆）的 campaign 挂点：方向建议必须
@@ -140,13 +141,29 @@ def _evolution_context(root: Path) -> str:
     if budget.get("max_files"):
         parts.append(f"Change budget: max_files={budget['max_files']}, "
                      f"max_lines={budget.get('max_lines', 0)}")
-    state = root / "docs" / "auto" / "state.jsonl"
-    if state.is_file():
-        rejected = _recent_rejected(state)
-        if rejected:
-            lines = "\n".join(f"- {d[:120]} ({r})" for d, r in rejected)
-            parts.append("Previously rejected directions (do NOT re-propose "
-                         "the same or overlapping work):\n" + lines)
+    if state_path is not None:
+        states = [state_path]
+    else:
+        states = [config.data_dir(str(root)) / "state.jsonl",
+                  root / "docs" / "auto" / "state.jsonl"]
+    rejected = []
+    seen = set()
+    for state in states:
+        if not state.is_file():
+            continue
+        for item in _recent_rejected(state, limit=_MAX_REJECTED_INJECT):
+            key = (item[0], item[1])
+            if key not in seen:
+                seen.add(key)
+                rejected.append(item)
+            if len(rejected) >= _MAX_REJECTED_INJECT:
+                break
+        if len(rejected) >= _MAX_REJECTED_INJECT:
+            break
+    if rejected:
+        lines = "\n".join(f"- {d[:120]} ({r})" for d, r in rejected)
+        parts.append("Previously rejected directions (do NOT re-propose "
+                     "the same or overlapping work):\n" + lines)
     return "\n\n".join(parts)
 
 
@@ -154,11 +171,16 @@ def _recent_rejected(state: Path, limit: int = _MAX_REJECTED_INJECT) -> list:
     """从 state.jsonl 尾部扫描最近被拒方向（有界行缓冲，倒序收集）。"""
     rejected = []
     try:
-        with state.open(encoding="utf-8") as handle:
-            tail = list(handle)[-_STATE_LINE_SCAN:]
+        tail = []
+        for line in reverse_lines(state, maximum=256 * 1024):
+            if line is None:
+                continue
+            tail.append(line)
+            if len(tail) >= _STATE_LINE_SCAN:
+                break
     except (OSError, ValueError):
         return []
-    for line in reversed(tail):
+    for line in tail:
         if not line.strip():
             continue
         try:
@@ -175,15 +197,22 @@ def _recent_rejected(state: Path, limit: int = _MAX_REJECTED_INJECT) -> list:
 
 
 def build_analysis_task(root: Path, settings: CampaignSettings, module: str,
-                        model: str = "", provider: str = "", timeout: int = 0) -> Task:
-    output = settings.path(root, settings.output_dir) / "analyses" / f"{module_slug(module)}.json"
+                        model: str = "", provider: str = "", timeout: int = 0,
+                        focus: str = "") -> Task:
+    output = settings.output_path(root) / "analyses" / f"{module_slug(module)}.json"
     prompt = analysis_prompt(settings, module)
-    context = _evolution_context(root)
+    if str(focus or "").strip():
+        prompt += ("\n\n==== Campaign focus request ====\n"
+                   + str(focus).strip()[:2000]
+                   + "\nPrioritize evidence relevant to this request; do not invent "
+                     "module relevance.")
+    context = _evolution_context(root, settings.state_path(root))
     if context:
         prompt += ("\n\n==== Project context (constitution + rejected history) ====\n"
                    + context)
     task = Task(prompt=prompt, output=str(output), cwd=str(root))
-    task.memory = {"stage": "campaign-analysis", "memory_mode": "execute"}
+    task.memory = {"stage": "campaign-analysis", "module": module,
+                   "memory_mode": "execute"}
     task.model = model or task.model
     task.provider = provider or task.provider
     if timeout:
@@ -194,30 +223,43 @@ def build_analysis_task(root: Path, settings: CampaignSettings, module: str,
 def analysis_fingerprint(root: Path, settings: CampaignSettings, module: str,
                          snapshot: dict, task: Task) -> str:
     return digest({
-        "version": 1,
+        "version": 2,
         "module": module,
         "module_tree": tree_digest(root / module, settings.excludes),
-        "repository": snapshot,
+        # Scope reuse to this module and shared contract roots. A full
+        # repository snapshot invalidated every module after any implementation.
+        "repository_scope": _analysis_repository_scope(root, module, settings),
         "prompt": task.prompt,
         "model": task.model,
         "provider": task.provider,
         "thinking": config.AGENT_THINKING_OVERRIDE or task.thinking,
-        "planning_history": _planning_history(root),
+        "planning_history": _planning_history(root, module),
         "tool": tool_digest(),
     })
 
 
-def _planning_history(root: Path) -> list[dict]:
-    """Return only recent failure metadata that should invalidate analysis reuse."""
+def _analysis_repository_scope(root: Path, module: str,
+                               settings: CampaignSettings) -> dict:
+    scope = {"module": module}
+    for name in ("interfaces", "contracts", "schemas"):
+        candidate = root / name
+        if candidate.is_dir() and name != module:
+            scope[name] = tree_digest(candidate, settings.excludes)
+    return scope
+
+
+def _planning_history(root: Path, module: str = "") -> list[dict]:
+    """Return failures for this module, not unrelated campaign work."""
     from .memory import memory_enabled, recent
     if not memory_enabled():
         return []
     try:
-        rows = recent(str(root), limit=12)
+        rows = recent(str(root), limit=48)
     except (OSError, ValueError):
         return []
     return [row for row in rows
-            if row.get("status") in _PLANNING_FAILURE_STATUSES]
+            if row.get("status") in _PLANNING_FAILURE_STATUSES
+            and (not module or str(row.get("module", "")) == module)]
 
 
 def run_analysis_tasks(tasks: list[Task], jobs: int, retries: int,

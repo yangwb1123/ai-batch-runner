@@ -122,7 +122,9 @@ python pi-batch.py campaign --max-directions 2 --reuse --retry-failed
 ```
 
 分析必须返回 JSON，并为每个方向给出现有文件/符号证据和可测试验收标准。
-恢复依据是 `docs/auto/state.jsonl` 与 fingerprint，不是 Markdown 文件是否非空。
+恢复依据是用户级 runtime 中的 `state.jsonl` 与 fingerprint（默认
+`~/.codex/pbatch/projects/<workspace-id>/`），不是 Markdown 文件是否非空；显式
+`state_file` 时仍按配置路径执行。
 需要并行实现时使用 `--parallel-pipelines N`；runner 会先要求主工作区干净，
 再为每个方向建立独立 Git worktree 和分支。
 

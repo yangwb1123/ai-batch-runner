@@ -424,8 +424,8 @@ def run_argv(cmd: list[str], cwd: str, timeout: float = 30,
 REJECTED_EXCERPT_MAX_BYTES = 65536  # bounded diagnostics, never the deliverable
 
 def _save_rejected_excerpt(tmp: Path, workdir: str, cmd: str, reason: str) -> Optional[str]:
-    """Keep a bounded excerpt of a validator-rejected artifact under
-    .pi-batch/rejected/ so humans and retry prompts can diagnose WHY the
+    """Keep a bounded excerpt of a validator-rejected artifact under the
+    private runtime ``rejected/`` directory so humans and retry prompts can diagnose WHY the
     gate refused it (the deliverable path itself stays clean — zero
     residue at the output location, aero-id maintenance R5 finding).
     Returns the excerpt path ("" when the artifact was already gone)."""
@@ -484,7 +484,7 @@ def _apply_gate_commands(tmp: Path, task: Task, commands: list,
 def _reject_artifact(tmp: Path, workdir: str, cmd: str, reason: str,
                      stdout: str = "", stderr: str = "") -> None:
     """Fail-closed disposal of a gate-rejected artifact: keep a bounded
-    excerpt under .pi-batch/rejected/ for diagnosis, delete the temp file
+    excerpt under the private runtime ``rejected/`` directory for diagnosis, delete the temp file
     (zero residue at the output path), log the validator output tails."""
     rej = _save_rejected_excerpt(tmp, workdir, cmd, reason)
     if rej:
@@ -501,7 +501,7 @@ def _gate_spec_passed(spec, cmd: str, tmp: Path, result: TaskResult, v, workdir:
     (T12a) and judge VERDICT protocol (fail closed on missing/bare verdict).
     Records failure feedback on the result, deletes the temp artifact and
     returns False on rejection. Rejected artifacts keep a bounded excerpt
-    under .pi-batch/rejected/ for diagnosis (never at the output path)."""
+    under the private runtime ``rejected/`` directory (never at the output path)."""
     if not v.ok:
         _reject_artifact(tmp, workdir, cmd,
                          "exit=%d%s" % (v.exit_code, " (timeout)" if v.timed_out else ""),
@@ -968,7 +968,7 @@ def print_summary(results: list[TaskResult]) -> None:
         rate = 100.0 * succeeded / total
         print("  成功率:    %.0f%%" % rate)
     if failed:
-        print("  下一步:    重试用 --retries；被拒产物在 .pi-batch/rejected/ 可诊断")
+        print("  下一步:    重试用 --retries；被拒产物在用户级 runtime/rejected/ 可诊断")
     elif succeeded:
         print("  全部通过 ✓ — 可 --git-commit 落库或继续下一轮")
     print()

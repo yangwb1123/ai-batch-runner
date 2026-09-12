@@ -264,8 +264,12 @@ def write_summary(store: StateStore, path: Path, campaign_name: str) -> None:
         raise ValueError(f"refusing symlink summary file: {path}")
     latest = store.latest()
     rows = []
+    metric_events = []
     for (_, _, direction), event in sorted(latest.items()):
-        if direction != "__analysis__":
+        if direction == "__metrics__":
+            if event.get("campaign") == campaign_name:
+                metric_events.append(event)
+        elif direction != "__analysis__":
             rows.append(event)
         elif event.get("status") == "ANALYSIS_FAILED":
             rows.append(dict(event, direction="(module analysis)"))
@@ -290,13 +294,29 @@ def write_summary(store: StateStore, path: Path, campaign_name: str) -> None:
     lines.extend(f"- {key}: {counts[key]}" for key in sorted(counts))
     # Per-campaign breakdown: multiple campaigns share one state file
     # (real-world lesson: my round loop and the user's compose queue
-    # interleave events in docs/auto/state.jsonl).
+    # interleave events in the private campaign state.jsonl).
     if len(per_campaign) > 1:
         for campaign in sorted(per_campaign):
             bucket = per_campaign[campaign]
             lines.extend(["", f"### {campaign}", ""])
             lines.extend(f"- {key}: {bucket[key]}" for key in sorted(bucket))
+    _append_efficiency_section(lines, metric_events)
     _atomic_text(path, "\n".join(lines) + "\n")
+
+
+def _append_efficiency_section(lines: list[str], metric_events: list[dict]) -> None:
+    if not metric_events:
+        return
+    metrics = metric_events[-1].get("metrics")
+    if not isinstance(metrics, dict):
+        return
+    lines.extend(["", "## Efficiency (latest round)", ""])
+    for key in sorted(metrics):
+        lines.append(f"- {_cell(key)}: {_metric_cell(metrics[key])}")
+
+
+def _metric_cell(value) -> str:
+    return str(value).replace("|", "\\|").replace("\n", " ")
 
 
 def _cell(value) -> str:

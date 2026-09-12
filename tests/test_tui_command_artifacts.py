@@ -116,8 +116,9 @@ def test_retention_replaces_oldest_within_file_budget(tmp_path):
 def test_symlinked_artifact_directory_fails_without_writing_target(tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
-    data_root = tmp_path / ".pi-batch"
-    data_root.mkdir()
+    from pbatch.user_dirs import project_runtime_dir
+    data_root = project_runtime_dir(str(tmp_path))
+    data_root.mkdir(parents=True)
     (data_root / "tui").symlink_to(outside, target_is_directory=True)
     store = _store(tmp_path)
 

@@ -3,6 +3,13 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 新增
+
+- GitHub Release 单文件二进制构建与跨平台冒烟流程。
+- `ops serve --control` 手机会话列表、服务端会话创建、有界指令提交、状态轮询和本地停止。
+
 ## [0.3.0] - 2026-08-20（交互式 TUI）
 
 ### 新增

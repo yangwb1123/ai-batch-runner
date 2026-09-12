@@ -7,7 +7,11 @@ proposals — with automatic retry, resumption, throttling, and supervision.
 The machinery composes existing safeguards: outputs are saved only after
 validation (quota/rate-limit/offline replies and timeouts are rejected),
 `--reuse` skips only non-empty, non-symlink outputs that still pass current
-validators, and every round reruns what is missing or stale.
+validators, and every round reruns what is missing or stale. Runtime state,
+logs, rejected diagnostics, memory, campaign reports, and generated review
+Markdown default to `~/.codex/pbatch/projects/<workspace-id>/`; explicit
+`--output`, `--log-file`, and configured project knowledge paths remain
+intentional overrides.
 
 ## One-shot batch
 
@@ -280,12 +284,41 @@ python pi-batch.py campaign --jobs 4 --max-directions 2 \
 It discovers bounded module directories, runs structured analyses in parallel,
 scores and deduplicates directions, rejects candidates without existing-file
 evidence or testable acceptance checks, then materializes one direction-scoped
-SDLC pipeline per selection. `docs/auto/state.jsonl` is append-only authority;
-`SUMMARY.md` is an atomic derived view. Freshness fingerprints cover repository
+SDLC pipeline per selection. By default, campaign state/artifacts are under
+`~/.codex/pbatch/projects/<workspace-id>/campaign/`; `state.jsonl` is the
+append-only authority and `SUMMARY.md` is an atomic derived view. Explicit
+`state.output_dir/state_file/summary_file` paths remain opt-in project outputs. Freshness fingerprints cover repository
 and module state, prompts, direction data, pipeline/role/config content, and
 model/provider routing. State records use bounded line reads
 (`state.line_max_bytes`, 256KiB default), and the coordinator caches only each
 module/direction's latest transition for repeated reuse checks.
+
+For large 24x7 queues, analysis can be planned deterministically before any
+provider call. `--focus "..."` ranks modules by the task/request vocabulary;
+`--analysis-batch-size N` is an optional batch/template bound; and
+`--analysis-budget-tokens N` is an optional explicit token cap. With the token
+cap unset (`0`), the planner does not invent a fixed budget: it uses remaining
+run/daily invocation allowances to bound the next batch; observed historical
+input/output/total usage supplies the live token baseline and diagnostics (and
+is used when an explicit token cap is configured). It falls back to the YAML
+batch template only when telemetry/caps provide no stronger signal. The plan
+is recorded as a `CAMPAIGN_PLAN` event with selected/skipped modules, calls, and
+input/output/total token telemetry. A missing focus match or exhausted budget
+fails closed instead of silently analyzing an unrelated repository. Example:
+
+```bash
+python pi-batch.py campaign --focus "journal recovery" \
+  --analysis-batch-size 4 \
+  --reuse --retry-failed
+```
+
+Analysis reuse is module-scoped: unrelated commits and failures no longer
+invalidate every module. The module tree plus shared `interfaces/`, `contracts/`,
+and `schemas/` roots are the freshness boundary. `--focus` is advisory to the
+agent only after deterministic module selection; it cannot invent evidence.
+The shipped `examples/repository-campaign.yaml` uses a four-module cold-start
+batch template; set `analysis.batch_size: 0` only when an exhaustive pass is
+intentional and no adaptive cap is available.
 
 Pi session files remain append-only and untouched. Metering caches each file's
 device/inode, byte offset, and cumulative numeric usage, then scans only newly
@@ -296,7 +329,7 @@ changing the raw file. Emitted task usage is the before/after invocation delta.
 Analysis parallelism stays inside the one lock-owning process. Implementation
 is serial by default. `--parallel-pipelines N` requires a clean Git worktree at
 campaign start and creates one persistent branch/worktree/output/decision-log/
-run-log namespace per direction. This prevents concurrent agents and validators
+run-log namespace per direction under the private runtime directory. This prevents concurrent agents and validators
 from observing each other's partial repository changes. Isolated branches are
 not auto-merged; state records the branch, commit, and worktree evidence for the
 repository's normal review/merge process. `implementation.timeout` (14400s by
@@ -304,18 +337,47 @@ default) is a wall-clock ceiling for each isolated direction; expiry kills the
 whole child pipeline group and records a failed outcome. The Bash
 `scripts/full-auto.sh` entry is only a compatibility wrapper.
 
+Each isolated direction also has a bounded lease under its worktree's runtime
+`data_dir`. The lease records the child PID, Linux process-start identity,
+worktree, pipeline, log, deadline, and heartbeat; a live matching lease blocks
+a duplicate owner, while a stale lease is removed only after the owner is no
+longer verifiable. This is coordination evidence, not an execution grant.
+
+The optional `implementation.no_progress_timeout` YAML value or
+`--no-progress-timeout SECONDS` CLI flag watches only child progress markers
+(the direction log and materialized pipeline). `0` disables the stall policy;
+the hard pipeline timeout is still enforced. On a stall or hard deadline the
+watchdog terminates the complete child process group, records the reason, and
+lets the next `--rounds 0` iteration retry it with `--reuse --retry-failed`.
+Choose the value above the longest legitimate quiet model-thinking interval;
+no provider-side cancellation is sent.
+
+For a coordinator that must survive an external graceful stop, opt in with
+`--auto-resume-on-signal --resume-delay 30`. SIGTERM stops active child groups,
+leaves append-only state and worktree evidence intact, and resumes the loop in
+the same lock-owning process. Without the flag SIGTERM remains a normal exit
+(130), so service managers can still stop the campaign. Avoid a forced
+SIGKILL when recovery is required.
+
+After each implementation round, `SUMMARY.md` contains a bounded
+`Efficiency (latest round)` section: analysis tokens per successful direction,
+wall/work time, retry ratio, gate-rejection ratio, no-progress duration, and
+concurrency-slot utilization. These are observations for scheduling and cost
+control only; they do not authorize code changes or merge branches.
+
 ### 多 campaign 串行协作（同仓库锁 + 排队）
 
 实战教训（aero-vault 维护）：多个维护者/自动队列可能同时想跑同一仓库的
 campaign。规则：
 
-- **锁是仓库级的**（`.pi-batch.lock`，含 pid/start/host/argv/token）。活 PID
+- **锁按 workspace 协调但存于用户级 runtime**（`locks/.pi-batch.lock`，含
+  pid/start/host/argv/token；升级时仍识别旧 cwd `.pi-batch.lock`）。活 PID
   的锁永不打破（7×24 运行可远超 24h）；死 PID 的 stale 锁由下一个实例自动
   破除；不可解析锁 fail-closed。
 - **排队用内建 `--wait-lock MINUTES`**（campaign 与单批 CLI 均支持）：30s
   轮询、stale 锁立即破除、预算耗尽 exit 5。shell 版 `wait-for-run.sh`（
   examples/snaplink-platform/）留给非 pi-batch 命令，同样带 stale 检测。
-- 多个 campaign 可共享 `docs/auto/state.jsonl`（事件按 campaign 名区分，
+- 多个 campaign 可共享用户级 runtime 下的 `campaign/state.jsonl`（事件按 campaign 名区分，
   SUMMARY.md 的 Counts 按 campaign 拆分），但不要并发写同一工作树——
   `--no-lock` 只用于故意分叉（不同 worktree）。
 - 每次 campaign 启动会记录 `TOOL_VERSION` 事件（工具代码 digest + 工具仓库
@@ -333,6 +395,10 @@ python pi-batch.py campaign --rounds 10 --round-delay 60 \
 - `--rounds N`（0 = 无限）：每轮重新发现模块；配合 `--reuse/--skip-passed`，
   指纹使后轮增量——已 PASSED 的分析/方向直接复用，只有被上一轮改动的模块
   重新分析（新鲜证据）。不带复用标志时每轮都是全量新跑。
+- `--focus`、`--analysis-batch-size`、`--analysis-budget-tokens`：在模块
+  发现后先生成有界策略计划；计划不调用 LLM，实际 token 统计来自当前
+  `--events-file` 的 `campaign-analysis` 事件；未指定时默认写入运行时
+数据目录的 `campaign-events.jsonl`。
 - `--round-delay SECONDS`：轮间节流。
 - `--round-commit`：每轮结束后 `git add -A` + 提交（尊重 .gitignore，提交
   失败只告警不影响轮次）；轮间工作树保持干净。
@@ -510,16 +576,17 @@ validator exit signature.
   output cap. Parallel Campaign worktrees use only the child handler for each
   logfile, preventing duplicate writes and rotation races; model bodies remain
   available in artifacts and native session JSONL.
-- **Single-instance lock** (T4): an O_EXCL `.pi-batch.lock` in the cwd
-  refuses a second concurrent instance (exit 5, holder named in the error);
+- **Single-instance lock** (T4): an O_EXCL `.pi-batch.lock` in the private
+  workspace runtime refuses a second concurrent instance (exit 5, holder named
+  in the error); legacy cwd locks are recognized during migration.
   stale locks are broken only when the holder PID is dead (a live 7x24 holder
   is never displaced merely because it is old); released in
   finally; `--dry-run` and `--no-lock` skip it.
 - **Triage** (T5): per-task circuit isolation (`--circuit-max` default 5,
   poison tasks stop burning quota), stall detection (`--stall-rounds`
-  default 6 rounds without progress -> exit 4), residue markers
-  (`.pi-batch/state/*.start`, a surviving marker signals a killed run and
-  is regenerated), and environment-class halt (identical validator stderr
+  default 6 rounds without progress -> exit 4), residue markers in the
+  private runtime `state/*.start` (a surviving marker signals a killed run
+  and is regenerated), and environment-class halt (identical validator stderr
   across >=2 tasks stops the loop). Exit codes: 0 success, 1 max rounds,
   3 budget cap (T8), 4 stall/circuit stop, 5 lock held, 130 interrupt.
 
@@ -536,8 +603,8 @@ validator exit signature.
   logged only).
 - **Invocation budgets** (T8): `--max-invocations N` (legacy alias:
   `--budget-max`) caps agent invocations per run; `--daily-invocations N`
-  (legacy alias: `--daily-budget`) caps per UTC day (state file
-  `.pi-batch/daily-budget.json`, `--daily-state` overrides). On cap the
+  (legacy alias: `--daily-budget`) caps per UTC day (state file in the
+  private runtime, `--daily-state` overrides). On cap the
   run stops with exit 3 and a budget_cap event — the cap wins over
   `--max-rounds 0`. Exit codes: 0 success, 1 max rounds, 3 budget cap,
   4 stall/circuit stop, 5 lock held, 130 interrupt.
@@ -545,7 +612,8 @@ validator exit signature.
 ## Progressive message memory
 
 `memory.mode: auto` preserves pi's original session JSONL while building a
-small append-only index at `.pi-batch/memory/sessions.index.jsonl`. Independent
+small append-only index at the private runtime `memory/sessions.index.jsonl`.
+Independent
 tasks receive explicit traceable session ids; shared/per-stage sessions retain
 their configured ids. The index contains redacted prompt excerpts, domains,
 status, output hashes and paths, validator/Gate outcomes, Campaign transitions,

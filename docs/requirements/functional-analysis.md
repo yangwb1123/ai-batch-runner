@@ -30,7 +30,7 @@ OpenCode）的治理化批处理/流水线运行时 + 交互式终端工作台**
 | FR-2.1 | 多种输入：`-p`/stdin/YAML tasks/`--from-dir`/pipeline `from_prompt`/`from_dir`/`from_outputs` DAG 串联 | `pbatch/task_loading.py`、`from_dir.py` | ✅ |
 | FR-2.2 | 硬超时（进程组 SIGKILL、绝对截止、零孤儿）、失败签名拒绝落盘（额度/速率/网络/CLI 横幅，宽泛词不误杀） | `pbatch/runner.py`、`process_exec.py` | ✅ |
 | FR-2.3 | 验证门禁：31 验证器注册表、`{output}`/`{tool_root}` 占位符、文件级 4 路并行 + 仓库级阶段末执行、临时文件原子 rename、失败零残留 | `pi-batch.yaml`、`pbatch/validation_batch.py` | ✅ |
-| FR-2.4 | 被拒产物有界摘录（64KiB）留 `.pi-batch/rejected/` 供诊断 | runner + CHANGELOG | ✅ |
+| FR-2.4 | 被拒产物有界摘录（64KiB）留用户级 runtime/rejected/ 供诊断 | runner + CHANGELOG | ✅ |
 | FR-2.5 | 重试（指数退避 + jitter）、轮循环 `--max-rounds`、成功节流 `--min-interval` | `pbatch/runner.py`、`cli_rounds.py` | ✅ |
 | FR-2.6 | 会话模式 new/shared/per-stage + 稳定可重现 session id + 渐进式 message memory（有界索引、find/recent/read、tenant/sensitivity 边界、脱敏） | `pbatch/memory*.py`、`index_io.py` | ✅ |
 | FR-2.7 | 复用控制：`--reuse` 验证器复验、fingerprint sidecar（输入+配置+agent+仓库状态）、gate 产物裁决绑定不复用 | `pbatch/reuse.py` | ✅ |

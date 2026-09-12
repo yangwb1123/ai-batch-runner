@@ -54,7 +54,7 @@ def _add_metering_args(p) -> None:
                    type=int, default=0,
                    help="T8: cap agent invocations per UTC day (0 = unlimited); state in --daily-state file")
     p.add_argument("--daily-state", default="",
-                   help="T8: daily budget counter state file (default: .pi-batch/daily-budget.json)")
+                   help="T8: daily budget counter state file (default: private runtime/daily-budget.json)")
     p.add_argument("--rate-limit", type=float, default=0.0,
                    help="F line: max agent invocations per second across all workers "
                         "(0 = unlimited, default); per-provider overrides via limits.providers")

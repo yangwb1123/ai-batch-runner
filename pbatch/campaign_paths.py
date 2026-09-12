@@ -11,7 +11,8 @@ from .campaign_models import CampaignSettings
 def validate_paths(root: Path, settings: CampaignSettings) -> None:
     """Validate writable paths and resolve the implementation template."""
     for value in (settings.output_dir, settings.state_file, settings.summary_file):
-        inside(root, settings.path(root, value))
+        if value:
+            inside(root, settings.path(root, value))
     if settings.worktree_root:
         # 显式 worktree 根必须仍在仓库内（信任边界）；空值走 data_dir
         #（PBATCH_DATA_DIR 可移出项目，无需 inside 校验）。

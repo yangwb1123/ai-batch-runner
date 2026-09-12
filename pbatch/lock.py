@@ -2,8 +2,9 @@
 
 A second pi-batch process must not run against the same worktree: two
 round loops would double-spend quota and interleave session writes. The
-lock is an O_EXCL-published file `.pi-batch.lock` in the process cwd
-holding {pid, start, host, argv, token} JSON.
+lock is an O_EXCL-published file `.pi-batch.lock` in the private workspace
+runtime (legacy cwd locks are still recognized) holding {pid, start, host,
+argv, token} JSON.
 
 Contract (hardened after the round-4 adversarial reviews):
 
@@ -30,8 +31,8 @@ Contract (hardened after the round-4 adversarial reviews):
   prove that two agents will not edit the same dirty source. Such a holder
   remains exclusive until the dirty worktree is isolated or the operator
   explicitly handles it.
-- `PBATCH_LOCK_FILE` may point to an external lock path when the project
-  must not receive even the tool's runtime lock file; the guarded workspace
+- `PBATCH_LOCK_FILE` may point to an explicit coordination path; by default
+  the lock is already in the private workspace runtime. The guarded workspace
   is still the `cwd`, not the lock-file directory.
 - The file is 0o600 and the `-p`/`--prompt` value is redacted from the
   recorded argv (prompt content is sensitive and the file can survive a
@@ -54,7 +55,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from .config import log
+from .config import data_dir, log
 
 LOCK_NAME = ".pi-batch.lock"
 STALE_AGE_SEC = 24 * 3600
@@ -169,11 +170,25 @@ def _status_has_output(root: str) -> bool:
             process.stdout.close()
 
 
+def _default_lock_path(cwd: str = "") -> Path:
+    """Return the default private lock, honoring a legacy cwd lock."""
+    root = Path(cwd or os.getcwd()).expanduser().resolve()
+    legacy = root / LOCK_NAME
+    if legacy.exists():
+        return legacy
+    return data_dir(str(root)) / "locks" / LOCK_NAME
+
+
 def _lock_path(cwd: str) -> Path:
-    """Resolve the coordination file without changing the guarded cwd."""
+    """Resolve the external coordination file without changing the guarded cwd.
+
+    A pre-existing cwd lock is honored as a migration fallback so an upgrade
+    cannot accidentally start beside an older live instance.
+    """
+    root = Path(cwd or os.getcwd()).expanduser().resolve()
     configured = os.environ.get("PBATCH_LOCK_FILE", "").strip()
     if not configured:
-        return Path(cwd or os.getcwd()) / LOCK_NAME
+        return _default_lock_path(str(root))
     path = Path(configured).expanduser()
     if not path.is_absolute():
         path = Path(cwd or os.getcwd()) / path

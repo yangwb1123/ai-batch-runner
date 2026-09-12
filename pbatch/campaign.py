@@ -32,6 +32,16 @@ def build_campaign_parser() -> argparse.ArgumentParser:
         description="Discover repository modules and run evidence-backed SDLC campaigns")
     parser.add_argument("--config", default="examples/repository-campaign.yaml")
     parser.add_argument("--modules", default="", help="comma-separated module directories")
+    _add_strategy_args(parser)
+    _add_campaign_selection_args(parser)
+    _add_campaign_paths_args(parser)
+    _add_campaign_agent_args(parser)
+    _add_round_args(parser)
+    _add_campaign_runtime_args(parser)
+    return parser
+
+
+def _add_campaign_selection_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-directions", type=int)
     parser.add_argument("--top-only", action="store_true")
     parser.add_argument("--skip-passed", action="store_true")
@@ -41,8 +51,13 @@ def build_campaign_parser() -> argparse.ArgumentParser:
     parser.add_argument("--jobs", type=int, help="parallel module analyses")
     parser.add_argument("--parallel-pipelines", type=int,
                         help="isolated implementation worktrees")
+
+
+def _add_campaign_paths_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--pipeline", default="",
                         help="implementation pipeline template override")
+    parser.add_argument("--data-dir", default="",
+                        help="private runtime root (default: ~/.codex/pbatch/projects/<workspace>)")
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--state-file", default="")
     parser.add_argument("--summary-file", default="")
@@ -51,26 +66,42 @@ def build_campaign_parser() -> argparse.ArgumentParser:
         "--preflight-strict", action="store_true",
         help="abort before direction pipelines when a repo-scoped pipeline "
              "validator is red at HEAD")
+
+
+def _add_campaign_agent_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--agent-bin", default=config.AGENT_BIN)
     parser.add_argument("--model", default="")
     parser.add_argument("--provider", default="")
     parser.add_argument("--thinking", default="",
                         help="reasoning level override for every campaign agent (e.g. max)")
     parser.add_argument("--timeout", type=int, default=0)
+    parser.add_argument("--no-progress-timeout", type=int, default=None,
+                        metavar="SECONDS", help="stop an isolated pipeline after this long "
+                        "without artifact progress (0 disables; hard --timeout remains active)")
     parser.add_argument("--retries", type=int, help="analysis retries")
     parser.add_argument("--retry-delay", type=float, default=10)
-    parser.add_argument("--log-file", default="logs/full-auto.log")
+    parser.add_argument("--log-file", default=None,
+                        help="campaign log path (default: private runtime directory; empty disables)")
     parser.add_argument("--stream-output", choices=["auto", "full", "none"],
                         default=config.STREAM_OUTPUT)
-    _add_round_args(parser)
+
+
+def _add_campaign_runtime_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-lock", action="store_true")
-    parser.add_argument(
-        "--wait-lock", type=int, default=0, metavar="MINUTES",
-        help="queue behind a held lock instead of exiting immediately")
+    parser.add_argument("--wait-lock", type=int, default=0, metavar="MINUTES",
+                        help="queue behind a held lock instead of exiting immediately")
     parser.add_argument("--memory-mode", choices=["auto", "on", "off"],
                         default=config.MEMORY_MODE)
     _add_metering_args(parser)
-    return parser
+
+
+def _add_strategy_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--focus", default="",
+                        help="task/request text used to rank relevant modules")
+    parser.add_argument("--analysis-batch-size", type=int, default=None,
+                        help="maximum modules to analyze this round (0 = unlimited)")
+    parser.add_argument("--analysis-budget-tokens", type=int, default=None,
+                        help="explicit analysis token cap (0 = adaptive)")
 
 
 def _add_round_args(parser: argparse.ArgumentParser) -> None:
@@ -80,6 +111,12 @@ def _add_round_args(parser: argparse.ArgumentParser) -> None:
              "reuse makes later rounds incremental)")
     parser.add_argument("--round-delay", type=float, default=0,
                         metavar="SECONDS", help="pause between campaign rounds")
+    parser.add_argument(
+        "--auto-resume-on-signal", action="store_true",
+        help="after SIGTERM, preserve state and resume the next campaign round")
+    parser.add_argument(
+        "--resume-delay", type=float, default=30,
+        metavar="SECONDS", help="delay before signal-triggered campaign resume")
     parser.add_argument(
         "--round-commit", action="store_true",
         help="commit all non-ignored changes after each round; commit errors "
@@ -141,7 +178,11 @@ def load_settings(root: Path, args: argparse.Namespace) -> CampaignSettings:
 def _validate_runtime_args(args: argparse.Namespace) -> None:
     values = {"timeout": args.timeout, "retry-delay": args.retry_delay,
               "budget-max": args.budget_max, "daily-budget": args.daily_budget,
-              "round-delay": args.round_delay, "rate-limit": args.rate_limit,
+              "analysis-batch-size": getattr(args, "analysis_batch_size", 0) or 0,
+              "analysis-budget-tokens": getattr(args, "analysis_budget_tokens", 0) or 0,
+              "no-progress-timeout": getattr(args, "no_progress_timeout", 0) or 0,
+              "round-delay": args.round_delay, "resume-delay": args.resume_delay,
+              "rate-limit": args.rate_limit,
               "rate-burst": args.rate_burst,
               "merge-wait-lock": getattr(args, "merge_wait_lock", 0)}
     invalid = [name for name, value in values.items()
@@ -165,6 +206,12 @@ def _apply_overrides(settings: CampaignSettings, args: argparse.Namespace) -> No
         settings.pipeline_concurrency = args.parallel_pipelines
     if args.retries is not None:
         settings.analysis_retries = args.retries
+    if getattr(args, "analysis_batch_size", None) is not None:
+        settings.analysis_batch_size = args.analysis_batch_size
+    if getattr(args, "analysis_budget_tokens", None) is not None:
+        settings.analysis_budget_tokens = args.analysis_budget_tokens
+    if getattr(args, "no_progress_timeout", None) is not None:
+        settings.pipeline_no_progress_timeout = args.no_progress_timeout
     values = (("pipeline_template", args.pipeline), ("output_dir", args.output_dir),
               ("state_file", args.state_file), ("summary_file", args.summary_file))
     for attr, value in values:

@@ -462,7 +462,9 @@ def chain_variables(prior_outputs: dict, stage: str, variables: dict,
 def stage_out_dir(args) -> Path:
     if args.output_dir:
         return Path(args.output_dir)
-    return Path(__file__).parent / "reviews" / args.context_name
+    workspace = Path(getattr(args, "repo", "") or os.getcwd()).expanduser().resolve()
+    return (batch_config.data_dir(str(workspace)) / "ai-reviews" /
+            args.context_name)
 
 
 def agent_failure_reason(returncode: int, output: str, bin_name: str = "") -> str:

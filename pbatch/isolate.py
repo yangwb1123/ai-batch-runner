@@ -1,7 +1,7 @@
 """`pi-batch isolate` — worktree 隔离执行（多任务并行 / session 驱动的标准模式）。
 
 一个 SSH 会话 = 一个 worktree：在同一仓库上为每个任务建独立工作目录
-+ 独立分支，各自跑 pi-batch（锁按 cwd 天然隔离、.pi-batch/ 会话/记忆
++ 独立分支，各自跑 pi-batch（锁按 workspace runtime 隔离、用户级会话/记忆
 各自独立、agent 改代码互不干扰）。
 
 两种收尾模式：
@@ -54,6 +54,7 @@ from pathlib import Path
 from typing import Optional
 
 from .config import data_dir, log
+from .user_dirs import project_runtime_dir
 from .lock import acquire_lock, release_lock
 from .session_merge import (MERGE_BLOCKED_EXIT, SessionOptions, append_session,
                       merge_session_block, read_sessions, session_id)
@@ -101,22 +102,22 @@ def _copy_memory(root: Path, worktree: Path) -> None:
 
     src 用 config.data_dir（PBATCH_DATA_DIR 已设置时从外部目录复制）。"""
     src = data_dir(str(root))
-    dst = worktree / ".pi-batch"
+    dst = project_runtime_dir(str(worktree))
     if not src.is_dir():
-        log.info("ISOLATE: no .pi-batch/ in %s to copy", root)
+        log.info("ISOLATE: no runtime data in %s to copy", src)
         return
     import shutil
     try:
         shutil.copytree(src, dst, dirs_exist_ok=True)
-        log.info("ISOLATE: copied .pi-batch/ from %s", root)
+        log.info("ISOLATE: copied runtime data from %s", src)
     except OSError as exc:
-        log.warning("ISOLATE: could not copy .pi-batch/: %s", exc)
+        log.warning("ISOLATE: could not copy runtime data: %s", exc)
 
 
 def _child_env(workdir: Path) -> dict:
-    """Bind every child to its worktree-local runtime ledger."""
+    """Bind every child to its private worktree runtime ledger."""
     env = os.environ.copy()
-    env["PBATCH_DATA_DIR"] = str(workdir / ".pi-batch")
+    env["PBATCH_DATA_DIR"] = str(project_runtime_dir(str(workdir)))
     return env
 
 
@@ -352,7 +353,7 @@ def _scope_abort(root: Path, workdir: Path, sess: str, reason: str) -> int:
 
 def _operational_path_line(porcelain_line: str) -> bool:
     """True for porcelain lines that are runtime data, not worktree
-    changes: .pi-batch/ paths (ledger, memory, session maps, rejected
+    changes: runtime paths (ledger, memory, session maps, rejected
     excerpts). Matches repo_gates._operational_path semantics."""
     path = porcelain_line[3:].strip()
     return path == ".pi-batch" or path.startswith(".pi-batch/")
@@ -361,7 +362,7 @@ def _operational_path_line(porcelain_line: str) -> bool:
 def _finish_session(root: Path, branch: str, workdir: Path, sess: str,
                     opts: SessionOptions) -> int:
     """worktree 干净检查 → 根仓库锁（合并队列）→ 合并事务。
-    运行时数据目录（.pi-batch/、账本、memory、会话映射）不属于工作区
+    运行时数据目录（用户级 runtime、账本、memory、会话映射）不属于工作区
     变更（真实仓库由 .gitignore 覆盖，陌生/测试仓库必须显式排除），
     否则账本写入会把会话卡在 DIRTY。"""
     porcelain_lines = [line for line in
@@ -402,7 +403,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("-d", "--dir", default="",
                         help="worktree directory (default: <parent>/<repo>-<branch>)")
     parser.add_argument("--copy-memory", action="store_true",
-                        help="copy .pi-batch/ (sessions/memory) from the main "
+                        help="copy runtime sessions/memory from the main "
                              "worktree to continue context")
     parser.add_argument("--seed-dirty", action="append", default=[], metavar="PATH",
                         help="seed this workspace-relative dirty path/pattern into "

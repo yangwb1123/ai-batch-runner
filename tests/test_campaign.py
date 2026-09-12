@@ -148,6 +148,9 @@ def test_settings_mapping_and_positive_validation(tmp_path):
     })
     assert (settings.analysis_jobs, settings.max_directions, settings.pipeline_concurrency) == (2, 4, 3)
     assert settings.pipeline_timeout == 90
+    with_stall_watchdog = CampaignSettings.from_mapping({
+        "implementation": {"no_progress_timeout": 12}})
+    assert with_stall_watchdog.pipeline_no_progress_timeout == 12
     settings.analysis_jobs = 0
     with pytest.raises(ValueError, match="analysis.jobs"):
         settings.validate()
@@ -177,6 +180,7 @@ def test_load_settings_rejects_negative_runtime_values(tmp_path):
     cases = [(["--retry-delay", "-1"], "retry-delay"),
              (["--retry-delay", "nan"], "retry-delay"),
              (["--timeout", "-1"], "timeout"),
+             (["--no-progress-timeout", "-1"], "no_progress_timeout"),
              (["--budget-max", "-1"], "budget-max"),
              (["--agent-bin", ""], "agent-bin")]
     for flags, expected in cases:
@@ -385,6 +389,14 @@ def test_state_store_reuse_corrupt_tolerance_summary_and_history(tmp_path):
     text = summary.read_text(encoding="utf-8")
     assert "| m | Dir | PASSED" in text
     assert "- PASSED: 1" in text
+    store.append({"campaign": "test", "module": "__campaign__",
+                  "direction_id": "__metrics__", "status": "CAMPAIGN_METRICS",
+                  "metrics": {"retry_ratio": 0.0, "wall_seconds": 1}})
+    write_summary(store, summary, "test")
+    text = summary.read_text(encoding="utf-8")
+    assert "## Efficiency (latest round)" in text
+    assert "- retry_ratio: 0.0" in text
+    assert "- CAMPAIGN_METRICS: 1" not in text
     with pytest.raises(ValueError, match="campaign state event exceeds 512 bytes"):
         store.append({"module": "m", "direction_id": "too-large", "payload": "x" * 1000})
 
@@ -731,6 +743,33 @@ def test_isolated_pipeline_has_hard_wall_clock_timeout(tmp_path):
     assert not marker.exists()
 
 
+def test_isolated_pipeline_has_no_progress_watchdog(tmp_path):
+    (tmp_path / "pi-batch.py").write_text(
+        "import time\n"
+        "time.sleep(30)\n",
+        encoding="utf-8")
+    (tmp_path / "pipeline.yaml").write_text(
+        "stages:\n  - name: requirements\n    from_prompt: old\n    output: report.md\n",
+        encoding="utf-8")
+    analysis = tmp_path / "analysis.json"
+    analysis.write_text("[]", encoding="utf-8")
+    _init_git(tmp_path, extra=["pi-batch.py", "pipeline.yaml", "analysis.json"])
+    settings = CampaignSettings(
+        pipeline_template="pipeline.yaml", output_dir="docs/auto",
+        worktree_root=".worktrees", pipeline_timeout=10,
+        pipeline_no_progress_timeout=1)
+    direction = Direction.from_mapping("src", {
+        "title": "Detect stalled pipeline", "problem": "child can hang",
+        "evidence": ["source.py"], "acceptance": ["stall is recorded"],
+    })
+    outcome = run_directions_isolated(
+        tmp_path, settings, [(direction, analysis)], 1, [])[0]
+    assert outcome.status == "PIPELINE_FAILED"
+    assert "made no progress for 1s" in outcome.reason
+    assert outcome.no_progress_seconds >= 1
+    assert outcome.elapsed < 6
+
+
 def test_campaign_end_to_end_and_fingerprint_reuse(tmp_path):
     _campaign_fixture(tmp_path)
     command = [sys.executable, str(PI_BATCH), "campaign", "--config", "campaign.yaml",
@@ -758,6 +797,36 @@ def test_campaign_end_to_end_and_fingerprint_reuse(tmp_path):
                             capture_output=True, text=True, timeout=60)
     assert second.returncode == 0, second.stderr
     assert len((tmp_path / "calls.log").read_text(encoding="utf-8").splitlines()) == 3
+
+
+def test_campaign_auto_resume_on_signal_preserves_round_loop(monkeypatch):
+    from pbatch import campaign_exec
+    context = SimpleNamespace(
+        args=SimpleNamespace(auto_resume_on_signal=True, resume_delay=3))
+    calls = []
+
+    def run_once(_context):
+        calls.append(len(calls))
+        if len(calls) == 1:
+            raise campaign_exec.CampaignSignalInterrupt
+        return 0
+
+    sleeps = []
+    monkeypatch.setattr(campaign_exec, "run_campaign_loop", run_once)
+    monkeypatch.setattr(campaign_exec.time, "sleep", sleeps.append)
+    assert campaign_exec._run_campaign_supervised(context) == 0
+    assert calls == [0, 1]
+    assert sleeps == [3]
+
+
+def test_campaign_signal_without_auto_resume_returns_interrupt_code(monkeypatch):
+    from pbatch import campaign_exec
+    context = SimpleNamespace(
+        args=SimpleNamespace(auto_resume_on_signal=False, resume_delay=0))
+    monkeypatch.setattr(
+        campaign_exec, "run_campaign_loop", lambda _context: (_ for _ in ()).throw(
+            KeyboardInterrupt))
+    assert campaign_exec._run_campaign_supervised(context) == 130
 
 
 def test_campaign_rounds_reuse_between_rounds(tmp_path):
