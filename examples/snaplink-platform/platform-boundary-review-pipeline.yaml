@@ -1,0 +1,9 @@
+git_commit: false
+
+stages:
+  - name: boundary_optimization_review
+    from_prompt: '@/home/dwp/ai-batch-runner/examples/snaplink-platform/prompts/review-boundary-optimization.md'
+    output: docs/workflow/phase1-boundary-review.md
+    cwd: /home/dwp/workspace/job/sverpweb-stable-platform-workflow
+    agent: pi
+    mode: serial
