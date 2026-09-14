@@ -1,0 +1,36 @@
+# Agent Hub production configuration. Replace all identity placeholders with
+# actual Snaplink identities; no OAuth clients or users are created by this file.
+auth:
+  mode: jwt
+  issuer: https://identity.example.test
+  jwks_url: https://identity.example.test/.well-known/jwks.json
+  audience: agent-hub
+  algorithms: [EdDSA, RS256, ES256]
+  grants:
+    - tenant_id: REPLACE_TENANT
+      subject: REPLACE_USER_SUBJECT
+      client_id: REPLACE_CONSOLE_OAUTH_CLIENT
+      kind: user
+      instances: [alpha, beta]
+      scopes:
+        - agent.instances:read
+        - agent.sessions:read
+        - agent.sessions:write
+        - agent.turns:cancel
+    - tenant_id: REPLACE_TENANT
+      subject: REPLACE_ALPHA_SERVICE_SUBJECT
+      client_id: REPLACE_ALPHA_OAUTH_CLIENT
+      kind: gateway
+      instances: [alpha]
+      scopes: [agent.gateway:connect]
+allowed_origins:
+  - https://console.example.test
+
+# Optional per-tenant Fabric/workspace/Vault configuration: see
+# docs/agent-hub/COMPUTE.md. Compute scopes and target instance grants are explicit.
+compute: []
+
+# Optional member projection gate and durable notifications/audit deliveries:
+# docs/agent-hub/ECOSYSTEM.md. Empty lists leave these integrations disabled.
+identity: []
+integrations: []

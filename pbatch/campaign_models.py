@@ -86,6 +86,18 @@ def _strings(value) -> tuple[str, ...]:
     return tuple(str(item).strip() for item in value if str(item).strip())
 
 
+def _recovery_values(recovery: dict) -> dict:
+    return {
+        "recovery_enabled": _bool_value(recovery, "enabled", False),
+        "recovery_max_attempts": _int_value(recovery, "max_attempts", 1),
+        "recovery_restore_on_failure": _bool_value(recovery, "restore_on_failure", True),
+        "recovery_narrow_scope": _bool_value(recovery, "narrow_scope", True),
+        "recovery_max_roles_per_iteration": _int_value(recovery, "max_roles_per_iteration", 2),
+        "recovery_allow_failed_roles": _int_value(recovery, "allow_failed_roles", 1),
+        "recovery_stop_after_stalled_rounds": _int_value(recovery, "stop_after_stalled_rounds", 2),
+    }
+
+
 @dataclass
 class CampaignSettings:
     name: str = "repository-improvements"
@@ -178,18 +190,7 @@ class CampaignSettings:
             worktree_root=_string_value(implementation, "worktree_root", ""),
             analysis_minutes=_float_value(estimates, "analysis_minutes", 3),
             pipeline_minutes=_float_value(estimates, "pipeline_minutes", 20),
-            recovery_enabled=_bool_value(recovery, "enabled", False),
-            recovery_max_attempts=_int_value(recovery, "max_attempts", 1),
-            recovery_restore_on_failure=_bool_value(
-                recovery, "restore_on_failure", True),
-            recovery_narrow_scope=_bool_value(
-                recovery, "narrow_scope", True),
-            recovery_max_roles_per_iteration=_int_value(
-                recovery, "max_roles_per_iteration", 2),
-            recovery_allow_failed_roles=_int_value(
-                recovery, "allow_failed_roles", 1),
-            recovery_stop_after_stalled_rounds=_int_value(
-                recovery, "stop_after_stalled_rounds", 2),
+            **_recovery_values(recovery),
         )
 
     def validate(self) -> None:

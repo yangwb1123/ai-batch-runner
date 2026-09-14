@@ -602,8 +602,11 @@ def test_ssh_cancel_registry(monkeypatch):
     assert killed == []
     # 模拟执行中：登记后 cancel 生效
     fabric_exec._register_ssh_proc("ssh-live", fake_proc)
-    fabric_exec._cancel_remote("ssh-live")
-    assert killed == [fake_proc]
+    try:
+        fabric_exec._cancel_remote("ssh-live")
+        assert killed == [fake_proc]
+    finally:
+        fabric_exec._unregister_ssh_proc("ssh-live")
 
 
 def test_probe_required_error(tmp_path, monkeypatch):

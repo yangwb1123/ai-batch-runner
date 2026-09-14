@@ -41,6 +41,7 @@ MANUAL = {
     "pi": ("execution", "medium", "Pi CLI 参数/终端输入",
            "官方 Pi TUI、文本、JSONL、RPC 或包管理结果"),
     "tui": ("execution", "medium", "交互任务/项目上下文", "agent 回复/工作区变更/会话"),
+    "fleet": ("execution", "medium", "Hub 连接/实例/会话/prompt", "跨实例会话控制与事件"),
     "graph": ("reasoning", "low", "graph.json|源代码目录", "结构违规/依赖环/统计"),
     "profile": ("reasoning", "low", "需求文本", "12 维画像/模式/包络"),
     "pareto": ("reasoning", "low", "候选+目标", "前沿/Utility/MUC"),
@@ -90,6 +91,8 @@ def _module_of(target: str) -> str:
 def _tests_for(capability_id: str) -> list:
     """启发式关联测试：能力 id 单词出现在测试文件名中。"""
     tokens = set(re.split(r"[_-]", capability_id)) - {"py", "ui"}
+    if capability_id == "fleet":
+        tokens.add("hub")
     matches = []
     if not TESTS_DIR.is_dir():
         return matches

@@ -1,0 +1,2162 @@
+openapi: 3.0.3
+info:
+  title: Snaplink Agent Hub API
+  version: 1.4.0
+  description: >-
+    Tenant-scoped directory and command API for sessions owned by distinct
+    Agent Hub instances. This API lists instances and sessions, submits a
+    prompt to one existing session, relays events, and requests cancellation.
+    Ordinary JSON requests are limited to 64 KiB. Snapshot uploads and their
+    active-turn gateway envelope allow 576 KiB. Optional tenant-bound Device
+    Fabric connections expose resource discovery and durable computation tasks.
+servers:
+  - url: https://hub.example.test
+    description: Production Hub; remote listeners require TLS.
+  - url: http://127.0.0.1:8788
+    description: Loopback development listener only.
+security:
+  - HubBearer: []
+tags:
+  - name: Integration API
+    description: Explicitly authorized lifecycle delivery diagnostics and retries.
+  - name: Compute API
+    description: Authorized project devices, durable tasks, and active-turn delegation.
+  - name: Health
+  - name: User API
+    description: User principals read authorized instances and sessions and send or cancel turns.
+  - name: Gateway API
+    description: A gateway principal is bound to exactly one instance.
+paths:
+  /healthz:
+    get:
+      tags: [Health]
+      operationId: health
+      summary: Check whether the Hub HTTP service is responsive
+      security: []
+      responses:
+        '200':
+          description: Service is responsive; this does not verify a Gateway or its sessions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthEnvelope'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/v1/agent/instances:
+    get:
+      tags: [User API]
+      operationId: listInstances
+      summary: List instances granted to the caller
+      description: >-
+        Results are filtered by the caller's configured instance allowlist in
+        the database query before pagination. The next cursor is the final
+        returned instance_id; pass it as after to continue lexicographically.
+      x-principal-kind: user
+      x-required-scope: agent.instances:read
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - name: after
+          in: query
+          required: false
+          description: Return instance_id values lexicographically greater than this cursor.
+          schema:
+            type: string
+            maxLength: 256
+            default: ''
+      responses:
+        '200':
+          description: Authorized instance page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InstanceListEnvelope'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/v1/agent/sessions:
+    get:
+      tags: [User API]
+      operationId: listSessions
+      summary: List sessions visible to the caller
+      description: >-
+        Session pages are filtered by the caller's instance allowlist before
+        pagination. If instance_id is supplied it must also be authorized.
+        The next cursor is the final returned session_id; pass it as after to
+        continue lexicographically.
+      x-principal-kind: user
+      x-required-scope: agent.sessions:read
+      parameters:
+        - name: instance_id
+          in: query
+          required: false
+          description: Restrict results to one authorized instance.
+          schema:
+            type: string
+            maxLength: 256
+        - $ref: '#/components/parameters/Limit'
+        - name: after
+          in: query
+          required: false
+          description: Return session_id values lexicographically greater than this cursor.
+          schema:
+            type: string
+            maxLength: 256
+            default: ''
+      responses:
+        '200':
+          description: Authorized session page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionListEnvelope'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/v1/agent/sessions/{session_id}:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+    get:
+      tags: [User API]
+      operationId: getSession
+      summary: Read one authorized session
+      x-principal-kind: user
+      x-required-scope: agent.sessions:read
+      responses:
+        '200':
+          description: Session metadata; no prompt or event body is included here.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/v1/agent/sessions/{session_id}/turns:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+    post:
+      tags: [User API]
+      operationId: submitTurn
+      summary: Submit a prompt to one controllable session
+      description: >-
+        Reuse the same Idempotency-Key to retry the same prompt. Reusing that
+        key with different session or prompt content conflicts. Prompt UTF-8
+        content is limited to 16 KiB. The response omits the prompt; it is
+        available only to the owning Gateway command poll.
+      x-principal-kind: user
+      x-required-scope: agent.sessions:write
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: Stable caller-chosen key for this prompt submission; use a new key for a new prompt.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 256
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitTurnRequest'
+      responses:
+        '202':
+          description: Turn accepted into the durable command ledger.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TurnEnvelope'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/v1/agent/sessions/{session_id}/events:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+    get:
+      tags: [User API]
+      operationId: listSessionEvents
+      summary: Read a bounded durable event page
+      description: >-
+        JSON polling and finite Server-Sent Events replay use the same durable
+        cursor. after is exclusive. For an SSE request, Last-Event-ID is used
+        only when after is absent. An SSE response is one page and then closes;
+        reconnect using the last event id. Each SSE record uses event name
+        agent.event, id equal to cursor, and JSON event data. The retry hint is
+        1000 ms. Serialized event content is limited to 32 KiB; sensitive keys
+        are rejected and event text is redacted before persistence. The bundled
+        Python client limits each event page to 100; the service allows 200.
+      x-principal-kind: user
+      x-required-scope: agent.sessions:read
+      parameters:
+        - name: after
+          in: query
+          required: false
+          description: Nonnegative tenant event cursor; only events with a greater cursor are returned.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+            maximum: 999999999999999999
+            default: 0
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of events in this finite page.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 100
+        - name: Last-Event-ID
+          in: header
+          required: false
+          description: SSE reconnect cursor, used only if the after query parameter is absent.
+          schema:
+            type: string
+            pattern: '^[0-9]{1,18}$'
+        - name: Accept
+          in: header
+          required: false
+          description: Include text/event-stream to receive a finite SSE replay page; otherwise JSON is returned.
+          schema:
+            type: string
+            example: text/event-stream
+      responses:
+        '200':
+          description: A bounded event page, as JSON or a finite SSE replay.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventListEnvelope'
+            text/event-stream:
+              schema:
+                type: string
+                description: >-
+                  retry: 1000 followed by zero or more event blocks. Each
+                  block has id: cursor, event: agent.event, and data containing
+                  one serialized SessionEvent object. An empty page has a
+                  comment record.
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/v1/agent/turns/{turn_id}:
+    parameters:
+      - $ref: '#/components/parameters/TurnId'
+    get:
+      tags: [User API]
+      operationId: getTurn
+      summary: Read one authorized turn without its prompt
+      x-principal-kind: user
+      x-required-scope: agent.sessions:read
+      responses:
+        '200':
+          description: Turn state and metadata; prompt is never included.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TurnEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/v1/agent/turns/{turn_id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/TurnId'
+    post:
+      tags: [User API]
+      operationId: cancelTurn
+      summary: Cancel a queued or running turn
+      description: >-
+        A queued turn becomes cancelled immediately. A running turn becomes
+        cancel_requested and remains so until its Gateway reports a terminal
+        event. Repeated cancellation of a cancel_requested turn is idempotent.
+      x-principal-kind: user
+      x-required-scope: agent.turns:cancel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+      responses:
+        '202':
+          description: Current durable turn state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TurnEnvelope'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/v1/agent/gateway/commands:
+    get:
+      tags: [Gateway API]
+      operationId: pollGatewayCommands
+      summary: Poll pending prompt and cancellation commands
+      description: >-
+        Returns pending commands for the gateway principal's one bound
+        instance and current generation. Repeated polls return the same command
+        ids until the Gateway reports progress or completion. Prompt commands
+        include the prompt; cancel commands set cancel_requested to true and
+        have an empty prompt.
+      x-principal-kind: gateway
+      x-required-scope: agent.gateway:connect
+      parameters:
+        - $ref: '#/components/parameters/InstanceIdQuery'
+        - $ref: '#/components/parameters/GenerationQuery'
+      responses:
+        '200':
+          description: Pending commands for the bound instance generation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandListEnvelope'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/v1/agent/gateway/register:
+    post:
+      tags: [Gateway API]
+      operationId: registerGatewayInstance
+      summary: Register or resume a gateway process
+      description: >-
+        The instance_id must match the instance bound to the gateway token.
+        Re-registering the same boot_id preserves generation. A different boot
+        is rejected while the previous registration is online; after expiry it
+        takes over with a greater generation and prior unfinished turns become
+        lost. No generation is supplied in this request.
+      x-principal-kind: gateway
+      x-required-scope: agent.gateway:connect
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterInstanceRequest'
+      responses:
+        '200':
+          description: Instance record including the current generation and heartbeat timestamp.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InstanceEnvelope'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/v1/agent/gateway/heartbeat:
+    post:
+      tags: [Gateway API]
+      operationId: heartbeatGateway
+      summary: Refresh the current generation's online lease
+      description: The generation is fenced; an old generation cannot refresh a newer instance registration.
+      x-principal-kind: gateway
+      x-required-scope: agent.gateway:connect
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GatewayGenerationRequest'
+      responses:
+        '200':
+          description: Updated instance state and last_seen epoch timestamp.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InstanceEnvelope'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/v1/agent/gateway/sessions:
+    post:
+      tags: [Gateway API]
+      operationId: publishGatewaySession
+      summary: Publish or refresh session metadata owned by this gateway
+      description: >-
+        The gateway may publish only sessions for its authorized instance and
+        generation. Old-generation sessions remain read-only after takeover.
+      x-principal-kind: gateway
+      x-required-scope: agent.gateway:connect
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpsertSessionRequest'
+      responses:
+        '200':
+          description: Current session record with computed online and controllable flags.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionEnvelope'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/v1/agent/gateway/events:
+    post:
+      tags: [Gateway API]
+      operationId: publishGatewayEvent
+      summary: Append one idempotent session event
+      description: >-
+        event_id is scoped to the tenant. Reusing it with identical content
+        returns the original cursor; changing its content conflicts. Event
+        content (session_id, turn_id, kind and payload serialized together)
+        is limited to 32 KiB. The bundled Gateway client applies the same
+        byte limit to the entire event POST body. Nested sensitive keys such as
+        token, password, credential, and private_key are rejected; event text
+        is redacted before it is stored. A turn state event must name turn_id.
+      x-principal-kind: gateway
+      x-required-scope: agent.gateway:connect
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppendEventRequest'
+      responses:
+        '200':
+          description: Stored event, including its persistent cursor.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventEnvelope'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/v1/agent/devices:
+    get:
+      tags:
+      - Compute API
+      operationId: listComputeDevices
+      summary: listComputeDevices
+      description: >-
+        Queries authorized project bindings in bounded Fabric batches. The
+        returned rows have a 6 MiB JSON budget; a shorter page can be continued
+        using its next cursor. Missing unregistered devices are skipped.
+      x-required-scope: agent.devices:read
+      parameters:
+      - name: project_id
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 256
+      - name: after
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 256
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Authorized compute response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComputeDeviceListEnvelope'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/agent/tasks:
+    get:
+      tags:
+      - Compute API
+      operationId: listComputeTasks
+      summary: listComputeTasks
+      x-required-scope: agent.tasks:read
+      parameters:
+      - name: session_id
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 256
+      - name: after
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 256
+      - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Authorized compute response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComputeTaskListEnvelope'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/agent/tasks/{task_id}:
+    get:
+      tags:
+      - Compute API
+      operationId: getComputeTask
+      summary: getComputeTask
+      x-required-scope: agent.tasks:read
+      parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 256
+      responses:
+        '200':
+          description: Authorized compute response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComputeTaskEnvelope'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/agent/sessions/{session_id}/tasks:
+    post:
+      tags:
+      - Compute API
+      operationId: submitComputeTask
+      summary: submitComputeTask
+      x-required-scope: agent.tasks:write
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 256
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          maxLength: 256
+      responses:
+        '202':
+          description: Authorized compute response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComputeTaskEnvelope'
+        default:
+          $ref: '#/components/responses/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitComputeRequest'
+  /api/v1/agent/tasks/{task_id}/cancel:
+    post:
+      tags:
+      - Compute API
+      operationId: cancelComputeTask
+      summary: cancelComputeTask
+      x-required-scope: agent.tasks:cancel
+      parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 256
+      responses:
+        '202':
+          description: Authorized compute response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComputeTaskEnvelope'
+        default:
+          $ref: '#/components/responses/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties: {}
+  /api/v1/agent/gateway/compute:
+    post:
+      tags:
+      - Compute API
+      operationId: delegateComputeTool
+      summary: Use an active running turn compute capability
+      description: Requires gateway connect plus the requested compute scope. The
+        Gateway grant is intersected with the initiating user authority frozen at
+        prompt admission. For operation devices, payload accepts only an optional
+        after device ID. Device pages contain at most four rows and 60 KiB of JSON,
+        with project_ids restricted to the active session project. Continue after
+        the last device ID until an empty page to inspect all authorized devices.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ComputeDelegationRequest'
+      responses:
+        '200':
+          description: Device array or task object in data.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  data:
+                    oneOf:
+                    - $ref: '#/components/schemas/ComputeTask'
+                    - $ref: '#/components/schemas/WorkspaceSnapshot'
+                    - $ref: '#/components/schemas/WorkspaceOutput'
+                    - type: array
+                      maxItems: 10
+                      items:
+                        $ref: '#/components/schemas/WorkspaceSnapshot'
+                    - type: array
+                      maxItems: 4
+                      items:
+                        $ref: '#/components/schemas/ComputeDevice'
+                required:
+                - data
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/v1/agent/integrations/deliveries:
+    get:
+      tags:
+      - Integration API
+      operationId: listDeliveries
+      summary: List authorized lifecycle delivery receipts
+      description: Filtered by tenant and instance grants before monotonic sequence pagination. Failed records
+        remain visible without consuming active queue capacity.
+      x-principal-kind: user
+      x-required-scope: agent.integrations:read
+      parameters:
+      - $ref: '#/components/parameters/Limit'
+      - name: after
+        in: query
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+      - name: state
+        in: query
+        schema:
+          type: string
+          enum:
+          - pending
+          - sending
+          - retrying
+          - failed
+          - delivered
+      responses:
+        '200':
+          description: Delivery metadata; no prepared request, identity mapping or credential is returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IntegrationDeliveryListEnvelope'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/agent/integrations/deliveries/{delivery_id}/retry:
+    parameters:
+    - name: delivery_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    post:
+      tags:
+      - Integration API
+      operationId: retryDelivery
+      summary: Retry a failed or waiting delivery with its original destination and key
+      description: Grants a new bounded attempt budget. Notification retries are refused six days after
+        their first attempt. A retry-only caller receives no receipt or event details.
+      x-principal-kind: user
+      x-required-scope: agent.integrations:retry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+      responses:
+        '202':
+          description: Queued for retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IntegrationRetryEnvelope'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/v1/agent/sessions/{session_id}/snapshots:
+    get:
+      tags:
+      - Compute API
+      operationId: listWorkspaceSnapshots
+      summary: List ready snapshots of this session
+      x-required-scope: agent.tasks:read
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 256
+      - name: after
+        in: query
+        schema:
+          type: string
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 200
+      responses:
+        default:
+          $ref: '#/components/responses/Error'
+        '200':
+          description: Authorized compute response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceSnapshotListEnvelope'
+      description: Scoped to the source instance and session.
+    post:
+      tags:
+      - Compute API
+      operationId: uploadWorkspaceSnapshot
+      summary: Upload a pinned workspace snapshot
+      x-required-scope: agent.tasks:write
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 256
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          maxLength: 256
+      responses:
+        default:
+          $ref: '#/components/responses/Error'
+        '200':
+          description: Authorized compute response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceSnapshotEnvelope'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadWorkspaceRequest'
+      description: Maximum HTTP body 576 KiB. Same actor/key/content resumes a pending
+        upload. Vault version readback must verify before publication.
+  /api/v1/agent/tasks/{task_id}/workspace:
+    get:
+      tags:
+      - Compute API
+      operationId: downloadWorkspaceOutput
+      summary: Read verified fixed-version task output
+      x-required-scope: agent.tasks:read
+      parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 256
+      responses:
+        '200':
+          description: Authorized compute response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceOutputEnvelope'
+        default:
+          $ref: '#/components/responses/Error'
+      description: Only ready archived output is returned. Pending/unavailable output
+        returns 409. Does not expose a Vault credential or download URL.
+
+components:
+  securitySchemes:
+    HubBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT or opaque development token
+      description: >-
+        Production callers obtain a Snaplink access token for the Agent Hub
+        resource audience. The Hub verifies the pinned issuer and signing keys,
+        expiration, issuer, audience, subject, tenant_id, client_id, and token
+        scope, then intersects token scopes with the Hub operator's exact
+        tenant/subject/client_id grant and instance allowlist. Production
+        remote listeners require TLS. Development credentials are opaque random
+        tokens created by fleet init, stored as hashes by the Hub, and accepted
+        only when bound to a literal loopback IP address. Credentials in token
+        or access_token query parameters are rejected; use Authorization only.
+        Tokens carrying unsupported cnf proof or act delegation claims are
+        rejected.
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Page size, bounded to 200 records.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 100
+    SessionId:
+      name: session_id
+      in: path
+      required: true
+      description: Opaque Hub session identifier; globally bound to tenant, instance, and local session identity.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 256
+    TurnId:
+      name: turn_id
+      in: path
+      required: true
+      description: Opaque Hub turn identifier.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 256
+    InstanceIdQuery:
+      name: instance_id
+      in: query
+      required: true
+      description: Must equal the one instance bound to this gateway token.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 256
+    GenerationQuery:
+      name: generation
+      in: query
+      required: true
+      description: Current positive fencing generation returned by register.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 9999999999
+  responses:
+    InvalidRequest:
+      description: Malformed input, unknown request fields, or invalid cursor.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Unauthenticated:
+      description: Missing, invalid, expired, or unverifiable bearer token.
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+          example: 'Bearer realm="agent-hub"'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Forbidden:
+      description: Caller lacks the required scope, principal kind, or instance grant.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    NotFound:
+      description: The requested resource is not found in the caller's tenant.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Conflict:
+      description: Idempotency conflict, unavailable session, active prior boot, or stale generation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    TooLarge:
+      description: Request body, prompt, metadata, or event content exceeds its size limit.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    UnsupportedMediaType:
+      description: Request body must use application/json.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Error:
+      description: Other request or service error; error envelope format is stable.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+  schemas:
+    ErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              example: forbidden
+            message:
+              type: string
+              example: permission denied
+    HealthEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [status]
+          properties:
+            status:
+              type: string
+              enum: [ok]
+    Instance:
+      type: object
+      required: [tenant, instance_id, boot_id, generation, last_seen, online]
+      properties:
+        tenant:
+          type: string
+        instance_id:
+          type: string
+          description: Operator-assigned instance identity.
+        boot_id:
+          type: string
+          description: Identity of the current gateway process boot.
+        generation:
+          type: integer
+          minimum: 1
+          description: Monotonically increased on an offline process takeover; used to fence old gateways.
+        last_seen:
+          type: number
+          format: double
+          description: Heartbeat time as Unix epoch seconds.
+        online:
+          type: boolean
+          description: Computed from the current time and the configured heartbeat expiry window.
+        name:
+          type: string
+        project_id:
+          type: string
+      additionalProperties: false
+    Session:
+      type: object
+      additionalProperties: false
+      required:
+        - session_id
+        - tenant
+        - instance_id
+        - local_session_id
+        - generation
+        - name
+        - project_id
+        - status
+        - active_turn_id
+        - online
+        - controllable
+        - frozen
+        - updated_at
+      properties:
+        session_id:
+          type: string
+          description: Stable Hub id derived from tenant, instance_id, and local_session_id.
+        tenant:
+          type: string
+        instance_id:
+          type: string
+        local_session_id:
+          type: string
+        generation:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+        project_id:
+          type: string
+        status:
+          type: string
+          description: Active turn state when a turn exists; otherwise the status last published by the Gateway.
+        active_turn_id:
+          type: string
+          description: Current nonterminal turn id, or the empty string if no turn is active.
+        online:
+          type: boolean
+          description: True only while this session generation matches a live instance generation.
+        controllable:
+          type: boolean
+          description: True only if the session was marked controllable, is not frozen, and its instance is online.
+        frozen:
+          type: boolean
+          description: Old-generation sessions become frozen and read-only after takeover.
+        updated_at:
+          type: number
+          format: double
+          description: Last session metadata update as Unix epoch seconds.
+    TurnState:
+      type: string
+      enum: [queued, running, cancel_requested, completed, failed, interrupted, cancelled, lost]
+    Turn:
+      type: object
+      additionalProperties: false
+      required:
+        - turn_id
+        - tenant
+        - session_id
+        - instance_id
+        - generation
+        - actor
+        - state
+        - status
+        - idempotency_key
+        - created_at
+        - updated_at
+      properties:
+        turn_id:
+          type: string
+        tenant:
+          type: string
+        session_id:
+          type: string
+        instance_id:
+          type: string
+        generation:
+          type: integer
+          minimum: 1
+        actor:
+          type: string
+        state:
+          $ref: '#/components/schemas/TurnState'
+        status:
+          $ref: '#/components/schemas/TurnState'
+          description: Compatibility alias; always equal to state.
+        idempotency_key:
+          type: string
+          maxLength: 256
+        created_at:
+          type: number
+          format: double
+          description: Creation time as Unix epoch seconds.
+        updated_at:
+          type: number
+          format: double
+          description: Last state change as Unix epoch seconds.
+    SessionEvent:
+      type: object
+      additionalProperties: false
+      required: [cursor, event_id, session_id, turn_id, instance_id, generation, kind, payload, created_at, duplicate]
+      properties:
+        cursor:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Persistent monotonically increasing cursor within the tenant.
+        event_id:
+          type: string
+          maxLength: 256
+        session_id:
+          type: string
+        turn_id:
+          type: string
+          description: Empty when the event is not associated with a turn.
+        instance_id:
+          type: string
+        generation:
+          type: integer
+          minimum: 1
+        kind:
+          type: string
+          maxLength: 128
+        payload:
+          type: object
+          description: >-
+            Redacted JSON object; sensitive keys are rejected at ingress.
+            Bundled Gateway message events contain text, chunk_index (zero-based),
+            chunk_count and truncated. Text chunks contain at most 4 KiB UTF-8;
+            each source runtime event is capped at 256 KiB before redaction.
+            Process by cursor and deduplicate by event_id. For message.completed,
+            chunk zero replaces accumulated delta text; later chunks append.
+            A true truncated flag requires a visible truncation indication.
+          additionalProperties: true
+        turn_state:
+          type: string
+          enum: ['', queued, running, cancel_requested, completed, failed, interrupted, cancelled, lost]
+          description: >-
+            Present on Gateway append acknowledgements only. The current turn
+            state, including on duplicate event replay; empty without a turn.
+        created_at:
+          type: number
+          format: double
+          description: Event time as Unix epoch seconds.
+        duplicate:
+          type: boolean
+          description: True when an identical previously stored event_id was replayed.
+    GatewayCommand:
+      type: object
+      additionalProperties: false
+      required: [command_id, kind, turn_id, session_id, local_session_id, prompt, state, cancel_requested]
+      properties:
+        command_id:
+          type: string
+        kind:
+          type: string
+          enum: [prompt, cancel]
+        turn_id:
+          type: string
+        session_id:
+          type: string
+        local_session_id:
+          type: string
+        prompt:
+          type: string
+          description: Original prompt for prompt commands; empty for cancel commands.
+        state:
+          $ref: '#/components/schemas/TurnState'
+        cancel_requested:
+          type: boolean
+          description: True for a cancel command.
+    InstanceEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Instance'
+    SessionEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Session'
+    TurnEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Turn'
+    EventEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          allOf:
+            - $ref: '#/components/schemas/SessionEvent'
+            - type: object
+              required: [turn_state]
+    InstanceListEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, next_cursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Instance'
+        next_cursor:
+          type: string
+          description: Last instance_id returned, or an empty string when the page is empty.
+    SessionListEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, next_cursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Session'
+        next_cursor:
+          type: string
+          description: Last session_id returned, or an empty string when the page is empty.
+    EventListEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, next_cursor]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SessionEvent'
+        next_cursor:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Last cursor returned, or the requested after cursor when the page is empty.
+    CommandListEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/GatewayCommand'
+    SubmitTurnRequest:
+      type: object
+      additionalProperties: false
+      required: [prompt]
+      properties:
+        prompt:
+          type: string
+          minLength: 1
+          description: Nonblank prompt with UTF-8 encoding no larger than 16 KiB.
+    RegisterInstanceRequest:
+      type: object
+      additionalProperties: false
+      required: [instance_id, boot_id]
+      properties:
+        instance_id:
+          type: string
+          minLength: 1
+          maxLength: 256
+        boot_id:
+          type: string
+          minLength: 1
+          maxLength: 256
+        name:
+          type: string
+          maxLength: 256
+        project_id:
+          type: string
+          maxLength: 256
+    GatewayGenerationRequest:
+      type: object
+      additionalProperties: false
+      required: [instance_id, generation]
+      properties:
+        instance_id:
+          type: string
+          minLength: 1
+          maxLength: 256
+        generation:
+          type: integer
+          minimum: 1
+          maximum: 9999999999
+    UpsertSessionRequest:
+      type: object
+      additionalProperties: false
+      required: [instance_id, generation, local_session_id]
+      properties:
+        instance_id:
+          type: string
+          minLength: 1
+          maxLength: 256
+        generation:
+          type: integer
+          minimum: 1
+          maximum: 9999999999
+        local_session_id:
+          type: string
+          minLength: 1
+          maxLength: 256
+        name:
+          type: string
+          maxLength: 256
+          default: ''
+        project_id:
+          type: string
+          maxLength: 256
+          default: ''
+        controllable:
+          type: boolean
+          default: false
+        status:
+          type: string
+          maxLength: 32
+          default: active
+    AppendEventRequest:
+      type: object
+      additionalProperties: false
+      required: [instance_id, generation, event_id, session_id, kind]
+      properties:
+        instance_id:
+          type: string
+          minLength: 1
+          maxLength: 256
+        generation:
+          type: integer
+          minimum: 1
+          maximum: 9999999999
+        event_id:
+          type: string
+          minLength: 1
+          maxLength: 256
+        session_id:
+          type: string
+          minLength: 1
+          maxLength: 256
+        turn_id:
+          type: string
+          maxLength: 256
+          default: ''
+        kind:
+          type: string
+          enum: [turn.running, turn.completed, turn.failed, turn.interrupted, message.delta, message.completed]
+          description: >-
+            queued, cancel_requested, cancelled and lost events are generated
+            by the Hub and cannot be submitted by a Gateway.
+        payload:
+          type: object
+          additionalProperties: true
+          default: {}
+          description: >-
+            Redacted JSON object. UTF-8 serialized event content is limited to
+            32 KiB; nested sensitive keys are rejected. Ordinary text values
+            are not rejected merely because they contain words such as token.
+
+    ComputeResources:
+      type: object
+      additionalProperties: false
+      description: >-
+        GPU memory is a per-card admission minimum, not an operating-system
+        limit. GPU fields are omitted from canonical CPU-only requests.
+      properties:
+        cpu_cores:
+          type: integer
+          minimum: 1
+          maximum: 256
+        memory_bytes:
+          type: integer
+          minimum: 0
+          maximum: 17592186044416
+        gpu_count:
+          type: integer
+          minimum: 0
+          maximum: 16
+          default: 0
+        gpu_memory_bytes:
+          type: integer
+          minimum: 0
+          maximum: 1099511627776
+          default: 0
+      anyOf:
+        - required: [gpu_count]
+          properties:
+            gpu_count:
+              minimum: 1
+        - properties:
+            gpu_memory_bytes:
+              maximum: 0
+    ComputeRequirements:
+      type: object
+      additionalProperties: false
+      properties:
+        os:
+          type: string
+        architecture:
+          type: string
+        runtimes:
+          type: array
+          maxItems: 32
+          items:
+            type: string
+    SubmitComputeRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        workspace:
+          $ref: '#/components/schemas/ComputeWorkspace'
+        argv:
+          type: array
+          minItems: 1
+          maxItems: 128
+          items:
+            type: string
+        workdir:
+          type: string
+          default: .
+        timeout:
+          type: integer
+          minimum: 1
+          maximum: 3600
+          default: 60
+        resources:
+          $ref: '#/components/schemas/ComputeResources'
+        requirements:
+          $ref: '#/components/schemas/ComputeRequirements'
+        target_device_id:
+          type: string
+        turn_id:
+          type: string
+      required:
+      - argv
+    ComputeGPU:
+      type: object
+      additionalProperties: false
+      description: >-
+        One NVIDIA physical card; available memory cannot exceed total memory.
+        Duplicate UUIDs are rejected case-insensitively. Stale measurements
+        and device-level unavailability prevent GPU placement.
+      properties:
+        uuid:
+          type: string
+          pattern: '^GPU-[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        vendor:
+          type: string
+          enum: [nvidia]
+        total_memory_bytes:
+          type: integer
+          minimum: 1
+          maximum: 1099511627776
+        available_memory_bytes:
+          type: integer
+          minimum: 0
+          maximum: 1099511627776
+        schedulable:
+          type: boolean
+        reserved:
+          type: boolean
+        observed_at:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+          maximum: 1000000000000
+      required: [uuid, name, vendor, total_memory_bytes, available_memory_bytes, schedulable, reserved, observed_at]
+    ComputeGPUAssignment:
+      type: object
+      additionalProperties: false
+      description: >-
+        Immutable Fabric-selected physical GPU allocation. UUID count and
+        per-card memory must match task resources. Assigned time cannot
+        precede observed time. Duplicate UUIDs are rejected case-insensitively.
+        GPU tasks expose this after confirmed admission.
+      properties:
+        vendor:
+          type: string
+          enum: [nvidia]
+        mode:
+          type: string
+          enum: [physical]
+        uuids:
+          type: array
+          minItems: 1
+          maxItems: 16
+          uniqueItems: true
+          items:
+            type: string
+            pattern: '^GPU-[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$'
+        gpu_memory_bytes:
+          type: integer
+          minimum: 0
+          maximum: 1099511627776
+        assigned_at:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+          maximum: 1000000000000
+        observed_at:
+          type: number
+          minimum: 0
+          exclusiveMinimum: true
+          maximum: 1000000000000
+      required: [vendor, mode, uuids, gpu_memory_bytes, assigned_at, observed_at]
+    ComputeDevice:
+      type: object
+      additionalProperties: false
+      properties:
+        workspace_supported:
+          type: boolean
+          description: Both Fabric and target Runner support bounded workspace tasks.
+        device_id:
+          type: string
+        instance_id:
+          type: string
+        name:
+          type: string
+        lifecycle_state:
+          type: string
+        os:
+          type: string
+        architecture:
+          type: string
+        online:
+          type: boolean
+        schedulable:
+          type: boolean
+        cpu_cores:
+          type: number
+          minimum: 0
+        total_memory_bytes:
+          type: number
+          minimum: 0
+        available_memory_bytes:
+          type: number
+          minimum: 0
+        reserved_cpu_cores:
+          type: number
+          minimum: 0
+        reserved_memory_bytes:
+          type: number
+          minimum: 0
+        running_tasks:
+          type: number
+          minimum: 0
+        last_seen:
+          type: number
+          minimum: 0
+        runtimes:
+          type: array
+          items:
+            type: string
+        project_ids:
+          type: array
+          items:
+            type: string
+        gpu_status:
+          type: string
+          enum: [unsupported, unavailable, stale, available, busy]
+          description: Missing on older Hubs; clients must treat absence as unsupported.
+        gpus:
+          type: array
+          maxItems: 16
+          items:
+            $ref: '#/components/schemas/ComputeGPU'
+      required:
+      - device_id
+      - instance_id
+      - name
+      - lifecycle_state
+      - os
+      - architecture
+      - online
+      - schedulable
+      - cpu_cores
+      - total_memory_bytes
+      - available_memory_bytes
+      - reserved_cpu_cores
+      - reserved_memory_bytes
+      - running_tasks
+      - last_seen
+      - runtimes
+      - project_ids
+    ComputeTask:
+      type: object
+      additionalProperties: false
+      properties:
+        workspace:
+          $ref: '#/components/schemas/ComputeWorkspace'
+        workspace_result:
+          $ref: '#/components/schemas/WorkspaceResult'
+        task_id:
+          type: string
+        session_id:
+          type: string
+        instance_id:
+          type: string
+        turn_id:
+          type: string
+        actor:
+          type: string
+        project_id:
+          type: string
+        device_id:
+          type: string
+        device_instance_id:
+          type: string
+        workdir:
+          type: string
+        error:
+          type: string
+        state:
+          type: string
+          enum:
+          - queued
+          - dispatching
+          - running
+          - cancel_requested
+          - completed
+          - failed
+          - cancelled
+          - lost
+        argv:
+          type: array
+          minItems: 1
+          maxItems: 128
+          items:
+            type: string
+        timeout:
+          type: integer
+          minimum: 1
+          maximum: 3600
+          default: 60
+        resources:
+          $ref: '#/components/schemas/ComputeResources'
+        requirements:
+          $ref: '#/components/schemas/ComputeRequirements'
+        created_at:
+          type: number
+          minimum: 0
+        updated_at:
+          type: number
+          minimum: 0
+        result:
+          $ref: '#/components/schemas/ComputeResult'
+        archive_state:
+          type: string
+          enum:
+          - disabled
+          - pending
+          - archived
+          - failed
+        artifact_ref:
+          $ref: '#/components/schemas/ComputeArtifact'
+        target_device_id:
+          type: string
+        gpu_assignment:
+          $ref: '#/components/schemas/ComputeGPUAssignment'
+      required:
+      - task_id
+      - session_id
+      - instance_id
+      - turn_id
+      - actor
+      - project_id
+      - device_id
+      - device_instance_id
+      - workdir
+      - error
+      - state
+      - argv
+      - timeout
+      - resources
+      - requirements
+      - created_at
+      - updated_at
+      - result
+      - archive_state
+      - artifact_ref
+      - target_device_id
+    ComputeResult:
+      type: object
+      additionalProperties: false
+      properties:
+        exit_code:
+          type: integer
+          nullable: true
+        timed_out:
+          type: boolean
+        cancelled:
+          type: boolean
+        stdout:
+          type: string
+        stderr:
+          type: string
+        output_truncated:
+          type: boolean
+        elapsed:
+          type: number
+          minimum: 0
+        evidence_digest:
+          type: string
+    ComputeArtifact:
+      type: object
+      additionalProperties: false
+      properties:
+        backend:
+          type: string
+          enum:
+          - aero-vault
+        key:
+          type: string
+        version_id:
+          type: string
+        etag:
+          type: string
+        sha256:
+          type: string
+        size:
+          type: integer
+          minimum: 0
+        bucket:
+          type: string
+    ComputeTaskEnvelope:
+      type: object
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/ComputeTask'
+      required:
+      - data
+    ComputeTaskListEnvelope:
+      type: object
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/ComputeTask'
+        next_cursor:
+          type: string
+      required:
+      - data
+      - next_cursor
+    ComputeDeviceListEnvelope:
+      type: object
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/ComputeDevice'
+        next_cursor:
+          type: string
+      required:
+      - data
+      - next_cursor
+    ComputeDelegationRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        instance_id:
+          type: string
+        generation:
+          type: integer
+          minimum: 1
+        session_id:
+          type: string
+        turn_id:
+          type: string
+        operation:
+          type: string
+          enum:
+          - devices
+          - submit
+          - status
+          - cancel
+          - snapshots
+          - snapshot-upload
+          - workspace-output
+        payload:
+          type: object
+        key:
+          type: string
+      required:
+      - instance_id
+      - generation
+      - session_id
+      - turn_id
+      - operation
+    IntegrationDelivery:
+      type: object
+      additionalProperties: false
+      properties:
+        delivery_id:
+          type: string
+        sink_name:
+          type: string
+        event_id:
+          type: string
+        instance_id:
+          type: string
+        kind:
+          type: string
+        error_code:
+          type: string
+        sequence:
+          type: integer
+          minimum: 0
+        cursor:
+          type: integer
+          minimum: 0
+        attempts:
+          type: integer
+          minimum: 0
+        error_status:
+          type: integer
+          minimum: 0
+        retry_at:
+          type: number
+          minimum: 0
+        created_at:
+          type: number
+          minimum: 0
+        updated_at:
+          type: number
+          minimum: 0
+        first_attempt_at:
+          type: number
+          nullable: true
+        sink_kind:
+          type: string
+          enum:
+          - audit
+          - im
+        state:
+          type: string
+          enum:
+          - pending
+          - sending
+          - retrying
+          - failed
+          - delivered
+        configured:
+          type: boolean
+        receipt:
+          type: object
+          description: Verified safe receipt metadata; empty until delivered.
+      required:
+      - delivery_id
+      - sink_name
+      - event_id
+      - instance_id
+      - kind
+      - error_code
+      - sequence
+      - cursor
+      - attempts
+      - error_status
+      - retry_at
+      - created_at
+      - updated_at
+      - first_attempt_at
+      - sink_kind
+      - state
+      - configured
+      - receipt
+    IntegrationDeliveryListEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+      - data
+      - next_cursor
+      properties:
+        data:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/IntegrationDelivery'
+        next_cursor:
+          type: integer
+          minimum: 0
+    IntegrationRetryEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+      - data
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required:
+          - delivery_id
+          - state
+          - attempts
+          properties:
+            delivery_id:
+              type: string
+            state:
+              type: string
+              enum:
+              - pending
+              - sending
+              - retrying
+              - failed
+              - delivered
+            attempts:
+              type: integer
+              minimum: 0
+
+    WorkspaceBundle:
+      type: object
+      additionalProperties: false
+      properties:
+        schema:
+          type: string
+          enum:
+          - pbatch.workspace.v1
+        files:
+          type: array
+          maxItems: 128
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              path:
+                type: string
+                minLength: 1
+                maxLength: 512
+              content_b64:
+                type: string
+                maxLength: 87384
+            required:
+            - path
+            - content_b64
+      required:
+      - schema
+      - files
+      description: 'Canonical UTF-8 JSON with sorted keys and path-sorted files. At most
+        512 KiB JSON, 128 files, 64 KiB decoded per file, 256 KiB decoded total. Exact
+        relative portable paths only; no links, traversal, glob expansion, duplicate/casefold
+        collisions or file-parent conflicts. NFC Unicode paths: at most 512 UTF-8 bytes,
+        255 bytes per segment.'
+    ComputeWorkspace:
+      type: object
+      additionalProperties: false
+      properties:
+        snapshot_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+        outputs:
+          type: array
+          maxItems: 128
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+            maxLength: 512
+      required:
+      - snapshot_id
+      - outputs
+    WorkspaceSnapshot:
+      type: object
+      additionalProperties: false
+      properties:
+        snapshot_id: &id001
+          type: string
+        session_id: *id001
+        instance_id: *id001
+        project_id: *id001
+        sha256:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+        size:
+          type: integer
+          minimum: 0
+          maximum: 524288
+        file_count:
+          type: integer
+          minimum: 0
+          maximum: 128
+        created_at:
+          type: number
+        artifact_ref:
+          $ref: '#/components/schemas/ComputeArtifact'
+      required:
+      - snapshot_id
+      - session_id
+      - instance_id
+      - project_id
+      - sha256
+      - size
+      - file_count
+      - created_at
+      - artifact_ref
+    WorkspaceResult:
+      type: object
+      additionalProperties: false
+      properties:
+        input_sha256: *id001
+        output_sha256: *id001
+        state:
+          type: string
+          enum:
+          - pending
+          - ready
+          - failed
+          - unavailable
+        artifact_ref:
+          $ref: '#/components/schemas/ComputeArtifact'
+      required:
+      - input_sha256
+      - output_sha256
+      - state
+      - artifact_ref
+    WorkspaceOutput:
+      type: object
+      additionalProperties: false
+      properties:
+        input_sha256: *id001
+        output_sha256: *id001
+        bundle:
+          $ref: '#/components/schemas/WorkspaceBundle'
+      required:
+      - input_sha256
+      - output_sha256
+      - bundle
+    UploadWorkspaceRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        bundle:
+          $ref: '#/components/schemas/WorkspaceBundle'
+      required:
+      - bundle
+    WorkspaceSnapshotEnvelope:
+      type: object
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/WorkspaceSnapshot'
+      required:
+      - data
+    WorkspaceOutputEnvelope:
+      type: object
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/WorkspaceOutput'
+      required:
+      - data
+    WorkspaceSnapshotListEnvelope:
+      type: object
+      additionalProperties: false
+      properties:
+        data:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/WorkspaceSnapshot'
+        next_cursor: *id001
+      required:
+      - data
+      - next_cursor

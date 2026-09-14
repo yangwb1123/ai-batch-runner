@@ -76,9 +76,7 @@ def _parse_stage_def(s: dict, global_git_commit: bool) -> Stage:
     """Map one schema-validated YAML stage definition onto a Stage."""
     return Stage(
         name=s.get("name", ""),
-        agent=s.get("agent", ""),
-        model=s.get("model", ""),
-        provider=s.get("provider", ""),
+        agent=s.get("agent", ""), model=s.get("model", ""), provider=s.get("provider", ""),
         from_dir=s.get("from_dir", ""),
         from_outputs=s.get("from_outputs", ""),
         suffix=s.get("suffix", ".md"),
@@ -823,6 +821,12 @@ def _read_only_stage_ok(stage: Stage, outputs: list,
     return True
 
 
+def _stage_git_baseline(stage: Stage):
+    if stage.git_commit or stage.read_only:
+        return capture_stage_dirty_paths(stage.cwd or os.getcwd(), stage.read_only_paths)
+    return None
+
+
 def _run_pipeline_stage(stage: Stage, stage_outputs: dict, failed_stages: list,
                         model_override: str, reuse: bool, timeout_override: int,
                         session_mode: str, session_name: str, validate_cmd: str,
@@ -830,9 +834,7 @@ def _run_pipeline_stage(stage: Stage, stage_outputs: dict, failed_stages: list,
                         original_prompt: str, decision_log: str, retries: int = 0, retry_delay: float = 10.0,
                         backoff: float = 2.0, session_state: Optional[set] = None) -> tuple[bool, list]:
     """Execute, gate, optionally fix one stage; return (stop, results)."""
-    git_baseline = capture_stage_dirty_paths(
-        stage.cwd or os.getcwd(), stage.read_only_paths
-    ) if stage.git_commit or stage.read_only else None
+    git_baseline = _stage_git_baseline(stage)
     results, stage_ok = execute_stage(stage, stage_outputs, model_override, reuse,
                                       timeout_override, session_mode, session_name,
                                       validate_cmd, reuse_legacy, fingerprint_mode,

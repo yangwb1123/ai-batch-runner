@@ -10,6 +10,7 @@ import threading
 from typing import Any, Mapping, Optional, Protocol, Sequence, runtime_checkable
 
 from .tui_codex_support import _bound, _stop_process
+from .provider_env import provider_child_env
 from .tui_protocol import RUNTIME_PROTOCOL_VERSION, RuntimeCapabilities
 from .tui_runtime import RuntimeInfo
 
@@ -188,7 +189,7 @@ class Transport(Protocol):
 def _default_spawn(argv: Sequence[str], cwd: str) -> subprocess.Popen[bytes]:
     return subprocess.Popen(
         list(argv), cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, start_new_session=True)
+        stderr=subprocess.PIPE, start_new_session=True, env=provider_child_env())
 
 
 class _LfReader:

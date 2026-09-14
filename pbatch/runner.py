@@ -47,6 +47,7 @@ from .runner_session import (bind_spawned_session as _bind_spawned_session,
                              unexpected_result as _unexpected_result)
 from .triage import clear_marker, is_retryable, task_key, write_marker
 from .process_exec import ValidationResult, _DrainTimeout, run_bounded
+from .provider_env import provider_child_env
 from .runner_cancel import (
     CancelledDrain as _CancelledDrain, cancel_requested as _cancel_requested,
     cancelled_result as _cancelled_result,
@@ -170,7 +171,7 @@ def _spawn_agent(cmd: list, workdir: str, env: dict) -> subprocess.Popen:
     appends piped stdin as a <stdin> block) swallow or hang on batch input."""
     return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             stdin=subprocess.DEVNULL, text=True, cwd=workdir,
-                            env=env, start_new_session=True)
+                            env=provider_child_env(env), start_new_session=True)
 def _agent_not_found(task: Task) -> TaskResult:
     """The agent binary is missing from PATH: a permanent, non-retryable
     failure (never saved as an artifact)."""

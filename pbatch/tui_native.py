@@ -356,6 +356,7 @@ class NativePipelineAttachment:
         self.workspace_id = expected
         self._consumer = consumer
         self._lock = threading.Lock()
+        self._delivery_lock = threading.Lock()
         self._closed = False
         self.events_accepted = 0
 
@@ -366,28 +367,38 @@ class NativePipelineAttachment:
 
     def __call__(self, event: RuntimeEvent) -> None:
         """Accept only read-only events emitted by the native observer."""
-        with self._lock:
-            if self._closed:
-                raise RuntimeError("native pipeline attachment is closed")
+        with self._delivery_lock:
+            with self._lock:
+                if self._closed:
+                    raise RuntimeError("native pipeline attachment is closed")
+                try:
+                    self._validate_event(event)
+                except Exception:
+                    self._closed = True
+                    raise
             try:
-                if not isinstance(event, RuntimeEvent):
-                    raise TypeError(
-                        "native pipeline attachment requires RuntimeEvent")
-                if event.workspace_id != self.workspace_id:
-                    raise ValueError(
-                        "native pipeline workspace does not match attachment")
-                if (event.extensions.get("runtime") != _NATIVE_RUNTIME
-                        or event.extensions.get("read_only") is not True):
-                    raise ValueError(
-                        "event is not a read-only native pipeline event")
                 self._consumer(event)
             except Exception:
-                self._closed = True
+                with self._lock:
+                    self._closed = True
                 raise
-            self.events_accepted += 1
+            with self._lock:
+                self.events_accepted += 1
+
+    def _validate_event(self, event: RuntimeEvent) -> None:
+        if not isinstance(event, RuntimeEvent):
+            raise TypeError(
+                "native pipeline attachment requires RuntimeEvent")
+        if event.workspace_id != self.workspace_id:
+            raise ValueError(
+                "native pipeline workspace does not match attachment")
+        if (event.extensions.get("runtime") != _NATIVE_RUNTIME
+                or event.extensions.get("read_only") is not True):
+            raise ValueError(
+                "event is not a read-only native pipeline event")
 
     def close(self) -> None:
-        """Stop accepting events; closing never controls the pipeline itself."""
+        """Reject new events while already admitted callbacks may finish."""
         with self._lock:
             self._closed = True
 

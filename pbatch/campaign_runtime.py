@@ -11,7 +11,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import config
+from . import config, metering
 from .campaign_models import Direction
 from .campaign_state import git_worktree_evidence
 from .campaign_worktree import finalize_worktree, isolated_status
@@ -59,6 +59,35 @@ def _print_plan(context, modules: list[str]) -> None:
 
 _ACTIVE_PIPELINES: set[subprocess.Popen] = set()
 _ACTIVE_LOCK = threading.Lock()
+
+
+def isolated_command(worktree: Path, pipeline_path: Path, logfile: Path,
+                     agent_args: list[str]) -> list[str]:
+    local_entrypoint = worktree / "pi-batch.py"
+    tool_entrypoint = Path(config.TOOL_ROOT) / "pi-batch.py"
+    # Materialized campaign pipelines use the current runner schema. Prefer
+    # it over an older project-local vendored shim while retaining the target
+    # worktree as cwd for project config and assets.
+    entrypoint = tool_entrypoint if tool_entrypoint.is_file() else local_entrypoint
+    runner = ([sys.executable, str(entrypoint)] if entrypoint.is_file()
+              else [sys.executable, "-m", "pbatch"])
+    cmd = [*runner, str(pipeline_path), "--reuse", "--reuse-fingerprint",
+           "--log-file", str(logfile)]
+    if metering.EVENTS_FILE:
+        cmd.extend(["--events-file", metering.EVENTS_FILE])
+    # Older project-local shims may lack --run-id; coordinator outcomes remain
+    # authoritative while those children create their own metering run ids.
+    if metering.RUN_ID and entrypoint == tool_entrypoint:
+        cmd.extend(["--run-id", metering.RUN_ID])
+    return [*cmd, *agent_args]
+
+
+def isolated_failure_reason(settings, returncode: int, timed_out: bool, stalled: bool) -> str:
+    if stalled:
+        return f"isolated pipeline made no progress for {settings.pipeline_no_progress_timeout}s"
+    if timed_out:
+        return f"isolated pipeline timed out after {settings.pipeline_timeout}s"
+    return "" if returncode == 0 else f"isolated pipeline exited {returncode}"
 
 
 def copy_local_analysis(worktree: Path, direction: Direction,

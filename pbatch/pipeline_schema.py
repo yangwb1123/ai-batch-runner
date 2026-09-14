@@ -106,17 +106,22 @@ def _field_errors(stage: dict, prefix: str) -> list[str]:
         value = stage.get(key, minimum)
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
             errors.append(f"{prefix}.{key} must be an integer >= {minimum}")
-    if "read_only_paths" in stage and (
-            not isinstance(stage["read_only_paths"], list)
-            or not all(isinstance(item, str) and item.strip()
-                       for item in stage["read_only_paths"])):
-        errors.append(f"{prefix}.read_only_paths must be a string list")
+    errors.extend(_read_only_path_errors(stage, prefix))
     errors.extend(_command_list_errors(stage, prefix))
     for key in ("validate", "validate_cmd", "gate_fix_validate"):
         value = stage.get(key)
         if value is not None and not isinstance(value, str):
             errors.append(f"{prefix}.{key} must be a string or null")
     return errors
+
+
+def _read_only_path_errors(stage: dict, prefix: str) -> list[str]:
+    if "read_only_paths" not in stage:
+        return []
+    paths = stage["read_only_paths"]
+    if not isinstance(paths, list) or not all(isinstance(item, str) and item.strip() for item in paths):
+        return [f"{prefix}.read_only_paths must be a string list"]
+    return []
 
 
 def _source_errors(stage: dict, prefix: str, seen: set[str]) -> list[str]:

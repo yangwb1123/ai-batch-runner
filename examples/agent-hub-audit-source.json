@@ -1,0 +1,7 @@
+{
+  "id": "agent-hub",
+  "tenant_id": "<TENANT_ID>",
+  "name": "Agent Hub lifecycle events",
+  "allowed_client_ids": ["<SIGNED_AUDIT_WRITER_CLIENT_ID>"],
+  "active": true
+}

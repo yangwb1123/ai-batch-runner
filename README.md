@@ -35,6 +35,16 @@ pi-batch ops serve --control --token-file ~/.config/pbatch/ops-token
 默认只读；`--control` 只允许操作服务端启动时绑定的 workspace/agent，历史会话不可
 隐式 resume，详细边界见 [`docs/RELEASING.md`](docs/RELEASING.md)。
 
+跨设备、跨实例会话使用 `pi-batch fleet`：启动 Agent Hub 与各实例的出站 Gateway，
+通过 CLI、`fleet tui` 或 Flutter Console 查看授权会话、发送 prompt、接收事件和取消 turn。
+`fleet compute` 提供设备资源目录、计算任务与调度 TUI；`fleet agent --compute-tools`
+让当前会话 Agent 在授权范围内调度设备，见 [计算配置](docs/agent-hub/COMPUTE.md)。
+NVIDIA 物理 GPU 支持按卡数和每卡空闲显存选机、分配展示与执行前复核，见
+[GPU 计算](docs/agent-hub/GPU.md)。
+支持 Snaplink JWT 和实例授权；本地试用、API 契约及生态接入边界见
+[`docs/AGENT_HUB.md`](docs/AGENT_HUB.md)。Aero ID 成员门禁、IM 通知、Audit 入账回执与
+`fleet integrations` 运维入口见 [生态集成](docs/agent-hub/ECOSYSTEM.md)。
+
 构建 wheel 安装时会同时携带规则注册表、验证脚本、默认流水线、角色模板和
 评估集；`pi-batch health --json` 会检查分发资产是否完整。
 

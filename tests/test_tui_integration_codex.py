@@ -21,9 +21,17 @@ from textual.widgets import Input, Markdown
 
 from pbatch.tui import PiBatchTUI, TuiOptions
 from pbatch.tui_backend import TUIBackend
+from pbatch import config
 
 pytestmark = pytest.mark.skipif(
     shutil.which("codex") is None, reason="codex CLI not installed")
+
+
+@pytest.fixture(autouse=True)
+def _use_codex_account_defaults(monkeypatch):
+    # This repository's default model is Pi-specific. A real Codex smoke test
+    # should use the user's configured Codex model, without rewriting it.
+    monkeypatch.setattr(config, "AGENT_DEFAULT_MODEL", "")
 
 
 def _run(coro) -> None:
@@ -72,8 +80,9 @@ def test_tui_core_loop_with_real_codex_two_turns(tmp_path: Path):
                               "Reply with exactly: GOT_IT")
             await pilot.press("enter")
             await _wait_until(lambda: not app._busy, pilot)
+            assert backend.snapshot()["status"] == "succeeded", backend.snapshot()
             source = app.query_one("#conversation", Markdown).source
-            assert "GOT_IT" in source, f"turn1 reply missing; source={source[-400:]}"
+            assert "GOT_IT" in app._runtime_view.assistant_text, source[-400:]
             # structured path engaged: the immutable runtime snapshot holds
             # typed command/file/usage cards from the real codex run
             timeline_kinds = [
@@ -92,7 +101,7 @@ def test_tui_core_loop_with_real_codex_two_turns(tmp_path: Path):
             await pilot.press("enter")
             await _wait_until(lambda: not app._busy, pilot)
             source2 = app.query_one("#conversation", Markdown).source
-            assert "KAPPA_7" in source2, \
+            assert "KAPPA_7" in app._runtime_view.assistant_text, \
                 f"turn2 recall failed; source={source2[-400:]}"
             assert backend.snapshot()["turn"] == 2
 

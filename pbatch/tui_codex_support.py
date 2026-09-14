@@ -17,6 +17,7 @@ from typing import Any
 
 from .tui_protocol import RUNTIME_PROTOCOL_VERSION
 from .tui_runtime import RuntimeCapabilities, RuntimeInfo
+from .provider_env import provider_child_env
 
 CODEX_EXEC_RUNTIME_NAME = "codex-exec"
 MAX_FIELD_BYTES = 48 * 1024
@@ -55,7 +56,8 @@ def _option_tail_index(argv: tuple[str, ...]) -> int:
 def _default_spawn(argv: Sequence[str], cwd: str) -> subprocess.Popen[str]:
     return subprocess.Popen(
         list(argv), cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        stdin=subprocess.DEVNULL, text=True, start_new_session=True)
+        stdin=subprocess.DEVNULL, text=True, start_new_session=True,
+        env=provider_child_env())
 
 
 def _stop_process(process: Any) -> None:

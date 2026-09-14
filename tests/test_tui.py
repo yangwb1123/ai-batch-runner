@@ -275,7 +275,7 @@ def test_pipeline_command_starts_read_only_native_projection(tmp_path: Path,
     def fake_run(pipeline, **kwargs):
         calls.append((pipeline.name, kwargs.get("session_mode")))
         pipeline_started.set()
-        pipeline_release.wait(timeout=2)
+        pipeline_release.wait()
         observer = NativePipelineObserver(
             kwargs["event_sink"], str(tmp_path), session_id="pipeline-session",
             run_id="pipeline-run", turn_id="pipeline-turn")
@@ -292,31 +292,35 @@ def test_pipeline_command_starts_read_only_native_projection(tmp_path: Path,
             TuiOptions(cwd=str(tmp_path), runtime="legacy"),
             backend_factory=FakeBackend)
         async with app.run_test(size=(120, 40)) as pilot:
-            composer = app.query_one("#composer", Input)
-            composer.value = "/pipeline demo.yaml"
-            await pilot.press("enter")
-            await _wait_until(pipeline_started.is_set, pilot)
-            await pilot.pause()
+            try:
+                composer = app.query_one("#composer", Input)
+                composer.value = "/pipeline demo.yaml"
+                await pilot.press("enter")
+                await _wait_until(pipeline_started.is_set, pilot)
+                await pilot.pause()
 
-            cancel_calls = app._backend.cancel_calls
-            app.action_cancel()
-            composer.value = "must not queue"
-            await pilot.press("enter")
-            assert app._backend.cancel_calls == cancel_calls
-            assert not app._follow_up_queue.items
-            pipeline_release.set()
-            await _wait_until(lambda: not app._busy, pilot)
+                cancel_calls = app._backend.cancel_calls
+                app.action_cancel()
+                composer.value = "must not queue"
+                await pilot.press("enter")
+                assert app._backend.cancel_calls == cancel_calls
+                assert not app._follow_up_queue.items
+                assert app._busy
+                pipeline_release.set()
+                await _wait_until(lambda: not app._busy, pilot)
 
-            assert calls == [("demo", "new")]
-            assert app._backend.prompts == []
-            assert not (tmp_path / ".pi-batch.lock").exists()
-            assert app._runtime_view.turn_state == TurnState.SUCCEEDED
-            assert [node.actor_id for node in app._runtime_view.actors.nodes] == [
-                "pipeline", "stage_1_build"]
-            assert app._native_pipeline_attachment is not None
-            cancel_calls = app._backend.cancel_calls
-            app.action_cancel()
-            assert app._backend.cancel_calls == cancel_calls
+                assert calls == [("demo", "new")]
+                assert app._backend.prompts == []
+                assert not (tmp_path / ".pi-batch.lock").exists()
+                assert app._runtime_view.turn_state == TurnState.SUCCEEDED
+                assert [node.actor_id for node in app._runtime_view.actors.nodes] == [
+                    "pipeline", "stage_1_build"]
+                assert app._native_pipeline_attachment is not None
+                cancel_calls = app._backend.cancel_calls
+                app.action_cancel()
+                assert app._backend.cancel_calls == cancel_calls
+            finally:
+                pipeline_release.set()
 
     _run(scenario())
 
@@ -454,7 +458,7 @@ def test_native_pipeline_attach_projects_typed_timeline_without_control(tmp_path
                 pilot)
             assert not app._start_turn("must wait for pipeline")
             assert app._backend.prompts == []
-            worker.join(timeout=2)
+            await _wait_until(lambda: not worker.is_alive(), pilot)
             await _wait_until(
                 lambda: app._runtime_view.turn_state == TurnState.SUCCEEDED,
                 pilot)
