@@ -22,6 +22,7 @@ BASE="${PBATCH_GATE_BASE:-HEAD}"
 FRONT_CHECK="$RUNNER_ROOT/scripts/check-frontend-quality.py"
 BACK_CHECK="$RUNNER_ROOT/scripts/check-backend-quality.py"
 UI_CHECK="$RUNNER_ROOT/scripts/check-ui-spec.py"
+I18N_CHECK="$RUNNER_ROOT/scripts/check-i18n.py"
 NO_DIST="$RUNNER_ROOT/scripts/sverp/check-no-dist-edit.sh"
 FULL_GATE="$RUNNER_ROOT/scripts/sverp/check-sverpweb.sh"
 
@@ -30,6 +31,7 @@ cd "$ROOT"
 test -f package.json || { echo "FAIL: package.json not found — not sverpweb-stable?" >&2; exit 1; }
 test -f apps/api/package.json || { echo "FAIL: apps/api/package.json not found" >&2; exit 1; }
 test -f apps/web/package.json || { echo "FAIL: apps/web/package.json not found" >&2; exit 1; }
+test -f "$I18N_CHECK" || { echo "FAIL: i18n checker not found: $I18N_CHECK" >&2; exit 1; }
 
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
   || { echo "FAIL: engineering gate requires a git work tree" >&2; exit 1; }
@@ -40,6 +42,13 @@ bash "$NO_DIST" "$ROOT"
 
 echo "==> git diff --check (base=$BASE)"
 git diff --check "$BASE" --
+
+if test -f apps/web/src/i18n.ts; then
+  echo "==> i18n engineering gate (base=$BASE)"
+  python "$I18N_CHECK" --root "$ROOT" --base "$BASE"
+else
+  echo "PASS: i18n gate not applicable (apps/web/src/i18n.ts is absent)"
+fi
 
 # Collect tracked staged/unstaged changes and untracked files. NUL separation
 # prevents a filename containing whitespace from becoming another target.
@@ -102,7 +111,7 @@ for file in "${CHANGED[@]}"; do
   esac
 done
 
-echo "PASS: changed-file engineering checks (frontend=$frontend_count backend=$backend_count ui=$ui_count)"
+echo "PASS: changed-file engineering checks (frontend=$frontend_count backend=$backend_count ui=$ui_count i18n=checked)"
 
 echo "==> repository engineering gate"
 bash "$FULL_GATE" "$ROOT"
