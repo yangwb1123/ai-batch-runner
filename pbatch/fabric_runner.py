@@ -35,9 +35,15 @@ from .fabric_exec import _ACTIVE_SSH_PROCS, _ACTIVE_SSH_LOCK
 from .fabric_rpc import RpcClient, tls_context_for_url
 from .capabilities import authorize_grant
 from .fabric_outbox import EvidenceOutbox, EvidenceOutboxError
+from .fabric_runner_monitor import TaskMonitor
+from .fabric_gpu import probe_nvidia_gpus
+from .fabric_runner_gpu import (preflight_gpu, report_cancel_if_requested,
+                                report_gpu_preflight_failure)
+from .fabric_runner_workspace import execute_workspace_task
 
 KEY_DIR = "keys"
 REGISTER_BACKOFF_MAX = 30.0
+PROBE_REFRESH_SECONDS = 12 * 60 * 60
 
 
 def _safe_checkpoint_path(cwd: str, remote: str) -> Optional[Path]:
@@ -109,7 +115,39 @@ def _register_with_meta(client: RpcClient, name: str,
         meta["region"] = _META["region"]
     if _META.get("attestation"):
         meta["attestation"] = _META["attestation"]
-    return client.register(name, local_probe(), **meta)
+    return client.register(name, local_probe("full"), **meta)
+
+
+def _refresh_probe_if_due(client: RpcClient, name: str, state_dir: str,
+                          due: bool) -> bool:
+    """Refresh full capabilities under the existing approved identity."""
+    if not due:
+        return True
+    result = _register_with_meta(client, name, state_dir)
+    if result.get("approved"):
+        return True
+    log.warning("Runner 能力探测刷新未获批准：%s",
+                result.get("error", result.get("message", "?")))
+    return False
+
+
+def _runner_cycle(client: RpcClient, name: str, state_dir: str,
+                  outbox: EvidenceOutbox, next_probe_refresh: float) -> tuple:
+    """Maintain runner liveness, refresh capability and execute one lease."""
+    flush_evidence(client, outbox)
+    beat = client.heartbeat(local_probe()["dynamic_state"], running_attempts())
+    if not beat.get("ok"):
+        log.warning("心跳未确认：%s", beat.get("error", "?"))
+    due = time.monotonic() >= next_probe_refresh
+    if not _refresh_probe_if_due(client, name, state_dir, due):
+        return False, next_probe_refresh
+    if due:
+        next_probe_refresh = time.monotonic() + PROBE_REFRESH_SECONDS
+    polled = client.poll_tasks(limit=1)
+    for task in polled.get("tasks", []):
+        execute_task(client, task, outbox)
+    client.reconcile(running_attempts())
+    return True, next_probe_refresh
 
 
 # 运行时元数据（runner_main 从 CLI 参数注入）。
@@ -194,22 +232,53 @@ def execute_task(client: RpcClient, task: dict,
     allowed, reasons = _authorize_task_grant(client, task)
     if not allowed:
         return _report_grant_denial(client, task, reasons, outbox)
+    if task.get("workspace") is not None:
+        return _dispatch_workspace_task(client, task, outbox)
     if not _start_task(client, task):
-        return {"accepted": False, "reason": "task start rejected"}
-    _restore_checkpoint(client, task)
-    spec = ExecutionSpec(
-        argv=task.get("argv", []), cwd=task.get("cwd", "") or ".",
-        timeout=float(task.get("timeout", 60) or 60),
-        effect_class=str(task.get("effect_class", "read_only")),
-        mobility=str(task.get("mobility", "stateless")),
-        label=f"task:{task.get('task_id', '')}")
-    evidence = LocalExecutionTarget().execute(spec)
+        return report_cancel_if_requested(client, task, outbox,
+                                          _submit_evidence) or {
+            "accepted": False, "reason": "task start rejected"}
+    cancel_event = threading.Event()
+    monitor = TaskMonitor(client, str(task.get("task_id", "")),
+                          cancel_event)
+    monitor.start()
+    try:
+        resources = task.get("resources") or {}
+        assignment, reason = preflight_gpu(
+            resources, task, probe_nvidia_gpus)
+        if not reason:
+            _restore_checkpoint(client, task)
+        if not _start_task(client, task):
+            return report_cancel_if_requested(client, task, outbox,
+                                              _submit_evidence) or {
+                "accepted": False, "reason": "task start rejected"}
+        if reason:
+            return report_gpu_preflight_failure(
+                client, task, assignment, reason, outbox, _submit_evidence)
+        spec = ExecutionSpec(
+            argv=task.get("argv", []), cwd=task.get("cwd", "") or ".",
+            timeout=float(task.get("timeout", 60) or 60),
+            effect_class=str(task.get("effect_class", "read_only")),
+            mobility=str(task.get("mobility", "stateless")),
+            label=f"task:{task.get('task_id', '')}",
+            cancel_event=cancel_event, gpu_assignment=assignment,
+            restrict_gpu_visibility=isinstance(task.get("resources"), dict))
+        evidence = LocalExecutionTarget().execute(spec)
+    finally:
+        monitor.stop()
     result = _submit_evidence(client, task, evidence.to_dict(), outbox)
     if not result.get("accepted"):
         log.warning("任务 %s 证据被拒：%s", task.get("task_id", "?"),
                     result.get("reason", "?"))
     _save_checkpoint(client, task, spec.cwd)
     return result
+
+
+def _dispatch_workspace_task(client, task, outbox):
+    return execute_workspace_task(
+        client, task, outbox, start_task=_start_task,
+        submit_evidence=_submit_evidence,
+        authorize_task_grant=_authorize_task_grant)
 
 
 def _start_task(client: RpcClient, task: dict) -> bool:
@@ -227,7 +296,8 @@ def _start_task(client: RpcClient, task: dict) -> bool:
     return True
 
 
-def _authorize_task_grant(client: RpcClient, task: dict) -> tuple:
+def _authorize_task_grant(client: RpcClient, task: dict,
+                          cwd: Optional[str] = None) -> tuple:
     """Runner 执行前验票：票据必须绑定本设备与本任务。"""
     lease = task.get("lease") or {}
     grant = lease.get("grant")
@@ -235,7 +305,7 @@ def _authorize_task_grant(client: RpcClient, task: dict) -> tuple:
     return authorize_grant(
         {"id": "device.execute", "domain": "ops", "risk": "low"},
         grant, 1, client.device_id, client.device_id, "execute",
-        str(task.get("cwd", "")) or "*", environment,
+        str(cwd if cwd is not None else task.get("cwd", "")) or "*", environment,
         str(task.get("effect_class", "read_only")),
         device_zone=environment,
         data_class=str(task.get("data_class", "public")),
@@ -324,6 +394,7 @@ def run_runner_loop(base_url: str, name: str, state_dir: str = "",
     backoff = 2.0
     approved = False
     drill_remaining = max(0, int(drill_skip_heartbeats))
+    next_probe_refresh = 0.0
     log.info("runner %s (%s) → %s", name, key["device_id"], base_url)
     while not (stop_event is not None and stop_event.is_set()):
         try:
@@ -337,6 +408,7 @@ def run_runner_loop(base_url: str, name: str, state_dir: str = "",
                     backoff = min(backoff * 2, REGISTER_BACKOFF_MAX)
                     continue
                 backoff = 2.0
+                next_probe_refresh = time.monotonic() + PROBE_REFRESH_SECONDS
                 log.info("runner %s 已批准，进入心跳循环", name)
             if drill_remaining > 0:
                 drill_remaining -= 1
@@ -344,15 +416,8 @@ def run_runner_loop(base_url: str, name: str, state_dir: str = "",
                             name, drill_remaining + 1)
                 _sleep(heartbeat_interval, stop_event)
                 continue
-            flush_evidence(client, outbox)
-            beat = client.heartbeat(local_probe()["dynamic_state"],
-                                    running_attempts())
-            if not beat.get("ok"):
-                log.warning("心跳未确认：%s", beat.get("error", "?"))
-            polled = client.poll_tasks()
-            for task in polled.get("tasks", []):
-                execute_task(client, task, outbox)
-            client.reconcile(running_attempts())
+            approved, next_probe_refresh = _runner_cycle(
+                client, name, state_dir, outbox, next_probe_refresh)
         except Exception as exc:  # 断线：退避重连（含控制平面重启场景）
             log.warning("控制平面不可达（%s），%gs 后重连", exc, backoff)
             approved = False

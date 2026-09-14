@@ -1,0 +1,15 @@
+{
+  "tenant_id": "<TENANT_ID>",
+  "schema_id": "agent-hub.lifecycle",
+  "version": 1,
+  "event_type": "agent.lifecycle",
+  "required_fields": [
+    "hub_event_id", "cursor", "kind", "created_at", "actor_subject", "status"
+  ],
+  "allowed_fields": [
+    "hub_event_id", "cursor", "kind", "created_at", "instance_id",
+    "session_id", "turn_id", "task_id", "actor_subject", "trigger_subject", "status"
+  ],
+  "classification": "internal",
+  "active": true
+}

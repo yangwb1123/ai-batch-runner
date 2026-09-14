@@ -355,6 +355,7 @@ def test_markdown_headings_are_visible_but_not_implementable():
 
 
 def test_analysis_retry_removes_invalid_artifact(monkeypatch, tmp_path):
+    monkeypatch.setenv("PBATCH_RUNTIME_HOME", str(tmp_path / "private-runtime"))
     task = Task(prompt="analyze", output=str(tmp_path / "analysis.json"),
                 cwd=str(tmp_path))
     calls = []
@@ -372,9 +373,10 @@ def test_analysis_retry_removes_invalid_artifact(monkeypatch, tmp_path):
     results = run_analysis_tasks([task], 1, 1, retry_delay=0, validator=valid)
     assert calls == [1, 1]
     assert results[str(task.output_path())].success is True
-    rejected = list((tmp_path / ".pi-batch" / "rejected").glob(
+    rejected = list((config.data_dir(str(tmp_path)) / "rejected").glob(
         "analysis-*.rejected.json"))
     assert rejected and rejected[0].read_text(encoding="utf-8") == "not json"
+    assert not (tmp_path / ".pi-batch").exists()
 
 
 def test_state_store_reuse_corrupt_tolerance_summary_and_history(tmp_path):
@@ -607,7 +609,7 @@ def test_parallel_ready_requires_clean_git(tmp_path):
     assert parallel_ready(tmp_path)[0] is False
 
 
-def test_parallel_directions_use_real_isolated_worktrees(tmp_path):
+def test_parallel_directions_use_real_isolated_worktrees(tmp_path, monkeypatch):
     (tmp_path / "pi-batch.py").write_text(
         "import pathlib, sys\n"
         "log = pathlib.Path(sys.argv[sys.argv.index('--log-file') + 1])\n"
@@ -615,6 +617,7 @@ def test_parallel_directions_use_real_isolated_worktrees(tmp_path):
         "    handle.write('CHILD-LOG\\n')\n"
         "print('ISOLATED-MODEL-BODY')\n",
         encoding="utf-8")
+    monkeypatch.setattr(config, "TOOL_ROOT", str(tmp_path))
     (tmp_path / "pipeline.yaml").write_text(
         "stages:\n  - name: requirements\n    from_prompt: old\n    output: report.md\n",
         encoding="utf-8")
@@ -654,12 +657,13 @@ def test_parallel_directions_use_real_isolated_worktrees(tmp_path):
         assert f"docs/auto/runs/{outcome.direction.direction_id}/pipeline.yaml" in committed
 
 
-def test_isolated_pipeline_rejects_failed_final_commit_hook(tmp_path):
+def test_isolated_pipeline_rejects_failed_final_commit_hook(tmp_path, monkeypatch):
     (tmp_path / "pi-batch.py").write_text(
         "import pathlib, sys\n"
         "log = pathlib.Path(sys.argv[sys.argv.index('--log-file') + 1])\n"
         "log.write_text('CHILD-LOG\\n', encoding='utf-8')\n",
         encoding="utf-8")
+    monkeypatch.setattr(config, "TOOL_ROOT", str(tmp_path))
     (tmp_path / "pipeline.yaml").write_text(
         "stages:\n  - name: requirements\n    from_prompt: old\n    output: report.md\n",
         encoding="utf-8")
@@ -720,13 +724,14 @@ def test_existing_worktree_fast_forwards_baseline_and_rejects_dirty(tmp_path):
         _ensure_worktree(tmp_path, settings, direction)
 
 
-def test_isolated_pipeline_has_hard_wall_clock_timeout(tmp_path):
+def test_isolated_pipeline_has_hard_wall_clock_timeout(tmp_path, monkeypatch):
     marker = tmp_path / "survived"
     (tmp_path / "pi-batch.py").write_text(
         "import pathlib, time\n"
         "time.sleep(30)\n"
         f"pathlib.Path({str(marker)!r}).write_text('late')\n",
         encoding="utf-8")
+    monkeypatch.setattr(config, "TOOL_ROOT", str(tmp_path))
     (tmp_path / "pipeline.yaml").write_text(
         "stages:\n  - name: requirements\n    from_prompt: old\n    output: report.md\n",
         encoding="utf-8")
@@ -747,11 +752,12 @@ def test_isolated_pipeline_has_hard_wall_clock_timeout(tmp_path):
     assert not marker.exists()
 
 
-def test_isolated_pipeline_has_no_progress_watchdog(tmp_path):
+def test_isolated_pipeline_has_no_progress_watchdog(tmp_path, monkeypatch):
     (tmp_path / "pi-batch.py").write_text(
         "import time\n"
         "time.sleep(30)\n",
         encoding="utf-8")
+    monkeypatch.setattr(config, "TOOL_ROOT", str(tmp_path))
     (tmp_path / "pipeline.yaml").write_text(
         "stages:\n  - name: requirements\n    from_prompt: old\n    output: report.md\n",
         encoding="utf-8")
@@ -772,6 +778,30 @@ def test_isolated_pipeline_has_no_progress_watchdog(tmp_path):
     assert "made no progress for 1s" in outcome.reason
     assert outcome.no_progress_seconds >= 1
     assert outcome.elapsed < 6
+
+
+def test_isolated_command_falls_back_to_tool_runner_and_keeps_worktree_cwd(
+        tmp_path, monkeypatch):
+    from pbatch.campaign_runtime import isolated_command
+
+    worktree = tmp_path / "worktree"
+    tool_root = tmp_path / "tool-root"
+    worktree.mkdir()
+    tool_root.mkdir()
+    selected = tmp_path / "selected-cwd.txt"
+    (tool_root / "pi-batch.py").write_text(
+        "import pathlib\n"
+        f"pathlib.Path({str(selected)!r}).write_text(str(pathlib.Path.cwd()))\n",
+        encoding="utf-8")
+    monkeypatch.setattr(config, "TOOL_ROOT", str(tool_root))
+
+    cmd = isolated_command(
+        worktree, worktree / "pipeline.yaml", worktree / "campaign.log", [])
+    assert cmd[1] == str(tool_root / "pi-batch.py")
+    result = subprocess.run(cmd, cwd=worktree, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert selected.read_text(encoding="utf-8") == str(worktree.resolve())
 
 
 def test_campaign_end_to_end_and_fingerprint_reuse(tmp_path):

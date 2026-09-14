@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import ssl
 import time
@@ -25,11 +26,38 @@ import uuid
 from typing import Optional
 from urllib import error as urlerror
 from urllib import request as urlrequest
+from urllib.parse import urlsplit
 
 # 请求时间窗（秒）与 nonce 防重放缓存上限（有界，超限清空）。
 SIGN_TIMESTAMP_WINDOW = 300
 NONCE_CACHE_MAX = 10000
 BODY_MAX_BYTES = 1024 * 1024
+
+
+class _NoRedirect(urlrequest.HTTPRedirectHandler):
+    """Control-plane credentials and signatures never follow redirects."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _validate_hub_transport(url: str) -> None:
+    """Hub callers may use HTTPS or a literal numeric loopback URL only."""
+    parsed = None
+    try:
+        parsed = urlsplit(str(url))
+        host = parsed.hostname or ""
+        if (parsed.scheme == "https" and host and not parsed.username
+                and not parsed.password):
+            return
+        loopback = ipaddress.ip_address(host).is_loopback
+    except (ValueError, TypeError):
+        loopback = False
+    if (parsed is not None and parsed.scheme == "http" and loopback
+            and not parsed.username
+            and not parsed.password):
+        return
+    raise ValueError("Hub Fabric connections require HTTPS or literal loopback")
 
 
 def build_tls_context(ca_file: str = "", cert_file: str = "",
@@ -119,11 +147,11 @@ def rpc_post(url: str, secret: str, method: str, path: str,
                              headers={"Content-Type": "application/json"},
                              method=method)
     try:
-        opener = urlrequest.urlopen
-        kwargs = {"timeout": timeout}
+        handlers = [_NoRedirect()]
         if ssl_context is not None:
-            kwargs["context"] = ssl_context
-        with opener(req, **kwargs) as resp:
+            handlers.append(urlrequest.HTTPSHandler(context=ssl_context))
+        opener = urlrequest.build_opener(*handlers)
+        with opener.open(req, timeout=timeout) as resp:
             body = resp.read(BODY_MAX_BYTES + 1)
             if len(body) > BODY_MAX_BYTES:
                 return (0, {"error": "response too large"})
@@ -142,7 +170,10 @@ class RpcClient:
     """设备 Runner 侧客户端：注册 / 心跳 / 租约 / 证据 / 对账。"""
 
     def __init__(self, base_url: str, secret: str, device_id: str,
-                 ssl_context: Optional[ssl.SSLContext] = None):
+                 ssl_context: Optional[ssl.SSLContext] = None,
+                 require_secure_transport: bool = False):
+        if require_secure_transport:
+            _validate_hub_transport(base_url)
         self.base_url = base_url.rstrip("/")
         self.secret = secret
         self.device_id = device_id
@@ -223,8 +254,11 @@ class RpcClient:
                     estimated_cost: float = 0.0,
                     data_class: str = "public",
                     target_device: str = "",
-                    network_budget_bytes: int = 0) -> dict:
-        code, data = self._post("/task/submit", {
+                    network_budget_bytes: int = 0,
+                    request_id: str = "", resources: Optional[dict] = None,
+                    hub_context: Optional[dict] = None,
+                    workspace: Optional[dict] = None) -> dict:
+        payload = {
             "device_id": self.device_id, "argv": argv, "cwd": cwd,
             "timeout": timeout, "effect_class": effect_class,
             "data_class": data_class,
@@ -234,8 +268,20 @@ class RpcClient:
             "estimated_cost": estimated_cost,
             "network_budget_bytes": network_budget_bytes,
             "target_device": target_device,
-        })
-        return data if code == 200 else {"task": None, "error": data}
+        }
+        if request_id:
+            payload["request_id"] = request_id
+        if resources is not None:
+            payload["resources"] = resources
+        if hub_context is not None:
+            payload["hub_context"] = hub_context
+        if workspace is not None:
+            payload["workspace"] = workspace
+        code, data = self._post("/task/submit", payload)
+        if code == 200:
+            return data
+        return {"task": None, "error": data, "status_code": code,
+                "transport_error": code == 0}
 
     def submit_gang(self, targets: list, argv: list, cwd: str = "",
                     timeout: float = 60.0, effect_class: str = "read_only",
@@ -295,9 +341,22 @@ class RpcClient:
         })
         return data if code == 200 else {"ok": False, "error": data}
 
-    def poll_tasks(self) -> dict:
-        code, data = self._post("/task/poll", {"device_id": self.device_id})
+    def poll_tasks(self, limit: Optional[int] = None) -> dict:
+        payload = {"device_id": self.device_id}
+        if limit is not None:
+            if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
+                raise ValueError("task poll limit must be between 1 and 200")
+            payload["limit"] = limit
+        code, data = self._post("/task/poll", payload)
         return data if code == 200 else {"tasks": [], "error": data}
+
+    def inventory(self, target_device_ids: list[str]) -> dict:
+        """Read a bounded, signed inventory projection for requested devices."""
+        code, data = self._post("/inventory", {
+            "device_id": self.device_id,
+            "target_device_ids": target_device_ids,
+        })
+        return data if code == 200 else {"devices": [], "error": data}
 
     def task_start(self, task_id: str, lease: dict) -> dict:
         code, data = self._post("/task/start", {

@@ -86,6 +86,10 @@ def _evidence_shape(evidence: dict) -> tuple:
     result = str(evidence.get("result", ""))
     if result not in ("passed", "failed", "inconclusive"):
         return "", "", "", "invalid evidence result"
+    if ("cancelled" in evidence and not isinstance(evidence["cancelled"], bool)):
+        return "", "", "", "evidence cancelled must be boolean"
+    if evidence.get("cancelled") is True and result != "inconclusive":
+        return "", "", "", "cancelled evidence must be inconclusive"
     stdout, stderr = evidence.get("stdout", ""), evidence.get("stderr", "")
     if not isinstance(stdout, str) or not isinstance(stderr, str):
         return "", "", "", "evidence stdout/stderr must be strings"

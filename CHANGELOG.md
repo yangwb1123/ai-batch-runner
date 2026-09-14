@@ -7,6 +7,17 @@
 
 ### 新增
 
+- `fleet` Agent Hub：持久实例/会话目录、prompt 幂等路由、事件游标与取消；
+  出站 Gateway 拥有本地 AgentSession，支持 CLI/TUI 和 Flutter Console 接入。
+  Snaplink JWT 按 tenant、scope 和实例授权过滤，Gateway 换代拒绝旧进程写入。
+- `fleet compute`：授权设备目录、CPU/内存调度、持久幂等计算任务与运行中取消；
+  CLI/TUI/Console 可操作，Gateway 可为当前轮次提供受限调度工具。
+  可选 Aero Vault 固定版本证据归档；工作区传输仍待后续实现。
+- NVIDIA CUDA 物理 GPU 探测、逐卡显存选机、持久 UUID 分配、Runner 执行前复核
+  和证据绑定；CLI/TUI/Console 支持 GPU 输入和展示，旧 CPU 请求保持幂等兼容。
+- Aero ID 成员投影门禁、Aero IM 终态通知和 Audit Governance 入账回执；
+  持久 outbox 支持有界重试、断点恢复、固定接收人和租户/实例隔离的 `fleet integrations` 运维入口。
+- Hub 本地开发配置初始化、生产配置样例和 OpenAPI 契约，见 `docs/AGENT_HUB.md`。
 - GitHub Release 单文件二进制构建与跨平台冒烟流程。
 - `ops serve --control` 手机会话列表、服务端会话创建、有界指令提交、状态轮询和本地停止。
 

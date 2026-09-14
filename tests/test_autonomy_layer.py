@@ -37,8 +37,10 @@ def test_generate_actions_no_failures():
 
 
 def test_reflection_actions_repeat_findings(tmp_path, monkeypatch):
-    state_dir = tmp_path / ".pi-batch"
-    state_dir.mkdir()
+    from pbatch import config
+    monkeypatch.setenv("PBATCH_RUNTIME_HOME", str(tmp_path / "private-runtime"))
+    state_dir = config.data_dir(str(tmp_path))
+    state_dir.mkdir(parents=True)
     reflections = state_dir / "reflections.jsonl"
     records = [
         {"findings": [{"type": "missed_requirement",
@@ -52,6 +54,7 @@ def test_reflection_actions_repeat_findings(tmp_path, monkeypatch):
         json.dumps(r) for r in records) + "\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     actions = retro._reflection_actions()
+    assert not (tmp_path / ".pi-batch").exists()
     assert any(a["type"] == "reflection_critical" for a in actions)
     assert any(a["type"] == "repeat_finding" and "missed_requirement"
                in a.get("finding", "") for a in actions)

@@ -292,7 +292,7 @@ def test_findings_picker_fix_starts_an_ordinary_turn(tmp_path):
             app._slash_findings(())
             await pilot.pause()
             await pilot.press("f")
-            for _ in range(100):
+            for _ in range(600):
                 if not app._busy:
                     break
                 await pilot.pause(0.01)

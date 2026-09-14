@@ -142,6 +142,33 @@ def test_native_tui_attachment_accepts_only_scoped_read_only_native_events():
     assert attachment.closed
 
 
+def test_native_tui_attachment_close_does_not_wait_for_consumer():
+    event_source = []
+    NativePipelineObserver(event_source.append, "/tmp/project").start("demo", 0)
+    close_finished = threading.Event()
+    close_thread = None
+    attachment = None
+
+    def close_attachment():
+        attachment.close()
+        close_finished.set()
+
+    def consume(_event):
+        nonlocal close_thread
+        close_thread = threading.Thread(target=close_attachment)
+        close_thread.start()
+        assert close_finished.wait(timeout=2)
+
+    attachment = NativePipelineAttachment("/tmp/project", consume)
+    attachment(event_source[0])
+    close_thread.join(timeout=2)
+    assert not close_thread.is_alive()
+    assert attachment.closed
+    assert attachment.events_accepted == 1
+    with pytest.raises(RuntimeError, match="closed"):
+        attachment(event_source[1])
+
+
 def test_native_approval_channel_requires_exact_run_scope():
     events = []
     requested = threading.Event()

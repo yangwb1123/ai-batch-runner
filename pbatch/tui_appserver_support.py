@@ -19,6 +19,7 @@ from .tui_codex_support import (
 from .tui_protocol import (
     RUNTIME_PROTOCOL_VERSION, RuntimeCapabilities, RuntimeEvent, TurnState,
 )
+from .provider_env import provider_child_env
 from .tui_runtime import (
     ListSessionsRequest, RuntimeInfo, RuntimeSessionObservation, RuntimeSessionPage,
     RuntimeSessionSummary,
@@ -154,6 +155,7 @@ class DefaultTransport:
         self._process = subprocess.Popen(
             argv, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, start_new_session=True,
+            env=provider_child_env(),
         )
         self._stderr_thread = threading.Thread(
             target=self._read_stderr, name="codex-app-server-stderr", daemon=True)

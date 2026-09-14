@@ -19,6 +19,7 @@ import subprocess
 import threading
 import time
 from typing import Any, Callable, Optional, Sequence
+from .provider_env import provider_child_env
 
 
 MIN_SESSION_SETTINGS_VERSION = (0, 84, 3)
@@ -224,7 +225,7 @@ def _default_spawn(argv: Sequence[str], cwd: str) -> subprocess.Popen[bytes]:
     return subprocess.Popen(
         list(argv), cwd=cwd, stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        start_new_session=True)
+        start_new_session=True, env=provider_child_env())
 
 
 def _collect_process(

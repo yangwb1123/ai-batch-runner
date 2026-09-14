@@ -158,7 +158,13 @@ def test_task_start_promotes_with_current_fencing_lease(control_plane):
         "status"] == "running"
     assert control_plane["httpd"].control.tasks[task["task_id"]][
         "attempts"][-1]["status"] == "running"
-    assert client.task_cancel(task["task_id"])["ok"] is False
+    cancellation = client.task_cancel(task["task_id"])
+    assert cancellation["ok"] is True
+    assert cancellation["cancel_requested"] is True
+    record = control_plane["httpd"].control.tasks[task["task_id"]]
+    assert record["status"] == "running"
+    assert record["cancel_requested"] is True
+    assert record["evidence"] is None
 
 
 def test_rejected_checkpoint_leaves_no_admission_side_effects(control_plane):

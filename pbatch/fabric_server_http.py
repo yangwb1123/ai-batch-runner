@@ -100,6 +100,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             "/evidence": control.handle_evidence,
             "/usage": control.handle_usage,
             "/lifecycle": control.handle_lifecycle,
+            "/inventory": control.handle_inventory,
             "/reconcile": control.handle_reconcile,
             "/task/submit": control.handle_task_submit,
             "/task/gang-submit": control.handle_task_gang_submit,

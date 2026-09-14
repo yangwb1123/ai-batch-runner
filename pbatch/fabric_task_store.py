@@ -8,6 +8,9 @@ import os
 import time
 from pathlib import Path
 
+from .fabric_gpu import normalize_gpu_assignment
+from .fabric_workspace import workspace_task_projection
+
 
 MAX_RECORD_BYTES = 2 * 1024 * 1024
 MAX_FILE_BYTES = 64 * 1024 * 1024
@@ -61,11 +64,9 @@ class TaskStateStore:
                 task_id = str(event.get("task_id", ""))
                 if not task_id or str(event["task"].get("task_id", "")) != task_id:
                     raise TaskStateError("task snapshot has invalid task id")
-                latest[task_id] = {
-                    "task": dict(event["task"]),
-                    "lease": dict(event["lease"])
-                    if isinstance(event.get("lease"), dict) else None,
-                }
+                latest[task_id] = {"task": dict(event["task"]),
+                                   "lease": dict(event["lease"])
+                                   if isinstance(event.get("lease"), dict) else None}
         return latest
 
     def save(self, task: dict, lease: dict | None = None) -> None:
@@ -83,8 +84,6 @@ class TaskStateStore:
             latest[task_id] = event
             self.compact(latest)
             return
-        if current + len(line) > MAX_FILE_BYTES:
-            raise TaskStateError("task state file capacity exhausted")
         try:
             with self.path.open("ab") as handle:
                 handle.write(line)
@@ -102,12 +101,15 @@ class TaskStateStore:
                 for task_id, snapshot in snapshots.items():
                     event = snapshot if "task_id" in snapshot else {
                         "task_id": task_id, **snapshot}
-                    handle.write(self._line(event))
+                    line = self._line(event)
+                    if handle.tell() + len(line) > MAX_FILE_BYTES:
+                        raise TaskStateError("compacted task state exceeds file limit")
+                    handle.write(line)
                 handle.flush()
                 os.fsync(handle.fileno())
+            os.chmod(temp, 0o600)
             os.replace(temp, self.path)
-            os.chmod(self.path, 0o600)
-        except OSError as exc:
+        except (OSError, TaskStateError) as exc:
             try:
                 temp.unlink()
             except OSError:
@@ -128,10 +130,21 @@ class TaskStateMixin:
             "effect_class": request["effect_class"],
             "data_class": request["data_class"],
             "network_budget_bytes": request["network_budget_bytes"],
+            "request_id": str(payload.get("request_id", "")),
+            "request_digest": str(payload.get("request_digest", "")),
+            "resources": dict(payload["resources"])
+            if isinstance(payload.get("resources"), dict) else None,
+            "workspace": dict(payload["workspace"])
+            if isinstance(payload.get("workspace"), dict) else None,
+            "gpu_assignment": dict(payload["gpu_assignment"])
+            if isinstance(payload.get("gpu_assignment"), dict) else None,
+            "hub_context": dict(payload.get("hub_context", {}))
+            if isinstance(payload.get("hub_context"), dict) else {},
             "mobility": str(payload.get("mobility", "stateless")),
             "quota_device_id": device_id, "quota_released": False,
             "checkpoint_remote": request["checkpoint_remote"],
             "status": "queued", "lease_id": lease["lease_id"],
+            "cancel_requested": False,
             "created_at": time.time(), "evidence": None,
             "evidence_digest": "", "usage": None,
             "usage_ledger_id": "", "attempts": [],
@@ -212,6 +225,7 @@ class TaskStateMixin:
                             reason: str = "") -> None:
         """Persist cancellation and release its active quota reservation."""
         task["status"] = "cancelled"
+        task["cancel_requested"] = False
         task["cancelled_at"] = time.time()
         if actor:
             task["cancelled_by"] = actor
@@ -277,15 +291,22 @@ class TaskStateMixin:
         task["quota_released"] = False
         return ""
 
-    def _task_view(self, task: dict) -> dict:
+    def _task_view(self, task: dict, *, include_workspace_input=False,
+                   include_workspace_result=True) -> dict:
         view = {key: task.get(key) for key in (
             "task_id", "device_id", "argv", "cwd", "timeout",
             "effect_class", "mobility", "checkpoint_remote", "status",
             "data_class", "network_budget_bytes", "owner_device_id",
+            "request_id", "resources", "hub_context", "cancel_requested",
             "created_at", "finished_at", "failure_reason", "started_at",
             "evidence",
             "evidence_digest", "usage", "usage_ledger_id", "attempts",
             "rescheduled_at", "lost_at")}
+        if isinstance(task.get("gpu_assignment"), dict):
+            view["gpu_assignment"] = dict(task["gpu_assignment"])
+        view = workspace_task_projection(
+            task, view, include_input=include_workspace_input,
+            include_result=include_workspace_result)
         view["lease"] = self.leases.get(task.get("lease_id", ""))
         return view
 
@@ -303,10 +324,15 @@ class TaskStateMixin:
 
     def _finish_task_evidence(self, task: dict, evidence: dict,
                               digest: str, legacy: bool, usage: dict,
-                              network_error: str) -> None:
+                              network_error: str,
+                              cancelled: bool = False) -> None:
         """Apply terminal evidence facts after validation and ledger append."""
-        task["status"] = ("done" if evidence.get("result") == "passed"
-                           and not network_error else "failed")
+        if cancelled and task.get("cancel_requested"):
+            task["status"] = "cancelled"
+        else:
+            task["status"] = ("done" if evidence.get("result") == "passed"
+                               and not network_error else "failed")
+        task["cancel_requested"] = False
         task["evidence"] = evidence
         task["evidence_digest"] = digest
         task["evidence_legacy"] = legacy
@@ -315,9 +341,10 @@ class TaskStateMixin:
         if network_error:
             task["failure_reason"] = network_error
         task["finished_at"] = time.time()
+        attempt_status = {"done": "verified", "cancelled": "cancelled",
+                          "failed": "failed"}[task["status"]]
         self._mark_task_attempt(task, task.get("lease_id", ""),
-                                "verified" if task["status"] == "done"
-                                else "failed")
+                                attempt_status)
         self._release_task_quota(task)
 
     @task_locked
@@ -333,11 +360,24 @@ class TaskStateMixin:
             device_id, task_id, lease_id, payload.get("fencing_token"))
         if error:
             return {"ok": False, "error": error}
+        if task.get("cancel_requested"):
+            return {"ok": False, "error": "task cancellation requested"}
         if task.get("status") == "running":
             return {"ok": True, "duplicate": True,
                     "task": self._task_view(task)}
         if task.get("status") != "leased":
             return {"ok": False, "error": f"task is {task.get('status')}"}
+        resources = task.get("resources") or {}
+        if isinstance(resources, dict) and resources.get("gpu_count", 0):
+            if "task.gpu.v1" not in self.devices.get(
+                    device_id, {}).get("runner_capabilities", []):
+                return {"ok": False, "error": "Runner lacks task.gpu.v1"}
+            try:
+                normalize_gpu_assignment(
+                    task.get("gpu_assignment"), resources["gpu_count"],
+                    resources.get("gpu_memory_bytes", 0))
+            except (KeyError, ValueError):
+                return {"ok": False, "error": "GPU task assignment is invalid"}
         task["status"] = "running"
         task["started_at"] = time.time()
         self._mark_task_attempt(task, lease["lease_id"], "running")
@@ -353,6 +393,12 @@ class TaskStateMixin:
     @task_locked
     def handle_task_gang_submit(self, payload: dict) -> dict:
         """Submit a preflighted gang while claimers are excluded by the lock."""
+        if payload.get("workspace") is not None:
+            return self._gang_failure("workspace tasks do not support gang execution")
+        return self._handle_legacy_gang_submit(payload)
+
+    def _handle_legacy_gang_submit(self, payload: dict) -> dict:
+        """Retain gang admission for the legacy non-workspace task contract."""
         actor = str(payload.get("device_id", ""))
         refs = payload.get("target_devices")
         if (not isinstance(refs, list) or len(refs) < 2
@@ -431,7 +477,8 @@ class TaskStateMixin:
                                     "control plane restarted")
         if task.get("mobility") in ("stateless", "restartable"):
             task.update({"status": "queued", "device_id": None,
-                         "lease_id": "", "rescheduled_at": time.time()})
+                         "lease_id": "", "cancel_requested": False,
+                         "rescheduled_at": time.time()})
             self.task_leases[task["task_id"]] = ""
         else:
             task.update({"status": "lost", "lost_at": time.time()})

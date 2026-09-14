@@ -30,6 +30,10 @@ dev = [
     "pytest>=8.0",      # regression suite in tests/
     "pytest-cov>=5.0",  # make coverage
     "wheel>=0.42",      # packaging regression gate must not silently skip
+    "PyJWT[crypto]>=2.10,<3", # Agent Hub signed-token contract tests
+]
+hub = [
+    "PyJWT[crypto]>=2.10,<3", # optional Snaplink JWKS authentication
 ]
 binary = [
     "pyinstaller>=6.0", # optional single-file release executable builder

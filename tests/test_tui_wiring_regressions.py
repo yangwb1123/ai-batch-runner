@@ -165,7 +165,9 @@ class _MultiCompletedRawBackend(_LongRawBackend):
         return {"success": True, "stdout": "first\n\nsecond", "stderr": ""}
 
 
-class _JournalRawBackend(_LongRawBackend):
+class _JournalRawBackend(_CompletedRawBackend):
+    # Exercise terminal persistence; the separate long-output fixtures cover
+    # rendering pressure without making this journal check depend on UI timing.
     def __init__(self, emit, **options):
         super().__init__(emit, **options)
         self.cwd = str(options["cwd"])

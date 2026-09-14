@@ -241,13 +241,14 @@ def test_proposal_cli(tmp_path, capsys):
 # ---------------------------------------------------------------------------
 
 def test_pinned_render_and_fingerprint(tmp_path, monkeypatch):
-    pinned_file = tmp_path / ".pi-batch" / "pinned.md"
+    from pbatch import config
+    monkeypatch.setenv("PBATCH_RUNTIME_HOME", str(tmp_path / "private-runtime"))
+    pinned_file = config.data_dir(str(tmp_path)) / "pinned.md"
     pinned_file.parent.mkdir(parents=True)
     pinned_file.write_text("不得修改公共 API\n", encoding="utf-8")
-    monkeypatch.setattr(pinned, "PINNED_DEFAULT",
-                        Path(".pi-batch") / "pinned.md")
     report = pinned.render_pinned(cwd=str(tmp_path))
-    assert report["sources"]
+    assert report["sources"] == [str(pinned_file)]
+    assert not (tmp_path / ".pi-batch").exists()
     assert "不得修改公共 API" in report["content"]
     assert report["fingerprint"]
     # 摘要有效性：文件未变 → 有效

@@ -381,6 +381,7 @@ _SUBCOMMANDS: dict[str, str] = {
     # earendil-works/pi and are deliberately not parsed by pi-batch.
     "pi": "pi_cli:pi_main",
     "tui": "tui:tui_main",
+    "fleet": "hub_cli:hub_main",
     "agents": "agent_ledger:agents_main",
     "config": "config_cli:config_main",
     "memory": "memory:main",

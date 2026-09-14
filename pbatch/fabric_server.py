@@ -26,6 +26,9 @@ from .fabric_lifecycle import DeviceLifecycleStore, LifecycleError
 from .fabric_server_registration import (prepare_registration_lifecycle,
                                           registration_result)
 from .fabric_checkpoint_store import CheckpointStore
+from .fabric_hub_compute import HubComputeMixin
+from .fabric_gpu import normalize_gpu_assignment
+from .fabric_workspace import workspace_evidence_error
 from .fabric_task_store import TaskStateMixin, TaskStateStore, task_locked
 from . import fabric_server_util
 from .fabric_rpc import BODY_MAX_BYTES, verify_request
@@ -44,6 +47,19 @@ DEFAULT_DEVICE_POLICY = {
 }
 SUPPORTED_PROTOCOLS = (FABRIC_PROTOCOL,)
 SERVER_CAPABILITIES = ("task.v1", "grant.v1", "checkpoint.v1")
+
+
+def _terminal_evidence_replay(task: dict, digest: str,
+                              task_id: str) -> dict | None:
+    """Preserve same-digest evidence replay for already terminal tasks."""
+    if (task.get("status") not in ("done", "failed", "cancelled")
+            or not task.get("evidence_digest")):
+        return None
+    if task["evidence_digest"] != digest:
+        return {"accepted": False, "reason": "evidence conflict"}
+    return {"accepted": True, "duplicate": True, "task_id": task_id}
+
+
 def _valid_name(name: str) -> bool:
     return bool(_ID_RE.fullmatch(name or ""))
 def _normalize_device_policy(raw: dict) -> dict:
@@ -82,7 +98,8 @@ def _device_policy_map(explicit: Optional[dict]) -> dict:
             if key:
                 policies.setdefault(str(key), policy)
     return policies
-class ControlPlane(fabric_server_util.CheckpointOpsMixin, TaskStateMixin):
+class ControlPlane(HubComputeMixin, fabric_server_util.CheckpointOpsMixin,
+                   TaskStateMixin):
     """设备注册表 + 租约 + 证据账本的权威状态（进程内 + 追加式持久化）。"""
     def __init__(self, state_dir: str = "", auto_approve: bool = False,
                  budget_cap: float = 0.0,
@@ -249,12 +266,16 @@ class ControlPlane(fabric_server_util.CheckpointOpsMixin, TaskStateMixin):
         return ""
 
     def _grant_context(self, device_id: str, task_id: str,
-                       effect_class: str, data_class: str, cwd: str) -> dict:
+                       effect_class: str, data_class: str, cwd: str,
+                       workspace: bool = False) -> dict:
         """构造最小任务票据上下文，供 lease/fencing 一起签发。"""
         policy = self._policy_for(device_id)
+        resources = [cwd or "*"]
+        if workspace and cwd:
+            resources.append(cwd.rstrip("/") + "/.pbatch-workspaces/*")
         return {"agent_id": device_id, "node_id": device_id,
                 "task_node_id": task_id, "actions": ["execute"],
-                "grant_resources": [cwd or "*"],
+                "grant_resources": resources,
                 "environment": policy["trust_zone"],
                 "allowed_data_classes": [data_class],
                 "max_effect_class": effect_class,
@@ -441,26 +462,30 @@ class ControlPlane(fabric_server_util.CheckpointOpsMixin, TaskStateMixin):
     def _store_task_evidence(self, device_id: str, task_id: str,
                              lease_id: str, task: dict, evidence: dict) -> dict:
         """校验、幂等保存任务证据并更新资源账本。"""
+        gpu_error = self._gpu_evidence_assignment_error(task, evidence)
         legacy = (isinstance(evidence, dict)
                   and set(evidence) <= {"result"}
                   and not evidence.get("attempt_id"))
         denial = (isinstance(evidence, dict)
                   and evidence.get("error") == "capability grant denied")
         probe = self.devices.get(device_id, {}).get("probe", {}) or {}
-        error = validate_execution_evidence(
+        workspace_error = workspace_evidence_error(task.get("workspace"),
+                                                    evidence)
+        error = gpu_error or workspace_error or validate_execution_evidence(
             evidence, require_digest=not denial and not legacy,
-            expected_environment_digest=str(
-                probe.get("environment_digest", "")))
+            expected_environment_digest=str(probe.get("environment_digest", "")))
         if error:
             return {"accepted": False, "reason": error}
         digest = evidence_digest(evidence)
-        if task.get("status") in ("done", "failed"):
-            if (task.get("evidence_digest")
-                    and task["evidence_digest"] != digest):
-                return {"accepted": False, "reason": "evidence conflict"}
-            return {"accepted": True, "duplicate": True, "task_id": task_id}
+        replay = _terminal_evidence_replay(task, digest, task_id)
+        if replay is not None:
+            return replay
         if task.get("status") in ("cancelled", "lost"):
             return {"accepted": False, "reason": f"task is {task['status']}"}
+        cancelled = evidence.get("cancelled") is True
+        if cancelled and not task.get("cancel_requested"):
+            return {"accepted": False,
+                    "reason": "cancelled evidence was not requested"}
         try:
             usage = self._record_evidence_usage(
                 device_id, task_id, lease_id, evidence)
@@ -468,7 +493,7 @@ class ControlPlane(fabric_server_util.CheckpointOpsMixin, TaskStateMixin):
             return {"accepted": False, "reason": f"usage ledger: {exc}"}
         network_error = self._network_budget_error(task, evidence)
         self._finish_task_evidence(task, evidence, digest, legacy, usage,
-                                   network_error)
+                                   network_error, cancelled)
         lifecycle_error = self._sync_lifecycle_after_task(device_id)
         if lifecycle_error:
             return {"accepted": False, "reason": lifecycle_error}
@@ -479,6 +504,28 @@ class ControlPlane(fabric_server_util.CheckpointOpsMixin, TaskStateMixin):
         return {"accepted": True, "task_id": task_id,
                 "usage_ledger_id": usage["ledger_id"],
                 "budget_exceeded": bool(network_error)}
+
+    @staticmethod
+    def _gpu_evidence_assignment_error(task: dict, evidence: dict) -> str:
+        resources = task.get("resources") or {}
+        count = resources.get("gpu_count", 0) if isinstance(resources, dict) else 0
+        if not count:
+            return ("CPU task evidence must not contain GPU assignment"
+                    if isinstance(evidence, dict)
+                    and evidence.get("gpu_assignment") is not None else "")
+        if isinstance(count, bool) or not isinstance(count, int):
+            return "task GPU resource count is invalid"
+        memory = resources.get("gpu_memory_bytes", 0)
+        expected_raw = task.get("gpu_assignment")
+        actual_raw = (evidence.get("gpu_assignment")
+                      if isinstance(evidence, dict) else None)
+        try:
+            expected = normalize_gpu_assignment(expected_raw, count, memory)
+            actual = normalize_gpu_assignment(actual_raw, count, memory)
+        except ValueError:
+            return "GPU evidence assignment is missing or invalid"
+        return ("GPU evidence assignment does not match task"
+                if actual != expected else "")
 
     @task_locked
     def handle_evidence(self, payload: dict) -> dict:
@@ -711,106 +758,6 @@ class ControlPlane(fabric_server_util.CheckpointOpsMixin, TaskStateMixin):
                                        "task evidence accepted")
 
     @task_locked
-    def handle_task_submit(self, payload: dict) -> dict:
-        """提交任务到指定设备（须已审批且未 cordon）。"""
-        actor_id = str(payload.get("device_id", ""))
-        if actor_id not in self._approval_ids():
-            return {"task": None, "error": "device not approved"}
-        device_id = self._resolve_task_target(
-            actor_id, payload.get("target_device", ""))
-        if device_id not in self._approval_ids():
-            return {"task": None, "error": "target device not approved"}
-        if device_id in self.cordoned:
-            return {"task": None, "error": "device cordoned/draining"}
-        request, request_error = self._validated_task_request(device_id, payload)
-        if request_error:
-            return {"task": None, "error": request_error}
-        quota_error = self._tenant_quota_check(device_id)
-        if quota_error:
-            return {"task": None, "error": quota_error}
-        quota_error = self._device_quota_check(device_id)
-        if quota_error:
-            return {"task": None, "error": quota_error}
-        cost, spent, budget_error = self._task_cost(device_id, payload)
-        if budget_error:
-            return {"task": None, "error": budget_error}
-        checkpoint = payload.get("checkpoint_blob", "")
-        if isinstance(checkpoint, str) and len(checkpoint) > CHECKPOINT_MAX_B64:
-            return {"task": None, "error": "checkpoint too large"}
-        lifecycle_error = self._reserve_device_for_task(device_id)
-        if lifecycle_error:
-            return {"task": None, "error": lifecycle_error}
-        task_id = "t-" + uuid.uuid4().hex[:12]
-        lease = self._issue_lease(device_id, {},
-                                  int(payload.get("ttl_seconds", 300) or 300),
-                                  grant_context=self._grant_context(
-                                      device_id, task_id,
-                                      request["effect_class"],
-                                      request["data_class"], request["cwd"]))
-        self.leases[lease["lease_id"]] = lease
-        self.task_leases[task_id] = lease["lease_id"]
-        checkpoint_error = self._store_checkpoint(task_id, payload)
-        if checkpoint_error:
-            self._rollback_task_admission(task_id, lease["lease_id"], device_id)
-            return {"task": None, "error": checkpoint_error}
-        admission_error = self._commit_task_admission(
-            task_id, device_id, actor_id, payload, request, cost, lease, spent)
-        if admission_error:
-            return {"task": None, "error": admission_error}
-        return {"task": self._task_view(self.tasks[task_id])}
-
-    @task_locked
-    def handle_task_poll(self, payload: dict) -> dict:
-        """Runner 拉取任务：本设备排队任务 + 无主排队任务（认领即发新
-        租约；双 Runner 竞争时由 fencing 拒掉败者证据——at-least-once）。"""
-        device_id = str(payload.get("device_id", ""))
-        self._reschedule_stale()
-        lifecycle_error = self._prepare_device_poll(device_id)
-        if lifecycle_error:
-            return {"tasks": [], "server_time": time.time(),
-                    "error": lifecycle_error}
-        granted = []
-        cordon = self.cordoned.get(device_id, {})
-        for task in self.tasks.values():
-            if task.get("status") != "queued":
-                continue
-            if task.get("device_id") not in (None, device_id):
-                continue
-            if cordon.get("drain") and task.get("device_id") in (
-                    None, device_id):
-                continue
-            if task.get("device_id") is None:
-                effect_class = str(task.get("effect_class", "read_only"))
-                data_class = str(task.get("data_class", "public"))
-                if self._task_policy_error(device_id, effect_class,
-                                           data_class):
-                    continue
-                if quota_error := self._reserve_task_quota(task, device_id):
-                    continue
-                lease = self._issue_lease(
-                    device_id, {}, 300,
-                    grant_context=self._grant_context(
-                        device_id, task["task_id"], effect_class,
-                        data_class, str(task.get("cwd", ""))))
-                self.leases[lease["lease_id"]] = lease
-                self.task_leases[task["task_id"]] = lease["lease_id"]
-                task["lease_id"] = lease["lease_id"]
-                task["device_id"] = device_id
-                task["claimed_at"] = time.time()
-                self._append_task_attempt(task, lease, "leased")
-            lifecycle_error = self._mark_device_busy(device_id)
-            if lifecycle_error:
-                return {"tasks": granted, "server_time": time.time(),
-                        "error": lifecycle_error}
-            task["status"] = "leased"
-            self._mark_task_attempt(task, task.get("lease_id", ""), "leased")
-            self._persist_task(task)
-            granted.append(self._task_view(task))
-        return {"tasks": granted, "server_time": time.time(),
-                "cordoned": device_id in self.cordoned,
-                "draining": bool(cordon.get("drain"))}
-
-    @task_locked
     def handle_task_status(self, payload: dict) -> dict:
         task_id = str(payload.get("task_id", ""))
         task = self.tasks.get(task_id)
@@ -819,21 +766,6 @@ class ControlPlane(fabric_server_util.CheckpointOpsMixin, TaskStateMixin):
         if error := self._task_actor_error(task, payload.get("device_id")):
             return {"task": None, "error": error}
         return {"task": self._task_view(task)}
-
-    @task_locked
-    def handle_task_cancel(self, payload: dict) -> dict:
-        """取消排队/已认领任务（运行中的任务 D4 不打断，完成后自然结束）。"""
-        task_id = str(payload.get("task_id", ""))
-        task = self.tasks.get(task_id)
-        if task is None:
-            return {"ok": False, "error": "unknown task"}
-        if error := self._task_actor_error(task, payload.get("device_id")):
-            return {"ok": False, "error": error}
-        if task.get("status") not in ("queued", "leased"):
-            return {"ok": False, "error": f"task is {task.get('status')}"}
-        self._cancel_task_record(task)
-        self._sync_lifecycle_after_task(str(task.get("device_id", "")))
-        return {"ok": True, "task_id": task_id}
 
     @task_locked
     def handle_task_migrate(self, payload: dict) -> dict:

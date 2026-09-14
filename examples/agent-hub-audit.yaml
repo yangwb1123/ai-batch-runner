@@ -1,0 +1,17 @@
+# Adapter settings passed to pbatch.hub_audit.AuditSink; keep credentials in
+# a private file and replace the example origin and tenant for each deployment.
+name: snaplink-audit
+base_url: https://audit.example.internal
+tenant_id: tenant-a
+token_file: /etc/pbatch/secrets/audit-event-writer
+source_system: agent-hub
+event_type: agent.lifecycle
+schema_id: agent-hub.lifecycle
+schema_version: 1
+data_classification: internal
+retention_class: standard
+timeout: 5.0
+# Optional private trust/mTLS settings:
+# ca_file: /etc/pbatch/trust/audit-ca.pem
+# cert_file: /etc/pbatch/secrets/audit-client.pem
+# key_file: /etc/pbatch/secrets/audit-client-key.pem

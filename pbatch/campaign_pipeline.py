@@ -36,7 +36,8 @@ from .text_io import read_text_bounded
 from .campaign_process import (kill_isolated_pipelines,
                                run_isolated_child as _run_isolated_child)
 from .campaign_pipeline_support import classify_pipeline, parallel_ready
-from .campaign_runtime import copy_local_analysis as _copy_local_analysis
+from .campaign_runtime import (copy_local_analysis as _copy_local_analysis,
+                               isolated_command, isolated_failure_reason)
 
 
 @dataclass
@@ -437,21 +438,7 @@ def _run_in_worktree(settings: CampaignSettings, direction: Direction, analysis_
         worktree, settings, direction, local_analysis, recovery_mode)
     logfile = pipeline_path.parent / "campaign.log"
     logfile.parent.mkdir(parents=True, exist_ok=True)
-    local_entrypoint = worktree / "pi-batch.py"
-    tool_entrypoint = Path(config.TOOL_ROOT) / "pi-batch.py"
-    entrypoint = local_entrypoint if local_entrypoint.is_file() else tool_entrypoint
-    runner = ([sys.executable, str(entrypoint)] if entrypoint.is_file()
-              else [sys.executable, "-m", "pbatch"])
-    cmd = [*runner, str(pipeline_path), "--reuse", "--reuse-fingerprint",
-           "--log-file", str(logfile)]
-    if metering.EVENTS_FILE:
-        cmd.extend(["--events-file", metering.EVENTS_FILE])
-    # A project may carry an older local pi-batch shim without --run-id.
-    # Keep campaign execution compatible; child metering still creates its
-    # own run id, while the coordinator remains authoritative for outcomes.
-    if metering.RUN_ID and entrypoint == tool_entrypoint:
-        cmd.extend(["--run-id", metering.RUN_ID])
-    cmd.extend(agent_args)
+    cmd = isolated_command(worktree, pipeline_path, logfile, agent_args)
     # The child RotatingFileHandler is the sole logfile writer. Redirecting
     # its stdout to the same path created duplicate records and unsafe
     # concurrent rotation; isolated model bodies remain in artifacts/sessions.
@@ -459,12 +446,7 @@ def _run_in_worktree(settings: CampaignSettings, direction: Direction, analysis_
         cmd, settings, direction, worktree, pipeline_path, logfile)
     status = (PipelineStatus.PIPELINE_FAILED if timed_out or stalled
               else _isolated_status(returncode, logfile))
-    reason = (f"isolated pipeline made no progress for "
-              f"{settings.pipeline_no_progress_timeout}s"
-              if stalled else
-              f"isolated pipeline timed out after {settings.pipeline_timeout}s"
-              if timed_out else
-              ("" if returncode == 0 else f"isolated pipeline exited {returncode}"))
+    reason = isolated_failure_reason(settings, returncode, timed_out, stalled)
     repository = git_worktree_evidence(worktree)
     if returncode == 0 and not timed_out and not stalled:
         reason, repository = _finalize_worktree(
@@ -472,18 +454,10 @@ def _run_in_worktree(settings: CampaignSettings, direction: Direction, analysis_
         if reason:
             status = PipelineStatus.PIPELINE_FAILED
     evidence = [str(worktree), str(pipeline_path), str(logfile)]
-    recovery = RecoveryResult("")
-    if status != PipelineStatus.PASSED and settings.recovery_enabled:
-        recovery = recover_worktree(
-            worktree, baseline, branch, recovery_root, direction.direction_id,
-            start_clean=start_clean, enabled=True,
-            restore=settings.recovery_restore_on_failure, reason=reason,
-            preserve_paths=(settings.output_path(worktree),))
-        evidence.extend(recovery.evidence)
-        if recovery.status == RECOVERY_BLOCKED:
-            reason = f"{reason}; self-repair blocked: {recovery.reason}"
-        repository = git_worktree_evidence(
-            worktree, excludes=(settings.output_dir,))
+    recovery, repository, reason = _recover_isolated_worktree(
+        settings, direction, worktree, baseline, branch, recovery_root,
+        start_clean, status, reason, repository)
+    evidence.extend(recovery.evidence)
     return PipelineOutcome(
         direction, status, reason, time.monotonic() - start, evidence, branch,
         repository["head_commit"], baseline, repository["clean_commit"],
@@ -493,3 +467,16 @@ def _run_in_worktree(settings: CampaignSettings, direction: Direction, analysis_
         no_progress_seconds=no_progress_seconds)
 
 
+def _recover_isolated_worktree(settings, direction, worktree, baseline, branch,
+                               recovery_root, start_clean, status, reason, repository):
+    if status == PipelineStatus.PASSED or not settings.recovery_enabled:
+        return RecoveryResult(""), repository, reason
+    recovery = recover_worktree(
+        worktree, baseline, branch, recovery_root, direction.direction_id,
+        start_clean=start_clean, enabled=True,
+        restore=settings.recovery_restore_on_failure, reason=reason,
+        preserve_paths=(settings.output_path(worktree),))
+    if recovery.status == RECOVERY_BLOCKED:
+        reason = f"{reason}; self-repair blocked: {recovery.reason}"
+    repository = git_worktree_evidence(worktree, excludes=(settings.output_dir,))
+    return recovery, repository, reason

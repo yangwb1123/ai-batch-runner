@@ -37,6 +37,8 @@ from typing import Optional, Protocol
 
 from .config import log
 from .version import VERSION
+from .fabric_gpu import cuda_visible_devices, probe_nvidia_gpus
+from .fabric_workspace import RUNNER_CAPABILITY, workspace_filesystem_supported
 
 FABRIC_VERSION = VERSION
 FABRIC_PROTOCOL = "0.1"
@@ -77,6 +79,10 @@ class ExecutionSpec:
     mobility: str = "stateless"
     inputs: list = field(default_factory=list)   # list[ArtifactRef]
     code_digest: str = ""
+    cancel_event: Optional[threading.Event] = None
+    gpu_assignment: Optional[dict] = None
+    restrict_gpu_visibility: bool = False
+    cancelled: bool = field(default=False, init=False)
 
 
 @dataclass
@@ -100,9 +106,11 @@ class ExecutionEvidence:
     elapsed: float
     input_bytes: int = 0
     network_bytes: int = 0
+    cancelled: bool = False
+    gpu_assignment: Optional[dict] = None
 
     def to_dict(self) -> dict:
-        return {
+        result = {
             "attempt_id": self.attempt_id,
             "target_id": self.target_id,
             "label": self.label,
@@ -122,7 +130,11 @@ class ExecutionEvidence:
             "elapsed_seconds": round(self.elapsed, 3),
             "input_bytes": max(0, int(self.input_bytes or 0)),
             "network_bytes": max(0, int(self.network_bytes or 0)),
+            "cancelled": self.cancelled,
         }
+        if self.gpu_assignment:
+            result["gpu_assignment"] = dict(self.gpu_assignment)
+        return result
 
 
 @dataclass
@@ -205,12 +217,33 @@ def _environment_digest() -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
+def _local_gpu_facts() -> tuple[list, dict]:
+    probe = probe_nvidia_gpus()
+    static = [{key: row[key] for key in (
+        "uuid", "name", "vendor", "total_memory_bytes", "mig_mode")}
+        for row in probe["devices"]]
+    return static, {"gpu_status": probe["status"], "gpus": probe["devices"]}
+
+
+def _capability_fingerprint(static: dict, runtimes: dict) -> str:
+    raw = json.dumps({"static": static, "runtimes": runtimes}, sort_keys=True)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _runner_capabilities() -> list:
+    capabilities = ["task.v1", "grant.v1", "checkpoint.v1", "task.gpu.v1"]
+    if workspace_filesystem_supported():
+        capabilities.append(RUNNER_CAPABILITY)
+    return capabilities
+
+
 def local_probe(depth: str = "basic") -> dict:
     """本机 P0/P1 探测（只读、无副作用、无网络扫描）。"""
     if depth not in ("basic", "full"):
         depth = "basic"
     total, available = _memory_kb()
     runtimes = _runtime_presence() if depth == "full" else {}
+    gpu_static, gpu_dynamic = _local_gpu_facts()
     static = {
         "os": platform.system(),
         "os_release": platform.release(),
@@ -219,6 +252,7 @@ def local_probe(depth: str = "basic") -> dict:
         "total_memory_bytes": total,
         "python": sys.version.split()[0],
         "hostname": platform.node(),
+        "gpus": gpu_static,
     }
     load = os.getloadavg() if hasattr(os, "getloadavg") else (0.0, 0.0, 0.0)
     dynamic = {
@@ -227,9 +261,10 @@ def local_probe(depth: str = "basic") -> dict:
         "available_memory_bytes": available,
         "running_tasks": 0,
         "last_seen_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        **gpu_dynamic,
     }
-    fingerprint_raw = json.dumps({"static": static, "runtimes": runtimes},
-                                 sort_keys=True)
+    fingerprint = _capability_fingerprint(static, runtimes)
+    capabilities = _runner_capabilities()
     return {
         "device_id": _device_id(),
         "kind": "physical_device",
@@ -243,10 +278,9 @@ def local_probe(depth: str = "basic") -> dict:
                   "max_effect_class": "irreversible",
                   "allowed_data_classes": ["public", "internal",
                                             "confidential", "secret"]},
-        "capabilities": ["task.v1", "grant.v1", "checkpoint.v1"],
+        "capabilities": capabilities,
         "protocol_version": FABRIC_PROTOCOL,
-        "capability_fingerprint": hashlib.sha256(
-            fingerprint_raw.encode("utf-8")).hexdigest()[:16],
+        "capability_fingerprint": fingerprint,
         "environment_digest": _environment_digest(),
         "capability_valid_until": time.strftime(
             "%Y-%m-%dT%H:%M:%S",
@@ -324,6 +358,10 @@ def _spawn_bounded(spec: ExecutionSpec, env: dict, on_spawn=None):
     """Spawn + 排空 + 硬截止。返回 (proc, stdout, stderr, timed_out,
     overflow)；spawn 失败时 proc 为 None、stderr 为异常文本。
     on_spawn(proc) 在成功 spawn 后立即回调（供调用方登记可取消进程）。"""
+    spec.cancelled = bool(spec.cancel_event is not None
+                          and spec.cancel_event.is_set())
+    if spec.cancelled:
+        return None, "", "cancelled before process spawn", False, False
     try:
         proc = subprocess.Popen(
             list(spec.argv), cwd=spec.cwd, env=env,
@@ -346,16 +384,39 @@ def _spawn_bounded(spec: ExecutionSpec, env: dict, on_spawn=None):
     ]
     for t in threads:
         t.start()
-    timed_out = False
-    try:
-        proc.wait(timeout=spec.timeout)
-    except subprocess.TimeoutExpired:
-        _kill_group(proc)
-        timed_out = True
+    timed_out = _wait_bounded_process(proc, spec)
     for t in threads:
         t.join(timeout=5)
     return (proc, "".join(out), "".join(err),
             timed_out, out_overflow[0] or err_overflow[0])
+
+
+def _wait_bounded_process(proc, spec: ExecutionSpec) -> bool:
+    """Wait for exit, requested cancellation, or the absolute deadline."""
+    timed_out = False
+    deadline = time.monotonic() + max(0.0, float(spec.timeout))
+    while True:
+        if spec.cancel_event is not None and spec.cancel_event.is_set():
+            spec.cancelled = True
+            _kill_group(proc)
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _kill_group(proc)
+            timed_out = True
+            break
+        try:
+            proc.wait(timeout=min(0.1, remaining))
+            break
+        except subprocess.TimeoutExpired:
+            continue
+    if spec.cancelled or timed_out:
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _kill_group(proc)
+            proc.wait()
+    return timed_out
 
 
 def _execute_local(spec: ExecutionSpec) -> ExecutionEvidence:
@@ -366,24 +427,33 @@ def _execute_local(spec: ExecutionSpec) -> ExecutionEvidence:
     env = dict(os.environ)
     if spec.env:
         env.update(spec.env)
+    try:
+        _configure_gpu_visibility(spec, env)
+    except ValueError as exc:
+        return _failed_execution_evidence(spec, attempt, start, str(exc))
     proc, stdout, stderr, timed_out, overflow = _spawn_bounded(spec, env)
     if proc is None:
+        cancelled = spec.cancelled
         return ExecutionEvidence(
             attempt_id=attempt, target_id="local", label=spec.label,
-            result="failed", exit_code=-1, timed_out=False,
+            result="inconclusive" if cancelled else "failed",
+            exit_code=-1, timed_out=False,
             output_overflow=False, stdout="", stderr=stderr,
             code_digest=spec.code_digest,
             environment_digest=_environment_digest(),
             input_digest="", output_digest=_digest(stderr),
             runner_version=FABRIC_VERSION, elapsed=0.0,
-            input_bytes=sum(item.size for item in spec.inputs))
+            input_bytes=sum(item.size for item in spec.inputs),
+            cancelled=cancelled,
+            gpu_assignment=spec.gpu_assignment)
     exit_code = -1 if timed_out else proc.returncode
-    failed = timed_out or overflow or exit_code != 0
+    failed = spec.cancelled or timed_out or overflow or exit_code != 0
     if timed_out and not stderr:
         stderr = f"timed out after {spec.timeout}s"
     return ExecutionEvidence(
         attempt_id=attempt, target_id="local", label=spec.label,
-        result="failed" if failed else "passed",
+        result=("inconclusive" if spec.cancelled else
+                "failed" if failed else "passed"),
         exit_code=exit_code,
         timed_out=timed_out, output_overflow=overflow,
         stdout=stdout, stderr=stderr,
@@ -394,7 +464,33 @@ def _execute_local(spec: ExecutionSpec) -> ExecutionEvidence:
         output_digest=_digest(stdout + stderr),
         runner_version=FABRIC_VERSION,
         elapsed=time.monotonic() - start,
-        input_bytes=sum(item.size for item in spec.inputs))
+        input_bytes=sum(item.size for item in spec.inputs),
+        cancelled=spec.cancelled,
+        gpu_assignment=spec.gpu_assignment)
+
+
+def _failed_execution_evidence(spec: ExecutionSpec, attempt: str,
+                               start: float, reason: str) -> ExecutionEvidence:
+    text = str(reason)
+    return ExecutionEvidence(
+        attempt_id=attempt, target_id="local", label=spec.label,
+        result="failed", exit_code=-1, timed_out=False,
+        output_overflow=False, stdout="", stderr=text,
+        code_digest=spec.code_digest,
+        environment_digest=_environment_digest(), input_digest="",
+        output_digest=_digest(text), runner_version=FABRIC_VERSION,
+        elapsed=time.monotonic() - start,
+        input_bytes=sum(item.size for item in spec.inputs),
+        gpu_assignment=spec.gpu_assignment)
+
+
+def _configure_gpu_visibility(spec: ExecutionSpec, env: dict) -> None:
+    """Apply task-scoped GPU visibility after caller-provided environment."""
+    if spec.gpu_assignment:
+        env["CUDA_VISIBLE_DEVICES"] = cuda_visible_devices(
+            spec.gpu_assignment)
+    elif spec.restrict_gpu_visibility:
+        env["CUDA_VISIBLE_DEVICES"] = ""
 
 
 def current_target() -> ExecutionTarget:
