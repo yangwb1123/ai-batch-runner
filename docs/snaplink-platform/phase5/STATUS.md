@@ -10,8 +10,9 @@ branch:     platform/workflow-phase1
 worktree:   /home/dwp/workspace/job/sverpweb-stable-platform-workflow
 ```
 
-The main sverpweb worktree was not changed or merged. The branch was created
-from its clean `d9f1933` HEAD; existing main-worktree changes remain separate.
+The main sverpweb worktree was not changed or merged. The isolated branch was
+created from its clean `d9f1933` HEAD and currently contains the reviewed
+slice commits `7f4ca27` and `8f31972`; existing main-worktree changes remain separate.
 
 ## Execution through ai-batch-runner
 
@@ -64,17 +65,23 @@ Executed in the isolated worktree:
 
 ```text
 pnpm --filter @sverp/api typecheck  PASS
-pnpm --filter @sverp/api test       498 pass, 1 skipped, 0 fail
+pnpm --filter @sverp/api test       499 pass, 1 skipped, 0 fail
 pnpm --filter @sverp/api build      PASS
 pnpm check                          9 tasks successful
 python /home/dwp/ai-batch-runner/quality.py --strict <worktree>  PASS
+git diff d9f1933..HEAD --check                         PASS
+approval-slice-fast-check.sh                           PASS
+workflow kernel boundary review                         PASS
 ```
 
 The single skipped test is the existing cross-repository Snaplink E2E test.
 The build still emits the existing Vite chunk-size/dynamic-import warnings;
-no warning was promoted to a failure. The latest full code-gate rerun was
-interrupted before producing a new report; `phase5/code-gate.md` therefore
-still contains the prior FAIL report and must not be treated as approval.
+no warning was promoted to a failure. The latest full code-gate rerun and
+subsequent parallel component review were interrupted by timeouts before
+producing current gate reports; `phase5/code-gate.md` therefore still
+contains the prior FAIL report and must not be treated as approval. The
+migration-fix and kernel-boundary focused reports are limited handoff
+evidence, not a full-slice Gate.
 
 ## Not enabled / not evidenced
 

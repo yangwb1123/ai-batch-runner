@@ -26,3 +26,7 @@ The additive v21 digest reconciliation and legacy approval regression passed an 
 ### 2026-09-12T01:32:19Z — route/release/receipt repair and re-gate
 
 Added route-policy snapshot persistence/quarantine, expired-claim authority fencing, receipt-backed migration preservation, and persisted requester context. Independent code-handoff gate: VERDICT: PASS - code handoff is safe for human review
+
+### 2026-09-14T00:08:09Z — boundary optimization and local revalidation
+
+Moved purchase-specific workflow code under `apps/api/src/purchase/workflow/`, kept the generic workflow kernel business-neutral, and added a kernel boundary regression test. The isolated branch is clean at `7f4ca27`. Deterministic fast check: 499 tests passed, 1 skipped; typecheck, build, `pnpm check`, strict quality, and boundary review passed. Full current code-gate and parallel component reviews timed out; no new full-slice PASS is recorded. Production activation and merge remain blocked.
