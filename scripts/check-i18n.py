@@ -149,28 +149,31 @@ def _skip_quoted(text: str, start: int) -> int:
     return len(text)
 
 
+def _skip_non_code(text: str, start: int) -> int:
+    if text.startswith("//", start):
+        end = text.find("\n", start + 2)
+        return len(text) if end < 0 else end
+    if text.startswith("/*", start):
+        end = text.find("*/", start + 2)
+        return len(text) if end < 0 else end + 2
+    if text[start] in "\"'`":
+        return _skip_quoted(text, start)
+    return start
+
+
 def _code_without_literals(text: str) -> str:
     """Mask strings/comments so braces in messages do not affect nesting."""
-    masked: list[str] = []
+    masked = list(text)
     index = 0
     while index < len(text):
-        if text.startswith("//", index):
-            end = text.find("\n", index + 2)
-            end = len(text) if end < 0 else end
-            masked.extend(" " for _ in text[index:end])
-            index = end
-        elif text.startswith("/*", index):
-            end = text.find("*/", index + 2)
-            end = len(text) if end < 0 else end + 2
-            masked.extend("\n" if char == "\n" else " " for char in text[index:end])
-            index = end
-        elif text[index] in "\"'`":
-            end = _skip_quoted(text, index)
-            masked.extend("\n" if char == "\n" else " " for char in text[index:end])
-            index = end
-        else:
-            masked.append(text[index])
+        end = _skip_non_code(text, index)
+        if end <= index:
             index += 1
+            continue
+        for position in range(index, end):
+            if text[position] != "\n":
+                masked[position] = " "
+        index = end
     return "".join(masked)
 
 
@@ -205,31 +208,25 @@ def _locale_entries(body: str) -> dict[str, str]:
     return entries
 
 
-def _catalog_findings(root: Path) -> list[str]:
-    path = root / CATALOG
-    if not path.is_file():
-        return [f"missing i18n catalog: {CATALOG}"]
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as exc:
-        return [f"cannot read i18n catalog {CATALOG}: {exc}"]
+def _catalog_entries(text: str, anchor: str) -> dict[str, str]:
+    return _locale_entries(_object_body(text, anchor))
 
+
+def _locale_set_findings(locales: set[str], iris_entries: dict[str, str]) -> list[str]:
     findings: list[str] = []
-    messages_body = _object_body(text, "const messages")
-    locales = set(_locale_entries(messages_body))
     if not locales:
         findings.append("i18n catalog has no application locales")
+    missing = sorted(locales - set(iris_entries))
+    extra = sorted(set(iris_entries) - locales)
+    if missing:
+        findings.append(f"Iris locale catalog missing locales: {', '.join(missing)}")
+    if extra:
+        findings.append(f"Iris locale catalog has unsupported locales: {', '.join(extra)}")
+    return findings
 
-    iris_body = _object_body(text, "const irisLocaleMessages")
-    iris_entries = _locale_entries(iris_body)
-    if locales != set(iris_entries):
-        missing = sorted(locales - set(iris_entries))
-        extra = sorted(set(iris_entries) - locales)
-        if missing:
-            findings.append(f"Iris locale catalog missing locales: {', '.join(missing)}")
-        if extra:
-            findings.append(f"Iris locale catalog has unsupported locales: {', '.join(extra)}")
 
+def _month_message_findings(locales: set[str], iris_entries: dict[str, str]) -> list[str]:
+    findings: list[str] = []
     for locale in sorted(locales):
         entry = iris_entries.get(locale, "")
         for key, placeholders in MONTH_MESSAGES.items():
@@ -247,6 +244,22 @@ def _catalog_findings(root: Path) -> list[str]:
                         f"{locale}: Iris message {key} must preserve {{{placeholder}}}"
                     )
     return findings
+
+
+def _catalog_findings(root: Path) -> list[str]:
+    path = root / CATALOG
+    if not path.is_file():
+        return [f"missing i18n catalog: {CATALOG}"]
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        return [f"cannot read i18n catalog {CATALOG}: {exc}"]
+
+    locales = set(_catalog_entries(text, "const messages"))
+    iris_entries = _catalog_entries(text, "const irisLocaleMessages")
+    return _locale_set_findings(locales, iris_entries) + _month_message_findings(
+        locales, iris_entries
+    )
 
 
 def _is_source_file(rel: str) -> bool:
