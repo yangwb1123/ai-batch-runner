@@ -13,7 +13,7 @@
 #   workspace:*（本地开发保持 workspace 语义）。
 #
 # 用法:
-#   iris-publish.sh [--package=vue|core|react|solid|svelte] [--dry-run]
+#   iris-publish.sh [--package=vue|core|plugin-locale-zh|react|solid|svelte] [--dry-run]
 #                   [--version=X.Y.Z] [--commit] [--skip-gates]
 #     --package      发布哪个包（默认 vue）
 #     --dry-run      只 pack 不发布、不升级 sverpweb 依赖
@@ -41,7 +41,7 @@ for arg in "$@"; do
     --commit) DO_COMMIT=1 ;;
     --skip-gates) SKIP_GATES=1 ;;
     --package=*) PACKAGE="${arg#--package=}" ;;
-    --package) echo "usage: --package=vue|core|react|solid|svelte" >&2; exit 2 ;;
+    --package) echo "usage: --package=vue|core|plugin-locale-zh|react|solid|svelte" >&2; exit 2 ;;
     --version=*) VERSION="${arg#--version=}" ;;
     --version) echo "usage: --version=X.Y.Z" >&2; exit 2 ;;
     *) echo "unknown arg: $arg" >&2; exit 2 ;;
@@ -54,7 +54,7 @@ PKG="$PKG_DIR/package.json"
 
 # ── 0. 前置检查 ──────────────────────────────────────────────
 step "0. 前置检查"
-test -d "$PKG_DIR" || { echo "FAIL: $PKG_DIR 不存在（--package=vue|core|react|solid|svelte）" >&2; exit 1; }
+test -d "$PKG_DIR" || { echo "FAIL: $PKG_DIR 不存在（--package=vue|core|plugin-locale-zh|react|solid|svelte）" >&2; exit 1; }
 test -f "$SVERPWEB_DIR/apps/web/package.json" || { echo "FAIL: $SVERPWEB_DIR 不是 sverpweb-stable 仓库" >&2; exit 1; }
 "$HERE/check-no-dist-edit.sh" "$IRIS_UI_DIR"
 
