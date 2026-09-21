@@ -102,7 +102,7 @@ def test_missing_iris_translation_fails(tmp_path):
 def test_test_sources_are_not_copy_targets(tmp_path):
     root = _project(tmp_path, _catalog())
     (root / "apps/web/src/Page.test.tsx").write_text(
-        'test("保存", () => expect("关闭").toBe("关闭"))\n',
+        'export const Page = () => <button aria-label="关闭">保存</button>\n',
         encoding="utf-8",
     )
     result = _run(root)

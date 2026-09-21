@@ -198,8 +198,11 @@ def _ddl_warnings(text: str, rel: str) -> list:
         # Test files embed DDL in string literals (rollback assertions,
         # throwaway schemas) — those never touch a production database.
         return []
+    # ALTER TABLE … DROP CONSTRAINT/DEFAULT/NOT NULL drops metadata, not rows;
+    # only data-loss forms are flagged.
     matches = re.findall(
-        r"\b(DROP\s+TABLE|DROP\s+COLUMN|TRUNCATE\s+TABLE)\b|ALTER\s+TABLE[^;]{0,80}?\bDROP\b",
+        r"\b(DROP\s+TABLE|DROP\s+COLUMN|TRUNCATE\s+TABLE)\b|"
+        r"ALTER\s+TABLE[^;]{0,80}?\bDROP\s+(?!CONSTRAINT\b|DEFAULT\b|NOT\s+NULL\b)",
         _scrub_string_literals(text), re.IGNORECASE)
     # findall: single capture group -> group text ("" for ALTER..DROP alt);
     # never index into an empty match (""[0] raises IndexError).

@@ -25,7 +25,7 @@ from pathlib import Path
 CATALOG = Path("apps/web/src/i18n.ts")
 SOURCE_ROOT = Path("apps/web/src")
 SOURCE_EXTENSIONS = {".js", ".jsx", ".ts", ".tsx", ".vue"}
-TEST_PARTS = {"__testkit__", "test", "tests", "spec", "e2e"}
+TEST_PARTS = {"__testkit__", "__tests__", "test", "tests", "spec", "e2e"}
 CATALOG_FILES = {CATALOG.as_posix(), "apps/web/src/i18n.test.ts"}
 
 MONTH_MESSAGES = {
@@ -268,6 +268,7 @@ def _is_source_file(rel: str) -> bool:
         rel.startswith(SOURCE_ROOT.as_posix() + "/")
         and path.suffix in SOURCE_EXTENSIONS
         and not any(part in TEST_PARTS for part in path.parts)
+        and not path.stem.endswith((".test", ".spec"))
         and rel not in CATALOG_FILES
     )
 
