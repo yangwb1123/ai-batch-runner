@@ -1,0 +1,14 @@
+{
+  "hub_url": "https://hub.example.test",
+  "device_authorization_endpoint": "https://sso.example.test/device/code",
+  "token_endpoint": "https://sso.example.test/token",
+  "client_id": "agent-hub-cli",
+  "resource": "agent-hub",
+  "scopes": [
+    "agent.instances:read",
+    "agent.sessions:read",
+    "agent.sessions:write",
+    "agent.turns:cancel"
+  ],
+  "credential_directory": "user-session"
+}

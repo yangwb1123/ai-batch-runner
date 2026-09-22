@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 
-from .hub_compute_models import fields, request_body
+from .hub_compute_models import fields, request_body, reschedule_target, retry_target
 from .hub_errors import HubAccessError
 from . import hub_workspace_api
+from . import hub_compute_placement
 from .hub_store_helpers import (check_session_owner, get_session, get_turn_for_session,
                                 require_live_generation)
 
@@ -23,6 +24,10 @@ class ComputeAPI:
         self.compute = compute
 
     def dispatch(self, method, parts, query, body, principal, key):
+        if hub_compute_placement.is_route(parts):
+            if method != "GET":
+                raise HubAccessError("method_not_allowed", "method not allowed", 405)
+            fields(body, set())
         if self.compute is None:
             raise HubAccessError("compute_unavailable", "compute is not configured", 503)
         if hub_workspace_api.workspace_route(parts):
@@ -35,6 +40,9 @@ class ComputeAPI:
 
     def _get(self, parts, query, principal):
         from .hub_service import _page
+        if hub_compute_placement.is_route(parts):
+            return {"data": hub_compute_placement.read_placement(
+                self.compute, principal, parts[1], **hub_compute_placement.page_query(query))}
         if parts == ["devices"]:
             fields(query, {"project_id", "after", "limit"})
             principal.require("agent.devices:read")
@@ -55,7 +63,7 @@ class ComputeAPI:
         raise HubAccessError("not_found", "compute route not found", 404)
 
     def _device_page(self, project, page, principal):
-        bindings = self.compute.connection(principal.tenant_id).bindings
+        bindings = self.compute.bindings(principal.tenant_id)
         targets = sorted(device for device, binding in bindings.items()
                          if principal.allows_compute(binding["instance_id"])
                          and (not project or project in binding["workspaces"])
@@ -84,29 +92,91 @@ class ComputeAPI:
 
     def _post(self, parts, body, principal, key):
         if len(parts) == 3 and parts[0] == "tasks" and parts[2] == "cancel":
-            fields(body, set())
-            self._task(principal, parts[1], "agent.tasks:cancel")
-            task = self.compute.store.cancel(principal.tenant_id, parts[1], actor=principal.subject)
-            return mutation_response(task, principal)
+            return self._cancel_post(parts[1], body, principal)
+        if len(parts) == 3 and parts[0] == "tasks" and parts[2] == "reschedule":
+            return self._reschedule_post(parts[1], body, principal, key)
+        if len(parts) == 3 and parts[0] == "tasks" and parts[2] == "retry":
+            return self._retry_post(parts[1], body, principal, key)
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "tasks":
-            session = self.service._session(principal, parts[1], "agent.tasks:write")
-            payload = request_body(body)
-            if payload["turn_id"]:
-                turn = self.service.store.turn(principal.tenant_id, payload["turn_id"])
-                if turn["session_id"] != session["session_id"] or turn["actor"] != principal.subject:
-                    raise HubAccessError("forbidden", "turn must belong to this actor and session")
-            connection = self.compute.connection(principal.tenant_id)
-            targets = [device for device, binding in connection.bindings.items()
-                       if principal.allows_compute(binding["instance_id"])
-                       and session["project_id"] in binding["workspaces"]]
-            if not targets or payload["target_device_id"] and payload["target_device_id"] not in targets:
-                raise HubAccessError("forbidden", "no authorized project device matches the request")
-            task = self.compute.store.submit(principal, session, payload, key, targets,
-                                               connection.archive is not None,
-                                               workspace_input=self.compute.workspace.bind(
-                                                   principal.tenant_id, session, payload))
-            return mutation_response(task, principal)
+            return self._submit_post(parts[1], body, principal, key)
         raise HubAccessError("not_found", "compute route not found", 404)
+
+    def _cancel_post(self, task_id, body, principal):
+        fields(body, set())
+        self._task(principal, task_id, "agent.tasks:cancel")
+        task = self.compute.store.cancel(principal.tenant_id, task_id, actor=principal.subject)
+        return mutation_response(task, principal)
+
+    def _reschedule_post(self, task_id, body, principal, key):
+        if key:
+            raise ValueError("reschedule does not accept an idempotency key")
+        target = reschedule_target(body)
+        principal.require("agent.tasks:write")
+        task = self.compute.store.get(principal.tenant_id, task_id, private=True)
+        principal.require("agent.tasks:write", task["instance_id"])
+        if task["actor"] != principal.subject:
+            raise HubAccessError("forbidden", "only the task actor may reschedule it")
+        bindings = self.compute.bindings(principal.tenant_id)
+        allowed = {device for device, binding in bindings.items()
+                   if device in task["_targets"]
+                   and principal.allows_compute(binding["instance_id"])
+                   and task["project_id"] in binding["workspaces"]}
+        if not allowed:
+            raise HubAccessError("forbidden", "no authorized project device matches the task")
+        if target and target not in allowed:
+            raise HubAccessError("forbidden", "target device is not authorized for this task")
+        result = self.compute.store.reschedule(
+            principal.tenant_id, task_id, target, actor=principal.subject)
+        return mutation_response(result, principal)
+
+    def _retry_post(self, task_id, body, principal, key):
+        if key:
+            raise ValueError("retry does not accept an idempotency key")
+        requested = retry_target(body)
+        principal.require("agent.tasks:write")
+        task = self.compute.store.get(principal.tenant_id, task_id, private=True)
+        principal.require("agent.tasks:write", task["instance_id"])
+        if task["actor"] != principal.subject:
+            raise HubAccessError("forbidden", "only the task actor may retry it")
+        bindings = self.compute.bindings(principal.tenant_id)
+        allowed = {device for device, binding in bindings.items()
+                   if device in task["_targets"]
+                   and principal.allows_compute(binding["instance_id"])
+                   and task["project_id"] in binding["workspaces"]}
+        if not allowed:
+            raise HubAccessError("forbidden", "no authorized project device matches the task")
+        # An omitted target preserves an original pin.  Only an originally
+        # automatic task is allowed to become automatic again.
+        target = requested or task.get("target_device_id", "")
+        if target and target not in allowed:
+            raise HubAccessError("forbidden", "target device is not authorized for this task")
+        result = self.compute.store.retry_lost(
+            principal.tenant_id, task_id, target, actor=principal.subject,
+            confirm_duplicate=True)
+        return mutation_response(result, principal)
+
+    def _submit_post(self, session_id, body, principal, key):
+        session = self.service._session(principal, session_id, "agent.tasks:write")
+        payload = request_body(body)
+        if payload["turn_id"]:
+            turn = self.service.store.turn(principal.tenant_id, payload["turn_id"])
+            if turn["session_id"] != session["session_id"] or turn["actor"] != principal.subject:
+                raise HubAccessError("forbidden", "turn must belong to this actor and session")
+        bindings = self.compute.bindings(principal.tenant_id)
+        targets = [device for device, binding in bindings.items()
+                   if principal.allows_compute(binding["instance_id"])
+                   and session["project_id"] in binding["workspaces"]]
+        if "workspace" in payload:
+            targets = [device for device in targets
+                       if self.compute.connection_for_device(principal.tenant_id, device).archive is not None]
+        if not targets or payload["target_device_id"] and payload["target_device_id"] not in targets:
+            raise HubAccessError("forbidden", "no authorized project device matches the request")
+        task = self.compute.store.submit(principal, session, payload, key, targets,
+                                         self.compute.archive_enabled(principal.tenant_id),
+                                         workspace_input=self.compute.workspace.bind(
+                                             principal.tenant_id, session, payload,
+                                             payload["target_device_id"]))
+        return mutation_response(task, principal)
 
     def delegated(self, body, gateway):
         fields(body, {"instance_id", "generation", "session_id", "turn_id", "operation", "payload", "key"})
@@ -133,6 +203,12 @@ class ComputeAPI:
         if operation == "submit":
             return self._post(["sessions", session_id, "tasks"], dict(payload, turn_id=turn_id),
                               user, body.get("key", ""))
+        if operation == "placement":
+            return self._delegated_placement(payload, user, session_id, turn_id, body.get("key", ""))
+        if operation == "reschedule":
+            return self._delegated_reschedule(payload, user, session_id, turn_id, body.get("key", ""))
+        if operation == "retry":
+            return self._delegated_retry(payload, user, session_id, turn_id, body.get("key", ""))
         fields(payload, {"task_id"})
         scope = "agent.tasks:cancel" if operation == "cancel" else "agent.tasks:read"
         task = self._task(user, payload.get("task_id", ""), scope)
@@ -144,6 +220,44 @@ class ComputeAPI:
         if operation == "cancel":
             return self._post(["tasks", task["task_id"], "cancel"], {}, user, "")
         raise ValueError("unsupported delegated operation")
+
+    def _delegated_reschedule(self, payload, user, session_id, turn_id, key):
+        fields(payload, {"task_id", "target_device_id"})
+        if "target_device_id" not in payload:
+            raise ValueError("target_device_id is required")
+        if key:
+            raise ValueError("reschedule does not accept an idempotency key")
+        task = self._task(user, payload.get("task_id", ""), "agent.tasks:write")
+        if (task["session_id"] != session_id or task["turn_id"] != turn_id
+                or task["actor"] != user.subject):
+            raise HubAccessError("forbidden", "delegation is restricted to its active turn")
+        return self._post(
+            ["tasks", task["task_id"], "reschedule"],
+            {"target_device_id": payload["target_device_id"]}, user, "")
+
+    def _delegated_retry(self, payload, user, session_id, turn_id, key):
+        fields(payload, {"task_id", "target_device_id", "confirm_duplicate"})
+        if key:
+            raise ValueError("retry does not accept an idempotency key")
+        task = self._task(user, payload.get("task_id", ""), "agent.tasks:write")
+        if (task["session_id"] != session_id or task["turn_id"] != turn_id
+                or task["actor"] != user.subject):
+            raise HubAccessError("forbidden", "delegation is restricted to its active turn")
+        return self._post(
+            ["tasks", task["task_id"], "retry"],
+            {"target_device_id": payload.get("target_device_id", ""),
+             "confirm_duplicate": payload.get("confirm_duplicate")}, user, "")
+
+    def _delegated_placement(self, payload, user, session_id, turn_id, key):
+        fields(payload, {"task_id", "after", "limit"})
+        if key != "":
+            raise ValueError("placement diagnostics do not accept an idempotency key")
+        page = hub_compute_placement.page_values(payload.get("after", ""), payload.get("limit", 20))
+        task = self._task(user, payload.get("task_id", ""), "agent.tasks:read")
+        if (task["session_id"] != session_id or task["turn_id"] != turn_id
+                or task["actor"] != user.subject):
+            raise HubAccessError("forbidden", "delegation is restricted to its active turn")
+        return hub_compute_placement.read_placement(self.compute, user, task["task_id"], **page)
 
     def _delegated_devices(self, payload, user, session_id):
         fields(payload, {"after"})

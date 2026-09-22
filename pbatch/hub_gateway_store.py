@@ -24,6 +24,34 @@ class GatewayStore:
         os.chmod(self.path, 0o600)
         self._db.row_factory = sqlite3.Row
         self._initialize()
+        self._initialize_creations()
+        self._initialize_closures()
+
+    def _initialize_creations(self) -> None:
+        with self._lock, self._db:
+            self._db.execute("""CREATE TABLE IF NOT EXISTS session_creations (
+                request_id TEXT PRIMARY KEY, generation INTEGER NOT NULL,
+                local_session_id TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+                project_id TEXT NOT NULL, state TEXT NOT NULL,
+                error_code TEXT NOT NULL DEFAULT '', hub_session_id TEXT NOT NULL DEFAULT '',
+                acknowledged INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL
+            )""")
+            self._db.execute("""CREATE INDEX IF NOT EXISTS session_creations_pending
+                ON session_creations(generation,updated_at)
+                WHERE acknowledged=0 AND state IN ('created','failed')""")
+
+    def _initialize_closures(self) -> None:
+        with self._lock, self._db:
+            self._db.execute("""CREATE TABLE IF NOT EXISTS session_closures (
+                request_id TEXT PRIMARY KEY, generation INTEGER NOT NULL,
+                local_session_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                state TEXT NOT NULL, error_code TEXT NOT NULL DEFAULT '',
+                acknowledged INTEGER NOT NULL DEFAULT 0, updated_at REAL NOT NULL,
+                UNIQUE(generation,local_session_id)
+            )""")
+            self._db.execute("""CREATE INDEX IF NOT EXISTS session_closures_pending
+                ON session_closures(generation,updated_at)
+                WHERE acknowledged=0 AND state IN ('closed','failed')""")
 
     def _initialize(self) -> None:
         with self._lock:
@@ -95,6 +123,10 @@ class GatewayStore:
                 self._db.execute("UPDATE sessions SET controllable=0,status='uncertain'")
                 self._db.execute("UPDATE outbox SET obsolete=1 WHERE generation<>?",
                                   (generation,))
+                self._db.execute("UPDATE session_creations SET state='lost',updated_at=? "
+                                 "WHERE acknowledged=0", (time.time(),))
+                self._db.execute("UPDATE session_closures SET state='lost',updated_at=? "
+                                 "WHERE acknowledged=0", (time.time(),))
             self._db.execute("INSERT INTO metadata(key,value) VALUES('generation',?) "
                               "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                               (str(generation),))
@@ -105,13 +137,18 @@ class GatewayStore:
     def add_session(self, *, local_session_id: str, hub_session_id: str,
                     name: str, project_id: str) -> None:
         with self._lock, self._db:
+            closing = self._db.execute("""SELECT 1 FROM session_closures
+                WHERE generation=? AND local_session_id=? AND state='accepted'""",
+                (self.generation(), local_session_id)).fetchone() is not None
             self._db.execute("""INSERT INTO sessions
                 (local_session_id,hub_session_id,name,project_id,status,controllable,created_at)
-                VALUES(?,?,?,?,?,1,?)
+                VALUES(?,?,?,?,?,?,?)
                 ON CONFLICT(local_session_id) DO UPDATE SET
                     hub_session_id=excluded.hub_session_id,name=excluded.name,
-                    project_id=excluded.project_id,status=excluded.status,controllable=1""",
-                (local_session_id, hub_session_id, name, project_id, "idle", time.time()))
+                    project_id=excluded.project_id,status=excluded.status,
+                    controllable=excluded.controllable""",
+                (local_session_id, hub_session_id, name, project_id,
+                 "closing" if closing else "idle", int(not closing), time.time()))
 
     def session(self, local_session_id: str) -> Optional[dict[str, Any]]:
         with self._lock:
@@ -135,6 +172,68 @@ class GatewayStore:
                 VALUES(?,?, 'accepted', ?, ?)""",
                 (turn_id, local_session_id, prompt_digest, time.time()))
         return cursor.rowcount == 1
+
+    def creation(self, request_id: str) -> Optional[dict[str, Any]]:
+        with self._lock:
+            row = self._db.execute("SELECT * FROM session_creations WHERE request_id=?",
+                                   (request_id,)).fetchone()
+        return dict(row) if row else None
+
+    def accept_creation(self, command: dict[str, Any]) -> None:
+        with self._lock, self._db:
+            self._db.execute("""INSERT INTO session_creations
+                (request_id,generation,local_session_id,name,project_id,state,updated_at)
+                VALUES(?,?,?,?,?,'accepted',?)""", tuple(command[key] for key in (
+                    "request_id", "generation", "local_session_id", "name", "project_id"))
+                + (time.time(),))
+
+    def finish_creation(self, request_id: str, state: str, *, error_code: str = "",
+                        hub_session_id: str = "", acknowledged: bool = False) -> None:
+        with self._lock, self._db:
+            self._db.execute("""UPDATE session_creations SET state=?,error_code=?,
+                hub_session_id=?,acknowledged=?,updated_at=? WHERE request_id=?""",
+                (state, error_code, hub_session_id, int(acknowledged), time.time(), request_id))
+
+    def pending_creations(self, generation: int) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._db.execute("""SELECT * FROM session_creations WHERE generation=?
+                AND acknowledged=0 AND state IN ('created','failed')
+                ORDER BY updated_at LIMIT 8""", (generation,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def closure(self, request_id: str) -> Optional[dict[str, Any]]:
+        with self._lock:
+            row = self._db.execute("SELECT * FROM session_closures WHERE request_id=?",
+                                   (request_id,)).fetchone()
+        return dict(row) if row else None
+
+    def accept_closure(self, command: dict[str, Any]) -> None:
+        with self._lock, self._db:
+            self._db.execute("""INSERT INTO session_closures
+                (request_id,generation,local_session_id,session_id,state,updated_at)
+                VALUES(?,?,?,?,'accepted',?)""", tuple(command[key] for key in (
+                    "request_id", "generation", "local_session_id", "session_id"))
+                + (time.time(),))
+            self._db.execute("UPDATE sessions SET status='closing',controllable=0 "
+                             "WHERE local_session_id=?", (command["local_session_id"],))
+
+    def finish_closure(self, request_id: str, state: str, *, error_code: str = "",
+                       acknowledged: bool = False) -> None:
+        with self._lock, self._db:
+            self._db.execute("""UPDATE session_closures SET state=?,error_code=?,
+                acknowledged=?,updated_at=? WHERE request_id=?""",
+                (state, error_code, int(acknowledged), time.time(), request_id))
+            self._db.execute("""UPDATE sessions SET status=?,controllable=0
+                WHERE local_session_id=(SELECT local_session_id FROM session_closures
+                                        WHERE request_id=?)""",
+                ("closed" if state == "closed" else "close_failed", request_id))
+
+    def pending_closures(self, generation: int) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._db.execute("""SELECT * FROM session_closures WHERE generation=?
+                AND acknowledged=0 AND state IN ('closed','failed')
+                ORDER BY updated_at LIMIT 8""", (generation,)).fetchall()
+        return [dict(row) for row in rows]
 
     def turn(self, turn_id: str) -> Optional[dict[str, Any]]:
         with self._lock:

@@ -1,8 +1,9 @@
 import asyncio
+import pytest
 
 from textual.widgets import Button, Static, TextArea
 
-from pbatch.hub_tui import HubTUI, _MAX_PENDING_PROMPTS
+from pbatch.hub_tui import HubTUI, _ALL_INSTANCES, _MAX_PENDING_PROMPTS
 from pbatch.hub_client import HubError
 
 
@@ -143,6 +144,42 @@ def test_tui_keeps_lost_ack_request_key_per_session():
     asyncio.run(scenario())
 
 
+def test_tui_can_aggregate_sessions_across_instances_without_enabling_instance_actions():
+    class Aggregate(_Client):
+        def __init__(self):
+            super().__init__()
+            self.filters = []
+
+        def list_sessions(self, instance_id):
+            self.filters.append(instance_id)
+            if instance_id:
+                return super().list_sessions(instance_id)
+            return [
+                {"session_id": "alpha-session", "instance_id": "alpha", "name": "Alpha",
+                 "status": "idle", "controllable": True},
+                {"session_id": "beta-session", "instance_id": "beta", "name": "Beta",
+                 "status": "idle", "controllable": True},
+            ]
+
+    async def scenario():
+        client = Aggregate()
+        app = HubTUI(client)
+        async with app.run_test() as pilot:
+            await pilot.pause(0.1)
+            app._selected_instance = _ALL_INSTANCES
+            await app._refresh_sessions()
+            assert client.filters[-1] == ""
+            assert {row["instance_id"] for row in app._sessions.values()} == {"alpha", "beta"}
+            assert app.query_one("#session-requests", Button).disabled
+            app._selected_session = "beta-session"
+            app._update_controls()
+            app.query_one("#composer", TextArea).text = "run on beta"
+            await app._send_prompt()
+            assert client.sent[-1][0] == "beta-session"
+
+    asyncio.run(scenario())
+
+
 def test_tui_does_not_evict_unconfirmed_requests_when_at_capacity():
     async def scenario():
         client = _Client()
@@ -158,5 +195,41 @@ def test_tui_does_not_evict_unconfirmed_requests_when_at_capacity():
             assert client.sent == []
             assert app._pending_prompts == pending
             assert "retry an existing session" in app.query_one("#status", Static).render().plain
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_tui_auth_recovery_keeps_prompt_and_submission_key(status):
+    class Rejected(_Client):
+        def __init__(self):
+            super().__init__()
+            self.keys = []
+
+        def send_prompt(self, session_id, prompt, idempotency_key=""):
+            self.keys.append(idempotency_key)
+            if len(self.keys) == 1:
+                raise HubError("private upstream response", status=status)
+            return super().send_prompt(session_id, prompt, idempotency_key)
+
+    async def scenario():
+        client = Rejected()
+        app = HubTUI(client)
+        async with app.run_test() as pilot:
+            await pilot.pause(0.1)
+            app._selected_session = "active"
+            app._update_controls()
+            composer = app.query_one("#composer", TextArea)
+            composer.text = "preserve this prompt"
+            await app._send_prompt()
+            rendered = app.query_one("#status", Static).render().plain
+            assert "private upstream response" not in rendered
+            assert "unconfirmed" in rendered
+            assert ("fleet auth login" in rendered) == (status == 401)
+            assert ("permissions" in rendered) == (status == 403)
+            assert composer.text == "preserve this prompt"
+            await app._send_prompt()
+            assert len(client.keys) == 2 and client.keys[0] == client.keys[1]
+            assert composer.text == ""
 
     asyncio.run(scenario())

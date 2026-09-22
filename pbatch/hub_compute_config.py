@@ -70,8 +70,21 @@ def connections(settings) -> dict:
     result, endpoints = {}, set()
     for settings_row in settings:
         connection = ComputeConnection(settings_row)
-        if connection.tenant in result or connection.url.lower() in endpoints:
-            raise ValueError("each compute tenant requires a distinct Fabric endpoint")
+        endpoint = connection.url.lower()
+        if endpoint in endpoints:
+            raise ValueError("each compute connection requires a distinct Fabric endpoint")
         endpoints.add(connection.url.lower())
-        result[connection.tenant] = connection
+        previous = result.get(connection.tenant)
+        if previous is None:
+            result[connection.tenant] = connection
+            continue
+        # A tenant may federate several independent Fabric control planes.  Device
+        # bindings remain globally unique so a task can always be routed to one
+        # unambiguous service identity.
+        rows = previous if isinstance(previous, list) else [previous]
+        if any(set(item.bindings).intersection(connection.bindings) for item in rows):
+            raise ValueError("federated compute connections cannot share a device binding")
+        if len(rows) >= 16:
+            raise ValueError("a tenant may federate at most 16 Fabric connections")
+        result[connection.tenant] = rows + [connection]
     return result

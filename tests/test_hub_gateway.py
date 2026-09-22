@@ -80,6 +80,12 @@ class _FakeClient:
     def get_commands(self, **_values):
         return list(self.commands)
 
+    def get_session_requests(self, **_values):
+        return []
+
+    def get_session_close_requests(self, **_values):
+        return []
+
     def send_event(self, event, **_values):
         self.events.append(event)
         if event["kind"] == "turn.running" and self.terminal_running_once:

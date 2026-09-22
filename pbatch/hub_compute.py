@@ -27,20 +27,86 @@ class HubCompute:
         self._stop = threading.Event()
         self._threads = []
 
-    def connection(self, tenant: str):
+    def connections_for(self, tenant: str) -> tuple:
         value = self.connections.get(tenant)
         if value is None:
             raise HubAccessError("compute_unavailable", "compute is not configured for this tenant", 503)
-        return value
+        rows = value if isinstance(value, (list, tuple)) else (value,)
+        if not rows or len(rows) > 16:
+            raise HubAccessError("compute_unavailable", "compute federation is invalid", 503)
+        return tuple(rows)
 
-    def inventory(self, tenant: str, *, target_ids=None) -> list:
-        connection = self.connection(tenant)
-        targets = list(connection.bindings) if target_ids is None else list(target_ids)
+    def bindings(self, tenant: str) -> dict:
+        result = {}
+        for connection in self.connections_for(tenant):
+            for device, binding in connection.bindings.items():
+                if device in result:
+                    raise HubAccessError("compute_unavailable", "duplicate federated device binding", 503)
+                result[device] = binding
+        return result
+
+    def connection(self, tenant: str):
+        """Return the sole connection; federated callers must provide a device."""
+        rows = self.connections_for(tenant)
+        if len(rows) != 1:
+            raise HubAccessError("compute_ambiguous", "a device is required for federated compute", 409)
+        return rows[0]
+
+    def connection_for_device(self, tenant: str, device_id: str):
+        if not isinstance(device_id, str) or not device_id:
+            raise HubAccessError("compute_unavailable", "a bound device is required", 503)
+        for connection in self.connections_for(tenant):
+            if device_id in connection.bindings:
+                return connection
+        raise HubAccessError("compute_unavailable", "task device is no longer configured", 503)
+
+    def archive_connection(self, tenant: str, device_id: str = ""):
+        """Select a Vault, rejecting ambiguous cross-plane archives."""
+        if device_id:
+            return self.connection_for_device(tenant, device_id)
+        rows = [connection for connection in self.connections_for(tenant)
+                if connection.archive is not None]
+        if not rows:
+            return None
+        signatures = set()
+        for item in rows:
+            signature = tuple(getattr(item.archive, key, None)
+                              for key in ("base_url", "tenant_id", "prefix"))
+            signatures.add(signature if all(value is not None for value in signature)
+                           else ("opaque-archive", id(item.archive)))
+        if len(signatures) != 1:
+            raise HubAccessError("workspace_ambiguous",
+                                 "a target device is required when Fabric planes use different Vaults", 409)
+        return rows[0]
+
+    def archive_enabled(self, tenant: str) -> bool:
+        return any(connection.archive is not None for connection in self.connections_for(tenant))
+
+    def inventory(self, tenant: str, *, target_ids=None, allow_partial=False) -> list:
+        all_bindings = self.bindings(tenant)
+        targets = list(all_bindings) if target_ids is None else list(target_ids)
         if len(targets) > 200 or len(set(targets)) != len(targets) or any(
-                target not in connection.bindings for target in targets):
+                target not in all_bindings for target in targets):
             raise ValueError("invalid bound inventory targets")
-        return [row for offset in range(0, len(targets), 16)
-                for row in self._inventory_page(connection, targets[offset:offset + 16])]
+        owners = {device: self.connection_for_device(tenant, device) for device in targets}
+        pages = []
+        failures = []
+        for connection in self.connections_for(tenant):
+            selected = [device for device in targets if owners[device] is connection]
+            try:
+                pages.extend(self._inventory_page(connection, selected[offset:offset + 16])
+                             for offset in range(0, len(selected), 16))
+            except (AttributeError, HubAccessError, KeyError, OSError, OverflowError,
+                    RuntimeError, TypeError, ValueError) as exc:
+                if not allow_partial:
+                    raise
+                failures.append((connection, exc))
+                log.warning("Fabric inventory unavailable for %s (%s)",
+                            getattr(connection, "url", "configured endpoint"), type(exc).__name__)
+        if failures and not pages:
+            raise failures[0][1]
+        observed = {row["device_id"]: row for page in pages for row in page}
+        return [observed[device] for device in targets if device in observed]
 
     @staticmethod
     def _inventory_page(connection, targets):
@@ -113,29 +179,31 @@ class HubCompute:
             self.store.update(task["tenant"], task["task_id"], {"error": reason}, delay=5)
 
     def _reconcile(self, task: dict):
-        connection = self.connection(task["tenant"])
         if task["state"] in TERMINAL:
-            self._archive(task, connection)
+            self._archive(task)
             return
-        if task.get("_fabric_actor") and connection.client().device_id != task["_fabric_actor"]:
-            raise HubAccessError("fabric_identity_changed", "restore the original Fabric service identity", 503)
         if task["state"] == "queued":
-            task = self._place(task, connection)
+            task = self._place(task)
             if task["state"] != "dispatching":
                 return
+        connection = self.connection_for_device(task["tenant"], task.get("device_id", ""))
+        if task.get("_fabric_actor") and connection.client().device_id != task["_fabric_actor"]:
+            raise HubAccessError("fabric_identity_changed", "restore the original Fabric service identity", 503)
         if not task["_fabric_id"]:
             task = self._dispatch(task, connection)
             if not task["_fabric_id"]:
                 return
         self._observe(task, connection)
 
-    def _place(self, task: dict, connection) -> dict:
-        candidates = [row for row in self.inventory(task["tenant"]) if eligible(task, row)]
+    def _place(self, task: dict) -> dict:
+        candidates = [row for row in self.inventory(task["tenant"], allow_partial=True)
+                      if eligible(task, row)]
         if not candidates:
             return self.store.update(task["tenant"], task["task_id"],
                                      {"error": "waiting_for_eligible_device"}, delay=3, expected=("queued",))
         chosen = min(candidates, key=lambda row: (
             row["reserved_cpu_cores"] / max(row["cpu_cores"], 1), row["device_id"]))
+        connection = self.connection_for_device(task["tenant"], chosen["device_id"])
         root = connection.bindings[chosen["device_id"]]["workspaces"][task["project_id"]]
         return self.store.update(task["tenant"], task["task_id"],
                                  {"device_id": chosen["device_id"], "error": "",
@@ -155,7 +223,8 @@ class HubCompute:
         response = client.submit_task(
             task["argv"], cwd=task["_cwd"], timeout=task["timeout"], mobility="pinned",
             effect_class="irreversible", data_class="internal", ttl_seconds=task["timeout"] + 120,
-            target_device=task["device_id"], request_id=task["task_id"],
+            target_device=task["device_id"],
+            request_id=task.get("_fabric_request_id") or task["task_id"],
             resources=task["resources"], hub_context=context,
             **workspace)
         remote = response.get("task") or {}
@@ -179,13 +248,29 @@ class HubCompute:
 
     def _observe(self, task: dict, connection):
         current = self.store.get(task["tenant"], task["task_id"], private=True)
+        fabric_id = task.get("_fabric_id", "")
+        if not fabric_id or current.get("_fabric_id") != fabric_id:
+            return
         client = self._client(task, connection)
         if current["state"] == "cancel_requested":
-            client.task_cancel(task["_fabric_id"])
-        response = client.task_status(task["_fabric_id"])
+            client.task_cancel(fabric_id)
+        response = client.task_status(fabric_id)
         remote = response.get("task") or {}
         if not remote:
             raise RuntimeError("Fabric task status unavailable")
+        if (remote.get("status") == "lost"
+                and current["state"] == "dispatching"
+                and "started_at" in remote
+                and remote["started_at"] is None):
+            # A leased task that never reached Runner start has no observable
+            # side effect.  Release the old remote handle and let the normal
+            # placement loop choose another currently eligible device.  Once
+            # start evidence exists, the task remains terminal lost so an
+            # irreversible command is never duplicated implicitly.
+            self.store.requeue_unstarted(
+                task["tenant"], task["task_id"],
+                reason="device_lost_before_start")
+            return
         mapped = {"done": "completed", "failed": "failed", "cancelled": "cancelled",
                   "lost": "lost", "running": "running", "cancel_requested": "cancel_requested"}
         state = mapped.get(remote.get("status"), "dispatching")
@@ -207,10 +292,13 @@ class HubCompute:
             raise HubAccessError("fabric_identity_changed", "restore the original Fabric service identity", 503)
         return client
 
-    def _archive(self, task: dict, connection):
+    def _archive(self, task: dict, connection=None):
         if task["archive_state"] not in {"pending", "failed"}:
             return
-        if connection.archive is None:
+        if connection is None:
+            connection = (self.connection_for_device(task["tenant"], task["device_id"])
+                          if task.get("device_id") else self.archive_connection(task["tenant"]))
+        if connection is None or connection.archive is None:
             state = "failed" if "workspace" in task else "disabled"
             self.store.update(task["tenant"], task["task_id"], {"archive_state": state}, delay=60)
             return

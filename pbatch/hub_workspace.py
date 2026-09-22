@@ -27,7 +27,7 @@ def workspace_request(value):
 
 def archive_client(connection):
     from .hub_vault_workspace import VaultWorkspaceArchive
-    if connection.archive is None:
+    if connection is None or connection.archive is None:
         raise HubAccessError("workspace_unavailable", "workspace requires configured Vault", 503)
     return VaultWorkspaceArchive(connection.archive)
 
@@ -39,7 +39,7 @@ class HubWorkspace:
 
     def upload(self, principal, session, bundle, key, *, turn_id=""):
         bundle = validate_bundle(bundle)
-        client = archive_client(self.compute.connection(principal.tenant_id))
+        client = archive_client(self.compute.archive_connection(principal.tenant_id))
         row = self.store.reserve(principal, session, key, bundle_digest(bundle),
                                  len(bundle_bytes(bundle)), len(bundle["files"]), turn_id=turn_id)
         if row["artifact_ref"]:
@@ -50,10 +50,10 @@ class HubWorkspace:
             raise HubAccessError("workspace_unavailable", "Vault workspace upload unavailable", 503) from exc
         return self.store.ready(principal.tenant_id, row["snapshot_id"], ref)
 
-    def bind(self, tenant, session, payload):
+    def bind(self, tenant, session, payload, device_id=""):
         if "workspace" not in payload:
             return None
-        archive_client(self.compute.connection(tenant))
+        archive_client(self.compute.archive_connection(tenant, device_id))
         row = self.store.get(tenant, session["session_id"], payload["workspace"]["snapshot_id"])
         if row["project_id"] != session["project_id"]:
             raise HubAccessError("workspace_project_changed", "snapshot project no longer matches", 409)
@@ -113,7 +113,8 @@ class HubWorkspace:
         if result.get("state") != "ready":
             raise HubAccessError("workspace_not_ready", "task output is not archived", 409)
         try:
-            bundle = archive_client(self.compute.connection(tenant)).read(result["artifact_ref"])
+            bundle = archive_client(self.compute.archive_connection(tenant, task.get("device_id", ""))).read(
+                result["artifact_ref"])
         except RuntimeError as exc:
             raise HubAccessError("workspace_unavailable", "Vault workspace download unavailable", 503) from exc
         if bundle_digest(bundle) != result["output_sha256"]:

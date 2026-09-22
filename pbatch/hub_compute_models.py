@@ -69,6 +69,35 @@ def request_body(body: dict) -> dict:
     return result
 
 
+def reschedule_target(body: dict) -> str:
+    """Validate the small, idempotent mutation used to retarget queued work."""
+    fields(body, {"target_device_id"})
+    if "target_device_id" not in body:
+        raise ValueError("target_device_id is required")
+    value = body["target_device_id"]
+    if value == "":
+        return ""
+    result = identifier(value, "target_device_id")
+    result.encode("utf-8")
+    return result
+
+
+def retry_target(body: dict) -> str:
+    """Validate an explicit retry of a lost task.
+
+    A lost task may already have executed remotely.  Requiring an explicit
+    boolean confirmation keeps this mutation visibly different from queued
+    retargeting and prevents an accidental duplicate side effect.
+    """
+    fields(body, {"target_device_id", "confirm_duplicate"})
+    if body.get("confirm_duplicate") is not True:
+        raise ValueError("confirm_duplicate must be true")
+    value = body.get("target_device_id", "")
+    if value == "":
+        return ""
+    return identifier(value, "target_device_id")
+
+
 def resource_request(value: dict) -> dict:
     resources = fields(value, {"cpu_cores", "memory_bytes", "gpu_count", "gpu_memory_bytes"})
     result = {

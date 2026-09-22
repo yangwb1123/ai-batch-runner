@@ -4,12 +4,24 @@
 幂等 turn、持久事件游标、取消请求，以及 CLI/TUI/Flutter Console 客户端。
 P2 增加设备资源目录、授权选机、计算任务、Agent 调度工具与 Vault 证据归档；
 配置和使用见 [COMPUTE.md](agent-hub/COMPUTE.md)。
+排队计算任务可跨端查看设备阻塞原因，诊断与实际 Hub 筛选共用逻辑，见
+[调度诊断](agent-hub/PLACEMENT.md)。
 GPU 增量支持 NVIDIA 物理卡发现、逐卡显存选机、持久分配和启动前复核，
 CLI/TUI/Console 接入说明见 [GPU.md](agent-hub/GPU.md)。
 Vault 工作区增量支持固定版本输入、Runner 独立目录恢复和指定输出回传，
 使用方式和容量边界见 [WORKSPACE.md](agent-hub/WORKSPACE.md)。
 P3 增加 Aero ID 成员资格门禁、Aero IM 状态通知、Audit 账本回执与持久投递队列，
 配置、恢复边界和运维命令见 [ECOSYSTEM.md](agent-hub/ECOSYSTEM.md)。
+CLI/TUI 用户可通过 Snaplink 设备授权登录并共享私有短期会话，使用方式见
+[USER_AUTH.md](agent-hub/USER_AUTH.md)；Gateway 自动续签见
+[MACHINE_AUTH.md](agent-hub/MACHINE_AUTH.md)。
+CLI/TUI/Console 可关闭空闲会话并在确认后释放容量，保留只读历史，见
+[SESSION_CLOSE.md](agent-hub/SESSION_CLOSE.md)。
+CLI/TUI/Console 也可选择在线实例按需新建会话：请求先持久化，Gateway 在固定
+项目中创建成功后才可发送 prompt；容量、重试与重启边界见
+[SESSION_CREATION.md](agent-hub/SESSION_CREATION.md)。
+创建与关闭请求可在不同客户端重新查询，按实例查看最近记录、刷新结果并显式打开
+会话，见[会话请求记录](agent-hub/SESSION_OPERATIONS.md)。
 实现采用一个 Hub 服务、SQLite WAL 和主动出站的实例 Gateway。
 会话运行时继续属于 Gateway 所在设备，数据库默认位于用户级 runtime。
 Hub/Gateway 当前使用 POSIX 文件锁，本轮运行验证在 Linux 完成。
@@ -28,7 +40,7 @@ Flutter 客户端共享 Web、桌面和移动端代码；本轮完成 Web 构建
 | Aero IM | 可选的机器集成状态卡片接收端；普通聊天消息不直接成为执行命令 |
 | Aero Vault | 固定版本执行证据归档与有界工作区输入/输出存储 |
 | Audit Governance | 消费脱敏持久状态事实并返回经过核验的入账回执；不复制对话正文 |
-| Device Fabric | Hub 授权选机、资源准入、幂等提交、运行心跳、取消和结果回传 |
+| Device Fabric | Hub 授权选机、资源准入、幂等提交、排队任务重新调度、运行心跳、取消和结果回传 |
 
 Snaplink 的登录 session、登录 device 与 Agent session、计算 Runner 分属不同域。
 Hub 没有用户密码库，不签发人类用户令牌，不读取生态服务数据库。
@@ -38,12 +50,13 @@ Hub 没有用户密码库，不签发人类用户令牌，不读取生态服务�
 
 ## 持久化设计
 
-业务模型为 Instance、AgentSession、Turn、SessionEvent；传输 DTO 不包含
+业务模型为 Instance、SessionCreationRequest、AgentSession、Turn、SessionEvent；传输 DTO 不包含
 数据库连接、Agent 对象、执行器路径或用户凭证。数据库表按 tenant 分区查询。
 
 | 数据 | 身份与不变量 |
 |---|---|
 | Instance | `(tenant, instance_id)` 唯一；boot_id 标识进程；generation 用于拒绝旧 Gateway |
+| SessionCreationRequest | `(tenant, subject, client_id, idempotency_key)` 唯一；创建期间预留容量，成功时原子登记会话，Gateway 换代将旧 pending 请求标为 lost |
 | AgentSession | 全局 ID 由 `(tenant, instance_id, local_session_id)` 派生；三元组另有唯一约束 |
 | Turn | prompt 原文进入私有命令记录；turn 查询不返回 prompt，授权事件流含脱敏后的用户输入；每会话至多一个非终态 turn |
 | SessionEvent | 稳定 event_id + 持久递增 cursor；同 ID 同内容复用，同 ID 异内容冲突 |
@@ -105,7 +118,11 @@ CLI 发送前会把请求 key 输出到 stderr，确认丢失后可用该 key �
 远程 TUI 按会话保留相同提交的 key，最多保存 128 个待确认请求；达到上限时
 拒绝新提交，先重试已有请求以释放位置。TUI 显示最近 60 条事件。完整历史可通过
 `fleet events` 的游标逐页读取。
-令牌仅接受环境变量或私有文件，不能放在 URL。网页/原生 Console 使用 Snaplink
+手动提供的 access token 仅从环境变量或私有文件读取，不能放在 URL。CLI/TUI 也可
+设置 `PBATCH_HUB_USER_CONFIG` 后运行 `pi-batch fleet auth login`，在浏览器中完成
+设备批准；用户 token 保存在该配置绑定的私有目录，过期后重新登录。
+`fleet auth status/logout` 查看或清理本地登录；退出不撤销已发出的请求或 Snaplink
+token。网页/原生 Console 使用 Snaplink
 登录获得 Hub audience 的 access token；开发令牌初始化不改变 Console 登录配置。
 
 ## Snaplink 与远端部署
@@ -134,7 +151,9 @@ Gateway 不透传用户 token 给 AgentSession；provider 子进程的启动环�
 该客户端必须允许此 grant/scope/resource；Hub gateway grant 的 `subject`、
 `client_id` 均填机器客户端 ID，并绑定单个 instance。CLI/Gateway 从私有令牌文件
 读取 access token，每次请求重新校验并读取该私有文件，支持部署侧原子替换令牌
-而不重启会话。当前没有自动换取或刷新机器令牌的功能，需由部署侧维护。
+而不重启会话。Gateway 也可通过 `--oauth-config` 或 `PBATCH_HUB_OAUTH_CONFIG`
+使用 Snaplink `client_credentials` 自动获取并续签机器令牌，配置与恢复边界见
+[机器认证](agent-hub/MACHINE_AUTH.md)。静态令牌与 OAuth 配置同时出现时明确拒绝。
 若 Snaplink 开启全局 scope registry，还需注册上述五个 Agent scopes；
 仅设置客户端 `allowed_scopes` 不够。启用计算时还需注册四个计算 scopes，
 并更新用户与 Gateway 的令牌和 grant，详见 [计算配置](agent-hub/COMPUTE.md)。
@@ -217,7 +236,7 @@ Gateway 事件回执还带当前 `turn_state`；重放同一 event_id 时该状�
 当前 turn，可用于确认开始许可是否已被取消。
 
 验收覆盖：两个实例拥有相同 local_session_id 仍不串会话；授权列表过滤；
-读/写/取消分别授权；重复 prompt 幂等；错误 tenant/instance 被拒绝；
+读/写/取消/重调度分别授权；重复 prompt 幂等；错误 tenant/instance 被拒绝；
 Gateway 换代 fencing；队列取消与运行中取消；消息游标重放；私有开发配置；
 真实 JWT 验签、错误 audience/issuer/过期和 JWKS 轮换。
 `tests/test_hub_integration.py` 通过真实 HTTP、SQLite、Gateway 与 AgentSession
@@ -233,6 +252,6 @@ Console 运行其 Flutter 分析、测试与工程门禁。跨仓运行状态与
 ## 后续里程碑
 
 1. GPU 探测/调度已实现；真实 CUDA 工作负载和跨设备部署仍需验收。
-2. P2 工作区增量已实现：Vault 固定版本快照、任务绑定输入与输出摘要校验，以及原生客户端文件选择/保存通道；大文件传输和自动源目录合并待实现。平台验证范围见 Console 的原生工作区说明。
+2. P2 工作区增量已实现：Vault 固定版本快照、任务绑定输入与输出摘要校验，以及原生客户端文件选择/保存通道；大文件传输和自动源目录合并待实现。排队中的计算任务现在可由创建者重新选择原始授权集合内的目标设备，或恢复自动调度；已派发任务仍不主动迁移，只有明确无启动证据的失联租约会按恢复契约重新排队。带启动证据的 `lost` 任务可由创建者显式确认可能重复副作用后重新入队，归档中的任务拒绝此动作。平台验证范围见 Console 的原生工作区说明。
 3. P3 已实现：Aero ID 成员投影门禁、Aero IM 通知 outbox、Audit Governance 脱敏事件和 ledger 回执；生产部署另行验收。
-4. P4：跨租户资源池策略、HA、区域路由和多控制面联邦。
+4. P4：跨租户资源池策略、HA、区域路由和多控制面的高可用联邦；同一租户的多 Fabric 设备聚合与按设备路由已在 P2 计算路径中落地。

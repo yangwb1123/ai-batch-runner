@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import ipaddress
+import hashlib
 import json
+import math
 import os
 import stat
 import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 API_PATH = "/api/v1/agent"
 DEFAULT_TIMEOUT = 5.0
@@ -101,12 +103,18 @@ def _read_private_token(path: str) -> str:
 class HubClient:
     """Authenticated JSON client with bounded responses and no redirects."""
 
-    def __init__(self, base_url: str, token: str, *, timeout: float = DEFAULT_TIMEOUT,
-                 max_response_bytes: int = MAX_RESPONSE_BYTES):
+    def __init__(self, base_url: str, token: str = "", *,
+                 timeout: float = DEFAULT_TIMEOUT,
+                 max_response_bytes: int = MAX_RESPONSE_BYTES,
+                 token_provider: Optional[Callable[[], str]] = None):
         self.base_url = validate_hub_url(base_url)
-        self._token = _checked_token(token)
+        if token_provider is not None and (token or not callable(token_provider)):
+            raise ValueError("select one Hub credential source")
+        self._token_provider = token_provider
+        self._token = "" if token_provider is not None else _checked_token(token)
         self._token_file = ""
-        if timeout <= 0 or timeout > 120:
+        if (type(timeout) not in {int, float} or not 0 < timeout <= 120
+                or not math.isfinite(timeout)):
             raise ValueError("hub timeout must be between 0 and 120 seconds")
         if not 1024 <= max_response_bytes <= 64 * 1024 * 1024:
             raise ValueError("hub response limit is outside the supported range")
@@ -119,17 +127,44 @@ class HubClient:
 
     @classmethod
     def from_env(cls, hub_url: str = "", *, environ=None,
-                 timeout: float = DEFAULT_TIMEOUT) -> "HubClient":
+                 timeout: float = DEFAULT_TIMEOUT,
+                 oauth_config: str = "") -> "HubClient":
         env = os.environ if environ is None else environ
         endpoint = hub_url or str(env.get("PBATCH_HUB_URL", "")).strip()
+        user_config = str(env.get("PBATCH_HUB_USER_CONFIG", "")).strip()
+        profile = oauth_config or str(env.get("PBATCH_HUB_OAUTH_CONFIG", "")).strip()
+        if user_config:
+            if profile or any(str(env.get(key, "")).strip() for key in
+                              ("PBATCH_HUB_TOKEN", "PBATCH_HUB_TOKEN_FILE")):
+                raise ValueError("user login configuration conflicts with other Hub credentials")
+            from .hub_user_credentials import UserTokenProvider
+            provider = UserTokenProvider.from_file(user_config, hub_url=endpoint, timeout=timeout)
+            return cls(provider.hub_url, timeout=timeout, token_provider=provider)
         if not endpoint:
             raise ValueError("set --hub or PBATCH_HUB_URL")
+        if profile:
+            if any(str(env.get(key, "")).strip() for key in
+                   ("PBATCH_HUB_TOKEN", "PBATCH_HUB_TOKEN_FILE")):
+                raise ValueError("OAuth configuration conflicts with static Hub credentials")
+            from .hub_oauth import MachineTokenProvider
+            provider = MachineTokenProvider.from_file(
+                profile, hub_url=endpoint, timeout=timeout)
+            return cls(endpoint, timeout=timeout, token_provider=provider)
         client = cls(endpoint, load_hub_token(environ=env), timeout=timeout)
         if not str(env.get("PBATCH_HUB_TOKEN", "")).strip():
             client._token_file = os.path.expanduser(env.get("PBATCH_HUB_TOKEN_FILE", ""))
         return client
 
     def _authorization_token(self) -> str:
+        if self._token_provider is not None:
+            try:
+                token = self._token_provider()
+                if not isinstance(token, str):
+                    raise ValueError("invalid provider token")
+                return _checked_token(token)
+            except (ValueError, OSError):
+                raise HubError("Hub credential provider is unavailable",
+                               code="credential_unavailable", status=401) from None
         if not self._token_file:
             return self._token
         try:
@@ -137,6 +172,19 @@ class HubClient:
         except (ValueError, OSError) as exc:
             raise HubError("private Hub credential file is unavailable",
                            code="credential_unavailable", status=401) from exc
+
+    def _invalidate_token(self, token: str) -> None:
+        invalidate = getattr(self._token_provider, "invalidate", None)
+        if callable(invalidate):
+            invalidate(token)
+
+    def _auth_context(self):
+        """An in-memory fence only; never display or persist this credential digest."""
+        return self.base_url, hashlib.sha256(self._authorization_token().encode()).digest()
+
+    def list_session_operations(self, instance_id: str = "", *, before: str = "", limit: int = 20):
+        from .hub_session_operations_client import read_page
+        return read_page(self, instance_id, before, limit)
 
     def list_instances(self, *, after: str = "", limit: int = 100,
                        max_pages: int = 20) -> list[dict[str, Any]]:
@@ -175,6 +223,34 @@ class HubClient:
         return _as_object(self._request("GET", f"/sessions/{_quote(session_id)}"),
                           "session")
 
+    def create_session(self, instance_id: str, name: str, *,
+                       idempotency_key: str) -> dict[str, Any]:
+        from .hub_session_client import creation_key, creation_record, session_name
+        name = session_name(name)
+        key = creation_key(idempotency_key)
+        result = self._request("POST", f"/instances/{_quote(instance_id)}/sessions",
+                               {"name": name}, headers={"Idempotency-Key": key}, accepted=(202,))
+        return creation_record(result, instance_id=instance_id, name=name)
+
+    def session_request(self, request_id: str) -> dict[str, Any]:
+        from .hub_session_client import creation_record
+        result = self._request("GET", f"/session-requests/{_quote(request_id)}")
+        return creation_record(result, request_id=request_id)
+
+    def close_session(self, session_id: str, *, idempotency_key: str) -> dict[str, Any]:
+        from .hub_session_close_client import close_key, close_record, close_target
+        session_id = close_target(session_id)
+        key = close_key(idempotency_key)
+        result = self._request("POST", f"/sessions/{_quote(session_id)}/close", {},
+                               headers={"Idempotency-Key": key}, accepted=(202,))
+        return close_record(result, session_id=session_id)
+
+    def session_close_request(self, request_id: str) -> dict[str, Any]:
+        from .hub_session_close_client import close_record, close_target
+        request_id = close_target(request_id)
+        result = self._request("GET", f"/session-close-requests/{_quote(request_id)}")
+        return close_record(result, request_id=request_id)
+
     def send_prompt(self, session_id: str, prompt: str,
                     idempotency_key: str = "") -> dict[str, Any]:
         if not isinstance(prompt, str) or not prompt.strip():
@@ -206,11 +282,45 @@ class HubClient:
         return _as_list(self._request("GET", suffix), "events")
 
     def register_instance(self, *, instance_id: str, boot_id: str,
-                          name: str, project_id: str) -> dict[str, Any]:
-        return _as_object(self._request("POST", "/gateway/register", {
+                          name: str, project_id: str,
+                          session_capacity: int = 0,
+                          session_close_supported: bool = False) -> dict[str, Any]:
+        if type(session_capacity) is not int or not 0 <= session_capacity <= 8:
+            raise ValueError("session capacity must be between 0 and 8")
+        if type(session_close_supported) is not bool:
+            raise ValueError("session close capability must be boolean")
+        body = {
             "instance_id": instance_id, "boot_id": boot_id,
             "name": name, "project_id": project_id,
-        }, accepted=(200, 201)), "instance")
+        }
+        if session_capacity:
+            body["session_capacity"] = session_capacity
+        if session_close_supported:
+            body["session_close_supported"] = True
+        return _as_object(self._request("POST", "/gateway/register", body,
+                                        accepted=(200, 201)), "instance")
+
+    def get_session_requests(self, *, instance_id: str, generation: int) -> list[dict]:
+        query = urllib.parse.urlencode({"instance_id": instance_id, "generation": generation})
+        return _as_list(self._request("GET", f"/gateway/session-requests?{query}"),
+                        "session creation commands")
+
+    def report_session_request(self, **body) -> dict[str, Any]:
+        from .hub_session_client import creation_record
+        result = self._request("POST", "/gateway/session-requests", body)
+        return creation_record(result, instance_id=body.get("instance_id", ""),
+                                request_id=body.get("request_id", ""))
+
+    def get_session_close_requests(self, *, instance_id: str, generation: int) -> list[dict]:
+        query = urllib.parse.urlencode({"instance_id": instance_id, "generation": generation})
+        return _as_list(self._request("GET", f"/gateway/session-close-requests?{query}"),
+                        "session close commands")
+
+    def report_session_close_request(self, **body) -> dict[str, Any]:
+        from .hub_session_close_client import close_record
+        result = self._request("POST", "/gateway/session-close-requests", body)
+        return close_record(result, instance_id=body.get("instance_id", ""),
+                             request_id=body.get("request_id", ""))
 
     def heartbeat(self, *, instance_id: str, generation: int) -> dict[str, Any]:
         return _as_object(self._request("POST", "/gateway/heartbeat", {
@@ -244,23 +354,25 @@ class HubClient:
                                         accepted=(200, 201)), "event")
 
     def _request(self, method: str, path: str, payload: Any = None, *,
-                 headers: Optional[dict[str, str]] = None,
-                 accepted: tuple[int, ...] = (200,),
-                 include_cursor: bool = False) -> Any:
+                  headers: Optional[dict[str, str]] = None,
+                  accepted: tuple[int, ...] = (200,),
+                  include_cursor: bool = False, response_limit=None, raw_response=False) -> Any:
         return _request_json(self, method, path, payload, headers or {}, accepted,
-                             include_cursor)
+                             include_cursor, response_limit=response_limit, raw_response=raw_response)
 
 
 def _request_json(client: HubClient, method: str, path: str, payload: Any,
                   extra_headers: dict[str, str], accepted: tuple[int, ...],
-                  include_cursor: bool) -> Any:
+                  include_cursor: bool, *, response_limit=None, raw_response=False) -> Any:
     body = None if payload is None else _encode_json(payload)
     from .hub_workspace import request_limit
     if body is not None and len(body) > request_limit(path):
         raise ValueError("Hub request exceeds the route request limit")
     request = urllib.request.Request(client.base_url + API_PATH + path,
                                      data=body, method=method)
-    request.add_header("Authorization", "Bearer " + client._authorization_token())
+    maximum = min(client.max_response_bytes, response_limit or client.max_response_bytes)
+    token = client._authorization_token()
+    request.add_header("Authorization", "Bearer " + token)
     request.add_header("Accept", "application/json")
     if body is not None:
         request.add_header("Content-Type", "application/json; charset=utf-8")
@@ -269,16 +381,21 @@ def _request_json(client: HubClient, method: str, path: str, payload: Any,
     try:
         response = client._opener.open(request, timeout=client.timeout)
     except urllib.error.HTTPError as exc:
-        raw = _read_limited(exc, client.max_response_bytes)
+        with exc:
+            if exc.code == 401:
+                client._invalidate_token(token)
+            raw = _read_limited(exc, maximum)
         _raise_http_error(exc.code, raw)
     except (OSError, TimeoutError, urllib.error.URLError) as exc:
         raise HubError(f"hub request failed: {type(exc).__name__}",
                        code="hub_unavailable") from exc
     with response:
         status = int(response.status)
-        raw = _read_limited(response, client.max_response_bytes)
+        raw = _read_limited(response, maximum)
     if status not in accepted:
         _raise_http_error(status, raw)
+    if raw_response:
+        return raw
     data, cursor = _decode_response(raw)
     return (data, cursor) if include_cursor else data
 

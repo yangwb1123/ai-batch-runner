@@ -16,6 +16,7 @@ from textual.widgets import (Button, Footer, Header, Input, Select, Static,
 
 from .hub_compute_client import ComputeClient
 from .hub_compute_models import resource_request
+from .hub_compute_placement_tui import ComputePlacement
 from . import hub_workspace_tui as workspace_ui
 from .hub_compute_tui_views import (
     _id, _permission_error, _session_label, _device_label, _device_summary,
@@ -67,6 +68,7 @@ class ComputeTUI(App[None]):
         self._task_seq = 0
         self._detail_seq = 0
         self._workspace_seq = 0
+        self._placement_selection_seq = 0
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -113,11 +115,17 @@ class ComputeTUI(App[None]):
                                          id="task-detail", markup=False)
                         yield from workspace_ui.output_controls()
                         with Horizontal(id="task-actions"):
-                            yield Button("Refresh tasks", id="refresh-tasks")
-                            yield Button("Cancel selected", id="cancel-task", variant="error")
-                            yield Static("", id="task-status", markup=False)
+                            yield from self._task_actions()
             yield Static("", id="status", markup=False)
         yield Footer()
+
+    def _task_actions(self):
+        yield Button("Refresh tasks", id="refresh-tasks")
+        yield Button("Cancel selected", id="cancel-task", variant="error")
+        yield Button("Reschedule selected", id="reschedule-task")
+        yield Button("Retry lost (duplicate risk)", id="retry-task")
+        yield Button("Placement", id="placement-task")
+        yield Static("", id="task-status", markup=False)
 
     async def on_mount(self) -> None:
         self.set_interval(5.0, self._refresh_selected)
@@ -126,14 +134,13 @@ class ComputeTUI(App[None]):
     async def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id == "session":
             workspace_ui.clear(self)
-            self._selected_session = _selected_value(event.value)
-            self._selected_task = ""
+            self._selection(session_id=_selected_value(event.value), task_id="")
             self._clear_task_view()
             await self._refresh_selected()
         elif event.select.id == "target":
             self._update_controls()
         elif event.select.id == "task-select":
-            self._selected_task = _selected_value(event.value)
+            self._selection(task_id=_selected_value(event.value))
             await self._load_task_detail(self._selected_task)
         self._update_controls()
 
@@ -147,6 +154,12 @@ class ComputeTUI(App[None]):
             await self._submit_task()
         elif event.button.id == "cancel-task":
             await self._cancel_task()
+        elif event.button.id == "reschedule-task":
+            await self._reschedule_task()
+        elif event.button.id == "retry-task":
+            await self._retry_task()
+        elif event.button.id == "placement-task" and self._selected_task:
+            self.push_screen(ComputePlacement(self))
         elif event.button.id in {"workspace-upload", "workspace-download"}:
             await workspace_ui.handle(self, event.button.id)
 
@@ -162,7 +175,7 @@ class ComputeTUI(App[None]):
         except Exception as exc:
             if request_seq == self._session_seq:
                 self._sessions.clear()
-                self._selected_session = ""
+                self._selection(session_id="")
                 self.query_one("#session", Select).set_options([])
                 self._clear_selected_data()
                 self._set_status(_permission_error("Session list", "agent.sessions:read", exc))
@@ -176,16 +189,16 @@ class ComputeTUI(App[None]):
         selector = self.query_one("#session", Select)
         selector.set_options(options)
         if options and self._selected_session not in self._sessions:
-            self._selected_session = options[0][1]
+            self._selection(session_id=options[0][1])
             selector.value = self._selected_session
         elif not options:
-            self._selected_session = ""
+            self._selection(session_id="")
             self._clear_selected_data()
             self._set_status("No sessions are available to this Hub identity.")
         self._update_controls()
 
     async def _refresh_selected(self) -> None:
-        if not self._selected_session:
+        if not self._selected_session or isinstance(self.screen, ComputePlacement):
             return
         await asyncio.gather(self._refresh_devices(), self._refresh_tasks(), workspace_ui.refresh(self))
 
@@ -248,10 +261,10 @@ class ComputeTUI(App[None]):
         selector = self.query_one("#task-select", Select)
         selector.set_options(options)
         if options and self._selected_task not in self._tasks:
-            self._selected_task = options[0][1]
+            self._selection(task_id=options[0][1])
             selector.value = self._selected_task
         elif not options:
-            self._selected_task = ""
+            self._selection(task_id="")
             self.query_one("#task-detail", Static).update("No compute tasks for this session.")
         await self._load_task_detail(self._selected_task)
         self._update_controls()
@@ -314,7 +327,7 @@ class ComputeTUI(App[None]):
         if session_id == self._selected_session:
             self._set_task_status(f"Task queued: {task_id or 'response received'}")
             if task_id:
-                self._selected_task = task_id
+                self._selection(task_id=task_id)
                 self.query_one("#tabs", TabbedContent).active = "tasks-pane"
             await self._refresh_tasks()
 
@@ -334,11 +347,49 @@ class ComputeTUI(App[None]):
         await self._load_task_detail(task_id)
         await self._refresh_tasks()
 
+    async def _reschedule_task(self) -> None:
+        task_id = self._selected_task
+        task = self._tasks.get(task_id, {})
+        if not task_id or _id(task, "state") != "queued":
+            self._set_task_status("Select a queued task to reschedule.")
+            return
+        target = _selected_value(self.query_one("#target", Select).value)
+        try:
+            result = await asyncio.to_thread(self.client.reschedule, task_id, target)
+        except Exception as exc:
+            self._set_task_status(_permission_error(
+                "Reschedule failed", "agent.tasks:write", exc))
+            return
+        selected = _id(result, "target_device_id") or "automatic"
+        self._set_task_status(f"Task target updated: {selected}")
+        await self._load_task_detail(task_id)
+        await self._refresh_tasks()
+
+    async def _retry_task(self) -> None:
+        task_id = self._selected_task
+        task = self._tasks.get(task_id, {})
+        if not task_id or _id(task, "state") != "lost":
+            self._set_task_status("Select a lost task to retry.")
+            return
+        target = _selected_value(self.query_one("#target", Select).value)
+        try:
+            result = await asyncio.to_thread(
+                self.client.retry, task_id, target, confirm_duplicate=True)
+        except Exception as exc:
+            self._set_task_status(_permission_error(
+                "Retry failed; the task may have already run", "agent.tasks:write", exc))
+            return
+        self._set_task_status(
+            f"Lost task requeued with duplicate-risk confirmation: "
+            f"{_id(result, 'state') or 'queued'}")
+        await self._load_task_detail(task_id)
+        await self._refresh_tasks()
+
     def _clear_selected_data(self) -> None:
         workspace_ui.clear(self)
         self._devices.clear()
         self._tasks.clear()
-        self._selected_task = ""
+        self._selection(task_id="")
         self._clear_devices("Select a session to load its project devices.")
         self._clear_task_view()
 
@@ -365,6 +416,17 @@ class ComputeTUI(App[None]):
         state = _id(task, "state")
         self.query_one("#cancel-task", Button).disabled = (
             not state or state in {"completed", "failed", "cancelled", "lost"})
+        self.query_one("#reschedule-task", Button).disabled = state != "queued"
+        self.query_one("#retry-task", Button).disabled = state != "lost"
+        self.query_one("#placement-task", Button).disabled = not bool(self._selected_task)
+
+    def _selection(self, *, session_id=None, task_id=None):
+        for attribute, value in (("_selected_session", session_id), ("_selected_task", task_id)):
+            if value is not None and value != getattr(self, attribute):
+                self._placement_selection_seq += 1
+                setattr(self, attribute, value)
+        if isinstance(self.screen, ComputePlacement):
+            self.screen.invalidate_selection()
 
     def _set_status(self, value: str) -> None:
         self.query_one("#status", Static).update(str(value)[:512])
@@ -424,7 +486,7 @@ def _body_fingerprint(body: dict[str, Any]) -> str:
 
 
 def _selected_value(value: Any) -> str:
-    return "" if value is Select.BLANK else str(value or "")
+    return value if isinstance(value, str) else ""
 
 
 __all__ = ["ComputeTUI", "run_compute_tui"]

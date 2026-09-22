@@ -69,6 +69,8 @@ EXPECTED_RUNTIME_ASSETS = (
     "scripts/check-completion-report.py", "ui-specs/rules.yaml",
     "backend-specs/rules.yaml", "product-specs/rules.yaml",
     "evolution-specs/rules.yaml", "examples/frontend-implementation-pipeline.yaml",
+    "examples/agent-hub-gateway-oauth.json",
+    "examples/agent-hub-user-auth.json",
     "examples/sdlc-inputs/oidc-logout-frontchannel.md",
     "prompts/architect.md", "agent-engineering/requirement.yaml",
 )

@@ -23,6 +23,22 @@ def parser():
     tasks.add_argument("--session-id", default="")
     for name in ("status", "cancel"):
         actions.add_parser(name).add_argument("task_id")
+    reschedule = actions.add_parser("reschedule", help="retarget a queued task")
+    reschedule.add_argument("task_id")
+    reschedule.add_argument("--target-device-id", default="",
+                            help="authorized device ID; omit for automatic placement")
+    retry = actions.add_parser(
+        "retry", help="explicitly retry a lost task (may duplicate side effects)")
+    retry.add_argument("task_id")
+    retry.add_argument("--target-device-id", default="",
+                       help="authorized device ID; omit to preserve the original target")
+    retry.add_argument("--confirm-duplicate", action="store_true",
+                       help="acknowledge that the lost task may have already run")
+    placement = actions.add_parser("placement", help="inspect queued task placement")
+    placement.add_argument("task_id")
+    placement.add_argument("--after", default="")
+    placement.add_argument("--limit", type=int, default=20)
+    placement.add_argument("--json", action="store_true")
     submit = actions.add_parser("submit")
     submit.add_argument("--session-id", default="")
     submit.add_argument("--argv-json", required=True, help='JSON argv, e.g. ["python","job.py"]')
@@ -48,11 +64,16 @@ def main(argv=None) -> int:
     args = parser().parse_args(argv)
     try:
         result = _run(args)
-        if args.operation != "tui":
+        if args.operation == "placement" and not args.json:
+            from .hub_compute_placement_client import describe
+            print(describe(result))
+        elif args.operation != "tui":
             print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
         return 0
     except (HubError, ValueError, RuntimeError, OSError) as exc:
-        print(f"fleet compute: {exc}", file=sys.stderr)
+        from .hub_compute_placement_client import failure, visible
+        message = failure(exc) if args.operation == "placement" and isinstance(exc, HubError) else str(exc)
+        print(f"fleet compute: {visible(message)}", file=sys.stderr)
         return 2
 
 
@@ -80,22 +101,44 @@ def _run(args):
         print("Idempotency-Key: " + key, file=sys.stderr)
     elif args.operation in {"status", "cancel"}:
         payload = {"task_id": args.task_id}
+    elif args.operation == "reschedule":
+        payload = {"task_id": args.task_id, "target_device_id": args.target_device_id}
+    elif args.operation == "retry":
+        if not args.confirm_duplicate:
+            raise ValueError("--confirm-duplicate is required for lost-task retry")
+        payload = {"task_id": args.task_id, "target_device_id": args.target_device_id,
+                   "confirm_duplicate": True}
+    elif args.operation == "placement":
+        from .hub_compute_placement_client import parameters
+        payload = parameters(args.task_id, args.after, args.limit)
     elif args.operation == "devices" and args.after:
         payload = {"after": args.after}
     if args.via:
         from .hub_compute_broker import broker_request
-        if args.operation not in {"devices", "submit", "status", "cancel"}:
-            raise ValueError("active-turn tools support devices, submit, status and cancel")
+        if args.operation not in {"devices", "submit", "status", "cancel", "placement",
+                                  "reschedule", "retry"}:
+            raise ValueError("active-turn tools support devices, submit, status, cancel, reschedule, retry and placement")
         return broker_request(args.via, args.operation, payload, key)
     client = ComputeClient(HubClient.from_env(args.hub))
+    return _direct(client, args, payload, key)
+
+
+def _direct(client, args, payload, key):
     if args.operation == "devices":
         return client.devices(args.project_id, after=args.after)
     if args.operation == "tasks":
         return client.tasks(args.session_id)
     if args.operation == "status":
         return client.get(args.task_id)
+    if args.operation == "placement":
+        return client.placement(**payload)
     if args.operation == "cancel":
         return client.cancel(args.task_id)
+    if args.operation == "reschedule":
+        return client.reschedule(args.task_id, args.target_device_id)
+    if args.operation == "retry":
+        return client.retry(args.task_id, args.target_device_id,
+                            confirm_duplicate=args.confirm_duplicate)
     if args.operation == "tui":
         from .hub_compute_tui import ComputeTUI
         return ComputeTUI(client).run()

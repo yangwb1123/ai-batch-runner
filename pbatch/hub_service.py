@@ -52,6 +52,15 @@ class HubService:
             raise HubAccessError("forbidden", "user access required")
         if self.identity is not None:
             self.identity.check(principal)
+        from .hub_session_operations_api import is_route as operations_route, dispatch as operations_dispatch
+        if operations_route(parts):
+            return operations_dispatch(self, method, query, body, principal)
+        from .hub_session_close_api import is_route as is_close_route, dispatch as close_dispatch
+        if is_close_route(parts):
+            return close_dispatch(self, method, parts, query, body, principal, idempotency_key)
+        from .hub_session_request_api import is_route, dispatch
+        if is_route(parts):
+            return dispatch(self, method, parts, query, body, principal, idempotency_key)
         if parts[0] == "integrations":
             from .hub_integration_api import dispatch
             return dispatch(self, method, parts, query, body, principal)
@@ -129,11 +138,19 @@ class HubService:
         if principal.kind != "gateway":
             raise HubAccessError("forbidden", "gateway access required")
         principal.require(GATEWAY_SCOPE)
+        if parts == ["session-close-requests"] and method not in {"GET", "POST"}:
+            raise HubAccessError("method_not_allowed", "method not allowed", 405)
         values = query if method == "GET" else body
         instance = values.get("instance_id", "")
         if not isinstance(instance, str) or not instance:
             raise ValueError("instance_id is required")
         principal.require(GATEWAY_SCOPE, instance)
+        if parts == ["session-close-requests"]:
+            from .hub_session_close_api import gateway
+            return gateway(self, method, query, body, principal, instance)
+        if parts == ["session-requests"]:
+            from .hub_session_request_api import gateway
+            return gateway(self, method, query, body, principal, instance)
         if method == "GET" and parts == ["commands"]:
             _only(values, {"instance_id", "generation"})
             generation = self._generation(values)
@@ -159,7 +176,8 @@ class HubService:
     def _gateway_write(self, route: str, tenant: str, instance: str, body: dict) -> dict:
         common = {"instance_id", "generation"}
         if route == "register":
-            _only(body, {"instance_id", "boot_id", "name", "project_id"})
+            _only(body, {"instance_id", "boot_id", "name", "project_id", "session_capacity",
+                         "session_close_supported"})
             return self.store.register_instance(tenant, instance, body)
         generation = self._generation(body)
         if route == "heartbeat":

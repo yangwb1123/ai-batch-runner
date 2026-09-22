@@ -24,6 +24,11 @@ class _HubHandler(BaseHTTPRequestHandler):
         self.seen.append((self.command, self.path, dict(self.headers), body))
         parsed = urlsplit(self.path)
         query = parse_qs(parsed.query)
+        if parsed.path.endswith("/rejected-write"):
+            status = 401 if self.headers["Authorization"] == "Bearer old-token" else 200
+            return self._auth_response(status)
+        if parsed.path.endswith("/forbidden-write"):
+            return self._auth_response(403)
         if self.path.endswith("/large"):
             payload = {"data": "x" * 2048}
         elif self.path.endswith("/redirect"):
@@ -61,6 +66,16 @@ class _HubHandler(BaseHTTPRequestHandler):
 
     def log_message(self, *_args):
         return
+
+    def _auth_response(self, status):
+        body = ({"data": {"state": "accepted"}} if status == 200 else
+                {"error": {"code": "unauthorized", "message": "access denied"}})
+        encoded = json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
 
 
 @pytest.fixture
@@ -144,3 +159,95 @@ def test_rotated_private_token_is_used_without_restarting_gateway(hub_server, tm
         client.list_sessions()
     assert denied.value.code == "credential_unavailable"
     assert len(_HubHandler.seen) == 2
+
+
+class _RotatingCredential:
+    def __init__(self):
+        self.token = "old-token"
+        self.invalidated = []
+
+    def __call__(self):
+        return self.token
+
+    def invalidate(self, token):
+        self.invalidated.append(token)
+        self.token = "new-token"
+
+    def __repr__(self):
+        return "private-provider-details"
+
+
+def test_provider_401_invalidates_used_token_without_replaying_write(hub_server):
+    provider = _RotatingCredential()
+    client = HubClient(hub_server, token_provider=provider)
+    with pytest.raises(HubError) as rejected:
+        client._request("POST", "/rejected-write", {"action": "already applied"})
+    assert rejected.value.status == 401
+    assert provider.invalidated == ["old-token"]
+    assert len(_HubHandler.seen) == 1
+    assert client._request("POST", "/rejected-write", {}) == {"state": "accepted"}
+    assert len(_HubHandler.seen) == 2
+    assert _HubHandler.seen[1][2]["Authorization"] == "Bearer new-token"
+    assert "old-token" not in repr(client)
+    assert "private-provider-details" not in repr(client)
+
+
+def test_provider_does_not_refresh_or_retry_a_forbidden_write(hub_server):
+    provider = _RotatingCredential()
+    client = HubClient(hub_server, token_provider=provider)
+    with pytest.raises(HubError) as rejected:
+        client._request("POST", "/forbidden-write", {})
+    assert rejected.value.status == 403
+    assert provider.invalidated == []
+    assert len(_HubHandler.seen) == 1
+
+
+def test_static_credential_401_remains_a_single_request(hub_server):
+    client = HubClient(hub_server, "old-token")
+    with pytest.raises(HubError) as rejected:
+        client._request("POST", "/rejected-write", {})
+    assert rejected.value.status == 401
+    assert len(_HubHandler.seen) == 1
+
+
+@pytest.mark.parametrize("value", [None, {}, "", "invalid\r\ntoken"])
+def test_invalid_provider_token_never_reaches_network(hub_server, value):
+    client = HubClient(hub_server, token_provider=lambda: value)
+    with pytest.raises(HubError) as rejected:
+        client.list_sessions()
+    assert rejected.value.code == "credential_unavailable"
+    assert not _HubHandler.seen
+
+
+def test_provider_error_does_not_expose_credentials(hub_server):
+    def unavailable():
+        raise ValueError("private-secret-must-not-escape")
+
+    client = HubClient(hub_server, token_provider=unavailable)
+    with pytest.raises(HubError) as rejected:
+        client.list_sessions()
+    assert "private-secret" not in str(rejected.value)
+    assert rejected.value.__suppress_context__
+    assert not _HubHandler.seen
+
+
+@pytest.mark.parametrize("timeout", [float("nan"), float("inf"), 0, -1, 10 ** 1000,
+                                   True, "5", None])
+def test_invalid_timeout_does_not_invoke_provider(timeout):
+    calls = []
+    with pytest.raises(ValueError, match="timeout"):
+        HubClient("https://hub.example", timeout=timeout,
+                  token_provider=lambda: calls.append(True))
+    assert not calls
+
+
+def test_constructor_refuses_ambiguous_credential_sources():
+    with pytest.raises(ValueError, match="one Hub credential"):
+        HubClient("https://hub.example", "static-token", token_provider=lambda: "other")
+
+
+@pytest.mark.parametrize("key", ["PBATCH_HUB_TOKEN", "PBATCH_HUB_TOKEN_FILE"])
+def test_oauth_profile_refuses_static_environment_before_loading(key):
+    env = {key: "private-value", "PBATCH_HUB_OAUTH_CONFIG": "/missing/profile.json"}
+    with pytest.raises(ValueError, match="conflicts"):
+        HubClient.from_env("https://hub.example", environ=env)

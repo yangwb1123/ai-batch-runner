@@ -73,6 +73,34 @@ def test_http_compute_scopes_tenant_pagination_and_idempotency(transport):
     assert client.cancel(task["task_id"])["state"] == "cancelled"
 
 
+def test_http_reschedule_queued_task_and_reject_running_task(transport):
+    client = ComputeClient(transport.user)
+    task = client.submit(transport.session, {"argv": ["python", "test.py"]}, "retarget-key")
+    moved = client.reschedule(task["task_id"], "device-b")
+    assert moved["target_device_id"] == "device-b"
+    assert moved["state"] == "queued"
+    assert client.reschedule(task["task_id"], "device-b") == moved
+    transport.compute.store.update("team", task["task_id"], {}, state="running")
+    with pytest.raises(HubError) as error:
+        client.reschedule(task["task_id"], "")
+    assert error.value.status == 409
+
+
+def test_http_lost_retry_requires_confirmation_and_uses_new_queue_admission(transport):
+    client = ComputeClient(transport.user)
+    task = client.submit(transport.session, {
+        "argv": ["python", "test.py"], "target_device_id": "device-b"},
+        "lost-retry-key")
+    transport.compute.store.update("team", task["task_id"], {}, state="lost")
+    with pytest.raises(ValueError, match="confirm_duplicate"):
+        client.retry(task["task_id"])
+    retried = client.retry(task["task_id"], confirm_duplicate=True)
+    assert retried["state"] == "queued"
+    assert retried["target_device_id"] == "device-b"
+    private = transport.compute.store.get("team", task["task_id"], private=True)
+    assert private["_fabric_request_id"].endswith(":retry-1")
+
+
 def test_local_capability_is_bound_to_running_turn_and_revoked_on_exit(transport):
     turn = transport.user.send_prompt(transport.session, "run compute", "turn-key")["turn_id"]
     transport.hub.append_event("team", "source", 1, {
@@ -119,6 +147,19 @@ def test_operator_bindings_rotation_and_separate_tenant_planes(tmp_path):
     credential.chmod(0o644)
     with pytest.raises(ValueError, match="0600"):
         connection.client()
+
+
+def test_same_tenant_can_federate_distinct_fabric_endpoints(tmp_path):
+    first = settings(tmp_path)
+    second = settings(tmp_path)
+    second.update(base_url="http://127.0.0.1:9998", bindings=[{
+        "device_id": "worker-two", "instance_id": "remote-two",
+        "workspaces": {"project": "/work-two"}}])
+    configured = connections([first, second])
+    assert [item.url for item in configured["team"]] == [first["base_url"], second["base_url"]]
+    overlap = dict(second, bindings=[dict(second["bindings"][0], device_id="worker")])
+    with pytest.raises(ValueError, match="share a device"):
+        connections([first, overlap])
 
 
 @pytest.mark.parametrize("workspace", ["relative", "/work/../escape", "C:\\work"])

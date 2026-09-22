@@ -20,7 +20,7 @@ from .hub_compute_client import ComputeClient
 
 MAX_BYTES = 65536
 WORKSPACE_BYTES = 576 * 1024
-OPERATIONS = {"devices", "submit", "status", "cancel", "snapshots", "snapshot-upload", "workspace-output"}
+OPERATIONS = {"devices", "submit", "status", "cancel", "reschedule", "retry", "placement", "snapshots", "snapshot-upload", "workspace-output"}
 
 
 class _Handler(socketserver.StreamRequestHandler):
@@ -45,6 +45,8 @@ class _Handler(socketserver.StreamRequestHandler):
             response = {"data": data}
         except HubError as exc:
             response = {"error": {"code": exc.code, "message": str(exc)}}
+            if body.get("operation") == "placement":
+                response["error"]["status"] = exc.status
         except Exception:
             response = {"error": {"code": "tool_unavailable", "message": "compute tool unavailable"}}
         encoded = json.dumps(response, ensure_ascii=False, allow_nan=False).encode()
@@ -57,7 +59,8 @@ class _Handler(socketserver.StreamRequestHandler):
 def _decode(raw: bytes, *, maximum=MAX_BYTES) -> dict:
     if len(raw) > maximum or not raw.endswith(b"\n"):
         raise ValueError("invalid bounded tool message")
-    value = json.loads(raw)
+    from .hub_compute_placement_client import unique_fields
+    value = json.loads(raw, object_pairs_hook=unique_fields)
     if not isinstance(value, dict):
         raise ValueError("tool message must be an object")
     return value
@@ -105,6 +108,9 @@ def _tool_prompt(prompt, path):
             f"{command} snapshots\n"
             f"{command} workspace-output TASK_ID --directory NEW_OUTPUT_DIRECTORY\n"
             f"{command} status TASK_ID\n{command} cancel TASK_ID\n"
+            f"{command} reschedule TASK_ID [--target-device-id DEVICE_ID]\n"
+            f"{command} retry TASK_ID --confirm-duplicate [--target-device-id DEVICE_ID]\n"
+            f"{command} placement TASK_ID [--after DEVICE_ID]\n"
             "Use devices to inspect project workspaces and resources before choosing a target. "
             "Devices returns up to 4 rows per page; repeat devices --after LAST_DEVICE_ID "
             "until an empty page to inspect all authorized project devices. "
@@ -113,10 +119,15 @@ def _tool_prompt(prompt, path):
             "Use --snapshot-id and repeat --output for exact output file paths; snapshot tasks use workdir . "
             "Upload only explicit --file paths (128 files, 64 KiB each, 256 KiB total). "
             "Retain Idempotency-Key for retry. Poll status to collect evidence. "
+            "Placement reads one page of live queued-task diagnostics; follow next_cursor explicitly. "
+            "It does not reserve resources or guarantee that Fabric accepts the task. "
             "Never display or copy the capability file; it expires when this turn ends.\n\n" + prompt)
 
 
 def broker_request(path: str, operation: str, payload: dict, key=""):
+    if operation == "placement":
+        from .hub_compute_placement_client import delegated_parameters
+        payload = delegated_parameters(payload, key)
     capability = json.loads(_read_private_token(path))
     raw = json.dumps({"token": capability["token"], "operation": operation,
                       "payload": payload, "key": key}, ensure_ascii=False).encode() + b"\n"
@@ -132,5 +143,8 @@ def broker_request(path: str, operation: str, payload: dict, key=""):
             response = _decode(stream.readline(maximum + 1), maximum=maximum)
     if "error" in response:
         error = response["error"]
-        raise HubError(error["message"], code=error["code"])
+        raise HubError(error["message"], code=error["code"], status=error.get("status", 0))
+    if operation == "placement":
+        from .hub_compute_placement_client import decode
+        return decode(json.dumps(response, ensure_ascii=False).encode(), **payload)
     return response["data"]

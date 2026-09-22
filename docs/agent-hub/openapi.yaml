@@ -1,14 +1,17 @@
 openapi: 3.0.3
 info:
   title: Snaplink Agent Hub API
-  version: 1.4.0
+  version: 1.10.0
   description: >-
     Tenant-scoped directory and command API for sessions owned by distinct
     Agent Hub instances. This API lists instances and sessions, submits a
-    prompt to one existing session, relays events, and requests cancellation.
+    prompt to one existing session, creates a session on a capable instance,
+    closes idle sessions while retaining history, relays events, and requests cancellation.
     Ordinary JSON requests are limited to 64 KiB. Snapshot uploads and their
     active-turn gateway envelope allow 576 KiB. Optional tenant-bound Device
-    Fabric connections expose resource discovery and durable computation tasks.
+    Fabric connections expose resource discovery and durable computation tasks,
+    including retargeting of queued work and explicitly confirmed retries of
+    lost tasks within the original device authority.
 servers:
   - url: https://hub.example.test
     description: Production Hub; remote listeners require TLS.
@@ -77,6 +80,257 @@ paths:
           $ref: '#/components/responses/Unauthenticated'
         '403':
           $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/v1/agent/instances/{instance_id}/sessions:
+    post:
+      tags: [User API]
+      operationId: createAgentSession
+      summary: Request a new session on one configured instance
+      description: >-
+        Requires write access to the target instance. The Gateway uses its fixed
+        project, provider, and working directory; callers can only choose a name.
+        Admission atomically reserves capacity against registered sessions without a successful close receipt plus
+        queued requests in the current live generation. Unsupported, offline,
+        and full instances reject new requests. The same tenant, subject,
+        client_id and Idempotency-Key with the same instance and normalized name
+        returns the original request even after completion or disconnection;
+        changed input conflicts. No query parameters are accepted.
+      x-principal-kind: user
+      x-required-scope: agent.sessions:write
+      parameters:
+        - $ref: '#/components/parameters/InstanceId'
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 256}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSessionRequest'
+      responses:
+        '202':
+          description: Durable creation request, including a replayed terminal result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionRequestEnvelope'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/v1/agent/session-operations:
+    get:
+      tags: [User API]
+      operationId: listSessionOperations
+      summary: Read durable creation and close requests across authorized instances
+      description: >-
+        Reads existing request ledgers without replaying work. Requires a user
+        session-read grant; filters tenant and current instance grants before
+        pagination, regardless of the submitting subject or client. Offline and
+        prior-generation records remain readable. No GET body, transfer encoding,
+        other query parameters or non-GET application methods are accepted;
+        existing OPTIONS transport preflight remains available for CORS.
+        Results use descending (created_at, operation, request_id) order. State
+        updates do not change position. This is live history, not a frozen snapshot
+        or admission sequence: clock rollback places new requests by recorded time;
+        refresh the first page to revisit previously traversed intervals.
+      x-principal-kind: user
+      x-required-scope: agent.sessions:read
+      parameters:
+        - name: instance_id
+          in: query
+          required: false
+          description: Optional exact instance requiring the caller's existing read grant.
+          schema: {type: string, minLength: 1, maxLength: 256}
+        - name: before
+          in: query
+          required: false
+          description: >-
+            Opaque unpadded base64url of compact UTF-8 JSON
+            [1, float.hex(created_at), operation, request_id]. Noncanonical
+            encodings and nonfinite or negative times are rejected. An empty
+            cursor requests the latest page. A cursor never grants authority.
+          schema:
+            type: string
+            maxLength: 2048
+            pattern: '^[A-Za-z0-9_-]*$'
+            default: ''
+        - name: limit
+          in: query
+          required: false
+          schema: {type: integer, minimum: 1, maximum: 50, default: 20}
+      responses:
+        '200':
+          description: >-
+            A bounded page from a shared SQLite read transaction. next_cursor is
+            empty when no additional older record was observed. Otherwise it
+            identifies the last returned row; clients explicitly request each page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionOperationListEnvelope'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '405':
+          description: Only GET is supported.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/v1/agent/session-requests/{request_id}:
+    get:
+      tags: [User API]
+      operationId: getSessionRequest
+      summary: Read a durable session creation result
+      description: >-
+        Requires read access to the request's target instance in the caller's
+        tenant. No query parameters or body are accepted. A created result
+        includes the Hub session_id for subsequent listing, prompt, and event
+        APIs. Pending requests survive Hub restart; Gateway generation takeover
+        marks them lost instead of recreating them.
+      x-principal-kind: user
+      x-required-scope: agent.sessions:read
+      parameters:
+        - name: request_id
+          in: path
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 256}
+      responses:
+        '200':
+          description: Current request result without actor or local configuration details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionRequestEnvelope'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/v1/agent/sessions/{session_id}/close:
+    post:
+      tags: [User API]
+      operationId: closeSession
+      summary: Request an idle session close while retaining history
+      description: >-
+        Requires write access to the session's exact instance and configured
+        identity membership. Accepts only an empty JSON object, no query, and a
+        required Idempotency-Key. The key domain is tenant, subject and client_id;
+        reuse for the same session replays the original request even after
+        completion or disconnect, while a different session conflicts.
+        Admission requires a live current-generation controllable session and
+        session_close_supported=true. Any queued, running or cancel_requested turn
+        or nonterminal compute task rejects with session_busy. Admission freezes
+        the session immediately and stops new work, but retains its capacity until
+        the Gateway explicitly reports closed. Failure retains the frozen session
+        and capacity; recovery requires Gateway restart. There is no force, reopen,
+        cancellation, deletion or history cleanup. A different key on an existing
+        request returns session_close_in_progress, session_closed,
+        session_close_failed, or session_unavailable for lost requests.
+      x-principal-kind: user
+      x-required-scope: agent.sessions:write
+      parameters:
+        - $ref: '#/components/parameters/SessionId'
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 256}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: false, maxProperties: 0}
+      responses:
+        '202':
+          description: Durable close request, including a replayed terminal result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionCloseRequestEnvelope'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '405':
+          description: This route accepts POST only.
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/v1/agent/session-close-requests/{request_id}:
+    get:
+      tags: [User API]
+      operationId: getSessionCloseRequest
+      summary: Read a durable close result
+      description: >-
+        Requires read access to the request's exact instance within the caller's
+        tenant. No query or body is accepted. Pending state survives Hub restart;
+        Gateway generation takeover marks queued requests lost/owner_replaced and
+        their sessions close_lost. This never claims runtime close success.
+        Session, turn, event and compute history are retained without automatic cleanup.
+      x-principal-kind: user
+      x-required-scope: agent.sessions:read
+      parameters:
+        - name: request_id
+          in: path
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 256}
+      responses:
+        '200':
+          description: Current close result without actor, key or local configuration.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionCloseRequestEnvelope'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '405':
+          description: This route accepts GET only.
         default:
           $ref: '#/components/responses/Error'
 
@@ -382,6 +636,168 @@ paths:
         default:
           $ref: '#/components/responses/Error'
 
+  /api/v1/agent/gateway/session-requests:
+    get:
+      tags: [Gateway API]
+      operationId: pollGatewaySessionRequests
+      summary: Poll pending session creation commands
+      description: >-
+        Requires the exact bound instance and its current live generation.
+        Returns at most eight pending commands in creation order. Each durable
+        local_session_id is allocated by the Hub and survives poll replay and
+        Hub restart. No body or additional query parameters are accepted.
+      x-principal-kind: gateway
+      x-required-scope: agent.gateway:connect
+      parameters:
+        - $ref: '#/components/parameters/InstanceIdQuery'
+        - $ref: '#/components/parameters/GenerationQuery'
+      responses:
+        '200':
+          description: Ordered pending creation commands for this generation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionRequestCommandEnvelope'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Error'
+    post:
+      tags: [Gateway API]
+      operationId: reportGatewaySessionRequest
+      summary: Complete a session creation request
+      description: >-
+        Requires the exact bound instance and its current live generation.
+        A created report atomically registers the expected Hub session using the
+        allocated local identity and makes it controllable. No identity or local
+        configuration overrides are accepted. Repeating the same terminal report
+        is idempotent; conflicting outcomes and replaced generations fail.
+        A failed report releases its reservation. Already created sessions keep
+        their slots until a separate close request succeeds, or generation takeover. No query parameters are accepted.
+      x-principal-kind: gateway
+      x-required-scope: agent.gateway:connect
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportSessionRequest'
+      responses:
+        '200':
+          description: Durable terminal result, including an identical report replay.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionRequestEnvelope'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/v1/agent/gateway/session-close-requests:
+    get:
+      tags: [Gateway API]
+      operationId: pollGatewaySessionCloseRequests
+      summary: Poll pending idle close commands
+      description: >-
+        Requires the exact bound instance and its current live generation.
+        Returns up to eight pending commands in creation order with their immutable
+        target identities. No body or additional query is accepted. A separate
+        bounded worker should close the runtime without blocking heartbeat or work
+        on other sessions. Durable local receipts prevent repeated runtime close
+        when a report acknowledgment is lost.
+      x-principal-kind: gateway
+      x-required-scope: agent.gateway:connect
+      parameters:
+        - $ref: '#/components/parameters/InstanceIdQuery'
+        - $ref: '#/components/parameters/GenerationQuery'
+      responses:
+        '200':
+          description: Ordered pending close commands for this generation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionCloseCommandEnvelope'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        default:
+          $ref: '#/components/responses/Error'
+    post:
+      tags: [Gateway API]
+      operationId: reportGatewaySessionCloseRequest
+      summary: Report the actual runtime close outcome
+      description: >-
+        Requires the exact bound instance and its current live generation. Only
+        closed with empty error_code or failed with session_close_failed or
+        session_unavailable is accepted. A closed report atomically releases the
+        registered session's capacity and sets status closed. Failure sets
+        close_failed, keeps its slot and freezes the session until Gateway restart.
+        Repeating an identical final report is idempotent; a different outcome
+        conflicts with session_request_terminal. Reports for replaced generations
+        fail even when their requested result matches a prior result. No identity
+        overrides or query parameters are accepted. Existing history is retained.
+      x-principal-kind: gateway
+      x-required-scope: agent.gateway:connect
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportSessionCloseRequest'
+      responses:
+        '200':
+          description: Durable final result, including an identical report replay.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionCloseRequestEnvelope'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '405':
+          description: This route accepts GET or POST only.
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/TooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        default:
+          $ref: '#/components/responses/Error'
+
   /api/v1/agent/gateway/register:
     post:
       tags: [Gateway API]
@@ -391,8 +807,16 @@ paths:
         The instance_id must match the instance bound to the gateway token.
         Re-registering the same boot_id preserves generation. A different boot
         is rejected while the previous registration is online; after expiry it
-        takes over with a greater generation and prior unfinished turns become
-        lost. No generation is supplied in this request.
+        takes over with a greater generation and prior unfinished turns and
+        queued creation and close requests become lost. No generation is supplied in this
+        request. Omitted or zero session_capacity means unsupported. A Gateway
+        can register with zero while publishing initial sessions, then advertise
+        its capacity by registering the same boot again. A positive capacity
+        cannot be lower than existing registered sessions plus queued requests
+        for that generation; zero still disables new creation without deleting
+        existing sessions or reservations. Successfully closed sessions no longer occupy
+        capacity. session_close_supported defaults to false independently of capacity;
+        advertise true only after initial sessions have been adopted.
       x-principal-kind: gateway
       x-required-scope: agent.gateway:connect
       requestBody:
@@ -463,6 +887,8 @@ paths:
       description: >-
         The gateway may publish only sessions for its authorized instance and
         generation. Old-generation sessions remain read-only after takeover.
+        Sessions frozen by a close request also reject ordinary metadata refresh;
+        this cannot reopen a session or forge a capacity-releasing close result.
       x-principal-kind: gateway
       x-required-scope: agent.gateway:connect
       requestBody:
@@ -506,6 +932,10 @@ paths:
         byte limit to the entire event POST body. Nested sensitive keys such as
         token, password, credential, and private_key are rejected; event text
         is redacted before it is stored. A turn state event must name turn_id.
+        On a current-generation session frozen by close, an already stored
+        identical event still returns its duplicate acknowledgment. A new event
+        fails with session_read_only without changing history or fencing other
+        sessions. Wrong owners and old generations still fail with stale_generation.
       x-principal-kind: gateway
       x-required-scope: agent.gateway:connect
       requestBody:
@@ -625,6 +1055,44 @@ paths:
                 $ref: '#/components/schemas/ComputeTaskEnvelope'
         default:
           $ref: '#/components/responses/Error'
+  /api/v1/agent/tasks/{task_id}/placement:
+    get:
+      tags: [Compute API]
+      operationId: getComputePlacement
+      summary: Inspect current Hub placement filters for a queued task
+      description: >-
+        Read-only live observation; never reserves resources or retries a task.
+        Requires both tasks read on the source instance and devices read. Device
+        IDs are filtered before querying Fabric by the original task target set,
+        current compute grants and current project bindings. No hidden counts are
+        returned. A matching row passes Hub filters only; Fabric performs final
+        admission. Non-queued tasks return no devices or cursor without reading
+        Fabric. A task state change during inventory discards the observations.
+        GET bodies and transfer encoding are rejected. Each page is at most 64 KiB.
+      x-principal-kind: user
+      x-required-scopes: [agent.tasks:read, agent.devices:read]
+      parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema: {type: string, minLength: 1, maxLength: 256}
+      - name: after
+        in: query
+        description: Exclusive device ID from next_cursor; empty starts the first page.
+        schema: {type: string, maxLength: 256, default: ''}
+      - name: limit
+        in: query
+        description: ASCII decimal integer; no signs, whitespace or duplicate parameters.
+        schema: {type: integer, minimum: 1, maximum: 20, default: 20}
+      responses:
+        '200':
+          description: Authorized live placement page, without command or workspace paths.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComputePlacementEnvelope'
+        default:
+          $ref: '#/components/responses/Error'
   /api/v1/agent/sessions/{session_id}/tasks:
     post:
       tags:
@@ -691,6 +1159,84 @@ paths:
               type: object
               additionalProperties: false
               properties: {}
+  /api/v1/agent/tasks/{task_id}/reschedule:
+    post:
+      tags:
+      - Compute API
+      operationId: rescheduleComputeTask
+      summary: Retarget a queued compute task
+      description: >-
+        Changes only the target selector of a task that is still queued. The
+        task actor must retain tasks write access to the source instance. The
+        target must belong to the task's original target set, the caller's
+        current compute grant and the task project binding. An empty target
+        restores automatic placement. This operation is idempotent by desired
+        target and never migrates a dispatched or running task.
+      x-principal-kind: user
+      x-required-scope: agent.tasks:write
+      parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 256
+      responses:
+        '202':
+          description: Authorized compute response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComputeTaskEnvelope'
+        default:
+          $ref: '#/components/responses/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RescheduleComputeRequest'
+  /api/v1/agent/tasks/{task_id}/retry:
+    post:
+      tags:
+      - Compute API
+      operationId: retryLostComputeTask
+      summary: Explicitly retry a lost compute task
+      description: >-
+        Re-admits only a terminal lost task after the caller confirms that the
+        remote command may already have run and could be duplicated. The task
+        actor must retain tasks write access to the source instance. A target
+        is checked against the task's original target set, current compute
+        grant and project binding; omitting it preserves an original explicit
+        target. Tasks with evidence archiving enabled are rejected to avoid a
+        race with immutable archive records. The old Fabric handle is cleared
+        and a new request identifier is used. This operation is never automatic.
+      x-principal-kind: user
+      x-required-scope: agent.tasks:write
+      parameters:
+      - name: task_id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 256
+      responses:
+        '202':
+          description: Authorized compute response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComputeTaskEnvelope'
+        default:
+          $ref: '#/components/responses/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetryLostComputeRequest'
   /api/v1/agent/gateway/compute:
     post:
       tags:
@@ -703,6 +1249,17 @@ paths:
         after device ID. Device pages contain at most four rows and 60 KiB of JSON,
         with project_ids restricted to the active session project. Continue after
         the last device ID until an empty page to inspect all authorized devices.
+        Operation placement requires tasks read and devices read, plus an active
+        turn owning the task. Its exact payload is task_id, optional after device
+        ID and optional integer limit (1..20); key must be empty. It returns a
+        ComputePlacement object using the same filtering as the user endpoint.
+        Operation reschedule requires an active turn that owns the queued task,
+        accepts task_id and target_device_id, and also requires an empty key; it
+        applies the same original-target and current-grant checks as the user endpoint.
+        Operation retry requires an active turn that owns a lost task, accepts
+        task_id, optional target_device_id and confirm_duplicate=true, and also
+        requires an empty key; it applies the same target and archive checks as
+        the user endpoint.
       requestBody:
         required: true
         content:
@@ -721,6 +1278,7 @@ paths:
                   data:
                     oneOf:
                     - $ref: '#/components/schemas/ComputeTask'
+                    - $ref: '#/components/schemas/ComputePlacement'
                     - $ref: '#/components/schemas/WorkspaceSnapshot'
                     - $ref: '#/components/schemas/WorkspaceOutput'
                     - type: array
@@ -922,6 +1480,12 @@ components:
         Tokens carrying unsupported cnf proof or act delegation claims are
         rejected.
   parameters:
+    InstanceId:
+      name: instance_id
+      in: path
+      required: true
+      description: Explicit target instance covered by the caller's resource grant.
+      schema: {type: string, minLength: 1, maxLength: 256}
     Limit:
       name: limit
       in: query
@@ -999,7 +1563,9 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorEnvelope'
     Conflict:
-      description: Idempotency conflict, unavailable session, active prior boot, or stale generation.
+      description: >-
+        Idempotency conflict, unavailable session, unsupported session creation,
+        full capacity, conflicting terminal report, active prior boot, or stale generation.
       content:
         application/json:
           schema:
@@ -1054,7 +1620,7 @@ components:
               enum: [ok]
     Instance:
       type: object
-      required: [tenant, instance_id, boot_id, generation, last_seen, online]
+      required: [tenant, instance_id, boot_id, generation, last_seen, online, session_capacity, session_close_supported]
       properties:
         tenant:
           type: string
@@ -1075,6 +1641,16 @@ components:
         online:
           type: boolean
           description: Computed from the current time and the configured heartbeat expiry window.
+        session_capacity:
+          type: integer
+          minimum: 0
+          maximum: 8
+          default: 0
+          description: Maximum unclosed sessions plus queued creations for this generation; zero disables creation.
+        session_close_supported:
+          type: boolean
+          default: false
+          description: Whether this Gateway can explicitly close idle sessions; independent of creation capacity.
         name:
           type: string
         project_id:
@@ -1116,7 +1692,10 @@ components:
           type: string
         status:
           type: string
-          description: Active turn state when a turn exists; otherwise the status last published by the Gateway.
+          description: >-
+            Active turn state when a turn exists; otherwise Gateway metadata or
+            the Hub-owned closing, closed, close_failed or close_lost lifecycle.
+            Arbitrary Gateway status text never releases capacity.
         active_turn_id:
           type: string
           description: Current nonterminal turn id, or the empty string if no turn is active.
@@ -1128,7 +1707,9 @@ components:
           description: True only if the session was marked controllable, is not frozen, and its instance is online.
         frozen:
           type: boolean
-          description: Old-generation sessions become frozen and read-only after takeover.
+          description: >-
+            Sessions become frozen and read-only on close acceptance or generation
+            takeover. Close failure never thaws a session; Gateway restart is required.
         updated_at:
           type: number
           format: double
@@ -1362,6 +1943,224 @@ components:
         project_id:
           type: string
           maxLength: 256
+        session_capacity:
+          type: integer
+          minimum: 0
+          maximum: 8
+          default: 0
+          description: Optional remote session capacity; includes unclosed initial sessions and queued creations.
+        session_close_supported:
+          type: boolean
+          default: false
+          description: Optional idle-close capability; may be true even when creation capacity is zero.
+    CreateSessionRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: >-
+            Control-free text, trimmed before storage and idempotency comparison.
+            The trimmed UTF-8 encoding must be nonempty and at most 256 bytes.
+    SessionRequest:
+      type: object
+      additionalProperties: false
+      required: [request_id, instance_id, name, status, session_id, error_code, created_at, updated_at]
+      properties:
+        request_id: {type: string}
+        instance_id: {type: string}
+        name: {type: string}
+        status:
+          type: string
+          enum: [queued, created, failed, lost]
+        session_id:
+          type: string
+          description: Hub session identity when created; otherwise an empty string.
+        error_code:
+          type: string
+          enum: ['', session_creation_failed, session_capacity, owner_replaced]
+          description: Empty for queued or created; owner_replaced denotes generation takeover.
+        created_at: {type: number, format: double}
+        updated_at: {type: number, format: double}
+    SessionOperationListEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, next_cursor]
+      properties:
+        data:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/SessionOperation'
+        next_cursor:
+          type: string
+          maxLength: 2048
+          pattern: '^[A-Za-z0-9_-]*$'
+          description: Empty for an exhausted or empty page; otherwise the last returned row.
+    SessionOperation:
+      type: object
+      additionalProperties: false
+      required: [operation, request_id, instance_id, name, status, session_id, error_code, created_at, updated_at]
+      description: >-
+        Public projection only. Identity is (operation, request_id), since the
+        two original ledgers have independent request identifiers. Identifiers
+        have at most 256 Unicode characters and exclude C0/DEL; C1 is permitted.
+        Time fields must be finite nonnegative JSON numbers. No actor, client,
+        key, local identity, generation, path or credential is exposed.
+      properties:
+        operation: {type: string, enum: [create, close]}
+        request_id: {type: string, minLength: 1, maxLength: 256}
+        instance_id: {type: string, minLength: 1, maxLength: 256}
+        name: {type: string, maxLength: 256}
+        status: {type: string}
+        session_id: {type: string, maxLength: 256}
+        error_code: {type: string}
+        created_at: {type: number, format: double, minimum: 0}
+        updated_at: {type: number, format: double, minimum: 0}
+      oneOf:
+        - properties:
+            operation: {enum: [create]}
+            name:
+              minLength: 1
+              description: Nonempty creation name, at most 256 UTF-8 bytes, without Unicode Cc/Cf.
+          oneOf:
+            - properties:
+                status: {enum: [queued]}
+                session_id: {enum: ['']}
+                error_code: {enum: ['']}
+            - properties:
+                status: {enum: [created]}
+                session_id: {minLength: 1}
+                error_code: {enum: ['']}
+            - properties:
+                status: {enum: [failed]}
+                session_id: {enum: ['']}
+                error_code: {enum: [session_creation_failed, session_capacity]}
+            - properties:
+                status: {enum: [lost]}
+                session_id: {enum: ['']}
+                error_code: {enum: [owner_replaced]}
+        - properties:
+            operation: {enum: [close]}
+            name: {enum: ['']}
+            session_id: {minLength: 1}
+          oneOf:
+            - properties:
+                status: {enum: [queued, closed]}
+                error_code: {enum: ['']}
+            - properties:
+                status: {enum: [failed]}
+                error_code: {enum: [session_close_failed, session_unavailable]}
+            - properties:
+                status: {enum: [lost]}
+                error_code: {enum: [owner_replaced]}
+    SessionRequestEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/SessionRequest'
+    SessionRequestCommand:
+      type: object
+      additionalProperties: false
+      required: [request_id, instance_id, generation, name, project_id, local_session_id]
+      properties:
+        request_id: {type: string}
+        instance_id: {type: string}
+        generation: {type: integer, minimum: 1}
+        name: {type: string}
+        project_id:
+          type: string
+          description: Operator-fixed project captured at admission; never a client-supplied path.
+        local_session_id:
+          type: string
+          description: Durable Hub-allocated local identity to pass to AgentSessionOptions.session_id.
+    SessionRequestCommandEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: array
+          maxItems: 8
+          items:
+            $ref: '#/components/schemas/SessionRequestCommand'
+    ReportSessionRequest:
+      type: object
+      additionalProperties: false
+      required: [instance_id, generation, request_id, status]
+      properties:
+        instance_id: {type: string, minLength: 1, maxLength: 256}
+        generation: {type: integer, minimum: 1, maximum: 9999999999}
+        request_id: {type: string, minLength: 1, maxLength: 256}
+        status: {type: string, enum: [created, failed]}
+        error_code:
+          type: string
+          enum: ['', session_creation_failed, session_capacity]
+          default: ''
+          description: Must be empty for created; failed requires one of the two fixed failure codes.
+    SessionCloseRequest:
+      type: object
+      additionalProperties: false
+      required: [request_id, instance_id, session_id, status, error_code, created_at, updated_at]
+      properties:
+        request_id: {type: string, minLength: 1, maxLength: 256}
+        instance_id: {type: string, minLength: 1, maxLength: 256}
+        session_id: {type: string, minLength: 1, maxLength: 256}
+        status:
+          type: string
+          enum: [queued, closed, failed, lost]
+        error_code:
+          type: string
+          enum: ['', session_close_failed, session_unavailable, owner_replaced]
+          description: Empty for queued/closed; failed has a fixed close error; lost has owner_replaced.
+        created_at: {type: number, format: double, minimum: 0}
+        updated_at: {type: number, format: double, minimum: 0}
+    SessionCloseRequestEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/SessionCloseRequest'
+    SessionCloseCommand:
+      type: object
+      additionalProperties: false
+      required: [request_id, instance_id, generation, session_id, local_session_id]
+      properties:
+        request_id: {type: string, minLength: 1, maxLength: 256}
+        instance_id: {type: string, minLength: 1, maxLength: 256}
+        generation: {type: integer, minimum: 1}
+        session_id: {type: string, minLength: 1, maxLength: 256}
+        local_session_id: {type: string, minLength: 1, maxLength: 256}
+    SessionCloseCommandEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: array
+          maxItems: 8
+          items:
+            $ref: '#/components/schemas/SessionCloseCommand'
+    ReportSessionCloseRequest:
+      type: object
+      additionalProperties: false
+      required: [instance_id, generation, request_id, status]
+      properties:
+        instance_id: {type: string, minLength: 1, maxLength: 256}
+        generation: {type: integer, minimum: 1, maximum: 9999999999}
+        request_id: {type: string, minLength: 1, maxLength: 256}
+        status: {type: string, enum: [closed, failed]}
+        error_code:
+          type: string
+          enum: ['', session_close_failed, session_unavailable]
+          default: ''
+          description: Closed requires empty; failed requires one of the two fixed codes.
     GatewayGenerationRequest:
       type: object
       additionalProperties: false
@@ -1493,6 +2292,30 @@ components:
           maxItems: 32
           items:
             type: string
+    RescheduleComputeRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        target_device_id:
+          type: string
+          maxLength: 256
+          default: ''
+          description: Empty selects automatic placement.
+      required: [target_device_id]
+    RetryLostComputeRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        target_device_id:
+          type: string
+          maxLength: 256
+          default: ''
+          description: Empty preserves an original explicit target or selects automatic placement.
+        confirm_duplicate:
+          type: boolean
+          enum: [true]
+          description: Required acknowledgement that the lost task may have already run.
+      required: [confirm_duplicate]
     SubmitComputeRequest:
       type: object
       additionalProperties: false
@@ -1852,6 +2675,72 @@ components:
       required:
       - data
       - next_cursor
+    ComputePlacementEnvelope:
+      type: object
+      additionalProperties: false
+      properties:
+        data:
+          $ref: '#/components/schemas/ComputePlacement'
+      required: [data]
+    ComputePlacement:
+      type: object
+      additionalProperties: false
+      properties:
+        task_id:
+          type: string
+          minLength: 1
+          maxLength: 256
+        state:
+          type: string
+          enum: [queued, dispatching, running, cancel_requested, completed, failed, cancelled, lost]
+        evaluated_at:
+          type: number
+          minimum: 0
+          description: Finite Hub observation timestamp, not an atomic cross-device snapshot.
+        devices:
+          type: array
+          maxItems: 20
+          description: Ascending distinct device IDs. Empty when state is not queued.
+          items:
+            $ref: '#/components/schemas/ComputePlacementDevice'
+        next_cursor:
+          type: string
+          maxLength: 256
+          description: Last returned device ID only if more visible bindings exist; otherwise empty.
+      required: [task_id, state, evaluated_at, devices, next_cursor]
+    ComputePlacementDevice:
+      type: object
+      additionalProperties: false
+      properties:
+        device_id: {type: string, minLength: 1, maxLength: 256}
+        instance_id: {type: string, minLength: 1, maxLength: 256}
+        eligible:
+          type: boolean
+          description: True exactly when reasons is empty; no admission guarantee.
+        reasons:
+          type: array
+          uniqueItems: true
+          maxItems: 16
+          items:
+            type: string
+            enum:
+            - device_offline
+            - device_not_ready
+            - device_busy
+            - device_unavailable
+            - project_unavailable
+            - target_not_authorized
+            - target_mismatch
+            - workspace_unsupported
+            - cpu_insufficient
+            - memory_insufficient
+            - os_mismatch
+            - architecture_mismatch
+            - runtime_missing
+            - gpu_unavailable
+            - gpu_insufficient
+            - inventory_missing
+      required: [device_id, instance_id, eligible, reasons]
     ComputeDelegationRequest:
       type: object
       additionalProperties: false
@@ -1871,7 +2760,10 @@ components:
           - devices
           - submit
           - status
+          - placement
           - cancel
+          - reschedule
+          - retry
           - snapshots
           - snapshot-upload
           - workspace-output

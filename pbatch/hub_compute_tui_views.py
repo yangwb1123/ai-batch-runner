@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .hub_auth_feedback import auth_hint
+
 MAX_DEVICES_SHOWN = 200
 MAX_TASK_OUTPUT_CHARS = 4096
 
@@ -17,6 +19,8 @@ def _id(row: dict[str, Any], field: str) -> str:
 def _permission_error(action: str, scope: str, exc: Exception) -> str:
     code = str(getattr(exc, "code", ""))
     status = int(getattr(exc, "status", 0) or 0)
+    if status == 401 and auth_hint(exc):
+        return f"{action}: {auth_hint(exc)}"
     if status in {401, 403} or code in {"forbidden", "scope_required"}:
         return f"{action}: permission denied; check {scope} and instance access ({code or status})."
     return f"{action}: {type(exc).__name__}" + (f" ({code})" if code else "")
@@ -25,15 +29,21 @@ def _permission_error(action: str, scope: str, exc: Exception) -> str:
 def _session_label(row: dict[str, Any]) -> str:
     status = _id(row, "status") or "unknown"
     access = "ready" if row.get("controllable") is True else "read only/offline"
-    return f"{_id(row, 'name') or 'session'} · {_id(row, 'session_id')} · {status} · {access}"
+    instance = _id(row, "instance_id")
+    source = f" · instance={instance}" if instance else ""
+    return (f"{_id(row, 'name') or 'session'} · {_id(row, 'session_id')}"
+            f"{source} · {status} · {access}")
 
 
 def _device_label(row: dict[str, Any]) -> str:
     cpu = max(0, int(row.get("cpu_cores", 0) or 0) -
               int(row.get("reserved_cpu_cores", 0) or 0))
     memory = max(0, int(row.get("available_memory_bytes", 0) or 0))
+    instance = _id(row, "instance_id")
+    source = f" · instance={instance}" if instance else ""
     return (f"{_id(row, 'name') or _id(row, 'device_id')} · "
-            f"{_id(row, 'device_id')} · {cpu} CPU · {_memory_label(memory)} free · "
+            f"{_id(row, 'device_id')}{source} · {cpu} CPU · "
+            f"{_memory_label(memory)} free · "
             f"{_gpu_label(row)}")
 
 

@@ -50,3 +50,40 @@ def test_actions_have_explicit_help():
     actions = hub_cli._parser()._subparsers._group_actions[0].choices
     assert set(("instances", "sessions", "show", "send", "events", "cancel",
                 "agent", "tui", "init")).issubset(actions)
+
+
+def test_gateway_forwards_oauth_profile_without_printing_credentials(monkeypatch, capsys):
+    calls = []
+    client = object()
+
+    def from_env(url, **kwargs):
+        calls.append((url, kwargs))
+        return client
+
+    class Gateway:
+        instance_id = "alpha"
+        generation = 1
+
+        def __init__(self, options, **kwargs):
+            assert kwargs["client"] is client
+            assert options.instance_id == "alpha"
+            assert options.sessions == 0 and options.max_sessions == 3
+
+        def run_forever(self):
+            calls.append("run")
+
+        def close(self):
+            calls.append("closed")
+
+    monkeypatch.setattr(hub_cli.HubClient, "from_env", from_env)
+    monkeypatch.setattr(hub_cli, "HubGateway", Gateway)
+    result = hub_cli.hub_main([
+        "agent", "--hub", "https://hub.example", "--instance-id", "alpha",
+        "--oauth-config", "/private/gateway-oauth.json", "--sessions", "0", "--max-sessions", "3"])
+    assert result == 0
+    assert calls[0] == ("https://hub.example", {
+        "timeout": 5.0, "oauth_config": "/private/gateway-oauth.json"})
+    assert calls[1:] == ["run", "closed"]
+    output = capsys.readouterr()
+    assert "Gateway alpha registered" in output.out
+    assert "/private" not in output.out + output.err

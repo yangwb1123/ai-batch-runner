@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from .hub_store_helpers import (
-    MAX_EVENT_BYTES, MAX_EVENT_PAGE, MAX_METADATA_BYTES, MAX_PAGE,
+    MAX_EVENT_BYTES, MAX_EVENT_PAGE, MAX_PAGE,
     MAX_PROMPT_BYTES, _SCHEMA, _SESSION_NAMESPACE, _TERMINAL, HubStoreError,
     _TURN_EVENT_STATES, allowed_instance_ids as _allowed_instance_ids,
     append_event_tx as _append_event_tx,
@@ -32,6 +32,15 @@ from .hub_store_helpers import (
     safe_object as _safe_object, session_record as _session_record,
     turn_record as _turn_record,
 )
+from .hub_session_request_models import (
+    SCHEMA as _SESSION_REQUEST_SCHEMA,
+    guard_session_registration as _guard_session_registration,
+)
+from .hub_session_request_store import SessionRequestStore
+from .hub_session_close_models import SCHEMA as _SESSION_CLOSE_SCHEMA
+from .hub_session_close_store import SessionCloseStore
+from .hub_instance_registry import register_instance as _register_instance
+from .hub_session_operations_store import SCHEMA as _OPERATIONS_SCHEMA, list_operations
 
 
 class HubStore:
@@ -51,6 +60,8 @@ class HubStore:
         self.offline_after = float(offline_after)
         self._closed = False
         self._lock_fd = None
+        self._session_creation = SessionRequestStore(self)
+        self._session_closing = SessionCloseStore(self)
         self._prepare_path()
         try:
             self._initialize()
@@ -94,6 +105,9 @@ class HubStore:
         try:
             conn.execute("PRAGMA journal_mode = WAL")
             conn.executescript(_SCHEMA)
+            conn.executescript(_SESSION_REQUEST_SCHEMA)
+            conn.executescript(_SESSION_CLOSE_SCHEMA)
+            conn.executescript(_OPERATIONS_SCHEMA)
             from .hub_compute_models import AUTH_SCHEMA
             conn.executescript(AUTH_SCHEMA)
             version = conn.execute("PRAGMA user_version").fetchone()[0]
@@ -131,58 +145,7 @@ class HubStore:
 
     def register_instance(self, tenant: str, instance: str,
                           body: dict) -> dict:
-        tenant = _identifier(tenant, "tenant")
-        instance = _identifier(instance, "instance")
-        if not isinstance(body, dict):
-            raise ValueError("instance body must be an object")
-        boot_id = _identifier(body.get("boot_id"), "boot_id")
-        metadata = _safe_object({key: body[key] for key in (
-            "name", "host", "version", "capabilities", "labels", "project_id") if key in body},
-            MAX_METADATA_BYTES, "instance metadata")
-        now = float(self.clock())
-        with self._write() as conn:
-            row = conn.execute(
-                "SELECT * FROM hub_instances WHERE tenant=? AND instance_id=?",
-                (tenant, instance)).fetchone()
-            if row is None:
-                generation = 1
-            elif row["boot_id"] == boot_id:
-                generation = int(row["generation"])
-            else:
-                if now - float(row["last_seen"]) <= self.offline_after:
-                    raise HubStoreError("instance_active", "another boot is still active")
-                generation = int(row["generation"]) + 1
-                self._takeover(conn, tenant, instance)
-            conn.execute(
-                "INSERT INTO hub_instances(tenant,instance_id,boot_id,generation,last_seen,metadata_json) "
-                "VALUES(?,?,?,?,?,?) ON CONFLICT(tenant,instance_id) DO UPDATE SET "
-                "boot_id=excluded.boot_id,generation=excluded.generation,last_seen=excluded.last_seen,"
-                "metadata_json=excluded.metadata_json",
-                (tenant, instance, boot_id, generation, now, _json(metadata)))
-            return _instance_record(conn.execute(
-                "SELECT * FROM hub_instances WHERE tenant=? AND instance_id=?",
-                (tenant, instance)).fetchone(), now, self.offline_after)
-
-    def _takeover(self, conn: sqlite3.Connection, tenant: str,
-                  instance: str) -> None:
-        conn.execute(
-            "UPDATE hub_sessions SET frozen=1,controllable=0 WHERE tenant=? AND instance_id=?",
-            (tenant, instance))
-        rows = conn.execute(
-            "SELECT * FROM hub_turns WHERE tenant=? AND instance_id=? "
-            "AND status IN ('queued','running','cancel_requested')",
-            (tenant, instance)).fetchall()
-        for row in rows:
-            now = float(self.clock())
-            conn.execute(
-                "UPDATE hub_turns SET status='lost',updated_at=? WHERE tenant=? AND turn_id=?",
-                (now, tenant, row["turn_id"]))
-            event_id = str(uuid.uuid5(_SESSION_NAMESPACE, "lost:" + row["turn_id"]))
-            _append_internal_event(conn, tenant, row, event_id, "turn.lost",
-                                   {"reason": "owner_replaced"}, now)
-            conn.execute(
-                "UPDATE hub_commands SET status='resolved' WHERE tenant=? AND turn_id=?",
-                (tenant, row["turn_id"]))
+        return _register_instance(self, tenant, instance, body)
 
     def heartbeat(self, tenant: str, instance: str, generation: int) -> dict:
         tenant = _identifier(tenant, "tenant")
@@ -220,6 +183,7 @@ class HubStore:
             if prior and (bool(prior["frozen"]) or
                           int(prior["generation"]) != int(inst["generation"])):
                 raise HubStoreError("session_read_only", "old-generation session is read-only")
+            _guard_session_registration(conn, inst, local_id, prior)
             conn.execute(
                 "INSERT INTO hub_sessions(session_id,tenant,instance_id,local_session_id,generation,"
                 "name,project_id,controllable,status,frozen,updated_at) VALUES(?,?,?,?,?,?,?,?,?,0,?) "
@@ -232,6 +196,37 @@ class HubStore:
                 "SELECT * FROM hub_sessions WHERE tenant=? AND session_id=?",
                 (tenant, session_id)).fetchone()
             return _session_record(conn, row, now, self.offline_after)
+
+    def create_session(self, tenant, instance, actor, name, idempotency_key, *, client_id):
+        return self._session_creation.create(
+            tenant, instance, actor, name, idempotency_key, client_id=client_id)
+
+    def session_request(self, tenant, request_id):
+        return self._session_creation.get(tenant, request_id)
+
+    def session_requests(self, tenant, instance, generation):
+        return self._session_creation.pending(tenant, instance, generation)
+
+    def report_session_request(self, tenant, instance, generation, body):
+        return self._session_creation.report(tenant, instance, generation, body)
+
+    def close_session(self, tenant, session_id, actor, idempotency_key, *, client_id):
+        return self._session_closing.close(
+            tenant, session_id, actor, idempotency_key, client_id=client_id)
+
+    def session_close_request(self, tenant, request_id):
+        return self._session_closing.get(tenant, request_id)
+
+    def session_close_requests(self, tenant, instance, generation):
+        return self._session_closing.pending(tenant, instance, generation)
+
+    def report_session_close_request(self, tenant, instance, generation, body):
+        return self._session_closing.report(tenant, instance, generation, body)
+
+    def session_operations(self, tenant, instance_id="", *, before="", limit=20,
+                           allowed_instances=None):
+        return list_operations(self, tenant, instance_id, before=before, limit=limit,
+                               allowed_instances=allowed_instances)
 
     def instances(self, tenant: str, limit: int = 100, after: str = "",
                   allowed_instances: tuple[str, ...] | None = None) -> list[dict]:
@@ -398,11 +393,13 @@ class HubStore:
             _require_live_generation(
                 conn, tenant, instance, generation, now, self.offline_after)
             session = _get_session(conn, tenant, session_id)
-            _check_session_owner(session, instance, generation)
-            turn = _get_turn_for_session(conn, tenant, turn_id, session_id) if turn_id else None
+            _check_session_owner(session, instance, generation, allow_frozen=True)
             prior = conn.execute(
                 "SELECT * FROM hub_events WHERE tenant=? AND event_id=?",
                 (tenant, event_id)).fetchone()
+            if not prior and session["frozen"]:
+                raise HubStoreError("session_read_only", "session no longer accepts new events")
+            turn = _get_turn_for_session(conn, tenant, turn_id, session_id) if turn_id else None
             if prior:
                 if prior["canonical_json"] != canonical:
                     raise HubStoreError("event_conflict", "event id has different content")

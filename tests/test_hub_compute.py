@@ -24,8 +24,11 @@ class Fabric:
         self.requests = []
         self.drop_ack = False
         self.online = True
+        self.fail_inventory = False
 
     def inventory(self, ids):
+        if self.fail_inventory:
+            return {"error": "fabric offline", "devices": []}
         return {"capabilities": ["hub.compute.v1"], "devices": [
             {"device_id": device, "online": self.online, "lifecycle_state": "ready",
              "capability_valid_until": "2099-01-01T00:00:00Z",
@@ -149,6 +152,226 @@ def test_queue_wait_cancel_and_result_redaction(system):
     assert complete["result"]["output_truncated"]
     assert complete["result"]["evidence_digest"] == "accepted-digest"
     assert system.compute.store.cancel("team", task_id)["state"] == "completed"
+
+
+def test_prestart_remote_loss_requeues_for_other_device_without_duplicate(system):
+    """A lost lease before Runner start is safe to place again."""
+    original_submit = system.fabric.submit_task
+
+    def submit_queued(argv, **options):
+        result = original_submit(argv, **options)
+        task_id = options["request_id"]
+        system.fabric.tasks[task_id]["status"] = "queued"
+        result["task"]["status"] = "queued"
+        return result
+
+    system.fabric.submit_task = submit_queued
+    task = submit(system, key="prestart-loss")
+    system.compute.tick()
+    task_id = task["task_id"]
+    assert system.compute.store.get("team", task_id)["state"] == "dispatching"
+
+    system.fabric.tasks[task_id].update(status="lost", started_at=None)
+    system.compute._reconcile(system.compute.store.get("team", task_id, private=True))
+    recovered = system.compute.store.get("team", task_id, private=True)
+    assert recovered["state"] == "queued"
+    assert recovered["device_id"] == ""
+    assert recovered["_fabric_id"] == ""
+    assert recovered["error"] == "device_lost_before_start"
+    assert recovered["_fabric_request_id"] == f"{task_id}:attempt-1"
+    events = system.hub.events("team", system.session["session_id"], 0, 50)
+    assert events[-1]["kind"] == "compute.queued"
+    assert events[-1]["payload"]["reason"] == "device_lost_before_start"
+
+    system.compute._reconcile(recovered)
+    assert len(system.fabric.requests) == 2
+    assert system.fabric.requests[1]["request_id"] == f"{task_id}:attempt-1"
+
+
+def test_started_remote_loss_stays_terminal(system):
+    """Start evidence keeps irreversible work terminal instead of retrying."""
+    task = submit(system, key="started-loss")
+    system.compute.tick()
+    task_id = task["task_id"]
+    system.fabric.tasks[task_id].update(status="lost", started_at=123.0)
+    system.compute._reconcile(system.compute.store.get("team", task_id, private=True))
+    assert system.compute.store.get("team", task_id)["state"] == "lost"
+
+
+def test_federated_tenant_aggregates_inventory_and_routes_to_bound_fabric(tmp_path):
+    """One tenant can expose devices from several Fabric control planes."""
+    hub = HubStore(tmp_path / "federated.sqlite")
+    hub.register_instance("team", "source", {"boot_id": "boot"})
+    session = hub.upsert_session("team", "source", 1, {
+        "local_session_id": "local", "name": "session", "project_id": "project",
+        "status": "idle", "controllable": True})
+    first, second = Fabric(), Fabric()
+    second.device_id = "hub-service-two"
+    one = SimpleNamespace(client=lambda: first,
+                          bindings={"device-a": {"instance_id": "remote-a",
+                                                 "workspaces": {"project": "/one"}}}, archive=None)
+    two = SimpleNamespace(client=lambda: second,
+                          bindings={"device-b": {"instance_id": "remote-b",
+                                                 "workspaces": {"project": "/two"}}}, archive=None)
+    compute = HubCompute(hub, configured={"team": [one, two]})
+    principal = HubPrincipal("team", "alice", "console", "user", frozenset({"source"}),
+                             USER_SCOPES, frozenset({"remote-a", "remote-b"}))
+    service = HubService(hub, compute)
+    try:
+        devices = service.dispatch("GET", PREFIX + "/devices", {"limit": "20"}, {}, principal)[1]["data"]
+        assert {row["device_id"] for row in devices} == {"device-a", "device-b"}
+        task = service.dispatch(
+            "POST", PREFIX + "/sessions/" + session["session_id"] + "/tasks", {},
+            {"argv": ["python", "job.py"], "target_device_id": "device-b"},
+            principal, "federated-task")[1]["data"]
+        compute.tick()
+        stored = compute.store.get("team", task["task_id"])
+        assert stored["state"] == "running" and stored["device_id"] == "device-b"
+        assert not first.requests
+        assert second.requests[0]["cwd"] == "/two"
+        assert second.requests[0]["target_device"] == "device-b"
+        first.online = False
+        automatic = service.dispatch(
+            "POST", PREFIX + "/sessions/" + session["session_id"] + "/tasks", {},
+            {"argv": ["python", "automatic.py"]}, principal, "federated-auto")[1]["data"]
+        compute.tick()
+        selected = compute.store.get("team", automatic["task_id"])
+        assert selected["device_id"] == "device-b"
+        assert len(second.requests) == 2
+        first.fail_inventory = True
+        with pytest.raises(HubAccessError, match="inventory unavailable"):
+            compute.inventory("team")
+        pinned_unavailable = service.dispatch(
+            "POST", PREFIX + "/sessions/" + session["session_id"] + "/tasks", {},
+            {"argv": ["python", "pinned.py"], "target_device_id": "device-a"},
+            principal, "federated-pinned-unavailable")[1]["data"]
+        compute.tick()
+        waiting = compute.store.get("team", pinned_unavailable["task_id"])
+        assert waiting["state"] == "queued"
+        assert waiting["error"] == "waiting_for_eligible_device"
+        degraded = service.dispatch(
+            "POST", PREFIX + "/sessions/" + session["session_id"] + "/tasks", {},
+            {"argv": ["python", "degraded.py"]}, principal, "federated-degraded")[1]["data"]
+        compute.tick()
+        assert compute.store.get("team", degraded["task_id"])["device_id"] == "device-b"
+        assert len(second.requests) == 3
+    finally:
+        hub.close()
+
+
+def test_missing_remote_start_field_stays_terminal(system):
+    """A malformed loss response fails closed instead of being retried."""
+    original_submit = system.fabric.submit_task
+
+    def submit_queued(argv, **options):
+        result = original_submit(argv, **options)
+        task_id = options["request_id"]
+        system.fabric.tasks[task_id]["status"] = "queued"
+        result["task"]["status"] = "queued"
+        return result
+
+    system.fabric.submit_task = submit_queued
+    task = submit(system, key="missing-start-field")
+    system.compute.tick()
+    task_id = task["task_id"]
+    system.fabric.tasks[task_id].update(status="lost")
+    system.compute._reconcile(system.compute.store.get("team", task_id, private=True))
+    assert system.compute.store.get("team", task_id)["state"] == "lost"
+
+
+def test_task_actor_can_retarget_queued_work_and_worker_uses_new_target(system):
+    user = replace(system.user, compute_instances=frozenset({"source", "remote"}))
+    system.fabric.online = False
+    task = submit(system, {"argv": ["python", "job.py"]}, key="retarget", user=user)
+    path = PREFIX + "/tasks/" + task["task_id"] + "/reschedule"
+    _, response = system.service.dispatch(
+        "POST", path, {}, {"target_device_id": "device-a"}, user)
+    assert response["data"]["target_device_id"] == "device-a"
+    assert response["data"]["device_id"] == ""
+    event = system.hub.events("team", system.session["session_id"], 0, 20)[-1]
+    assert event["kind"] == "compute.queued"
+    assert event["payload"]["reason"] == "rescheduled"
+    assert event["payload"]["target_device_id"] == "device-a"
+    system.fabric.online = True
+    system.compute.tick()
+    result = system.compute.store.get("team", task["task_id"])
+    assert result["state"] == "dispatching" and result["device_id"] == "device-a"
+
+
+def test_reschedule_is_owner_scoped_authorized_and_queued_only(system):
+    user = replace(system.user, compute_instances=frozenset({"source", "remote"}))
+    task = submit(system, key="owner", user=user)
+    path = PREFIX + "/tasks/" + task["task_id"] + "/reschedule"
+    other = replace(user, subject="bob")
+    with pytest.raises(HubAccessError, match="task actor"):
+        system.service.dispatch("POST", path, {}, {"target_device_id": "device-a"}, other)
+    with pytest.raises(ValueError, match="idempotency"):
+        system.service.dispatch("POST", path, {}, {"target_device_id": "device-b"}, user,
+                                 "unexpected-key")
+    with pytest.raises(ValueError, match="target_device_id"):
+        system.service.dispatch("POST", path, {}, {}, user)
+    system.compute.store.update("team", task["task_id"], {}, state="running")
+    with pytest.raises(HubStoreError, match="queued"):
+        system.service.dispatch("POST", path, {}, {"target_device_id": ""}, user)
+
+    limited = replace(system.user, compute_instances=frozenset({"remote"}))
+    original_only = submit(system, key="original-target", user=limited)
+    original_path = PREFIX + "/tasks/" + original_only["task_id"] + "/reschedule"
+    expanded = replace(limited, compute_instances=frozenset({"source", "remote"}))
+    with pytest.raises(HubAccessError, match="authorized"):
+        system.service.dispatch(
+            "POST", original_path, {}, {"target_device_id": "device-a"}, expanded)
+
+
+def test_lost_task_requires_explicit_duplicate_confirmation_and_requeues(system):
+    task = submit(system, key="explicit-lost-retry")
+    system.compute.tick()
+    task_id = task["task_id"]
+    system.fabric.tasks[task_id].update(status="lost", started_at=123.0)
+    system.compute._reconcile(system.compute.store.get("team", task_id, private=True))
+    assert system.compute.store.get("team", task_id)["state"] == "lost"
+    path = PREFIX + "/tasks/" + task_id + "/retry"
+    with pytest.raises(ValueError, match="confirm_duplicate"):
+        system.service.dispatch("POST", path, {}, {"target_device_id": ""}, system.user)
+
+    status, response = system.service.dispatch(
+        "POST", path, {}, {"confirm_duplicate": True}, system.user)
+    assert status == 202
+    retried = response["data"]
+    assert retried["state"] == "queued"
+    assert retried["target_device_id"] == ""
+    private = system.compute.store.get("team", task_id, private=True)
+    assert private["_fabric_request_id"] == f"{task_id}:retry-1"
+    assert private["_fabric_id"] == ""
+    assert private["error"] == "retry_requested"
+    events = system.hub.events("team", system.session["session_id"], 0, 50)
+    assert events[-1]["payload"]["reason"] == "retry_requested"
+    system.compute._reconcile(private)
+    assert len(system.fabric.requests) == 2
+    assert system.fabric.requests[-1]["request_id"] == f"{task_id}:retry-1"
+
+
+def test_lost_retry_preserves_original_explicit_target(system):
+    user = replace(system.user, compute_instances=frozenset({"remote"}))
+    task = submit(system, {"argv": ["python", "job.py"], "target_device_id": "device-b"},
+                  key="explicit-target-lost", user=user)
+    system.compute.tick()
+    task_id = task["task_id"]
+    system.fabric.tasks[task_id].update(status="lost", started_at=123.0)
+    system.compute._reconcile(system.compute.store.get("team", task_id, private=True))
+    path = PREFIX + "/tasks/" + task_id + "/retry"
+    _, response = system.service.dispatch(
+        "POST", path, {}, {"confirm_duplicate": True}, user)
+    assert response["data"]["target_device_id"] == "device-b"
+
+
+def test_lost_retry_rejects_tasks_with_archive_evidence_pending(system):
+    task = submit(system, key="archived-lost-retry")
+    system.compute.store.update("team", task["task_id"], {"archive_state": "pending"},
+                                state="lost")
+    path = PREFIX + "/tasks/" + task["task_id"] + "/retry"
+    with pytest.raises(HubStoreError, match="archived"):
+        system.service.dispatch("POST", path, {}, {"confirm_duplicate": True}, system.user)
 
 
 def _running_turn(system, user=None):

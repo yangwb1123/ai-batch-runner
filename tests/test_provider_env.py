@@ -27,6 +27,8 @@ def test_provider_environment_copies_and_only_removes_hub_namespace():
         "PBATCH_HUB_TOKEN": "hub-secret",
         "PBATCH_HUB_TOKEN_FILE": "/private/hub.token",
         "PBATCH_HUB_URL": "https://hub.example.test",
+        "PBATCH_HUB_OAUTH_CONFIG": "/private/gateway-oauth.json",
+        "PBATCH_HUB_USER_CONFIG": "/private/user-auth.json",
         "OPENAI_API_KEY": "provider-secret",
         "ANTHROPIC_API_KEY": "another-provider-secret",
         "PATH": "/usr/bin",
@@ -52,6 +54,8 @@ def test_agent_session_provider_spawns_receive_filtered_env(monkeypatch, tmp_pat
     monkeypatch.setenv("PBATCH_HUB_TOKEN", "hub-secret")
     monkeypatch.setenv("PBATCH_HUB_TOKEN_FILE", "/private/hub.token")
     monkeypatch.setenv("PBATCH_HUB_URL", "https://hub.example.test")
+    monkeypatch.setenv("PBATCH_HUB_OAUTH_CONFIG", "/private/gateway-oauth.json")
+    monkeypatch.setenv("PBATCH_HUB_USER_CONFIG", "/private/user-auth.json")
     monkeypatch.setenv("OPENAI_API_KEY", "provider-secret")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "another-provider-secret")
     captured = []
@@ -80,6 +84,8 @@ def test_agent_session_provider_spawns_receive_filtered_env(monkeypatch, tmp_pat
     assert "PBATCH_HUB_TOKEN" not in child_env
     assert "PBATCH_HUB_TOKEN_FILE" not in child_env
     assert "PBATCH_HUB_URL" not in child_env
+    assert "PBATCH_HUB_OAUTH_CONFIG" not in child_env
+    assert "PBATCH_HUB_USER_CONFIG" not in child_env
     assert child_env["OPENAI_API_KEY"] == "provider-secret"
     assert child_env["ANTHROPIC_API_KEY"] == "another-provider-secret"
     assert os.environ["PBATCH_HUB_TOKEN"] == "hub-secret"

@@ -63,8 +63,9 @@ def _unique_object(pairs: list) -> dict:
     return result
 
 
-def _query(raw: str) -> dict:
-    values = parse_qs(raw, keep_blank_values=True, max_num_fields=10)
+def _query(raw: str, *, strict=False) -> dict:
+    values = parse_qs(raw, keep_blank_values=True, max_num_fields=10,
+                      errors="strict" if strict else "replace")
     if any(len(items) != 1 for items in values.values()):
         raise ValueError("duplicate query parameter")
     if "token" in values or "access_token" in values:
@@ -108,7 +109,8 @@ class HubHandler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Vary", "Origin")
         self.end_headers()
-        self.wfile.write(body)
+        if self.command != "HEAD":
+            self.wfile.write(body)
 
     @staticmethod
     def _event_page(payload: dict) -> bytes:
@@ -124,16 +126,22 @@ class HubHandler(BaseHTTPRequestHandler):
 
     def _request(self, method: str) -> None:
         from .hub_store import HubStoreError
+        from .hub_compute_placement import is_path as placement_path
         try:
             self._origin()
             parsed = urlsplit(self.path)
-            query = _query(parsed.query)
+            query = _query(parsed.query, strict=placement_path(parsed.path))
             if method == "GET" and parsed.path == "/healthz":
                 self._write(200, {"data": {"status": "ok"}})
                 return
             if len(self.headers.get_all("Authorization", [])) != 1:
                 raise HubAccessError("unauthorized", "one Bearer token is required", 401)
             principal = self.server.auth.authenticate(self.headers.get("Authorization", ""))
+            if method == "GET":
+                from .hub_session_request_api import validate_read_headers
+                from .hub_compute_placement import validate_read_headers as validate_placement_headers
+                validate_read_headers(parsed.path, self.headers)
+                validate_placement_headers(parsed.path, self.headers)
             sse = (method == "GET" and parsed.path.endswith("/events")
                    and "text/event-stream" in self.headers.get("Accept", ""))
             if sse and "after" not in query and self.headers.get("Last-Event-ID"):
@@ -159,6 +167,22 @@ class HubHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         self._request("POST")
+
+    def do_PUT(self):
+        from .hub_session_close_api import is_route
+        from .hub_compute_placement import is_route as placement_route
+        from .hub_service import PREFIX
+        from urllib.parse import unquote
+        path = urlsplit(self.path).path
+        parts = [unquote(part) for part in path[len(PREFIX) + 1:].split("/")]
+        if path.startswith(PREFIX + "/") and (
+                is_route(parts) or placement_route(parts) or parts == ["session-operations"]
+                or parts == ["gateway", "session-close-requests"]):
+            self._request(self.command)
+        else:
+            self.send_error(501, "Unsupported method")
+
+    do_PATCH = do_DELETE = do_HEAD = do_PUT
 
     def do_OPTIONS(self):
         try:

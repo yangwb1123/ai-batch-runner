@@ -147,6 +147,7 @@ def instance_record(row: sqlite3.Row, now: float, offline_after: float) -> dict:
     record = {"tenant": row["tenant"], "instance_id": row["instance_id"],
               "boot_id": row["boot_id"], "generation": int(row["generation"]),
               "last_seen": float(row["last_seen"]),
+              "session_capacity": 0, "session_close_supported": False,
               "online": now - float(row["last_seen"]) <= offline_after}
     record.update(json.loads(row["metadata_json"]))
     return record
@@ -263,6 +264,25 @@ def require_live_generation(conn: sqlite3.Connection, tenant: str,
     return row
 
 
+def takeover_generation(conn: sqlite3.Connection, tenant: str, instance: str, now: float) -> None:
+    conn.execute(
+        "UPDATE hub_sessions SET frozen=1,controllable=0 WHERE tenant=? AND instance_id=?",
+        (tenant, instance))
+    rows = conn.execute(
+        "SELECT * FROM hub_turns WHERE tenant=? AND instance_id=? "
+        "AND status IN ('queued','running','cancel_requested')",
+        (tenant, instance)).fetchall()
+    for row in rows:
+        conn.execute(
+            "UPDATE hub_turns SET status='lost',updated_at=? WHERE tenant=? AND turn_id=?",
+            (now, tenant, row["turn_id"]))
+        event_id = str(uuid.uuid5(_SESSION_NAMESPACE, "lost:" + row["turn_id"]))
+        append_internal_event(conn, tenant, row, event_id, "turn.lost", {"reason": "owner_replaced"}, now)
+        conn.execute(
+            "UPDATE hub_commands SET status='resolved' WHERE tenant=? AND turn_id=?",
+            (tenant, row["turn_id"]))
+
+
 def get_session(conn: sqlite3.Connection, tenant: str,
                 session_id: str) -> sqlite3.Row:
     row = conn.execute(
@@ -274,8 +294,9 @@ def get_session(conn: sqlite3.Connection, tenant: str,
 
 
 def check_session_owner(row: sqlite3.Row, instance: str,
-                        generation: int) -> None:
-    if row["instance_id"] != instance or int(row["generation"]) != generation or row["frozen"]:
+                        generation: int, *, allow_frozen: bool = False) -> None:
+    if (row["instance_id"] != instance or int(row["generation"]) != generation
+            or (row["frozen"] and not allow_frozen)):
         raise HubStoreError("stale_generation", "session owner generation is stale")
 
 

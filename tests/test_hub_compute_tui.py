@@ -11,9 +11,9 @@ class _Hub:
     def list_sessions(self):
         return [
             {"session_id": "s1", "name": "first", "project_id": "p1",
-             "status": "idle", "controllable": True},
+             "instance_id": "i-1", "status": "idle", "controllable": True},
             {"session_id": "s2", "name": "second", "project_id": "p2",
-             "status": "idle", "controllable": True},
+             "instance_id": "i-2", "status": "idle", "controllable": True},
         ]
 
 
@@ -22,6 +22,8 @@ class _Compute:
         self.client = _Hub()
         self.submissions = []
         self.cancellations = []
+        self.reschedules = []
+        self.retries = []
         self.tasks_by_session = {"s1": [], "s2": []}
         self.block_project = ""
         self.device_started = threading.Event()
@@ -36,6 +38,7 @@ class _Compute:
         if self.fail_devices:
             raise HubError("missing scope", code="scope_required", status=403)
         return [{"device_id": f"{project_id}-gpu", "name": "GPU node",
+                 "instance_id": "i-1",
                  "schedulable": True, "cpu_cores": 8,
                  "reserved_cpu_cores": 2, "available_memory_bytes": 8 * 2**30,
                  "total_memory_bytes": 16 * 2**30}]
@@ -68,6 +71,19 @@ class _Compute:
         task["state"] = "cancel_requested"
         return {"state": task["state"]}
 
+    def reschedule(self, task_id, target_device_id=""):
+        self.reschedules.append((task_id, target_device_id))
+        task = self.get(task_id)
+        task["target_device_id"] = target_device_id
+        return task
+
+    def retry(self, task_id, target_device_id="", *, confirm_duplicate=False):
+        self.retries.append((task_id, target_device_id, confirm_duplicate))
+        task = self.get(task_id)
+        task["target_device_id"] = target_device_id
+        task["state"] = "queued"
+        return task
+
 
 def test_compute_tui_lists_sessions_devices_and_submits_structured_request():
     async def scenario():
@@ -76,7 +92,9 @@ def test_compute_tui_lists_sessions_devices_and_submits_structured_request():
         async with app.run_test() as pilot:
             await pilot.pause(0.1)
             assert app._selected_session == "s1"
+            assert "instance=i-1" in app.query_one("#session", Select)._options[1][0]
             assert "p1-gpu" in app.query_one("#devices", Static).render().plain
+            assert "instance=i-1" in app.query_one("#devices", Static).render().plain
             assert not app.query_one("#submit", Button).disabled
             assert app.query_one("#target", Select).value == ""
 
@@ -187,6 +205,41 @@ def test_compute_tui_cancel_updates_selected_task():
             assert app._tasks["task-2"]["state"] == "cancel_requested"
             assert "Cancellation requested" in app.query_one(
                 "#task-status", Static).render().plain
+
+    asyncio.run(scenario())
+
+
+def test_compute_tui_reschedules_queued_task_using_selected_target():
+    async def scenario():
+        client = _Compute()
+        client.tasks_by_session["s1"] = [{"task_id": "task-3", "session_id": "s1",
+                                           "state": "queued", "result": {}}]
+        app = ComputeTUI(client)
+        async with app.run_test() as pilot:
+            await pilot.pause(0.1)
+            assert not app.query_one("#reschedule-task", Button).disabled
+            app.query_one("#target", Select).value = "p1-gpu"
+            await app._reschedule_task()
+            assert client.reschedules == [("task-3", "p1-gpu")]
+            assert "target updated" in app.query_one("#task-status", Static).render().plain
+
+    asyncio.run(scenario())
+
+
+def test_compute_tui_retries_lost_task_only_with_duplicate_confirmation():
+    async def scenario():
+        client = _Compute()
+        client.tasks_by_session["s1"] = [{"task_id": "task-lost", "session_id": "s1",
+                                           "state": "lost", "target_device_id": "p1-gpu",
+                                           "result": {}}]
+        app = ComputeTUI(client)
+        async with app.run_test() as pilot:
+            await pilot.pause(0.1)
+            assert not app.query_one("#retry-task", Button).disabled
+            await app._retry_task()
+            assert client.retries == [("task-lost", "", True)]
+            assert app._tasks["task-lost"]["state"] == "queued"
+            assert "requeued" in app.query_one("#task-status", Static).render().plain
 
     asyncio.run(scenario())
 

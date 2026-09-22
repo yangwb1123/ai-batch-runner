@@ -1,0 +1,8 @@
+{
+  "hub_url": "https://hub.example.test",
+  "token_endpoint": "https://sso.example.test/token",
+  "client_id": "gateway-alpha",
+  "client_secret_file": "gateway-alpha.secret",
+  "resource": "agent-hub",
+  "scopes": ["agent.gateway:connect"]
+}

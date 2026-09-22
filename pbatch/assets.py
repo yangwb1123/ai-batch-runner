@@ -11,6 +11,13 @@ from typing import Optional
 
 def _distribution_asset_root() -> Optional[Path]:
     """Locate wheel ``data-files`` without assuming a system/user prefix."""
+    # pip --target moves data-files without rewriting their prefix-relative
+    # RECORD paths. Metadata may filter those missing paths, so inspect the
+    # current package's adjacent assets independently of the file listing.
+    package_root = Path(__file__).resolve().parent.parent
+    adjacent = package_root / "share" / "ai-batch-runner"
+    if (adjacent / "pi-batch.yaml").is_file():
+        return adjacent
     try:
         dist = distribution("ai-batch-runner")
         files = dist.files or ()
@@ -19,15 +26,9 @@ def _distribution_asset_root() -> Optional[Path]:
     suffix = "share/ai-batch-runner/pi-batch.yaml"
     for item in files:
         if str(item).replace("\\", "/").endswith(suffix):
-            candidates = [Path(item.locate()).resolve().parent]
-            # ``pip --target`` keeps data-files below the target directory
-            # while RECORD retains the wheel's prefix-relative path.  The
-            # package location is the reliable anchor in that layout.
-            package_root = Path(__file__).resolve().parent.parent
-            candidates.append(package_root / "share" / "ai-batch-runner")
-            for candidate in candidates:
-                if (candidate / "pi-batch.yaml").is_file():
-                    return candidate
+            candidate = Path(item.locate()).resolve().parent
+            if (candidate / "pi-batch.yaml").is_file():
+                return candidate
     return None
 
 

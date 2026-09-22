@@ -145,6 +145,98 @@ class ComputeStore:
                 self._event(conn, row, chosen, now)
             return task_record(self._row(conn, tenant, task_id), private=True)
 
+    def requeue_unstarted(self, tenant: str, task_id: str, *, reason: str,
+                          delay: float = 0.0) -> dict:
+        """Return a dispatching task to placement after a pre-start loss.
+
+        The remote task must have no start evidence before the caller invokes
+        this method.  Keeping the state transition here makes the cleanup of
+        the old Fabric handle atomic with the new queued state; a late remote
+        response therefore cannot cause the Hub to submit the same handle
+        again.
+        """
+        if not isinstance(reason, str) or not reason or len(reason) > 128:
+            raise ValueError("requeue reason must be a bounded string")
+        now = float(self.hub.clock())
+        with self.hub._write() as conn:
+            row = self._row(conn, tenant, task_id)
+            if row["state"] != "dispatching":
+                return task_record(row, private=True)
+            data = json.loads(row["data_json"])
+            try:
+                attempt = int(data.get("_fabric_attempt", 0)) + 1
+            except (TypeError, ValueError):
+                raise HubStoreError("invalid dispatch attempt metadata",
+                                     "compute dispatch metadata is invalid")
+            request_id = f"{task_id}:attempt-{attempt}"
+            data.update({"device_id": "", "device_instance_id": "",
+                         "error": reason, "_fabric_id": "", "_cwd": "",
+                         "_dispatch_uncertain": False,
+                         "_fabric_attempt": attempt,
+                         "_fabric_request_id": request_id})
+            conn.execute(
+                "UPDATE hub_compute_tasks SET state='queued',data_json=?,"
+                "updated_at=?,retry_at=? WHERE tenant=? AND task_id=?",
+                (canonical_json(data), now, now + max(0.0, float(delay)),
+                 tenant, task_id))
+            self._event(conn, row, "queued", now, reason=reason)
+            return task_record(self._row(conn, tenant, task_id), private=True)
+
+    def retry_lost(self, tenant: str, task_id: str, target_device_id: str, *,
+                   actor="", confirm_duplicate=False) -> dict:
+        """Explicitly re-admit a terminal lost task after duplicate-risk approval.
+
+        A lost Fabric task can have run even when its evidence never reached the
+        Hub.  This transition is therefore never automatic: callers must pass
+        the explicit confirmation and a task with disabled evidence archiving.
+        The old remote handle is removed before the task becomes visible to the
+        dispatcher, and a fresh request id fences Fabric's idempotency record.
+        """
+        if confirm_duplicate is not True:
+            raise HubStoreError("confirmation_required",
+                                "retry requires duplicate-side-effect confirmation", 400)
+        now = float(self.hub.clock())
+        with self.hub._write() as conn:
+            row = self._row(conn, tenant, task_id)
+            if actor and row["actor"] != actor:
+                raise HubStoreError("forbidden", "only the task actor may retry it", 403)
+            if row["state"] != "lost":
+                raise HubStoreError("task_not_lost", "only lost tasks can be retried", 409)
+            data = json.loads(row["data_json"])
+            if data.get("archive_state", "disabled") != "disabled":
+                raise HubStoreError("archive_in_progress",
+                                    "archived tasks cannot be retried", 409)
+            data = self._retry_data(data, task_id, target_device_id)
+            conn.execute(
+                "UPDATE hub_compute_tasks SET state='queued',data_json=?,"
+                "updated_at=?,retry_at=? WHERE tenant=? AND task_id=?",
+                (canonical_json(data), now, now, tenant, task_id))
+            self._event(conn, row, "queued", now, trigger_subject=actor,
+                        reason="retry_requested")
+            return task_record(self._row(conn, tenant, task_id), private=True)
+
+    @staticmethod
+    def _retry_data(data: dict, task_id: str, target_device_id: str) -> dict:
+        try:
+            attempt = int(data.get("_fabric_attempt", 0)) + 1
+        except (TypeError, ValueError):
+            raise HubStoreError("invalid dispatch attempt metadata",
+                                 "compute dispatch metadata is invalid")
+        data.update({"target_device_id": target_device_id, "device_id": "",
+                     "device_instance_id": "", "error": "retry_requested",
+                     "result": {}, "artifact_ref": {}, "_fabric_id": "",
+                     "_cwd": "", "_fabric_actor": "", "_dispatch_uncertain": False,
+                     "_fabric_attempt": attempt,
+                     "_fabric_request_id": f"{task_id}:retry-{attempt}"})
+        data.pop("gpu_assignment", None)
+        previous = data.get("workspace_result")
+        if isinstance(previous, dict):
+            data["workspace_result"] = {
+                "input_sha256": previous.get("input_sha256", ""),
+                "output_sha256": "", "state": "pending", "artifact_ref": {}}
+        data.pop("_workspace_output", None)
+        return data
+
     def cancel(self, tenant: str, task_id: str, *, actor="") -> dict:
         with self.hub._write() as conn:
             row = self._row(conn, tenant, task_id)
@@ -154,6 +246,34 @@ class ComputeStore:
                 conn.execute("UPDATE hub_compute_tasks SET state=?,updated_at=?,retry_at=0 "
                              "WHERE tenant=? AND task_id=?", (state, now, tenant, task_id))
                 self._event(conn, row, state, now, trigger_subject=actor)
+            return task_record(self._row(conn, tenant, task_id))
+
+    def reschedule(self, tenant: str, task_id: str, target_device_id: str, *, actor="") -> dict:
+        """Atomically change the target of work that has not been dispatched."""
+        with self.hub._write() as conn:
+            row = self._row(conn, tenant, task_id)
+            if actor and row["actor"] != actor:
+                raise HubStoreError("forbidden", "only the task actor may reschedule it", 403)
+            if row["state"] != "queued":
+                raise HubStoreError("task_not_queued", "only queued tasks can be rescheduled", 409)
+            data = json.loads(row["data_json"])
+            if data.get("target_device_id", "") == target_device_id:
+                return task_record(row)
+            data["target_device_id"] = target_device_id
+            data["device_id"] = ""
+            data["device_instance_id"] = ""
+            data["error"] = ""
+            for key in ("_cwd", "_fabric_id", "_fabric_actor", "_dispatch_uncertain"):
+                data.pop(key, None)
+            now = float(self.hub.clock())
+            conn.execute("UPDATE hub_compute_tasks SET state='queued',data_json=?,updated_at=?,retry_at=? "
+                         "WHERE tenant=? AND task_id=?",
+                         (canonical_json(data), now, now, tenant, task_id))
+            details = dict(row, turn_id=data.get("turn_id", ""))
+            append_internal_event(
+                conn, tenant, details, str(uuid.uuid4()), "compute.queued",
+                {"task_id": task_id, "state": "queued", "trigger_subject": actor,
+                 "reason": "rescheduled", "target_device_id": target_device_id}, now)
             return task_record(self._row(conn, tenant, task_id))
 
     def begin_dispatch(self, tenant, task_id):
@@ -176,9 +296,13 @@ class ComputeStore:
             return task_record(self._row(conn, tenant, task_id), private=True), uncertain
 
     @staticmethod
-    def _event(conn, row, state: str, now: float, *, trigger_subject=""):
+    def _event(conn, row, state: str, now: float, *, trigger_subject="",
+               reason=""):
         details = json.loads(row["data_json"])
         context = dict(row, turn_id=details.get("turn_id", ""))
+        payload = {"task_id": row["task_id"], "state": state,
+                   "trigger_subject": trigger_subject}
+        if reason:
+            payload["reason"] = reason
         append_internal_event(conn, row["tenant"], context, str(uuid.uuid4()),
-                              "compute." + state, {"task_id": row["task_id"], "state": state,
-                                                   "trigger_subject": trigger_subject}, now)
+                              "compute." + state, payload, now)
