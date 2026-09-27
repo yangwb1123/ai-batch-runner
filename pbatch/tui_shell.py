@@ -48,6 +48,7 @@ class TuiOptions:
     runtime: str = "auto"
     pipeline: str = ""
     native_session: str = ""
+    startup_timeout: Optional[float] = None
 
     def backend_kwargs(self) -> dict[str, Any]:
         return {

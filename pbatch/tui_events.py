@@ -181,6 +181,17 @@ class EventBus:
             self._remember(canonical)
             return True
 
+    def validate_sequence(self, event: RuntimeEvent) -> bool:
+        """Preview ordering without reserving a sequence or changing evidence."""
+        canonical = _canonical_event(event)
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("runtime event bus is closed")
+            if canonical.event_id in self._event_ids:
+                return False
+            self._prepare_sequence(canonical)
+            return True
+
     def _prepare_sequence(self, event: RuntimeEvent) -> None:
         previous = self._last_seq_by_run.get(event.run_id)
         if previous is None and len(self._last_seq_by_run) >= self.index_limit:

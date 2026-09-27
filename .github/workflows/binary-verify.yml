@@ -1,0 +1,163 @@
+name: Verify platform binaries
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/binary-verify.yml'
+      - '.github/workflows/release.yml'
+      - 'pbatch/**'
+      - 'tools/build-binary.py'
+      - 'tools/smoke-binary.py'
+      - 'tools/binary_smoke*.py'
+      - 'tools/tui-soak*.py'
+      - 'tools/tui_soak*.py'
+      - 'tests/test_binary*.py'
+      - 'tests/test_file_lock*.py'
+      - 'tests/test_process_identity.py'
+      - 'tests/test_instance_lock*.py'
+      - 'tests/test_lock_domain.py'
+      - 'tests/test_release.py'
+      - 'pi-batch.py'
+      - 'pi-batch.yaml'
+      - 'pyproject.toml'
+      - 'MANIFEST.in'
+      - 'quality.py'
+      - 'scripts/**'
+      - 'evals/**'
+      - 'examples/**'
+      - 'agent-engineering/**'
+      - 'pipelines/**'
+      - 'prompts/**'
+      - '*-specs/**'
+      - 'docs/**'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify ${{ matrix.asset }} binary
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-22.04, asset: linux-x86_64, python-arch: x64, extension: ""}
+          - {os: macos-15-intel, asset: macos-x86_64, python-arch: x64, extension: ""}
+          - {os: macos-15, asset: macos-arm64, python-arch: arm64, extension: ""}
+          - {os: windows-2022, asset: windows-x86_64, python-arch: x64, extension: ".exe"}
+    env:
+      BINARY_ASSET: ${{ matrix.asset }}
+      PYTHONUTF8: "1"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        timeout-minutes: 3
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        timeout-minutes: 5
+        with:
+          python-version: "3.11"
+          architecture: ${{ matrix.python-arch }}
+          cache: pip
+
+      - name: Record and verify build platform
+        id: platform
+        timeout-minutes: 1
+        run: |
+          mkdir -p validation
+          python - <<'PY'
+          import json, os, platform, runpy, sys
+          from pathlib import Path
+          observed = runpy.run_path("tools/build-binary.py")["binary_label"]()
+          report = {"expected": os.environ["BINARY_ASSET"], "observed": observed,
+                    "platform": platform.platform(), "python": sys.version,
+                    "runner_image": os.environ.get("ImageOS"),
+                    "runner_image_version": os.environ.get("ImageVersion"),
+                    "commit": os.environ["GITHUB_SHA"]}
+          Path("validation/platform.json").write_text(json.dumps(report, indent=2) + "\n")
+          if observed != report["expected"]:
+              raise SystemExit(f"unexpected build architecture: {report}")
+          PY
+
+      - name: Install package and binary builder
+        id: install
+        timeout-minutes: 10
+        run: |
+          set -o pipefail
+          python -m pip install ".[binary]" pytest 2>&1 | tee validation/install.log
+
+      - name: Verify native process probes and instance locks
+        id: file-locks
+        timeout-minutes: 3
+        run: |
+          set -o pipefail
+          python -m pytest tests/test_file_lock.py tests/test_process_identity.py tests/test_instance_lock_safety.py tests/test_instance_lock_generation.py tests/test_lock_domain.py -q 2>&1 | tee validation/file-locks.log
+
+      - name: Build self-contained executable
+        id: build
+        timeout-minutes: 15
+        run: |
+          set -o pipefail
+          python tools/build-binary.py --output dist --name "pi-batch-${BINARY_ASSET}" 2>&1 | tee validation/build.log
+
+      - name: Smoke-test executable
+        id: smoke
+        timeout-minutes: 10
+        run: |
+          set -o pipefail
+          python tools/smoke-binary.py "dist/pi-batch-${BINARY_ASSET}${{ matrix.extension }}" --report validation/smoke.json 2>&1 | tee validation/smoke.log
+
+      - name: Verify Linux TUI repeated fault recovery
+        id: soak
+        if: matrix.asset == 'linux-x86_64'
+        timeout-minutes: 5
+        run: |
+          set -o pipefail
+          python tools/tui-soak.py dist/pi-batch-linux-x86_64 --cycles 3 --output validation/soak 2>&1 | tee validation/soak.log
+
+      - name: Record verification outcomes
+        if: always()
+        timeout-minutes: 1
+        env:
+          STEP_OUTCOMES: ${{ toJSON(steps) }}
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path("validation")
+          root.mkdir(exist_ok=True)
+          steps = json.loads(os.environ["STEP_OUTCOMES"])
+          report = {"asset": os.environ["BINARY_ASSET"],
+                    "steps": {name: steps.get(name, {}).get("outcome", "skipped")
+                              for name in ("platform", "install", "file-locks", "build", "smoke", "soak")}}
+          (root / "outcomes.json").write_text(json.dumps(report, indent=2) + "\n")
+          PY
+
+      - name: Store verification evidence
+        if: always()
+        timeout-minutes: 3
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: pi-batch-verification-${{ matrix.asset }}
+          path: validation/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Store verified binary
+        timeout-minutes: 3
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: pi-batch-binary-${{ matrix.asset }}
+          path: dist/pi-batch-${{ matrix.asset }}${{ matrix.extension }}
+          if-no-files-found: error
+          retention-days: 14

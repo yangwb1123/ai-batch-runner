@@ -236,7 +236,9 @@ def _planned_outputs(args) -> list:
             for stage in data.get("stages") or []:
                 if isinstance(stage, dict) and stage.get("output"):
                     collected.append(str(stage["output"]))
-    return collected[:16]
+    # Preserve one overflow item so lock metadata can select exclusive mode
+    # instead of treating a truncated declaration as proof of disjointness.
+    return collected[:17]
 
 
 def main() -> None:
@@ -384,6 +386,7 @@ _SUBCOMMANDS: dict[str, str] = {
     "fleet": "hub_cli:hub_main",
     "agents": "agent_ledger:agents_main",
     "config": "config_cli:config_main",
+    "pool": "llm_pool_cli:pool_main",
     "memory": "memory:main",
     "classify": "classifier:classify_main",
     "rules": "rule_cli:rules_main",
@@ -473,6 +476,9 @@ def _dispatch_default_tui() -> bool:
 
 
 def _dispatch_subcommand() -> bool:
+    from .launcher import dispatch_bundled_script
+    if dispatch_bundled_script(sys.argv[1:]):
+        return True
     if len(sys.argv) <= 1:
         return False
     target = _SUBCOMMANDS.get(sys.argv[1])

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import config
+from .launcher import package_source_dir, script_argv
 
 ROOT = Path(config.TOOL_ROOT)
 ASSET_ROOT = Path(config.TOOL_ROOT)
@@ -54,8 +55,8 @@ def _checker_violations(name: str, root: Optional[Path] = None) -> int:
     script = ASSET_ROOT / "scripts" / f"{name}.py"
     if not script.is_file():
         return -1
-    cmd = [sys.executable, str(script), "--dir", str(_resolved_root(root)),
-           "--json", "--skip", SKIP]
+    cmd = script_argv(script, "--dir", str(_resolved_root(root)),
+                      "--json", "--skip", SKIP)
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     except (OSError, subprocess.TimeoutExpired):
@@ -76,7 +77,7 @@ def _quality_violations(root: Optional[Path] = None) -> int:
         return -1
     try:
         result = subprocess.run(
-            [sys.executable, str(script), str(_resolved_root(root))],
+            script_argv(script, str(_resolved_root(root))),
             capture_output=True, text=True, timeout=120)
     except (OSError, subprocess.TimeoutExpired):
         return -1
@@ -144,7 +145,7 @@ def _health_score(checkers: dict, quality: int, tests: int) -> dict:
     arch_score, cycles = 20.0, -1
     try:
         from .hypergraph import extract_module_graph
-        graph = extract_module_graph(str(Path(__file__).resolve().parent))
+        graph = extract_module_graph(str(package_source_dir()))
         cycles = len(graph.depends_on_cycles())
         arch_score = max(0, arch_score - cycles * 5)
     except Exception:

@@ -23,6 +23,7 @@ from typing import Optional
 
 from . import config, org_workflow
 from .config import yaml
+from .launcher import cli_argv, script_argv
 
 ORG_DIR = Path("agent-engineering")
 REQUIRED_KEYS = ("id", "name", "role", "stage", "parent",
@@ -283,7 +284,10 @@ def _render_check_argv(check, params: dict) -> tuple[Optional[list], str]:
     for index, token in enumerate(argv):
         for sentinel, value in sentinels.items():
             argv[index] = token.replace(sentinel, value)
-    return _normalize_check_argv(argv), ""
+    try:
+        return _normalize_check_argv(argv), ""
+    except ValueError as exc:
+        return None, str(exc)
 
 
 def _normalize_check_argv(argv: list) -> list:
@@ -292,9 +296,9 @@ def _normalize_check_argv(argv: list) -> list:
         script = _existing_resource(argv[0])
         if script is not None:
             argv[0] = str(script)
-        argv.insert(0, sys.executable)
+        argv = script_argv(argv[0], *argv[1:])
     if argv[0] == "pi-batch":
-        argv = [sys.executable, "-m", "pbatch", *argv[1:]]
+        argv = cli_argv(*argv[1:])
     return argv
 
 

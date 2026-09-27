@@ -21,7 +21,10 @@ Contract (hardened after the round-4 adversarial reviews):
   refused (a partial write under the old format is never "free to take").
 - **Ownership-checked release**: `release_lock` unlinks the path only
   when the file still carries this process's token — a foreign (successor)
-  lock is left in place.
+  lock is left in place. Returned Path objects retain the acquisition token,
+  so a delayed release cannot act on a newer generation at the same path.
+- Every parallel instance publishes its own record. A permanent guard
+  serializes reads, reclamation, publication and release across all records.
 - **Round re-verification**: `verify_held` lets the round loop confirm
   the lock is still ours between rounds; a lock that vanished (unlinked
   by a concurrent breaker) stops the instance with exit 5 instead of
@@ -44,18 +47,22 @@ escape hatch.
 
 from __future__ import annotations
 
-import json
 import os
-import select
-import subprocess
+import math
+import socket
 import sys
-import tempfile
 import time
 import uuid
 from pathlib import Path
 from typing import Optional
 
 from .config import data_dir, log
+from .lock_storage import (
+    MAX_HOLDERS, OwnedLockPath, holder_paths, lock_guard, participant_path,
+    publish_holder, read_holder,
+)
+from .process_exec import run_bounded
+from .process_identity import pid_alive
 
 LOCK_NAME = ".pi-batch.lock"
 STALE_AGE_SEC = 24 * 3600
@@ -64,14 +71,11 @@ LOCK_EXIT_CODE = 5  # new exit-code contract (docs/RUNNING_247.md)
 # token -> lock path, per process: release/verify must only ever touch
 # locks this process actually created (a successor's file is never ours).
 _OWNED: dict = {}
+_COORDINATION: dict = {}
 
 
 def _alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except (ProcessLookupError, PermissionError):
-        return False
+    return pid_alive(pid)
 
 
 def _redacted_argv(argv: list) -> str:
@@ -96,12 +100,13 @@ def _payload(cwd: str, domain: str = "", outputs: tuple = (),
     return {
         "pid": os.getpid(),
         "start": time.time(),
-        "host": os.uname().nodename,
+        "host": socket.gethostname(),
         "workspace": str(Path(cwd or os.getcwd()).resolve()),
         "argv": _redacted_argv(sys.argv),
         "token": uuid.uuid4().hex,
         "domain": domain or "default",
         "outputs": list(outputs)[:MAX_DECLARED_OUTPUTS],
+        "outputs_complete": len(outputs) <= MAX_DECLARED_OUTPUTS,
         "session_name": session_name or "",
     }
 
@@ -111,70 +116,31 @@ _WORKTREE_PROBE_TIMEOUT = 5
 
 
 def _worktree_dirty(cwd: str) -> bool:
-    """Return a conservative dirty/unknown bit for one Git worktree."""
+    """Return a conservative dirty/unknown bit with bounded portable probes."""
     root = str(Path(cwd or os.getcwd()).resolve())
-    try:
-        probe = subprocess.run(
-            ["git", "-C", root, "rev-parse", "--is-inside-work-tree"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            text=True, timeout=_WORKTREE_PROBE_TIMEOUT)
-    except (OSError, subprocess.SubprocessError):
-        return True
-    if probe.returncode != 0:
-        return False
-    return _status_has_output(root)
+    probe = run_bounded(["git", "-C", root, "rev-parse", "--is-inside-work-tree"],
+                        root, _WORKTREE_PROBE_TIMEOUT, 1024, False, "git probe")
+    if not probe.ok:
+        # Only Git's explicit non-repository result is safe to distinguish
+        # from an unavailable command, timeout, or output overflow.
+        return "not a git repository" not in probe.stderr.lower()
+    return probe.stdout.strip() != "true" or _status_has_output(root)
 
 
 def _status_has_output(root: str) -> bool:
-    """Bound the Git status probe to one byte and a hard wait."""
-    try:
-        process = subprocess.Popen(
-            ["git", "-C", root, "status", "--porcelain=v1",
-             "--untracked-files=normal", "--", ".",
-             ":(exclude).pi-batch.lock*"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    except OSError:
-        return True
-    try:
-        stream = process.stdout
-        if stream is None:
-            return True
-        ready, _, _ = select.select([stream], [], [], _WORKTREE_PROBE_TIMEOUT)
-        if not ready:
-            return True
-        data = os.read(stream.fileno(), 1)
-        if not data:
-            try:
-                process.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                return True
-            return process.returncode != 0
-        if process.poll() is None:
-            process.kill()
-        try:
-            process.wait(timeout=1)
-        except subprocess.TimeoutExpired:
-            return True
-        return True
-    except (OSError, ValueError, select.error):
-        return True
-    finally:
-        if process.poll() is None:
-            process.kill()
-        try:
-            process.wait(timeout=1)
-        except (OSError, subprocess.SubprocessError):
-            pass
-        if process.stdout is not None:
-            process.stdout.close()
+    """Read both Git pipes with a hard deadline; select(pipe) is not portable."""
+    result = run_bounded(
+        ["git", "-C", root, "status", "--porcelain=v1", "--untracked-files=normal",
+         "--", ".", ":(exclude).pi-batch.lock*"],
+        root, _WORKTREE_PROBE_TIMEOUT, 1, False, "git status")
+    return not result.ok or bool(result.stdout)
 
 
 def _default_lock_path(cwd: str = "") -> Path:
     """Return the default private lock, honoring a legacy cwd lock."""
     root = Path(cwd or os.getcwd()).expanduser().resolve()
     legacy = root / LOCK_NAME
-    if legacy.exists():
+    if legacy.exists() or legacy.with_name(legacy.name + ".guard").exists():
         return legacy
     return data_dir(str(root)) / "locks" / LOCK_NAME
 
@@ -212,85 +178,87 @@ def _prepare_lock(cwd: str, domain: str, outputs: tuple,
 def acquire_lock(cwd: str = "", no_lock: bool = False,
                  wait_minutes: int = 0, domain: str = "",
                  outputs: tuple = (), session_name: str = "") -> Optional[Path]:
-    """Multi-instance-aware lock. An instance that DECLARES its planned
-    outputs/session runs in parallel unless it conflicts with the live
-    holder: same non-empty session name, or overlapping output paths
-    (fail closed with the overlapping paths listed). Instances that
-    declare NOTHING keep the historical exclusive contract (exit 5), so
-    an unlabelled 7x24 loop can never silently double-write shared
-    state. --run-domain forces a separate domain (parallel always);
-    --wait-lock queues; --no-lock bypasses. Returns the lock path, or
-    None when running lock-free (--no-lock / parallel branch)."""
+    """Acquire a verifiable record for every admitted instance.
+
+    Metadata publication, stale reclamation and release share a permanent
+    OS-locked guard. Waiting never holds that guard while sleeping.
+    """
     if no_lock:
         return None
+    if (type(wait_minutes) not in (int, float) or wait_minutes < 0
+            or wait_minutes > 1e9 or not math.isfinite(wait_minutes)):
+        raise ValueError("wait_minutes must be finite and non-negative")
     lock_path, payload = _prepare_lock(cwd, domain, outputs, session_name)
-    # Atomic publication: the payload is fully written to a unique temp
-    # file, then hard-linked into place. os.link fails with EEXIST when a
-    # lock is already present, so no reader can observe a partial file
-    # (a separate O_EXCL create + write left such a window before).
-    fd, tmp_name = tempfile.mkstemp(prefix=LOCK_NAME + ".", dir=str(lock_path.parent))
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f)
-        try:
-            os.link(tmp_name, str(lock_path))
-        except FileExistsError:
-            if wait_minutes > 0:
-                _wait_for_lock(lock_path, wait_minutes)
-            else:
-                if _parallel_or_conflict(lock_path, domain, outputs,
-                                         session_name, cwd):
-                    return None  # parallel branch (no lock held)
-                _reject_or_break(lock_path)
-            return acquire_lock(
-                cwd, no_lock=False, domain=domain, outputs=outputs,
-                session_name=session_name)  # stale broken
-    finally:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-        # best-effort I/O：失败不阻塞主流程（已验证有意）
-            pass
-    os.chmod(str(lock_path), 0o600)
-    _OWNED[str(lock_path)] = payload["token"]
-    return lock_path
+        if wait_minutes > 0:
+            return _wait_for_lock(lock_path, wait_minutes, payload, cwd)
+        return _attempt_lock(lock_path, payload, cwd)
+    except OSError as exc:
+        log.error("Cannot coordinate instance lock %s: %s", lock_path, exc)
+        raise SystemExit(LOCK_EXIT_CODE) from exc
 
 
-def _wait_for_lock(lock_path: Path, wait_minutes: int) -> None:
-    """Poll until the holder releases the lock or the budget expires.
-    A stale lock (dead holder) is broken immediately, as usual."""
+def _attempt_lock(lock_path: Path, payload: dict, cwd: str,
+                  deadline: float | None = None) -> Optional[Path]:
+    with lock_guard(lock_path, deadline=deadline):
+        for held_path in holder_paths(lock_path):
+            if deadline is None and payload["outputs_complete"] and _parallel_or_conflict(
+                    held_path, payload["domain"], tuple(payload["outputs"]),
+                    payload["session_name"], cwd, payload["worktree_dirty"]):
+                continue
+            _reject_or_break(held_path, quiet=deadline is not None)
+        if len(holder_paths(lock_path)) >= MAX_HOLDERS:
+            raise OSError("instance holder count exceeds its limit")
+        target = (participant_path(lock_path, payload["token"])
+                  if lock_path.exists() else lock_path)
+        if not publish_holder(target, payload, staging_dir=lock_path.parent):
+            log.error("Instance lock changed during acquisition: %s", target)
+            raise SystemExit(LOCK_EXIT_CODE)
+        _OWNED[str(target)] = payload["token"]
+        _COORDINATION[str(target)] = lock_path
+        handle = OwnedLockPath(target)
+        handle.owner_token = payload["token"]
+        return handle
+
+
+def _wait_for_lock(lock_path: Path, wait_minutes: float, payload: dict,
+                   cwd: str) -> Optional[Path]:
     deadline = time.monotonic() + wait_minutes * 60
-    while time.monotonic() < deadline:
-        if not lock_path.exists():
-            return
-        holder = _read_holder(lock_path)
-        if holder and not _alive(int(holder.get("pid", 0) or 0)):
-            log.warning("LOCK: holder pid=%s dead; breaking stale lock", holder.get("pid"))
-            return
-        log.info("LOCK: waiting for holder (pid=%s, age=%.1fm); %ds left",
-                 holder.get("pid", "?") if holder else "?",
-                 (time.time() - holder.get("start", time.time())) / 60 if holder else 0,
-                 int(deadline - time.monotonic()))
-        time.sleep(30)
-    raise SystemExit(5)
+    next_message = time.monotonic()
+    while True:
+        try:
+            return _attempt_lock(lock_path, payload, cwd, deadline)
+        except SystemExit as exc:
+            if exc.code != LOCK_EXIT_CODE:
+                raise
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SystemExit(LOCK_EXIT_CODE)
+        if time.monotonic() >= next_message:
+            log.info("LOCK: waiting for holder; %.1fs left", remaining)
+            next_message = time.monotonic() + 30
+        time.sleep(min(0.2, remaining))
 
 
 def _read_holder(lock_path: Path) -> dict:
-    try:
-        return json.loads(lock_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
+    return read_holder(lock_path)
+
+
+def _local_holder(holder: dict) -> bool:
+    return bool(holder) and holder.get("host") == socket.gethostname()
 
 
 def _parallel_or_conflict(lock_path: Path, domain: str,
                             outputs: tuple, session_name: str,
-                            cwd: str = "") -> bool:
-    """Decide whether a live lock permits a lock-free parallel instance."""
+                            cwd: str = "", worktree_dirty=None) -> bool:
+    """Check a request against one of the recorded live participants."""
     holder = _read_holder(lock_path)
-    pid = int(holder.get("pid", 0) or 0)
-    if not (pid and _alive(pid)):
+    pid = holder.get("pid", 0)
+    if not (_local_holder(holder) and _alive(pid)):
         return False  # stale lock: rejected, then broken by _reject_or_break
-    if _parallel_worktree_blocked(lock_path, holder, cwd):
+    if not holder.get("outputs_complete", len(holder.get("outputs", [])) < MAX_DECLARED_OUTPUTS):
+        return False
+    if _parallel_worktree_blocked(lock_path, holder, cwd, worktree_dirty):
         return False
     holder_domain = str(holder.get("domain", "") or "default")
     request_domain = domain or "default"
@@ -298,18 +266,20 @@ def _parallel_or_conflict(lock_path: Path, domain: str,
             and holder_domain != request_domain):
         log.warning(
             "Multi-instance mode: holder runs domain '%s', this run "
-            "declares domain '%s' — running in parallel WITHOUT the lock.",
+            "declares domain '%s' — admitting a separate participant.",
             holder_domain, request_domain)
         return True
-    return _parallel_declarations(holder, pid, outputs, session_name)
+    return _parallel_declarations(holder, pid, outputs, session_name, cwd)
 
 
 def _parallel_declarations(holder: dict, pid: int, outputs: tuple,
-                           session_name: str) -> bool:
+                           session_name: str, cwd: str = "") -> bool:
     """Apply output/session conflict rules after the worktree safety gate."""
-    holder_outputs = {str(p) for p in holder.get("outputs", [])}
-    request_outputs = {str(p) for p in outputs}
-    overlap = sorted(holder_outputs & request_outputs)
+    holder_outputs = _output_paths(holder.get("outputs", []), holder.get("workspace") or cwd)
+    request_outputs = _output_paths(outputs, cwd)
+    overlap = sorted(str(right) for right in request_outputs
+                     if any(left == right or left in right.parents or right in left.parents
+                            for left in holder_outputs))
     holder_session = str(holder.get("session_name", "") or "")
     if overlap:
         log.error(
@@ -329,17 +299,24 @@ def _parallel_declarations(holder: dict, pid: int, outputs: tuple,
         return False  # unlabelled instance: keep exclusive contract
     log.warning(
         "Multi-instance mode: holder pid=%s declares disjoint outputs — "
-        "running in parallel WITHOUT the lock.", pid)
+        "admitting a separate participant.", pid)
     return True
 
 
+def _output_paths(outputs, cwd: str) -> set[Path]:
+    root = Path(cwd or os.getcwd())
+    try:
+        return {Path(os.path.normcase(str((root / str(path)).resolve()))) for path in outputs}
+    except (ValueError, RuntimeError) as exc:
+        raise OSError(f"cannot resolve declared output path: {exc}") from exc
+
+
 def _parallel_worktree_blocked(lock_path: Path, holder: dict,
-                               cwd: str = "") -> bool:
+                               cwd: str = "", worktree_dirty=None) -> bool:
     """Dirty or unknown Git state vetoes all output-based parallelism."""
-    workspace = str(Path(cwd or holder.get("workspace")
-                         or lock_path.parent).resolve())
-    if not (_worktree_dirty(workspace)
-            or holder.get("worktree_dirty") is not False):
+    workspace = str(cwd or holder.get("workspace") or lock_path.parent)
+    dirty = _worktree_dirty(workspace) if worktree_dirty is None else worktree_dirty
+    if not (dirty or holder.get("worktree_dirty") is not False):
         return False
     log.error(
         "Git worktree %s is dirty or its state is unknown; refusing "
@@ -349,25 +326,22 @@ def _parallel_worktree_blocked(lock_path: Path, holder: dict,
     return True
 
 
-def _reject_or_break(lock_path: Path) -> None:
+def _reject_or_break(lock_path: Path, *, quiet: bool = False) -> None:
     """Refuse when the holder is alive or the lock is unparseable (fail
     closed: a lock we cannot read is never free to take); otherwise break
     the stale lock (dead PID only — a live holder is NEVER broken on age
     alone, because 7x24 runs routinely outlive the 24h staleness window)."""
     holder = _read_holder(lock_path)
-    pid = int(holder.get("pid", 0) or 0)
-    if pid and _alive(pid):
-        age_h = (time.time() - float(holder.get("start", 0) or 0)) / 3600
-        log.error("Another pi-batch instance is running (pid=%s, host=%s, argv=%s, age=%.1fh). "
-                  "Refusing to start (exit %d). Use --no-lock to override, or a different "
-                  "--run-domain to run multi-instance.",
-                  pid, holder.get("host", "?"), holder.get("argv", "?"), age_h, LOCK_EXIT_CODE)
+    pid = holder.get("pid", 0)
+    if not _local_holder(holder):
+        if not quiet:
+            log.error("Lock %s has unreadable or non-local holder metadata; "
+                      "refusing to start (exit %d)", lock_path, LOCK_EXIT_CODE)
         raise SystemExit(LOCK_EXIT_CODE)
-    if not pid:
-        # empty/unparseable lock file: could be a torn write or a planted
-        # token; fail closed instead of silently taking over.
-        log.error("Lock file %s is unreadable (no holder PID); refusing to start (exit %d). "
-                  "Remove it manually if it is a leftover.", lock_path, LOCK_EXIT_CODE)
+    if _alive(pid):
+        if not quiet:
+            log.error("Another pi-batch instance is running (pid=%s, host=%s); "
+                      "refusing to start (exit %d)", pid, holder["host"], LOCK_EXIT_CODE)
         raise SystemExit(LOCK_EXIT_CODE)
     log.warning("Breaking stale lock %s (pid=%s dead)", lock_path, pid)
     try:
@@ -385,10 +359,10 @@ def verify_held(lock_path: Optional[Path]) -> bool:
         return False
     key = str(lock_path)
     token = _OWNED.get(key)
-    if not token:
+    if not token or getattr(lock_path, "owner_token", token) != token:
         return False
     holder = _read_holder(lock_path)
-    return (holder.get("token") == token and int(holder.get("pid", 0) or 0) == os.getpid())
+    return (holder.get("token") == token and holder.get("pid") == os.getpid())
 
 
 def release_lock(lock_path: Optional[Path]) -> None:
@@ -397,13 +371,25 @@ def release_lock(lock_path: Optional[Path]) -> None:
     would let a third instance start while the real holder still runs."""
     if not lock_path:
         return
+    key = str(lock_path)
+    if key not in _OWNED:
+        return
+    token = _OWNED[key]
+    if getattr(lock_path, "owner_token", token) != token:
+        return
     try:
-        if verify_held(lock_path):
-            lock_path.unlink(missing_ok=True)
-        else:
-            log.warning("Not removing %s: lock is not owned by this instance", lock_path)
+        with lock_guard(_COORDINATION.get(key, lock_path)):
+            if _OWNED.get(key) != token:
+                return
+            if not _read_holder(lock_path) and (lock_path.exists() or lock_path.is_symlink()):
+                log.warning("Not removing %s: lock ownership is unreadable", lock_path)
+                return
+            if verify_held(lock_path):
+                lock_path.unlink(missing_ok=True)
+            else:
+                log.warning("Not removing %s: lock is not owned by this instance", lock_path)
+            _OWNED.pop(key, None)
+            _COORDINATION.pop(key, None)
     except OSError:
     # best-effort I/O：失败不阻塞主流程（已验证有意）
         pass
-    finally:
-        _OWNED.pop(str(lock_path), None)

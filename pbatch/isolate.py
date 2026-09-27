@@ -54,6 +54,7 @@ from pathlib import Path
 from typing import Optional
 
 from .config import data_dir, log
+from .launcher import cli_argv
 from .user_dirs import project_runtime_dir
 from .lock import acquire_lock, release_lock
 from .session_merge import (MERGE_BLOCKED_EXIT, SessionOptions, append_session,
@@ -166,7 +167,7 @@ def _run_child(workdir: Path, task_args: list,
     args = list(task_args)
     if protected and "--no-git-commit" not in args:
         args.append("--no-git-commit")
-    cmd = [sys.executable, "-m", "pbatch", *args]
+    cmd = cli_argv(*args)
     log.info("ISOLATE: running: %s (cwd=%s)", " ".join(cmd), workdir)
     return subprocess.run(cmd, cwd=str(workdir),
                           env=_child_env(workdir)).returncode

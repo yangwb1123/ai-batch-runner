@@ -6,7 +6,6 @@ import json
 import os
 import random
 import re
-import signal
 import subprocess
 import sys
 import tempfile
@@ -18,7 +17,7 @@ from typing import Optional
 from .validation_batch import run_file_validators
 from . import config
 from .config import _resolve_validator_specs, _resolve_validators, _session_flags, log
-from .cmd_expand import expand_cmd
+from .cmd_expand import embedded_checker_argv, expand_cmd
 from .context_inject import inject_task_context
 from .execution_trace import (annotate_result, attach_session,
                               finish_task_result as _finish_result,
@@ -46,7 +45,9 @@ from .runner_session import (bind_spawned_session as _bind_spawned_session,
                              rotation_flags as _rotation_flags,
                              unexpected_result as _unexpected_result)
 from .triage import clear_marker, is_retryable, task_key, write_marker
-from .process_exec import ValidationResult, _DrainTimeout, run_bounded
+from .process_exec import (ValidationResult, _DrainTimeout, run_bounded,
+                           read_chunks, validate_timeout,
+                           _kill_group as _kill_command_group)
 from .provider_env import provider_child_env
 from .runner_cancel import (
     CancelledDrain as _CancelledDrain, cancel_requested as _cancel_requested,
@@ -99,7 +100,7 @@ def _read_stream(stream, prefix: str, collector: list, cap: int = 0,
     total = 0
     sink = target or sys.stdout
     try:
-        for line in iter(lambda: stream.readline(8192), ""):
+        for line in read_chunks(stream, errors="strict"):
             within_cap = True
             if cap > 0:
                 total += len(line.encode("utf-8", errors="replace"))
@@ -111,9 +112,9 @@ def _read_stream(stream, prefix: str, collector: list, cap: int = 0,
                     sink.flush()
             elif overflow is not None:
                 overflow[0] = True
-    except ValueError:
-        # stream closed
-        pass
+    except (OSError, ValueError) as exc:
+        if overflow is not None:
+            overflow.error = f"agent output read failed: {exc}"
     finally:
         stream.close()
 def agent_failure_reason(returncode: int, output: str, bin_name: str = "") -> str:
@@ -150,17 +151,7 @@ def _kill_group(proc: Optional[subprocess.Popen]) -> None:
     process, then reap the direct child before returning."""
     if proc is None:
         return
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        try:
-            proc.kill()
-        except Exception:
-            pass  # process already gone
-    try:
-        proc.wait(timeout=1)
-    except (subprocess.TimeoutExpired, ChildProcessError):
-        pass  # 子进程已死/超时：清理路径（已验证有意）
+    _kill_command_group(proc)
 def kill_proc_group(proc: subprocess.Popen) -> None:
     _kill_group(proc)
 def _spawn_agent(cmd: list, workdir: str, env: dict) -> subprocess.Popen:
@@ -198,6 +189,7 @@ def _context_rejection(task: Task) -> Optional[TaskResult]:
 def _task_invocation(task: Task, session_flags: Optional[list],
                      session_name: str):
     try:
+        validate_timeout(task.timeout, "task")
         cmd, workdir, session_id, effective_name = _memory_invocation(
             task, session_flags, session_name)
     except (TypeError, ValueError) as exc:
@@ -403,12 +395,13 @@ def run_validation(cmd: str, cwd: str, timeout: float = 600,
     deadline and bounded diagnostics. A spawn crash fails closed."""
     if not isinstance(cmd, str):
         raise TypeError("validator command must be a string")
-    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout < 0:
-        raise ValueError("validator timeout must be non-negative")
+    validate_timeout(timeout, "validator")
     output_cap = config.VALIDATION_OUTPUT_MAX_BYTES if cap is None else max(1, cap)
+    embedded = embedded_checker_argv(cmd)
+    command, shell = (embedded, False) if embedded is not None else (cmd, True)
     if cancel_event is None:
-        return run_bounded(cmd, cwd, timeout, output_cap, True, "validator")
-    return run_bounded(cmd, cwd, timeout, output_cap, True, "validator",
+        return run_bounded(command, cwd, timeout, output_cap, shell, "validator")
+    return run_bounded(command, cwd, timeout, output_cap, shell, "validator",
                        cancel_event=cancel_event)
 
 def run_argv(cmd: list[str], cwd: str, timeout: float = 30,
@@ -417,8 +410,7 @@ def run_argv(cmd: list[str], cwd: str, timeout: float = 30,
     if (not isinstance(cmd, (list, tuple)) or not cmd
             or not all(isinstance(value, str) for value in cmd)):
         raise TypeError("argv command must be a non-empty string list")
-    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout < 0:
-        raise ValueError("process timeout must be non-negative")
+    validate_timeout(timeout, "process")
     output_cap = config.COMMAND_OUTPUT_MAX_BYTES if cap is None else max(1, cap)
     return run_bounded(list(cmd), cwd, timeout, output_cap, False, "process")
 
@@ -791,11 +783,13 @@ def _stream_proc(proc: subprocess.Popen, prefix: str, start: float,
                  timeout: int, emit: bool = False, stdout_target=None,
                  stderr_target=None, stderr_emit=None,
                  cancel_event=None) -> tuple[list[str], list[str], list]:
-    """Drain both pipes to one deadline; report stdout-cap overflow."""
-    stdout_lines, stderr_lines, overflow, _ = _drain_process(
+    """Drain both pipes to one deadline; reject either stream's cap overflow."""
+    stdout_lines, stderr_lines, overflow, stderr_overflow = _drain_process(
         proc, prefix, start, timeout, config.OUTPUT_MAX_BYTES, emit,
         stdout_target, stderr_target, stderr_emit, cancel_event)
-    return stdout_lines, stderr_lines, overflow
+    if error := getattr(overflow, "error", "") or getattr(stderr_overflow, "error", ""):
+        raise ValueError(error)
+    return stdout_lines, stderr_lines, [overflow[0] or stderr_overflow[0]]
 def _drain_process(proc: subprocess.Popen, prefix: str, start: float,
                    timeout: float, cap: int, emit: bool = False,
                    stdout_target=None, stderr_target=None,

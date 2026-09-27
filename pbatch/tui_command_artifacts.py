@@ -6,7 +6,7 @@ from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 import errno
-import fcntl
+from . import file_lock as fcntl
 import hashlib
 import os
 from pathlib import Path
@@ -214,9 +214,9 @@ class CommandArtifactStore:
 
     def _promote(self, capture: _Capture) -> None:
         directory, relative = self._open_artifact_directory(capture.context)
+        capture.directory_descriptor = directory
         final_name = _artifact_name(capture.context)
         descriptor, temporary = _create_private_temp(directory, final_name)
-        capture.directory_descriptor = directory
         capture.descriptor = descriptor
         capture.temporary_name = temporary
         capture.final_name = final_name
@@ -407,7 +407,15 @@ def _create_private_temp(directory: int, final_name: str) -> tuple[int, str]:
             descriptor = os.open(name, flags, 0o600, dir_fd=directory)
         except FileExistsError:
             continue
-        os.fchmod(descriptor, 0o600)
+        try:
+            os.fchmod(descriptor, 0o600)
+        except BaseException:
+            os.close(descriptor)
+            try:
+                os.unlink(name, dir_fd=directory)
+            except OSError:
+                pass
+            raise
         return descriptor, name
     raise RuntimeError("cannot allocate a unique command artifact temporary file")
 

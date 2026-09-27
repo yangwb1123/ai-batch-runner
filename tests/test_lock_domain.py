@@ -92,7 +92,9 @@ def test_clean_git_worktree_keeps_disjoint_parallel_opt_in(tmp_path):
     repo = _clean_git_repo(tmp_path)
     held = _hold_lock(repo, domain="batch-a", outputs=("docs/a.md",))
     try:
-        assert acquire_lock(repo, domain="batch-b", outputs=("docs/b.md",)) is None
+        other = acquire_lock(repo, domain="batch-b", outputs=("docs/b.md",))
+        assert other is not None and lock_mod.verify_held(other)
+        release_lock(other)
     finally:
         release_lock(held)
 
@@ -115,8 +117,10 @@ def test_external_lock_file_does_not_touch_workspace(tmp_path, monkeypatch):
 def test_different_named_domains_run_parallel(tmp_path):
     held = _hold_lock(tmp_path, domain="batch-a")
     try:
-        # parallel instance: no lock file, no exception
-        assert acquire_lock(str(tmp_path), domain="batch-b") is None
+        # Parallel instances retain independently verifiable ownership.
+        other = acquire_lock(str(tmp_path), domain="batch-b")
+        assert other is not None and lock_mod.verify_held(other)
+        release_lock(other)
         holder = json.loads(_lock_file(tmp_path).read_text())
         assert holder["domain"] == "batch-a"  # holder lock untouched
     finally:
@@ -127,8 +131,9 @@ def test_disjoint_declared_outputs_run_parallel(tmp_path):
     """Default-domain instances declare disjoint outputs -> parallel."""
     held = _hold_lock(tmp_path, outputs=("docs/out-a.md",))
     try:
-        assert acquire_lock(str(tmp_path),
-                            outputs=("docs/out-b.md",)) is None
+        other = acquire_lock(str(tmp_path), outputs=("docs/out-b.md",))
+        assert other is not None and lock_mod.verify_held(other)
+        release_lock(other)
     finally:
         release_lock(held)
 
@@ -150,7 +155,9 @@ def test_same_declared_session_name_refuses(tmp_path):
             acquire_lock(str(tmp_path), session_name="chat-main")
         assert exc.value.code == LOCK_EXIT_CODE
         # a different session name runs parallel
-        assert acquire_lock(str(tmp_path), session_name="chat-other") is None
+        other = acquire_lock(str(tmp_path), session_name="chat-other")
+        assert other is not None and lock_mod.verify_held(other)
+        release_lock(other)
     finally:
         release_lock(held)
 
@@ -160,7 +167,9 @@ def test_declared_request_parallel_to_unlabelled_holder(tmp_path):
     that declares disjoint outputs."""
     held = _hold_lock(tmp_path)
     try:
-        assert acquire_lock(str(tmp_path), outputs=("docs/mine.md",)) is None
+        other = acquire_lock(str(tmp_path), outputs=("docs/mine.md",))
+        assert other is not None and lock_mod.verify_held(other)
+        release_lock(other)
     finally:
         release_lock(held)
 

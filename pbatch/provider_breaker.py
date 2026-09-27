@@ -18,7 +18,7 @@ provider。事件进交互账本、日志清晰可见（retro 可复盘 provider
 
 from __future__ import annotations
 
-import fcntl
+from . import file_lock as fcntl
 import hashlib
 import json
 import math
@@ -138,7 +138,10 @@ def _write_path(path: Path, state: dict) -> None:
     descriptor, temporary = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     try:
-        os.fchmod(descriptor, 0o600)
+        if os.name == "posix":
+            os.fchmod(descriptor, 0o600)
+        # Windows inherits the runtime directory's ACL; mode 0600 is not
+        # an equivalent Windows access-control guarantee.
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             descriptor = -1
             handle.write(payload)
@@ -146,11 +149,7 @@ def _write_path(path: Path, state: dict) -> None:
             os.fsync(handle.fileno())
         os.replace(temporary, path)
         temporary = ""
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        _sync_parent(path.parent)
     finally:
         if descriptor >= 0:
             os.close(descriptor)
@@ -159,6 +158,18 @@ def _write_path(path: Path, state: dict) -> None:
                 os.unlink(temporary)
             except FileNotFoundError:
                 pass
+
+
+def _sync_parent(path: Path) -> None:
+    # Windows cannot open a directory with CRT os.open for directory fsync.
+    # The temporary file is fsynced above on both platforms.
+    if os.name == "nt":
+        return
+    directory = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def _read_state(data_dir=None) -> dict:

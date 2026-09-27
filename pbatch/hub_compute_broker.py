@@ -10,13 +10,13 @@ import secrets
 import shlex
 import socket
 import socketserver
-import sys
 import tempfile
 import threading
 from pathlib import Path
 
 from .hub_client import HubError, _read_private_token
 from .hub_compute_client import ComputeClient
+from .launcher import cli_argv
 
 MAX_BYTES = 65536
 WORKSPACE_BYTES = 576 * 1024
@@ -99,7 +99,7 @@ def _capability(directory, endpoint, token, session_id=""):
 
 def _tool_prompt(prompt, path):
     entry = Path(__file__).resolve().parent.parent / "pi-batch.py"
-    program = [sys.executable, str(entry)] if entry.is_file() else [sys.executable, "-m", "pbatch"]
+    program = cli_argv(entrypoint=entry)
     command = " ".join(map(shlex.quote, [*program, "fleet", "compute", "--via", str(path)]))
     return ("Available compute tools for this active turn (subject to user and device grants):\n"
             f"{command} devices\n"

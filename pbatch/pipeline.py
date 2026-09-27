@@ -26,7 +26,8 @@ from .pipeline_resources import normalize_bundled_resources as _normalize_bundle
 from .evidence import combine_outputs, source_manifest
 from .gate_contract import evaluate_gate_artifacts, gate_verdict as _gate_verdict
 from .meta import run_meta_stage
-from .repo_gates import (capture_stage_dirty_paths,
+from .repo_gates import (capture_stage_baseline,
+                         capture_stage_dirty_paths,  # re-exported for callers
                          commit_stage_outputs as _git_commit_stage,
                          read_only_violations,
                          run_stage_repo_validators)
@@ -823,7 +824,9 @@ def _read_only_stage_ok(stage: Stage, outputs: list,
 
 def _stage_git_baseline(stage: Stage):
     if stage.git_commit or stage.read_only:
-        return capture_stage_dirty_paths(stage.cwd or os.getcwd(), stage.read_only_paths)
+        return capture_stage_baseline(stage.cwd or os.getcwd(),
+                                      stage.read_only_paths,
+                                      read_only=stage.read_only)
     return None
 
 

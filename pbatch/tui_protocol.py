@@ -351,6 +351,7 @@ TERMINAL_TURN_STATES = frozenset({
 TURN_TRANSITIONS = {
     TurnState.QUEUED: frozenset({
         TurnState.RUNNING, TurnState.INTERRUPTING, TurnState.FAILED,
+        TurnState.UNKNOWN,
     }),
     TurnState.RUNNING: frozenset({
         TurnState.SUCCEEDED, TurnState.FAILED, TurnState.INTERRUPTING,

@@ -45,6 +45,11 @@ def _add_data_args(root: Path) -> list[str]:
         source = root / name
         if source.is_dir():
             values.extend(("--add-data", f"{source}{separator}share/ai-batch-runner/{name}"))
+    # AST-based quality/graph checks need real source, not an empty PYZ tree.
+    # Keep only authored package files, excluding bytecode and runtime state.
+    for source in sorted((root / "pbatch").glob("*")):
+        if source.is_file() and source.suffix in {".py", ".md", ".yaml"}:
+            values.extend(("--add-data", f"{source}{separator}share/ai-batch-runner/pbatch"))
     return values
 
 
@@ -62,6 +67,9 @@ def build(output: Path, root: Path = ROOT, artifact_name: str = "pi-batch") -> P
         name += ".exe"
     command = [
         sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile",
+        # Frozen Python ignores PYTHONUTF8; redirected Chinese output must
+        # also work on Windows machines using a legacy ANSI code page.
+        "--python-option", "X utf8=1",
         "--name", artifact_name, "--paths", str(root), "--collect-submodules", "pbatch",
         "--collect-data", "pbatch", *(_add_data_args(root)),
         "--distpath", str(output), "--workpath", str(output / ".build"),

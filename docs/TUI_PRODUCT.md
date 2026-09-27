@@ -43,6 +43,57 @@ text|json|rpc`。其中 raw `--mode rpc` 独占 stdin/stdout 传 LF-delimited JS
    hook 异常可重试；若 backend 拒绝，界面告警并保留真实完成/失败终态。
 5. 完成或失败后回到可输入状态，可继续、切换新会话或查看诊断。
 
+Pi RPC 与 App Server 直接任务也遵守 `--timeout`（未设置时采用配置默认值）：
+截止时间从界面接受任务开始计算，覆盖启动 RPC，持续输出不会延长执行窗口。
+超时或取消会按当前 handle 尝试中断，并关闭对应本地 transport、回收进程组。
+无法确认 provider 终态时保留未知状态，阻止继续使用该 runtime；关闭完成后通过
+`/new` 重新连接，不把本地停止伪装为 provider 成功完成。
+普通任务与 App Server 审查在调用启动 RPC 前先持久化本地 QUEUED，绑定本次
+workspace/session/run/turn；该记录只表示提交意图，不证明 provider 已接受任务。
+启动确认前失败、取消或超时可以直接从 QUEUED 收尾为 UNKNOWN，不补造 started。
+日志写入预备失败时不调用 provider，并保留普通输入或 `/review` 命令供显式重试。
+默认启用 journal；显式禁用后，这些本地记录只存在于当前进程的投影中。
+空闲期间或上一轮完成后断连同样可以用 `/new` 重连；若 provider 暂不可用，
+可再次显式尝试。重连保留旧会话的故障证据，开启新会话且不会自动重放任务。
+
+关闭 transport 会显式释放本地 stdin/stdout/stderr 描述符，不依赖对象回收。
+POSIX 管道使用可中止的非阻塞读写：即使脱离进程组的后代仍持有管道，关闭也会
+结束本地阻塞的读写操作，专用读取线程退出，线程池中的执行线程可以继续复用；
+反复重连不会累积等待读写的线程，大数据分段写入仍须完整发送。
+关闭与每次读写共用所有权检查，避免误读写已被复用的描述符。进程清理覆盖拥有的
+进程组，自行脱离该组的后代不会因此被自动终止。
+
+提交任务或切换会话前，空闲事件必须先写入会话日志。磁盘满或目录权限错误时，
+界面保留待写入事件并拒绝继续启动任务；普通输入也会留在输入框中。恢复存储访问后
+显式重试原动作或 `/new`，已经确认写入的事件不会重复记录，也不会自动重放任务。
+未保存的事件只保存在当前应用进程内，请在关闭窗口前处理日志错误。
+运行中的日志写入失败也会结束界面忙碌状态；如果连 UNKNOWN 补记都无法确认，
+界面会明确报告结果未确认、阻断后续任务，并要求恢复存储后通过 `/new` 重连。
+日志仍可写时，`/new` 会先重试保存这条 UNKNOWN 记录，再处理旧会话的晚到事件；
+再次写入失败时保留恢复记录供显式重试。已判定只读的旧日志保留可信前缀，并隔离
+晚到事件。晚到的成功结果不能覆盖 UNKNOWN，也不会触发任务重放。
+这不保证故障期间的事件全部落盘，恢复时仍以日志的可信前缀为准。
+
+`/review` 支持 Ctrl+C 和退出取消。独立审查进程会回收自身进程组，取消请求在
+启动前后保持有效；App Server 审查同样使用截止时间与有界关闭。审查未显式设置
+`--timeout` 时保留既有审查时间预算，取消和超时均不会被记录为成功审查。
+
+Codex App Server 的初始化默认独立使用 15 秒预算，覆盖创建连接、发送握手、等待
+响应和确认通知；超时关闭连接，迟到的响应不能将连接标为可用。普通 RPC 仍使用
+5 秒预算，`--timeout` 继续只控制任务。可用 `--runtime app-server --startup-timeout 30`
+为较慢的启动环境指定初始化期限；该参数必须为有限正数，其他 runtime 不接受它。
+Python adapter 的显式 `request_timeout` 仍控制启动与普通请求，除非另外指定
+`startup_timeout`；省略两者时才采用默认的 15/5 秒组合。
+
+App Server 协议按字节分块读取，每条 UTF-8 JSONL 记录（含换行）最多 8 MiB；
+超长、损坏编码或缺失换行的尾记录会关闭本次连接，不把部分输出当作完成结果。
+stderr 持续排空，只保留最近 64 KiB，断连诊断展示末尾 8 KiB；没有换行也不会
+无限累积内存或隐藏最近的错误内容。
+
+任务与验证器在启动前拒绝 NaN/Infinity 等非有限超时。底层进程按可用字节增量读取，
+stdout 或 stderr 超限即停止，无换行输出也受约束；损坏的 agent 正文拒绝落盘，
+验证器诊断以替换字符保留。POSIX 上，父进程正常退出后仍回收它的同组残留进程。
+
 Slash 命令提供帮助、状态、typed `/session`、后台 `/compact`、新会话、会话 picker、follow-up queue、steer、typed
 approval、清屏、runtime/agent/model/provider/memory 设置、诊断和退出；命令面板提供
 new/clear/status/plan/changes/queue/approvals/agents/breaker/files/sessions/refresh/doctor/help
@@ -242,6 +293,8 @@ Artifact Inspector 只读取当前 run/turn 的 canonical `artifact.created`，�
 符号链接（含中间组件）、目录、设备、缺失/不可读文件均显式停止；远程 URI 不联网，
 二进制或非 UTF-8 内容只显示元数据。界面不执行 shell、不启动外部 viewer，也不把
 声明的 media type/size 当作本地文件真值；实际文件大小来自已打开 fd。
+最终文件以非阻塞方式打开后再检查类型，无写入者 FIFO 也会立即拒绝；缺少这些
+安全打开能力的平台仍拒绝预览。命令产物创建失败会释放本次文件描述符和临时文件。
 
 Codex Structured Exec 和 App Server 把 command output 与正文严格分层：事件 payload
 继续只保留约 48 KiB 的有界预览，Timeline 只保留 2 KiB；只有可信 command item 的
@@ -337,6 +390,11 @@ Actor Tree 见 [`t34-actor-tree.md`](tui-phase0/t34-actor-tree.md)。
 - GitHub Release 构建并冒烟测试 Linux/macOS/Windows 单文件二进制，provider CLI 保持外部依赖；
 - `ops serve` 的手机会话列表、只读历史、token/TLS 边界和 `--control` 异步指令 API 有回归覆盖；
 - 现有完整 `make ci` 保持通过。
+
+Linux 二进制发布额外执行 `tools/tui-soak.py`：在同一个真实 PTY/TUI 进程中反复
+运行任务、注入失败/超时/取消，并通过 `/new` 恢复。它核对 journal 与进程/资源证据，
+支持 `--cycles 0 --duration N`；provider 为本地确定性模拟，实际运行时间写入报告。
+该检查不替代真实 provider 或其他平台的长期验收，操作见 [发布说明](RELEASING.md)。
 
 ## 后续版本
 

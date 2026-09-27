@@ -11,7 +11,9 @@ from pbatch.campaign_recovery import (
     recovery_attempt_count,
 )
 from pbatch.models import Stage
-from pbatch.repo_gates import capture_stage_dirty_paths, read_only_violations
+from pbatch.repo_gates import (capture_stage_baseline,
+                               capture_stage_dirty_paths,
+                               read_only_violations)
 
 
 def _git(path: Path, *args: str) -> str:
@@ -83,6 +85,60 @@ def test_read_only_stage_detects_unexpected_source_changes(tmp_path: Path) -> No
         [str(output)], baseline)
 
     assert violations == ["source.py"]
+
+
+def test_read_only_stage_tolerates_a_preexisting_dirty_worktree(
+        tmp_path: Path) -> None:
+    """A shared worktree that was ALREADY dirty must not fail every read-only
+    stage.
+
+    Campaign logs 2026-09-18/19 recorded 43 `read-only stage started with
+    existing changes` halts, each aborting the pipeline at requirements — so a
+    permanently dirty tree could never pass a single direction, which is why
+    that campaign produced 98 PIPELINE_FAILED rounds and 0 commits.
+    """
+    root, _baseline, _branch = _repo(tmp_path)
+    (root / "user_work.py").write_text("unrelated user change\n", encoding="utf-8")
+
+    baseline = capture_stage_baseline(str(root), read_only=True)
+    violations = read_only_violations(
+        Stage(name="requirements", cwd=str(root), read_only=True), [], baseline)
+
+    assert violations == []
+
+
+def test_read_only_stage_detects_edits_to_a_preexisting_dirty_file(
+        tmp_path: Path) -> None:
+    """Comparing dirty PATH sets alone would miss this, so a read-only baseline
+    carries content digests."""
+    root, _baseline, _branch = _repo(tmp_path)
+    dirty = root / "user_work.py"
+    dirty.write_text("unrelated user change\n", encoding="utf-8")
+
+    baseline = capture_stage_baseline(str(root), read_only=True)
+    dirty.write_text("stage rewrote the user's file\n", encoding="utf-8")
+    violations = read_only_violations(
+        Stage(name="requirements", cwd=str(root), read_only=True), [], baseline)
+
+    assert violations == ["user_work.py"]
+
+
+def test_read_only_baseline_digest_follows_the_stage_wiring(tmp_path: Path) -> None:
+    """Read-only stages get a digest-bearing baseline; commit stages keep the
+    two-element baseline that stage ownership relies on."""
+    from pbatch.pipeline import _stage_git_baseline
+
+    root, _baseline, _branch = _repo(tmp_path)
+    (root / "dirty.py").write_text("x\n", encoding="utf-8")
+
+    read_only = _stage_git_baseline(
+        Stage(name="requirements", cwd=str(root), read_only=True))
+    assert len(read_only) == 3
+    assert read_only[2]
+
+    committing = _stage_git_baseline(
+        Stage(name="implement", cwd=str(root), git_commit=True))
+    assert len(committing) == 2
 
 
 def test_campaign_retry_profile_narrows_meta_stage(tmp_path: Path) -> None:
@@ -228,3 +284,74 @@ def test_global_direction_cap_limits_one_pipeline_per_round(tmp_path, monkeypatc
     assert [item[0].title for item in selected] == ["One"]
     assert any("global selection quota" in item[0][5]
                for item in events if item[0][2] == "DIRECTION_REJECTED")
+
+
+def test_stall_stop_fires_with_recovery_disabled():
+    """The round stall stop is a SAFETY circuit, not part of the opt-in
+    stash-based self-repair.
+
+    Coupling the two made the stop unreachable at the shipped default
+    (``recovery.enabled = false`` → ``return 0, ""``): on 2026-09-19 an iris-ui
+    campaign churned 123 consecutive zero-progress rounds against a provider
+    quota outage for ~8h because the counter was reset every round.
+    """
+    from types import SimpleNamespace
+
+    from pbatch.campaign_models import CampaignSettings
+    from pbatch.campaign_recovery import update_round_recovery
+
+    settings = CampaignSettings(recovery_enabled=False,
+                                recovery_stop_after_stalled_rounds=2)
+    context = SimpleNamespace(round_progress=0, recovery_blocked=False,
+                              settings=settings)
+
+    stalled, stop = update_round_recovery(context, 0)
+    assert stalled == 1
+    assert stop == ""
+
+    stalled, stop = update_round_recovery(context, stalled)
+    assert stalled == 2
+    assert "made no progress for 2 round(s)" in stop
+
+
+def test_stall_counter_resets_on_a_productive_round():
+    from types import SimpleNamespace
+
+    from pbatch.campaign_models import CampaignSettings
+    from pbatch.campaign_recovery import update_round_recovery
+
+    settings = CampaignSettings(recovery_enabled=False,
+                                recovery_stop_after_stalled_rounds=2)
+    context = SimpleNamespace(round_progress=0, recovery_blocked=False,
+                              settings=settings)
+
+    stalled, _ = update_round_recovery(context, 0)
+    assert stalled == 1
+
+    context.round_progress = 1
+    stalled, stop = update_round_recovery(context, stalled)
+    assert stalled == 0
+    assert stop == ""
+
+
+def test_stall_stop_zero_limit_opts_out_and_blocked_recovery_short_circuits():
+    from types import SimpleNamespace
+
+    from pbatch.campaign_models import CampaignSettings
+    from pbatch.campaign_recovery import update_round_recovery
+
+    disabled = SimpleNamespace(
+        round_progress=0, recovery_blocked=False,
+        settings=CampaignSettings(recovery_enabled=False,
+                                  recovery_stop_after_stalled_rounds=0))
+    stalled, stop = update_round_recovery(disabled, 0)
+    assert stalled == 1
+    assert stop == ""
+
+    blocked = SimpleNamespace(
+        round_progress=0, recovery_blocked=True,
+        settings=CampaignSettings(recovery_enabled=True,
+                                  recovery_stop_after_stalled_rounds=2))
+    stalled, stop = update_round_recovery(blocked, 0)
+    assert stalled == 0
+    assert "self-repair blocked" in stop

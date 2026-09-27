@@ -27,6 +27,11 @@
   capability 按不支持处理；
 - Turn 只能沿 `TURN_TRANSITIONS` 迁移，SUCCEEDED、FAILED、INTERRUPTED 与 UNKNOWN
   为不可回退终态；
+- QUEUED 可直接转 UNKNOWN，表示启动确认前结果未确认，不能为迁移补造 RUNNING。
+  TUI 直接 runtime 在 RPC 前记录 coordinator QUEUED，provider 的首个同身份 queued
+  通知与该本地意图合并；新的重复 queued 或原始序号回退仍拒绝。
+  同 run/turn 的 provider 事件（含子 actor）序号统一加一，为本地意图预留首位，
+  原始序号保存在 `extensions.runtime_source_seq`，原事件对象保持不变；
 - 同一 `run_id` 内新事件的 `seq` 必须严格递增；重复 `event_id` 幂等跳过，并先于
   顺序检查处理。
 

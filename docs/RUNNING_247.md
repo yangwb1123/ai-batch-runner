@@ -373,9 +373,18 @@ campaign。规则：
 - **锁按 workspace 协调但存于用户级 runtime**（`locks/.pi-batch.lock`，含
   pid/start/host/argv/token；升级时仍识别旧 cwd `.pi-batch.lock`）。活 PID
   的锁永不打破（7×24 运行可远超 24h）；死 PID 的 stale 锁由下一个实例自动
-  破除；不可解析锁 fail-closed。
-- **排队用内建 `--wait-lock MINUTES`**（campaign 与单批 CLI 均支持）：30s
-  轮询、stale 锁立即破除、预算耗尽 exit 5。shell 版 `wait-for-run.sh`（
+  破除；不可解析锁 fail-closed。仅能确认属于本机且 PID 已退出的记录可自动回收，
+  权限不足、未知主机或无法判断的状态均保留。
+- 检查、回收、发布和释放共用永久 `.guard` 协调文件的系统锁；正常退出只删除
+  自己的持有记录，不删除 guard。每个获准并行实例在 `.holders/` 中保留独立记录，
+  后来的实例检查全部存活记录，主实例先退出也不会丢失其他实例的保护。输出路径
+  规范化后检查同路径及父子目录重叠；会话同名仍拒绝。Python `acquire_lock()` 对
+  获准并行实例也返回可 `verify_held()`/`release_lock()` 的 Path，仅 `no_lock=True`
+  返回 `None`。不要在实例运行中手工删除 guard 或持有记录。
+  超过 16 项的输出声明按互斥模式处理，不把截断清单当作不相交证明；运行记录总数
+  上限为 128，元数据上限为 64 KiB，超出时拒绝启动。
+- **排队用内建 `--wait-lock MINUTES`**（campaign 与单批 CLI 均支持）：有界
+  短轮询、不持协调锁休眠，协调锁竞争也受绝对截止时间约束，预算耗尽 exit 5。shell 版 `wait-for-run.sh`（
   examples/snaplink-platform/）留给非 pi-batch 命令，同样带 stale 检测。
 - 多个 campaign 可共享用户级 runtime 下的 `campaign/state.jsonl`（事件按 campaign 名区分，
   SUMMARY.md 的 Counts 按 campaign 拆分），但不要并发写同一工作树——

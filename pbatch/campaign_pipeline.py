@@ -188,8 +188,21 @@ def _scope_pipeline_outputs(data: dict, root: Path, run_dir: Path) -> None:
         stage_id = safe_slug(stage.get("name", "stage"), fallback="stage")
         stage_dir = run_dir / "artifacts" / stage_id
         stage["cwd"] = str(root)
-        if (stage.get("meta") or stage.get("gate") or
-                stage.get("name") in {"requirements", "design"}):
+        # A stage that COMMITS writes the diff its own gate just validated, so
+        # `gate`/`meta` must not silently force it read-only: doing so rejects
+        # the very diff the gate passed and halts the pipeline. The iris-ui
+        # 2026-09 campaign hit this on every round (its implement stage carried
+        # `gate: true` + `git_commit: true`) and landed 0 commits across 98
+        # PIPELINE_FAILED rounds. The shipped templates instead put the gate on
+        # a separate review stage — which stays read-only here, unchanged.
+        # An explicit `read_only: true` still wins.
+        stage_read_only = bool(
+            stage.get("meta") or stage.get("gate") or
+            stage.get("name") in {"requirements", "design"})
+        if (stage_read_only and stage.get("git_commit")
+                and stage.get("read_only") is None):
+            stage_read_only = False
+        if stage_read_only:
             stage["read_only"] = True
             stage["read_only_paths"] = [str(run_dir.parent)]
         if stage.get("output"):

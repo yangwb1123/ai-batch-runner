@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import contextlib
-import fcntl
+from . import file_lock as fcntl
 import math
 import os
 import sqlite3

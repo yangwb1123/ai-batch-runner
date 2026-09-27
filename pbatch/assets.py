@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import sys
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
@@ -115,7 +116,7 @@ def expand_validator_registry(registry: dict, frontend_root: str,
         return "{cwd}" if suffix in ("", ".") else f"{{cwd}}/{suffix}"
 
     replacements = {
-        "{tool_root}": TOOL_ROOT,
+        "{tool_root}": shlex.quote(TOOL_ROOT),
         "{frontend_root}": project_expression(frontend_root),
         "{backend_root}": project_expression(backend_root),
         "{report_root}": project_expression(report_root),

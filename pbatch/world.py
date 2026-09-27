@@ -35,7 +35,7 @@ from . import config
 from .text_io import read_text_bounded
 
 try:
-    import fcntl
+    from . import file_lock as fcntl
 except ImportError:  # pragma: no cover - Windows fallback
     fcntl = None
 

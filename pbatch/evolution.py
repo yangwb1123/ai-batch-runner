@@ -31,6 +31,7 @@ from typing import Optional
 
 from . import config
 from .config import log, yaml
+from .launcher import script_argv
 from .relevance import _keyword_hit
 from .rule_matcher import LEVELS, detect_scale, load_registry
 from .memory_io import reverse_lines
@@ -596,9 +597,8 @@ def _cmd_check(args: argparse.Namespace) -> int:
     root = Path(args.dir).resolve()
     script = Path(config.TOOL_ROOT) / "scripts"
     checks = [
-        ("baseline", [sys.executable, str(script / "check-baseline.py"),
-                      str(root), "--json"]),
-        ("changebudget", [sys.executable, str(script / "check-changebudget.py"),
+        ("baseline", [str(script / "check-baseline.py"), str(root), "--json"]),
+        ("changebudget", [str(script / "check-changebudget.py"),
                           "--dir", str(root), "--json"]),
     ]
     artifact = ""
@@ -607,15 +607,19 @@ def _cmd_check(args: argparse.Namespace) -> int:
                                          encoding="utf-8") as handle:
             handle.write(args.task_text)
             artifact = handle.name
-        checks.insert(1, ("nongoal", [
-            sys.executable, str(script / "check-nongoal.py"), artifact,
-            "--dir", str(root), "--json"]))
+        checks.insert(1, ("nongoal", [str(script / "check-nongoal.py"), artifact,
+                                     "--dir", str(root), "--json"]))
     else:
         print("[SKIP] nongoal: no --task-text artifact to compare")
     try:
         failed = False
         for name, cmd in checks:
-            proc = subprocess.run(cmd, capture_output=True, text=True)
+            try:
+                proc = subprocess.run(script_argv(*cmd), capture_output=True, text=True)
+            except (OSError, ValueError) as exc:
+                print(f"[FAIL] {name}: {exc}")
+                failed = True
+                continue
             status = "PASS" if proc.returncode == 0 else "FAIL"
             print(f"[{status}] {name}: {proc.stdout.strip()}")
             if proc.stderr.strip():

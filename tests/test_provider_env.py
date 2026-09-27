@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 import subprocess
 
@@ -11,9 +12,10 @@ from pbatch.provider_env import provider_child_env
 
 
 class _FakeProcess:
-    stdin = None
-    stdout = None
-    stderr = ()
+    def __init__(self):
+        self.stdin = io.BytesIO()
+        self.stdout = io.BytesIO()
+        self.stderr = io.BytesIO()
 
     def poll(self):
         return 0

@@ -472,8 +472,9 @@ def _scoped_relative(workspace_root: str, value: str) -> tuple[Path, Path]:
 
 def _read_scoped_file(root: Path, relative: Path,
                       maximum: int) -> tuple[bytes, int]:
-    if not hasattr(os, "O_NOFOLLOW") or os.open not in os.supports_dir_fd:
-        raise _ArtifactReadError("platform cannot guarantee no-follow preview")
+    if (not all(hasattr(os, name) for name in ("O_NOFOLLOW", "O_NONBLOCK"))
+            or os.open not in os.supports_dir_fd):
+        raise _ArtifactReadError("platform cannot guarantee safe no-follow preview")
     opened = []
     common = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
     try:
@@ -483,7 +484,8 @@ def _read_scoped_file(root: Path, relative: Path,
             flags = common | os.O_NOFOLLOW | getattr(os, "O_DIRECTORY", 0)
             opened.append(os.open(part, flags, dir_fd=opened[-1]))
         opened.append(os.open(
-            relative.parts[-1], common | os.O_NOFOLLOW, dir_fd=opened[-1]))
+            relative.parts[-1], common | os.O_NOFOLLOW | os.O_NONBLOCK,
+            dir_fd=opened[-1]))
         info = os.fstat(opened[-1])
         if not stat.S_ISREG(info.st_mode):
             raise _ArtifactReadError("artifact is not a regular file")

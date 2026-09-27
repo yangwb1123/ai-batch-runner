@@ -1,7 +1,7 @@
 """Configuration provenance, validation and explainability helpers.
 
 The execution path keeps its import-time defaults for compatibility.  This
-module gives operators a read-only view of the two input documents, the
+module gives operators a read-only view of the input documents, the
 section/key winner after merging, and the derived values used by the runner.
 It deliberately redacts secret-looking values before producing JSON.
 """
@@ -23,7 +23,7 @@ _EXPECTED_MAPPINGS = {
     "agent", "limits", "memory", "session", "logging", "input", "output",
     "evidence", "prompt", "validation", "commands", "project", "commit",
     "classifier", "runtime_policy", "device_fabric", "agent_ledger",
-    "model_routing", "tui",
+    "model_routing", "tui", "llm_pool",
     "validators",
 }
 _EXPECTED_SCALARS = {"config_version", "ui_scan_dir"}
@@ -32,24 +32,13 @@ _EXPECTED_TOP_LEVEL = _EXPECTED_MAPPINGS | _EXPECTED_SCALARS
 
 def _read_yaml(path: Path, max_bytes: int) -> tuple[dict, list[str]]:
     """Read one bounded YAML document and return data plus diagnostics."""
-    if config.yaml is None:
-        return {}, ["PyYAML is unavailable"]
     try:
-        with path.open("rb") as stream:
-            raw = stream.read(max_bytes + 1)
-        if len(raw) > max_bytes:
-            return {}, [f"file exceeds {max_bytes} byte limit"]
-        data = config.yaml.safe_load(raw.decode("utf-8")) or {}
-    except (OSError, UnicodeError, ValueError) as exc:
-        return {}, [f"cannot read YAML: {exc}"]
-    except Exception as exc:  # PyYAML parser errors are not ValueError.
-        return {}, [f"invalid YAML: {exc}"]
-    if not isinstance(data, dict):
-        return {}, ["top-level YAML value must be a mapping"]
-    return data, []
+        return config._read_config_document(path, max_bytes), []
+    except ValueError as exc:
+        return {}, [str(exc)]
 
 
-def _document(name: str, path: Optional[Path], max_bytes: int) -> dict:
+def _document(name: str, path: Optional[Path], max_bytes: int, *, optional=False) -> dict:
     """Load a source document into an internal, JSON-friendly record."""
     record = {
         "name": name,
@@ -59,7 +48,7 @@ def _document(name: str, path: Optional[Path], max_bytes: int) -> dict:
         "data": {},
         "errors": [],
     }
-    if path is None:
+    if path is None or (optional and not record["present"]):
         return record
     data, errors = _read_yaml(path, max_bytes)
     record["data"] = data
@@ -72,12 +61,12 @@ def _project_path(explicit: str = "") -> Optional[Path]:
     """Resolve the active project config or an explicitly inspected file."""
     if explicit:
         return Path(explicit).expanduser().resolve()
-    path = config._batch_config_path()
+    path = config._project_config_path()
     return path.resolve() if path else None
 
 
 def load_documents(config_file: str = "", max_bytes: Optional[int] = None) -> dict:
-    """Load project and user config sources without creating any directories.
+    """Load project, user and packaged sources without creating directories.
 
     An explicit ``config_file`` is inspected in isolation.  This makes
     ``config check --file`` deterministic and suitable for CI validation.
@@ -85,8 +74,10 @@ def load_documents(config_file: str = "", max_bytes: Optional[int] = None) -> di
     limit = max_bytes or max(config.INPUT_MAX_BYTES, 1)
     project = _document("project", _project_path(config_file), limit)
     user_path = None if config_file else user_dirs.user_settings_path().resolve()
-    user = _document("user", user_path, limit)
-    return {"project": project, "user": user}
+    user = _document("user", user_path, limit, optional=True)
+    default_path = None if config_file else config._default_config_path()
+    defaults = _document("defaults", default_path, limit, optional=True)
+    return {"project": project, "user": user, "defaults": defaults}
 
 
 def _version_diagnostics(data: dict, source: str) -> tuple[int, list[str], list[str]]:
@@ -125,31 +116,43 @@ def validate_document(data: Any, source: str = "<memory>") -> dict:
             errors.append(f"{source}: section '{key}' must be a mapping")
         if key == "validators" and not isinstance(data[key], dict):
             errors.append(f"{source}: section 'validators' must be a mapping")
+    errors.extend(_pool_reference_errors(data.get("llm_pool"), source))
     return {"valid": not errors, "version": version,
             "errors": errors, "warnings": warnings}
 
 
-def _source_tree(project: Any, user: Any) -> dict:
-    """Build a recursive path-to-source tree for the shallow merge policy."""
-    project = project if isinstance(project, dict) else {}
-    user = user if isinstance(user, dict) else {}
+def _pool_reference_errors(value, source: str) -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    if set(value) - {"config_file"}:
+        return [f"{source}: llm_pool accepts only config_file"]
+    if "config_file" in value and not isinstance(value["config_file"], str):
+        return [f"{source}: llm_pool.config_file must be a string"]
+    return []
+
+
+def _source_node(value: Any, source: str) -> dict:
+    node = {"source": source}
+    if isinstance(value, dict):
+        node["children"] = {key: _source_node(item, source)
+                            for key, item in value.items()}
+    return node
+
+
+def _source_tree(project: dict, user: dict, defaults: Optional[dict] = None) -> dict:
+    """Mirror section/key merging; nested mappings come from one winning key."""
     tree = {}
-    for key in sorted(set(project) | set(user), key=lambda item: str(item)):
-        in_project = key in project
-        in_user = key in user
-        left, right = project.get(key), user.get(key)
-        project_mapping_wins = isinstance(left, dict) and (
-            not in_user or isinstance(right, dict))
-        user_mapping_only = not in_project and isinstance(right, dict)
-        if project_mapping_wins or user_mapping_only:
-            children = _source_tree(left if isinstance(left, dict) else {},
-                                    right if isinstance(right, dict) else {})
-            child_sources = {item["source"] for item in children.values()}
-            source = "mixed" if len(child_sources) > 1 else next(
-                iter(child_sources), "project" if in_project else "user")
-            tree[key] = {"source": source, "children": children}
-        else:
-            tree[key] = {"source": "project" if in_project else "user"}
+    for source, document in (("defaults", defaults or {}), ("user", user),
+                             ("project", project)):
+        for key, value in document.items():
+            node = _source_node(value, source)
+            previous = tree.get(key, {})
+            if "children" in previous and "children" in node:
+                node["children"] = {**previous["children"], **node["children"]}
+                sources = {child["source"] for child in node["children"].values()}
+                node["source"] = ("mixed" if len(sources) > 1 else
+                                  next(iter(sources), source))
+            tree[key] = node
     return tree
 
 
@@ -242,6 +245,7 @@ def explain(config_file: str = "", max_bytes: Optional[int] = None) -> dict:
     documents = load_documents(config_file, max_bytes)
     project = documents["project"]["data"]
     user = documents["user"]["data"]
+    defaults = documents["defaults"]["data"]
     checks = {
         name: validate_document(record["data"], record["name"])
         for name, record in documents.items() if record["loaded"]
@@ -249,16 +253,15 @@ def explain(config_file: str = "", max_bytes: Optional[int] = None) -> dict:
     errors = [error for record in documents.values() for error in record["errors"]]
     errors.extend(error for check in checks.values() for error in check["errors"])
     warnings = [warning for check in checks.values() for warning in check["warnings"]]
-    merged = config._merge_config(project, user)
+    merged = config._merge_config(project, config._merge_config(user, defaults))
     return {
         "schema_version": config.CONFIG_SCHEMA_VERSION,
         "status": "invalid" if errors else "ok",
         "precedence": ["CLI/runtime override", "project pi-batch.yaml",
-                       "user settings.yaml", "built-in defaults"],
-        "sources": [_source_output(documents["project"]),
-                    _source_output(documents["user"])],
+                       "user settings.yaml", "packaged defaults", "built-in defaults"],
+        "sources": [_source_output(record) for record in documents.values()],
         "validation": {"sources": checks, "errors": errors, "warnings": warnings},
-        "provenance": _source_tree(project, user),
+        "provenance": _source_tree(project, user, defaults),
         "effective_file_config": _redact(merged),
         "resolved_runtime": _runtime_values(),
         "cli_override_contract": _cli_override_contract(),

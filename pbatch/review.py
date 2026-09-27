@@ -36,6 +36,7 @@ class RunOutcome:
     elapsed_ms: int
     timed_out: bool = False
     stderr: str = ""
+    cancelled: bool = False
 
 
 @dataclass
@@ -49,6 +50,8 @@ class ReviewCapture:
     turn_started: bool = False
     turn_completed: bool = False
     _message_bytes: int = 0
+    cancellation: Optional[threading.Event] = field(default=None, repr=False)
+    _process: Any = field(default=None, repr=False)
 
     def consume_jsonl(self, raw: str) -> None:
         raw_bytes = raw.encode("utf-8", "replace")
@@ -240,25 +243,67 @@ def run_review_process(argv: Sequence[str], cwd: str, timeout: float,
     """Run the bounded Codex review process; reused by ``review_fix`` tests."""
     started = time.monotonic()
     stderr_chunks: list[str] = []
+    if _review_cancelled(capture):
+        return RunOutcome(-1, 0, stderr="review cancelled before spawn", cancelled=True)
     try:
         process = _spawn_process(argv, cwd)
     except OSError as exc:
         return RunOutcome(-1, _elapsed_ms(started), stderr=_bounded_text(exc))
+    capture._process = process
     stdout_thread = threading.Thread(
         target=_read_stdout, args=(process.stdout, capture), daemon=True)
     stderr_thread = threading.Thread(
         target=_read_stderr, args=(process.stderr, stderr_chunks), daemon=True)
     stdout_thread.start(); stderr_thread.start()
-    timed_out = False
-    try:
-        process.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        _kill_group(process)
-    stdout_thread.join(timeout=1); stderr_thread.join(timeout=1)
-    exit_code = -1 if timed_out else int(process.returncode or 0)
+    timed_out, cancelled = _wait_review_process(
+        process, started + timeout, capture)
+    timed_out, cancelled = _drain_review_readers(
+        process, (stdout_thread, stderr_thread), started + timeout,
+        capture, timed_out, cancelled)
+    exit_code = -1 if timed_out or cancelled else int(process.returncode or 0)
     return RunOutcome(exit_code, _elapsed_ms(started), timed_out,
-                      "".join(stderr_chunks))
+                      "".join(stderr_chunks), cancelled=cancelled)
+
+
+def _review_cancelled(capture: ReviewCapture) -> bool:
+    return capture.cancellation is not None and capture.cancellation.is_set()
+
+
+def _wait_review_process(process, deadline: float,
+                         capture: ReviewCapture) -> tuple[bool, bool]:
+    """Cancellation stays latched across spawn, with no global process cleanup."""
+    while True:
+        cancelled = _review_cancelled(capture)
+        remaining = deadline - time.monotonic()
+        if cancelled or remaining <= 0:
+            _kill_group(process)
+            return not cancelled, cancelled
+        try:
+            process.wait(timeout=min(0.05, remaining))
+            return False, False
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def _drain_review_readers(process, readers, deadline: float,
+                          capture: ReviewCapture, timed_out: bool,
+                          cancelled: bool) -> tuple[bool, bool]:
+    """Retain cancellation/deadline control after the process leader exits."""
+    drain_deadline = min(deadline, time.monotonic() + 2)
+    while any(reader.is_alive() for reader in readers):
+        cancelled = cancelled or _review_cancelled(capture)
+        timed_out = timed_out or (not cancelled and time.monotonic() >= drain_deadline)
+        if cancelled or timed_out:
+            _kill_group(process)
+            for reader in readers:
+                reader.join(timeout=0.5)
+            return timed_out, cancelled
+        for reader in readers:
+            reader.join(timeout=0.01)
+    if _review_cancelled(capture):
+        _kill_group(process)
+        cancelled = True
+    return timed_out, cancelled
 
 
 _run_codex = run_review_process  # backward-compatible private injection name
@@ -369,6 +414,8 @@ def _summary(capture: ReviewCapture, outcome: RunOutcome,
              f"turn_completed={str(capture.turn_completed).lower()}"]
     if outcome.timed_out:
         parts.append("Codex review timed out")
+    elif outcome.cancelled:
+        parts.append("Codex review cancelled")
     elif outcome.codex_exit != 0:
         parts.append(f"Codex exited {outcome.codex_exit}")
     if not findings:
@@ -456,7 +503,7 @@ def _write_report(path: Path, text: str) -> None:
 def _exit_code(payload: Mapping[str, Any], outcome: RunOutcome) -> int:
     if payload["flagged_writes"]:
         return 3
-    if outcome.timed_out or outcome.codex_exit != 0 or not payload["findings"]:
+    if outcome.timed_out or outcome.cancelled or outcome.codex_exit != 0 or not payload["findings"]:
         return 2
     if any(item["severity"] in ("critical", "high") for item in payload["findings"]):
         return 1
@@ -467,21 +514,30 @@ Runner = Callable[[Sequence[str], str, float, ReviewCapture], RunOutcome]
 
 
 def run_review(scope: str, scope_argv: Sequence[str], cwd: Path, timeout: float,
-               output: Path, *, runner: Optional[Runner] = None
+               output: Path, *, runner: Optional[Runner] = None,
+               cancellation: Optional[threading.Event] = None
                ) -> tuple[dict[str, Any], RunOutcome]:
     """Execute and parse one review without rendering it.
 
     ``review_fix`` reuses this runner and :func:`extract_findings` contract so
     both commands consume exactly the same bounded JSONL projection.
     """
-    capture = ReviewCapture()
+    capture = ReviewCapture(cancellation=cancellation)
     execute = runner or _run_codex
     try:
-        outcome = execute(
-            ["codex", "exec", "review", "--json", *scope_argv],
-            str(cwd), timeout, capture)
+        if _review_cancelled(capture):
+            outcome = RunOutcome(-1, 0, cancelled=True)
+        else:
+            outcome = execute(
+                ["codex", "exec", "review", "--json", *scope_argv],
+                str(cwd), timeout, capture)
     except Exception as exc:
         outcome = RunOutcome(-1, 0, stderr=f"review runner failed: {_bounded_text(exc)}")
+    if _review_cancelled(capture) and not outcome.cancelled:
+        if capture._process is not None:
+            _kill_group(capture._process)
+        outcome = RunOutcome(-1, outcome.elapsed_ms, outcome.timed_out,
+                             outcome.stderr, cancelled=True)
     return _payload(scope, output, capture, outcome), outcome
 
 

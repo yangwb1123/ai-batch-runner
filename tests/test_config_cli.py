@@ -27,6 +27,30 @@ def test_explain_reports_sources_and_resolved_runtime():
     assert report["provenance"]["agent"]["children"]["bin"]["source"] == "project"
 
 
+def test_first_run_missing_user_settings_is_optional_and_read_only(tmp_path, monkeypatch):
+    from pbatch import user_dirs
+    missing = tmp_path / "not-created" / "settings.yaml"
+    monkeypatch.setattr(user_dirs, "user_settings_path", lambda: missing)
+    report = explain()
+    assert report["status"] == "ok"
+    user = next(source for source in report["sources"] if source["name"] == "user")
+    assert user["path"] == str(missing)
+    assert not user["present"] and not user["loaded"] and not user["errors"]
+    assert not missing.parent.exists()
+
+
+def test_explicit_missing_config_still_fails_closed(tmp_path):
+    assert config_check(str(tmp_path / "missing.yaml"))["valid"] is False
+
+
+def test_existing_invalid_user_settings_still_fails_closed(tmp_path, monkeypatch):
+    from pbatch import user_dirs
+    settings = tmp_path / "settings.yaml"
+    settings.write_text("invalid: [\n", encoding="utf-8")
+    monkeypatch.setattr(user_dirs, "user_settings_path", lambda: settings)
+    assert explain()["status"] == "invalid"
+
+
 def test_explain_redacts_secret_looking_values(tmp_path):
     path = tmp_path / "pi-batch.yaml"
     path.write_text(

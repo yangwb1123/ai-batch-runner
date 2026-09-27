@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 from . import config
+from .launcher import script_argv
 
 
 def ui_geometry_main(argv: list[str] | None = None) -> int:
@@ -42,7 +43,11 @@ def ui_geometry_main(argv: list[str] | None = None) -> int:
         print("ui-geometry: check-ui-geometry.py 未找到", file=sys.stderr)
         return 2
 
-    cmd = [sys.executable, str(script)]
+    try:
+        cmd = script_argv(script)
+    except ValueError as exc:
+        print(f"ui-geometry: {exc}", file=sys.stderr)
+        return 2
     if args.artifact:
         cmd.append(args.artifact)
     if args.dir:

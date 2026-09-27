@@ -489,6 +489,8 @@ def test_version_and_init_cli(capsys, tmp_path, monkeypatch):
 def test_init_cli_json_reports_all_created_paths(capsys, tmp_path, monkeypatch):
     """init --json 输出单个有效 JSON 文档，包含目录与 settings。"""
     from pbatch import product_cli
+    monkeypatch.delenv("PBATCH_RUNTIME_HOME", raising=False)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
     monkeypatch.setenv("PBATCH_HOME", str(tmp_path / "home"))
 
     with pytest.raises(SystemExit) as exc:

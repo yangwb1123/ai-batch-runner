@@ -12,6 +12,7 @@ from pathlib import Path
 
 from . import config
 from .config import log
+from .launcher import package_source_dir
 from .memory_io import bounded_lines
 
 
@@ -104,7 +105,7 @@ def tool_digest() -> str:
     them. Including the tool digest makes reuse decisions invalidate when
     the tool itself changes and makes the drift visible in state events.
     """
-    pkg = Path(__file__).resolve().parent
+    pkg = package_source_dir()
     root = pkg.parent
     records: list[tuple[str, str]] = [(pkg.name, tree_digest(pkg, excludes=("__pycache__",)))]
     entry = root / "pi-batch.py"

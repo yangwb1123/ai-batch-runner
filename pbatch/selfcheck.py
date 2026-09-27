@@ -17,6 +17,7 @@ import tempfile
 from pathlib import Path
 
 from . import config
+from .launcher import cli_argv, script_argv
 
 
 def _run_step(name: str, command: list) -> bool:
@@ -68,7 +69,7 @@ def _run_refusal_step(validators=None, script=None) -> bool:
             if body is not None:
                 path.write_text(body, encoding="utf-8")
             try:
-                r = subprocess.run([sys.executable, str(script), str(path)],
+                r = subprocess.run(script_argv(script, str(path)),
                                    capture_output=True, text=True, timeout=30)
             except (OSError, subprocess.TimeoutExpired) as exc:
                 print(f"CHECK [refusal] FAIL: {label} smoke run: {exc}",
@@ -87,25 +88,24 @@ def _default_steps(args) -> list:
     """默认门禁集：代码质量 / 规则注册表 / 规范完整性 / 能力注册表 /
     架构循环 / 命令分派 / eval 回归。"""
     asset_root = Path(config.TOOL_ROOT)
+    package_root = Path(__file__).resolve().parent
     source_root = (asset_root if (asset_root / "pbatch").is_dir()
-                   else Path(__file__).resolve().parent)
+                   else package_root)
+    graph_root = asset_root / "pbatch" if source_root == asset_root else package_root
     steps = [
-        ("quality", [sys.executable, str(asset_root / "quality.py"),
-                     "--strict", str(source_root)]),
-        ("registry", [sys.executable, "-m", "pbatch", "rules", "--check"]),
-        ("org", [sys.executable, "-m", "pbatch", "org", "check"]),
-        ("capabilities", [sys.executable, "-m", "pbatch", "capabilities",
-                          "check"]),
-        ("graph", [sys.executable, "-m", "pbatch", "graph", "extract",
-                   "--input", str(source_root / "pbatch")]),
-        ("tools", [sys.executable, "-m", "pbatch", "tools", "--check"]),
-        ("knowledge", [sys.executable,
-                       str(asset_root / "scripts" / "check-knowledge-freshness.py"),
-                       "--dir", str(source_root)]),
+        ("quality", script_argv(asset_root / "quality.py", "--strict", str(source_root))),
+        ("registry", cli_argv("rules", "--check")),
+        ("org", cli_argv("org", "check")),
+        ("capabilities", cli_argv("capabilities", "check")),
+        ("graph", cli_argv("graph", "extract", "--input", str(graph_root))),
+        ("tools", cli_argv("tools", "--check")),
+        ("knowledge", script_argv(
+            asset_root / "scripts" / "check-knowledge-freshness.py",
+            "--dir", str(source_root))),
     ]
     steps.append(("refusal", _run_refusal_step))
     if not args.skip_eval:
-        cmd = [sys.executable, "-m", "pbatch", "eval"]
+        cmd = cli_argv("eval")
         if args.quick_eval:
             cmd.append("--quick")
         steps.append(("eval", cmd))

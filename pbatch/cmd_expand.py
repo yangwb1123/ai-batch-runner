@@ -20,6 +20,7 @@ import shlex
 from typing import Optional, Sequence
 
 from . import config
+from .bundled_commands import embedded_checker_argv, embedded_checker_command
 
 
 def ui_scan_dir() -> Optional[str]:
@@ -58,4 +59,4 @@ def expand_cmd(cmd: str, output, cwd: str, tool_root: str = config.TOOL_ROOT,
     out = out.replace("{cwd}", shlex.quote(cwd)).replace("{tool_root}", shlex.quote(tool_root))
     if "{ui_scan_dir}" in out:  # 防御：任何遗留占位符都不该到达 shell
         config.log.error("expand_cmd: unresolved {ui_scan_dir} in %r", cmd)
-    return out
+    return embedded_checker_command(out)

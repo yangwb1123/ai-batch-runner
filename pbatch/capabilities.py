@@ -28,11 +28,12 @@ from .capability_grants import (
     CapabilityGrant, DATA_CLASSES, DATA_CLASS_LEVEL, EFFECT_CLASSES,
     EFFECT_ORDER, authorize_grant, authorize_required_capabilities,
 )
+from .launcher import package_source_dir
 
 CAPABILITY_DOMAINS = ("reasoning", "planning", "execution", "verification",
                       "governance", "device", "ops")
 MODULE_DEP_BUDGET = 15  # 模块级导入依赖上限（质量预算）
-PACKAGE_DIR = Path(__file__).resolve().parent
+PACKAGE_DIR = package_source_dir()
 TESTS_DIR = Path(config.TOOL_ROOT) / "tests"
 
 # 能力 id → (domain, risk, input 摘要, output 摘要)。
@@ -42,6 +43,7 @@ MANUAL = {
            "官方 Pi TUI、文本、JSONL、RPC 或包管理结果"),
     "tui": ("execution", "medium", "交互任务/项目上下文", "agent 回复/工作区变更/会话"),
     "fleet": ("execution", "medium", "Hub 连接/实例/会话/prompt", "跨实例会话控制与事件"),
+    "pool": ("execution", "medium", "账号池配置/模型请求", "配额路由/本地网关/脱敏状态"),
     "graph": ("reasoning", "low", "graph.json|源代码目录", "结构违规/依赖环/统计"),
     "profile": ("reasoning", "low", "需求文本", "12 维画像/模式/包络"),
     "pareto": ("reasoning", "low", "候选+目标", "前沿/Utility/MUC"),

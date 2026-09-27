@@ -237,6 +237,22 @@ def completion_main(argv: Optional[list] = None) -> int:
     raise SystemExit(0)
 
 
+def _doctor_config_checks() -> list:
+    """Report parse and schema failures without starting any provider."""
+    from .config_inspect import config_check
+    report = config_check()
+    labels = {"project": "项目配置", "user": "用户配置", "defaults": "打包默认配置"}
+    checks = []
+    for source in report["sources"]:
+        name = source["name"]
+        validation = report["validation"]["sources"].get(name, {})
+        errors = source["errors"] + validation.get("errors", [])
+        detail = "; ".join(errors) if errors else (
+            source["path"] if source["loaded"] else "未创建（可选）")
+        checks.append((labels[name], not errors, detail))
+    return checks
+
+
 def _doctor_checks() -> list:
     """环境诊断清单（每项: (name, ok, detail)）。"""
     from . import user_dirs, config
@@ -245,12 +261,7 @@ def _doctor_checks() -> list:
     checks.append(("Python", True, __import__("platform").python_version()))
     for kind, path in user_dirs.ensure_user_dirs().items():
         checks.append((f"目录 {kind}", path.exists(), str(path)))
-    settings = user_dirs.user_settings_path()
-    checks.append(("用户配置", settings.exists() or True,
-                   str(settings) if settings.exists() else "未创建（可选）"))
-    project_cfg = config._find_batch_config()
-    checks.append(("项目配置", project_cfg is not None,
-                   "pi-batch.yaml 已加载" if project_cfg else "无（用内置默认）"))
+    checks.extend(_doctor_config_checks())
     agent_bin = config.AGENT_BIN
     import shutil
     agent_ok = shutil.which(agent_bin) is not None

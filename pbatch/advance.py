@@ -31,7 +31,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -43,6 +42,7 @@ from .advance_support import (
     _validate_report, build_batches, classify_violation, format_plan,
 )
 from .config import log
+from .launcher import script_argv
 from .models import Task
 from .runner import (expand_command_placeholders, judge_verdict, run_serial,
                      run_validation)
@@ -60,13 +60,13 @@ def _checker_script(name: str) -> str:
     ]
     for candidate in candidates:
         if candidate.exists():
-            return str(candidate)
+            return str(candidate.resolve())
     return str(candidates[0])
 
 
 def _checker_args(script: str, target: str) -> list[str]:
     """Build the supported CLI for one registered checker."""
-    args = [sys.executable, script, "--dir", target]
+    args = script_argv(script, "--dir", target)
     name = Path(script).name
     if name == "check-ui-spec.py":
         args.append("--all")
@@ -89,7 +89,7 @@ def _run_checker(script: str, target: str) -> dict:
         result = subprocess.run(
             _checker_args(script, target), capture_output=True, text=True,
             timeout=300)
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
         raise CheckerError(f"{script}: checker execution failed: {exc}") from exc
     if result.returncode not in (0, 1):
         detail = (result.stderr or result.stdout).strip()[:500]

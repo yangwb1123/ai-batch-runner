@@ -16,11 +16,14 @@ import subprocess
 import sys
 from typing import Optional
 
+from .launcher import cli_argv
+
 # 子命令 → 一行描述（与 pbatch/cli.py _SUBCOMMANDS 同步维护）。
 DESCRIPTIONS = {
     "tui": "交互式终端工作台（任务输入/流式输出/运行控制）",
     "fleet": "跨端 Agent 会话浏览、发送与 Gateway",
     "config": "配置来源/版本/最终解析值检查（explain/check）",
+    "pool": "LLM 账号池（Go 配额切换/本地网关/只读 MCP）",
     "memory": "渐进式 message memory（ingest/recent/find/read）",
     "classify": "任务类型判定（frontend/backend 路由）",
     "rules": "规则 manifest（scale×page_type×risk + 双向校验）",
@@ -136,7 +139,7 @@ def _check_dispatch(report: dict) -> list:
         # 子进程 --help 冒烟（部分命令无 --help 输出也算通过）
         try:
             result = subprocess.run(
-                [sys.executable, "-m", "pbatch", name, "--help"],
+                cli_argv(name, "--help"),
                 capture_output=True, text=True, timeout=20)
             if result.returncode not in (0, 2):  # argparse help 退出码 0
                 broken.append(f"{name}: --help 退出码 {result.returncode}")

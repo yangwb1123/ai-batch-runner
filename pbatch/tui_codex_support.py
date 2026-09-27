@@ -61,21 +61,24 @@ def _default_spawn(argv: Sequence[str], cwd: str) -> subprocess.Popen[str]:
 
 
 def _stop_process(process: Any) -> None:
-    if process is None or _process_done(process):
+    """Reap an owned process group, including descendants outliving its leader."""
+    if process is None:
         return
     pid = getattr(process, "pid", None)
-    if isinstance(pid, int) and pid > 0:
+    if isinstance(pid, int) and pid > 0 and hasattr(os, "killpg"):
+        # Default spawns create a new session: the captured PID is its owned
+        # PGID even after wait() has reaped the leader.
+        if not _process_done(process):
+            try:
+                os.killpg(pid, signal.SIGTERM)
+            except OSError:
+                _call(process, "terminate")
+            _wait(process)
         try:
-            os.killpg(os.getpgid(pid), signal.SIGTERM)
-        except OSError:
-            _call(process, "terminate")
-        if _wait(process):
-            return
-        try:
-            os.killpg(os.getpgid(pid), signal.SIGKILL)
+            os.killpg(pid, signal.SIGKILL)
         except OSError:
             _call(process, "kill")
-    else:
+    elif not _process_done(process):
         _call(process, "kill")
     _wait(process)
 

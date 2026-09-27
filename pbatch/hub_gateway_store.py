@@ -307,7 +307,7 @@ class StateDirectoryLock:
         self._file = None
 
     def acquire(self) -> None:
-        import fcntl
+        from . import file_lock as fcntl
 
         descriptor = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
         os.chmod(self.path, 0o600)
@@ -322,7 +322,7 @@ class StateDirectoryLock:
     def close(self) -> None:
         if self._file is None:
             return
-        import fcntl
+        from . import file_lock as fcntl
 
         fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)
         self._file.close()

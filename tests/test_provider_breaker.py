@@ -6,6 +6,7 @@ import json
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -32,6 +33,26 @@ def test_trips_after_threshold_and_recovers_on_success():
     assert breaker.cooldown_remaining() == 0
     assert breaker.breaker_state()["streak"] == 0
     assert not breaker.register_provider_failure("x")  # fresh window
+
+
+def test_windows_state_write_has_no_posix_descriptor_requirements(
+        monkeypatch, tmp_path):
+    platform_os = SimpleNamespace(**vars(os))
+    platform_os.name = "nt"
+    platform_os.__dict__.pop("fchmod", None)
+    original_open = os.open
+
+    def regular_open(path, flags, *args):
+        assert not Path(path).is_dir(), "CRT cannot open Windows directories"
+        return original_open(path, flags, *args)
+
+    platform_os.open = regular_open
+    monkeypatch.setattr(breaker, "os", platform_os)
+    breaker.register_provider_failure("quota", data_dir=tmp_path)
+    breaker.register_success(data_dir=tmp_path)
+    state = json.loads((tmp_path / "provider-breaker.json").read_text())
+    assert state["version"] == 2
+    assert breaker.breaker_state(data_dir=tmp_path)["state_error"] == ""
 
 
 def test_wait_or_fail_waits_then_passes(monkeypatch):
@@ -400,3 +421,41 @@ def test_runner_checks_breaker_before_budget_and_rate(monkeypatch, tmp_path):
     assert events == ["task_fail"]
     assert ledger == [result]
     assert result.task_id and result.attempt == 1
+
+
+def test_go_gateway_usage_limit_is_a_shipped_default_signature(monkeypatch):
+    """opencode-go / Go gateways report quota exhaustion as
+    ``GoUsageLimitError`` with a SPACE-separated "Go usage limit exceeded".
+
+    Neither shape matched the original underscore-oriented defaults
+    (``quota_?exceeded`` / ``rate_?limit_?error``), so the shared provider
+    breaker stayed closed while the 2026-09-19 iris-ui campaign burned ~8h and
+    1412 provider errors on consecutive zero-progress rounds. The signature
+    must therefore work from the BUILT-IN defaults, with no per-agent config.
+    """
+    monkeypatch.setattr(breaker.config, "_AGENTS_CFG", {})
+    monkeypatch.setattr(breaker.config, "_AGENT_CFG", {})
+
+    stderr = (
+        "Warning: No project session found with id 'pb-1'; creating a new "
+        "session with that id.\n"
+        '429: {"type":"GoUsageLimitError","message":"Go usage limit exceeded"}'
+    )
+    reason = breaker.provider_failure_reason(stderr, "", "/usr/local/bin/pi")
+
+    assert reason
+    assert breaker.is_provider_failure_reason(reason)
+
+
+def test_go_gateway_session_banner_alone_is_not_a_provider_failure(monkeypatch):
+    """The session-recovery warning that precedes the quota line is CLI noise,
+    not provider health — it must not trip the shared breaker on its own."""
+    monkeypatch.setattr(breaker.config, "_AGENTS_CFG", {})
+    monkeypatch.setattr(breaker.config, "_AGENT_CFG", {})
+
+    assert not breaker.provider_failure_reason(
+        "Warning: No project session found with id 'pb-1'; creating a new "
+        "session with that id.",
+        "",
+        "/usr/local/bin/pi",
+    )

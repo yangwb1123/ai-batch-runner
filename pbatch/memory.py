@@ -4,14 +4,13 @@ index and a bounded manifest for LLM-directed, on-demand history access."""
 from __future__ import annotations
 
 import errno
-import fcntl
+from . import file_lock as fcntl
 import hashlib
 import heapq
 import json
 import os
 import re
 import shlex
-import sys
 import threading
 from collections import deque
 from datetime import datetime, timezone
@@ -21,6 +20,7 @@ from . import config
 from .config import log
 from . import session
 from .index_io import scan_events
+from .launcher import cli_argv
 from .memory_io import bounded_lines, cap_manifest
 from .memory_policy import classify_prompt, memory_scope, scope_matches
 from .memory_records import (
@@ -358,9 +358,7 @@ def memory_manifest(prompt: str, cwd: str = "", mode_hint: str = "") -> str:
     history = _manifest_history(profile, cwd)
     script_dir = Path(os.environ.get("PBATCH_SCRIPT_DIR", str(project_root(cwd))))
     script = script_dir / "pi-batch.py"
-    launcher = (f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}"
-                if script.is_file()
-                else f"{shlex.quote(sys.executable)} -m pbatch")
+    launcher = shlex.join(cli_argv(entrypoint=script))
     payload = json.dumps(history, ensure_ascii=False, separators=(",", ":"))
     payload = payload.replace("<", "\\u003c").replace(">", "\\u003e")
     try:

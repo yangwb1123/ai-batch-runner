@@ -57,17 +57,26 @@ def recovery_attempt_count(root: Path, recovery_root: Path,
 
 
 def update_round_recovery(context, stalled_rounds: int) -> tuple[int, str]:
-    """Return updated stall count and a fail-closed stop reason."""
+    """Return updated stall count and a fail-closed stop reason.
+
+    The stall stop is a SAFETY circuit, not part of the opt-in stash-based
+    self-repair. It must fire even when ``recovery.enabled`` is false (its
+    default), because a round that made no progress is the exact condition an
+    unattended run must not keep paying for. Coupling the two made the stop
+    unreachable by default: on 2026-09-19 an iris-ui campaign ran 123
+    consecutive zero-progress rounds against a provider-wide quota outage
+    (~8h, 1412 provider errors) because ``recovery_enabled`` defaulted to
+    false and this function returned ``(0, "")``, resetting the counter every
+    round. Only the destructive restore/self-repair behaviour stays opt-in.
+    """
     if getattr(context, "recovery_blocked", False):
         return stalled_rounds, "CAMPAIGN self-repair blocked; stopping fail-closed"
     settings = getattr(context, "settings", None)
-    if not getattr(settings, "recovery_enabled", False):
-        return 0, ""
     stalled = (0 if getattr(context, "round_progress", 0)
                else stalled_rounds + 1)
     limit = getattr(settings, "recovery_stop_after_stalled_rounds", 0)
     if limit and stalled >= limit:
-        return stalled, ("CAMPAIGN self-repair made no progress for "
+        return stalled, ("CAMPAIGN made no progress for "
                          f"{stalled} round(s); stopping fail-closed")
     return stalled, ""
 

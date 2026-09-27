@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import math
+import sys
 from typing import Optional
 
 log = logging.getLogger("pi-batch")
@@ -15,7 +17,9 @@ def _int_setting(section: dict, key: str, default: int,
         if isinstance(value, bool):
             raise ValueError
         parsed = int(value)
-    except (TypeError, ValueError):
+        if abs(parsed) > sys.maxsize - 1:
+            raise ValueError
+    except (TypeError, ValueError, OverflowError):
         log.warning("Config value '%s' must be an integer; using %d", key, default)
         return default
     if minimum is not None and parsed < minimum:
@@ -52,7 +56,9 @@ def _float_setting(section: dict, key: str, default: float,
         if isinstance(value, bool):
             raise ValueError
         parsed = float(value)
-    except (TypeError, ValueError):
+        if not math.isfinite(parsed):
+            raise ValueError
+    except (TypeError, ValueError, OverflowError):
         log.warning("Config value '%s' must be a number; using %s", key, default)
         return default
     outside = ((minimum is not None and parsed < minimum) or

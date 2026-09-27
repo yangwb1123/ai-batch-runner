@@ -25,6 +25,8 @@ def test_default_runtime_dir_is_private_and_workspace_scoped(tmp_path, monkeypat
 
 
 def test_runtime_home_and_data_dir_overrides_are_explicit(tmp_path, monkeypatch):
+    monkeypatch.setenv("PBATCH_HOME", str(tmp_path / "unified-home"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
     monkeypatch.setenv("PBATCH_RUNTIME_HOME", str(tmp_path / "runtime"))
     monkeypatch.delenv("PBATCH_DATA_DIR", raising=False)
     config.set_data_dir_override("")

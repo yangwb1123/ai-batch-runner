@@ -116,11 +116,13 @@ class HubCompute:
         rows = response.get("devices")
         if not isinstance(rows, list) or len(rows) > len(targets):
             raise ValueError("invalid Fabric inventory")
+        rows = [row for row in rows if isinstance(row, dict) and row.get("device_id") in targets]
+        if len({row["device_id"] for row in rows}) != len(rows):
+            raise ValueError("duplicate Fabric inventory device")
         gpu_supported = GPU_CAPABILITY in response.get("capabilities", [])
         workspace_supported = "hub.compute.workspace.v1" in response.get("capabilities", [])
         return [device_view(row, connection.bindings[row["device_id"]], gpu_supported=gpu_supported,
-                            workspace_supported=workspace_supported) for row in rows
-                if isinstance(row, dict) and row.get("device_id") in targets]
+                            workspace_supported=workspace_supported) for row in rows]
 
     def start(self):
         if self._threads:

@@ -28,7 +28,7 @@ normal acquire timeout.
 from __future__ import annotations
 
 import errno
-import fcntl
+from . import file_lock as fcntl
 import hashlib
 import json
 import math

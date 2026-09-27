@@ -6,7 +6,6 @@ import argparse
 import os
 import signal
 import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
@@ -15,6 +14,7 @@ from . import config, metering
 from .campaign_models import Direction
 from .campaign_state import git_worktree_evidence
 from .campaign_worktree import finalize_worktree, isolated_status
+from .launcher import cli_argv, is_frozen
 from .pipeline_status import PipelineStatus
 from .text_io import read_text_bounded
 
@@ -69,15 +69,14 @@ def isolated_command(worktree: Path, pipeline_path: Path, logfile: Path,
     # it over an older project-local vendored shim while retaining the target
     # worktree as cwd for project config and assets.
     entrypoint = tool_entrypoint if tool_entrypoint.is_file() else local_entrypoint
-    runner = ([sys.executable, str(entrypoint)] if entrypoint.is_file()
-              else [sys.executable, "-m", "pbatch"])
+    runner = cli_argv(entrypoint=entrypoint)
     cmd = [*runner, str(pipeline_path), "--reuse", "--reuse-fingerprint",
            "--log-file", str(logfile)]
     if metering.EVENTS_FILE:
         cmd.extend(["--events-file", metering.EVENTS_FILE])
     # Older project-local shims may lack --run-id; coordinator outcomes remain
     # authoritative while those children create their own metering run ids.
-    if metering.RUN_ID and entrypoint == tool_entrypoint:
+    if metering.RUN_ID and (is_frozen() or entrypoint == tool_entrypoint):
         cmd.extend(["--run-id", metering.RUN_ID])
     return [*cmd, *agent_args]
 
@@ -105,8 +104,7 @@ def run_isolated_child(worktree: Path, pipeline_path: Path, logfile: Path,
     local_entrypoint = worktree / "pi-batch.py"
     entrypoint = (local_entrypoint if local_entrypoint.is_file()
                   else Path(config.TOOL_ROOT) / "pi-batch.py")
-    runner = ([sys.executable, str(entrypoint)] if entrypoint.is_file()
-              else [sys.executable, "-m", "pbatch"])
+    runner = cli_argv(entrypoint=entrypoint)
     command = [*runner, str(pipeline_path), "--reuse", "--reuse-fingerprint",
                "--log-file", str(logfile), *agent_args]
     proc = subprocess.Popen(command, cwd=worktree, stdout=subprocess.DEVNULL,

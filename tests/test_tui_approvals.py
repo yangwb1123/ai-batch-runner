@@ -140,34 +140,39 @@ class _ApprovalAdapter:
     def events(self):
         return RuntimeEventStream(self.queue)
 
-    def start_turn(self, _request):
+    def start_turn(self, request):
         self.handle = TurnHandle(
-            self.session.session_id, "run_approval", "turn_approval",
+            self.session.session_id, request["run_id"], request["turn_id"],
             "agent_main", "2026-08-26T12:00:00Z", TurnState.RUNNING)
-        self.queue.put(_event(1, "turn.started"))
-        self.queue.put(_event(2, "approval.requested", _request_payload()))
+        self.queue.put(self._event(1, "turn.started"))
+        self.queue.put(self._event(2, "approval.requested", _request_payload()))
         return self.handle
+
+    def _event(self, seq, kind, payload=None):
+        event = _event(seq, kind, payload)
+        event.run_id, event.turn_id = self.handle.run_id, self.handle.turn_id
+        return event
 
     def resolve_approval(self, decision):
         expected = {
             "workspace_id": "ws_approval", "session_id": "ses_approval",
-            "run_id": "run_approval", "turn_id": "turn_approval",
+            "run_id": self.handle.run_id, "turn_id": self.handle.turn_id,
             "actor_id": "agent_main",
         }
         if any(decision.get(name) != value for name, value in expected.items()):
             return False
         self.decisions.append(dict(decision))
-        self.queue.put(_event(3, "approval.resolved", {
+        self.queue.put(self._event(3, "approval.resolved", {
             "request_id": "request-1", "approval_type": "command_execution",
             "decision": decision["decision"]}))
-        self.queue.put(_event(4, "turn.completed", {"state": TurnState.SUCCEEDED}))
+        self.queue.put(self._event(4, "turn.completed", {"state": TurnState.SUCCEEDED}))
         self.handle.state = TurnState.SUCCEEDED
         self.handle._done.set()
         return True
 
     def interrupt_turn(self, _request):
         if self.handle is not None and not self.handle.done:
-            self.queue.put(_event(5, "turn.interrupted"))
+            self.queue.put(self._event(5, "turn.interrupted"))
             self.handle.state = TurnState.INTERRUPTED
             self.handle._done.set()
 
@@ -194,7 +199,7 @@ def test_explicit_appserver_runtime_opens_modal_and_sends_scoped_decision(tmp_pa
             await _wait_until(lambda: not app._busy, pilot)
 
             assert adapter.decisions[0]["decision"] == "allow"
-            assert adapter.decisions[0]["turn_id"] == "turn_approval"
+            assert adapter.decisions[0]["turn_id"] == adapter.handle.turn_id
             assert app._runtime_view.turn_state == TurnState.SUCCEEDED
             assert app._runtime_view.approvals.pending == ()
         adapter.close()

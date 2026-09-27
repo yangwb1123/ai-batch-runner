@@ -21,14 +21,15 @@ from .tui_actor_tree import (
     actor_authority_payload, root_actor_authority_payload)
 from .tui_appserver_support import (
     APPROVAL_METHODS, DEFAULT_APPROVAL_TTL, DEFAULT_MAX_PENDING_APPROVALS,
-    DEFAULT_QUEUE_SIZE, DEFAULT_TIMEOUT,
+    DEFAULT_QUEUE_SIZE,
     RUNTIME_NAME, ApprovalEntry, DefaultTransport, EventQueue, ItemProjector,
     RuntimeEventStream, Transport, approval_decisions, approval_expiry,
     approval_payload, bounded_mapping, canonical_approval_decision,
-    decision_result, effective_policy_values, explicit_policy_values, item_text, json_summary,
-    make_runtime_info,
+    decline_on_close, decision_result, effective_policy_values, explicit_policy_values,
+    item_text, json_summary,
+    make_runtime_info, run_startup, start_adapter_transport, startup_timeouts,
     record_server_info, request_key, review_start_params, target_summary, thread_id,
-    session_page, session_query_params, thread_observation, turn_id,
+    session_local_id, session_page, session_query_params, thread_observation, turn_id,
     turn_outcome, valid_request_id,
 )
 from .review import extract_findings
@@ -46,11 +47,12 @@ class CodexAppServerAdapter(ItemProjector):
     """Map App Server requests and notifications to provider-neutral events."""
     def __init__(self, cwd: str | os.PathLike[str], *, daemon_socket: Optional[str] = None,
                  transport: Optional[Transport] = None, maxsize: int = DEFAULT_QUEUE_SIZE,
-                 request_timeout: float = DEFAULT_TIMEOUT,
+                 request_timeout: Optional[float] = None,
+                 startup_timeout: Optional[float] = None,
                  approval_ttl: float = DEFAULT_APPROVAL_TTL,
                  max_pending_approvals: int = DEFAULT_MAX_PENDING_APPROVALS):
-        if request_timeout <= 0 or approval_ttl <= 0:
-            raise ValueError("timeouts must be positive")
+        self._timeout, self._startup_timeout, self._approval_ttl = startup_timeouts(
+            request_timeout, startup_timeout, approval_ttl)
         if (isinstance(max_pending_approvals, bool)
                 or not isinstance(max_pending_approvals, int)
                 or max_pending_approvals <= 0):
@@ -58,7 +60,6 @@ class CodexAppServerAdapter(ItemProjector):
         self._cwd = os.path.realpath(os.path.abspath(os.fsdecode(cwd)))
         self._daemon_socket = daemon_socket
         self._transport, self._queue = transport, EventQueue(maxsize)
-        self._timeout, self._approval_ttl = request_timeout, approval_ttl
         self._lock, self._write_lock = threading.RLock(), threading.Lock()
         self._reader: Optional[threading.Thread] = None
         self._closed = self._stream_ended = self._initialized = False
@@ -114,32 +115,32 @@ class CodexAppServerAdapter(ItemProjector):
         if workspace:
             self._session.workspace_id = workspace
         try:
-            self._start_transport()
-            result = self._call("initialize", {
-                "clientInfo": {
-                    "name": "pi-batch", "title": "pi-batch", "version": VERSION},
-                "capabilities": {"experimentalApi": True},
-            })
-            self.server_info = record_server_info(result)
-            self._observe_policy(result)
-            if self._stream_ended: raise RuntimeError("connection lost during initialize")
-            self._send({"method": "initialized", "params": {}})
+            run_startup(self._initialize_transport, self.close, self._startup_timeout)
+            self._ensure_open()
         except Exception as exc:
             self.close()
             raise RuntimeError(f"codex app-server unavailable: {exc}") from exc
         self._initialized = True
         return self.runtime_info()
 
-    def _start_transport(self) -> None:
-        if self._reader is not None:
-            return
-        if self._transport is None:
-            self._transport = DefaultTransport(self._daemon_socket, cwd=self._cwd)
-        self._reader = threading.Thread(
-            target=self._read_loop, name="codex-app-server-reader", daemon=True)
-        self._reader.start()
+    def _initialize_transport(self) -> None:
+        self._start_transport()
+        result = self._call("initialize", {
+            "clientInfo": {"name": "pi-batch", "title": "pi-batch", "version": VERSION},
+            "capabilities": {"experimentalApi": True},
+        }, timeout=self._startup_timeout)
+        self.server_info = record_server_info(result)
+        self._observe_policy(result)
+        if self._stream_ended: raise RuntimeError("connection lost during initialize")
+        self._ensure_open()
+        self._send({"method": "initialized", "params": {}})
 
-    def _call(self, method: str, params: Mapping[str, Any]) -> Mapping[str, Any]:
+    def _start_transport(self) -> None:
+        start_adapter_transport(self, DefaultTransport)
+
+    def _call(self, method: str, params: Mapping[str, Any], *,
+              timeout: Optional[float] = None) -> Mapping[str, Any]:
+        timeout = self._timeout if timeout is None else timeout
         with self._lock:
             if self._stream_ended:
                 raise RuntimeError("connection lost")
@@ -149,11 +150,11 @@ class CodexAppServerAdapter(ItemProjector):
             self._responses[request_key(request_id)] = waiter
         try:
             self._send({"id": request_id, "method": method, "params": dict(params)})
-            response = waiter.get(timeout=self._timeout)
+            response = waiter.get(timeout=timeout)
         except queue.Empty as exc:
             with self._lock:
                 self._responses.pop(request_key(request_id), None)
-            raise RuntimeError(f"{method} timed out after {self._timeout:g}s") from exc
+            raise RuntimeError(f"{method} timed out after {timeout:g}s") from exc
         except Exception:
             with self._lock:
                 self._responses.pop(request_key(request_id), None)
@@ -253,7 +254,7 @@ class CodexAppServerAdapter(ItemProjector):
             self._ensure_session_replaceable()
             previous = self._session
             requested_id = str(_request_value(request, "session_id", "") or "")
-            local_id = _id("ses") if force_new or not requested_id else requested_id
+            local_id = session_local_id(previous, requested_id, mode, force_new)
             workspace = str(_request_value(request, "workspace_id", "") or
                             previous.workspace_id)
             self._session = RuntimeSession(local_id, "", workspace, _now(), "ACTIVE")
@@ -932,19 +933,14 @@ class CodexAppServerAdapter(ItemProjector):
             self._active_operation = ""
         for waiter in waiters:
             waiter.put(RuntimeError("app-server adapter closed"))
-        for entry in approvals:
-            if entry is None:
-                continue
-            result = decision_result(entry, {"decision": "deny"})
-            try:
-                self._send({
-                    "id": entry.request_id,
-                    "result": result or {"decision": "decline"},
-                })
-            except Exception:
-                break
+        decline = threading.Thread(
+            target=decline_on_close, args=(self._send, approvals), daemon=True,
+            name="codex-app-server-decline")
+        decline.start()
+        decline.join(timeout=0.1)
         if transport is not None:
             transport.close()
+        decline.join(timeout=0.5)
         if reader is not None and reader is not threading.current_thread():
             reader.join(timeout=1.0)
         if handle is not None and not handle.done:

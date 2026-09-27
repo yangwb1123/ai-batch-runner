@@ -1,0 +1,31 @@
+# Copy to ~/.config/pbatch/llm-pool.yaml and replace account/group identifiers.
+# No API keys in this file. Use `pi-batch pool key-set ACCOUNT` to enter them.
+schema_version: 1
+pool_id: opencode-go
+# Query Go's usage API before inference; unknown/stale quotas cannot admit requests.
+# Omit this section to keep the original error-triggered-only behavior.
+usage:
+  enabled: true
+  max_age: 60
+  timeout: 5
+gateway:
+  token_file: ~/.config/pbatch/llm-pool-keys/gateway-token
+  port: 8741
+  request_timeout: 300
+  probe_after: 60
+  max_connections: 16
+models:
+  glm-5.1: chat/completions
+  minimax-m2.7: messages
+  gpt-5.6-luna: responses
+accounts:
+  - id: go-a
+    credential_file: ~/.config/pbatch/llm-pool-keys/go-a
+    quota_group: subscription-a
+    priority: 10
+    max_concurrent: 1
+  - id: go-b
+    credential_file: ~/.config/pbatch/llm-pool-keys/go-b
+    quota_group: subscription-b
+    priority: 20
+    max_concurrent: 1

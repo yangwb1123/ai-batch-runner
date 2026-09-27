@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import queue
 import threading
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -12,7 +13,7 @@ import uuid
 
 from . import config
 from .tui_controller import TUIEventController, TUIViewSnapshot
-from .tui_journal import RuntimeEventJournal
+from .tui_journal import RuntimeEventJournal, RuntimeEventJournalError
 from .tui_native import (
     NativePipelineAttachment, NativePipelineControlChannel)
 from .tui_protocol import RuntimeEvent, TERMINAL_TURN_STATES, TurnState
@@ -36,6 +37,8 @@ _STATUS_LABELS = {
     TurnState.UNKNOWN: "Unknown",
 }
 _IDLE_QUARANTINE_LIMIT = 256
+_IDLE_PENDING_LIMIT = 256
+_IDLE_DRAIN_LIMIT = 1024
 
 
 class TUIProjectionMixin:
@@ -43,6 +46,7 @@ class TUIProjectionMixin:
 
     def _init_runtime_projection(self) -> None:
         self._event_controller = TUIEventController()
+        self._adapter_workspace_id = ""
         self._journal_session_id = ""
         self._journal_identity: tuple = ()
         self._runtime_view = self._event_controller.snapshot()
@@ -53,6 +57,11 @@ class TUIProjectionMixin:
         self._runtime_finish_view: Optional[TUIViewSnapshot] = None
         self._quarantined_runtime_events: list[RuntimeEvent] = []
         self._quarantined_runtime_event_count = 0
+        self._pending_idle_runtime_events: list[RuntimeEvent] = []
+        self._runtime_submission: Optional[RuntimeEvent] = None
+        self._runtime_submission_queue_pending = False
+        self._runtime_submission_queue_notice: Optional[RuntimeEvent] = None
+        self._pending_runtime_failure: Optional[RuntimeEvent] = None
         self._native_pipeline_attachment: Optional[NativePipelineAttachment] = None
         self._native_pipeline_approval: Optional[NativePipelineControlChannel] = None
         self._native_pipeline_controller: Optional[TUIEventController] = None
@@ -287,6 +296,100 @@ class TUIProjectionMixin:
         self._rendered_error_end = 0
         self._rendered_assistant_generation = 0
 
+    def _prepare_runtime_action(self, *, session_switch: bool = False,
+                                review: bool = False) -> bool:
+        """Keep failed journal preparation outside UI mutation and task launch."""
+        try:
+            if session_switch:
+                self._prepare_runtime_session_switch()
+            else:
+                if self._runtime_blocked_reason:
+                    raise RuntimeError(self._runtime_blocked_reason)
+                self._prepare_runtime_projection()
+                reason = (getattr(self, "_runtime_blocked_reason", "") or
+                          self._event_controller.read_only_reason)
+                if reason:
+                    raise RuntimeError(reason)
+                self._prepare_runtime_submission(review=review)
+        except (OSError, OverflowError, RuntimeError, TypeError, ValueError) as exc:
+            self._append_entry(
+                "error", f"Unable to prepare session history: {exc}. "
+                "Resolve the journal error, then retry this action or use `/new`. "
+                "No task was started.")
+            self._last_status = "Session history unavailable"
+            self._refresh_status()
+            return False
+        return True
+
+    def _prepare_runtime_submission(self, *, review: bool = False) -> None:
+        """Persist local dispatch intent before a managed start RPC can block."""
+        self._runtime_submission = None
+        self._runtime_submission_queue_pending = False
+        self._runtime_submission_queue_notice = None
+        if not self._strict_adapter or not self._projection_driven:
+            return
+        view = self._runtime_view
+        run_prefix, turn_prefix = (("review-run-", "review-turn-") if review
+                                   else ("run_", "turn_"))
+        event = RuntimeEvent(
+            event_id=f"evt_{uuid.uuid4().hex}", seq=0,
+            occurred_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            workspace_id=self._adapter_workspace_id or view.workspace_id or str(self._backend.cwd),
+            session_id=self._adapter_session_id,
+            run_id=f"{run_prefix}{uuid.uuid4().hex}",
+            turn_id=f"{turn_prefix}{uuid.uuid4().hex}",
+            actor_id="agent_main", kind="turn.queued",
+            payload={"state": TurnState.QUEUED},
+            extensions={"runtime": "tui-coordinator"})
+        self._ingest_runtime_event(event)
+        self._runtime_submission = event
+        self._runtime_submission_queue_pending = True
+
+    def _runtime_submission_request(self) -> dict[str, str]:
+        event = self._runtime_submission
+        return ({key: getattr(event, key) for key in (
+            "session_id", "run_id", "turn_id", "actor_id")}
+                if event is not None else {})
+
+    def _bind_runtime_submission(self, handle: Any) -> None:
+        if any(getattr(handle, key, None) != value
+               for key, value in self._runtime_submission_request().items()):
+            raise ValueError("runtime handle does not match the submitted turn")
+
+    def _submitted_runtime_event(
+            self, event: RuntimeEvent, controller: Optional[TUIEventController] = None
+            ) -> Optional[RuntimeEvent]:
+        """Merge local intent with a strictly ordered, matching provider stream."""
+        submitted = self._runtime_submission
+        if (submitted is None
+                or any(getattr(event, key) != getattr(submitted, key) for key in (
+                    "workspace_id", "session_id", "run_id", "turn_id"))):
+            return event
+        notice = self._runtime_submission_queue_notice
+        if notice is not None and event.event_id == notice.event_id:
+            return None
+        provider_event = event.extensions.get("runtime") != "tui-coordinator"
+        delivered = event
+        if event.seq > 0 and provider_event:
+            # Reserve sequence 1 for local intent; retain source ordering and
+            # evidence without mutating the adapter's queued object.
+            delivered = replace(event, seq=event.seq + 1, extensions={
+                **event.extensions, "runtime_source_seq": event.seq})
+        bus = (controller or self._event_controller).bus
+        if (provider_event and notice is not None and event.seq > 0
+                and event.seq <= notice.seq and bus.validate_sequence(delivered)):
+            raise ValueError("non-monotonic runtime seq after the queued notice")
+        if (self._runtime_submission_queue_pending
+                and event.kind.startswith("turn.")
+                and event.actor_id == submitted.actor_id):
+            self._runtime_submission_queue_pending = False
+            if (event.kind == "turn.queued"
+                    and self._runtime_view.turn_state == TurnState.QUEUED):
+                bus.validate_sequence(delivered)
+                self._runtime_submission_queue_notice = event
+                return None  # one provider notice repeats the durable local intent
+        return delivered
+
     def _ensure_runtime_journal(self) -> None:
         """Bind the active runtime session to its scoped durable controller."""
         if self._native_pipeline_attachment is not None:
@@ -307,9 +410,7 @@ class TUIProjectionMixin:
         self._rotate_runtime_journal(journal, session_id)
 
     def _reuse_runtime_journal(self, session_id: str) -> None:
-        pending = self._collect_idle_runtime_events()
-        self._validate_idle_sessions(pending, {session_id})
-        self._route_previous_idle_events(pending, session_id)
+        self._drain_previous_idle_events(session_id)
         reason = self._event_controller.read_only_reason
         if reason:
             self._runtime_blocked_reason = reason
@@ -321,12 +422,26 @@ class TUIProjectionMixin:
             invalidate()
         if not self._projection_driven:
             return
+        self._save_pending_runtime_failure()
         self._ensure_runtime_journal()
-        pending = self._collect_idle_runtime_events()
         session_id = str(getattr(self, "_adapter_session_id", "") or
                          self._journal_session_id)
-        self._validate_idle_sessions(pending, {session_id} if session_id else set())
-        self._route_previous_idle_events(pending, session_id)
+        self._drain_previous_idle_events(session_id)
+
+    def _drain_previous_idle_events(self, session_id: str) -> None:
+        for pending in self._idle_runtime_batches():
+            self._validate_idle_sessions(pending, {session_id} if session_id else set())
+            self._route_previous_idle_events(pending, session_id)
+
+    def _idle_runtime_batches(self):
+        processed = 0
+        while pending := self._collect_idle_runtime_events():
+            if processed >= _IDLE_DRAIN_LIMIT:
+                raise RuntimeError(
+                    "Session event backlog exceeds one action's limit; "
+                    "retry this action to continue saving pending events.")
+            processed += len(pending)
+            yield pending
 
     def _preflight_runtime_session(self, session_id: str) -> None:
         if not self._projection_driven or not config.TUI_JOURNAL_ENABLED:
@@ -367,13 +482,14 @@ class TUIProjectionMixin:
             detail = ("; ".join(controller.recovery.warnings)
                       or "reconciliation is required")
             raise RuntimeError(f"TUI journal recovery is read-only: {detail}")
-        pending = self._collect_idle_runtime_events()
+        self._save_pending_runtime_failure()
         allowed = {value for value in (self._journal_session_id, session_id) if value}
-        self._validate_idle_sessions(pending, allowed)
-        self._route_previous_idle_events(pending)
-        for event in pending:
-            if event.session_id == session_id:
-                controller.ingest(event)
+        for pending in self._idle_runtime_batches():
+            self._validate_idle_sessions(pending, allowed)
+            self._route_previous_idle_events(pending)
+            for event in pending:
+                if event.session_id == session_id:
+                    self._ingest_pending_idle_event(event, controller)
         previous = self._event_controller
         self._event_controller = controller
         self._journal_session_id = session_id
@@ -383,6 +499,7 @@ class TUIProjectionMixin:
         if callable(reset):
             reset()
         previous.close()
+        self._pending_runtime_failure = None
         self._runtime_blocked_reason = controller.read_only_reason
 
     def _show_recovered_runtime(self, notice: str) -> None:
@@ -419,17 +536,42 @@ class TUIProjectionMixin:
             return
         for index, event in enumerate(pending):
             try:
-                self._ingest_runtime_event(event)
+                self._ingest_pending_idle_event(event)
             except (OverflowError, RuntimeError, ValueError):
                 if not self._event_controller.read_only_reason:
                     raise
                 self._quarantine_idle_events(pending[index:])
                 return
 
+    def _ingest_pending_idle_event(
+            self, event: RuntimeEvent, controller: Optional[TUIEventController] = None
+            ) -> None:
+        try:
+            if controller is None:
+                self._ingest_runtime_event(event)
+            else:
+                delivered = self._submitted_runtime_event(event, controller)
+                if delivered is not None:
+                    controller.ingest(delivered)
+        except (OSError, RuntimeEventJournalError) as exc:
+            raise RuntimeEventJournalError(
+                f"Pending session events could not be saved: {exc}. "
+                "Restore storage access, then retry this action or use `/new`.",
+                retryable=getattr(exc, "retryable", True),
+                journal_fatal=getattr(exc, "journal_fatal", False)) from exc
+        self._acknowledge_idle_events((event,))
+
+    def _acknowledge_idle_events(self, events) -> None:
+        confirmed = {event.event_id for event in events}
+        self._pending_idle_runtime_events[:] = [
+            event for event in self._pending_idle_runtime_events
+            if event.event_id not in confirmed]
+
     def _quarantine_idle_events(self, events: list[RuntimeEvent]) -> None:
         self._quarantined_runtime_event_count += len(events)
         self._quarantined_runtime_events.extend(events)
         del self._quarantined_runtime_events[:-_IDLE_QUARANTINE_LIMIT]
+        self._acknowledge_idle_events(events)
 
     @staticmethod
     def _validate_idle_sessions(
@@ -438,7 +580,10 @@ class TUIProjectionMixin:
             raise RuntimeError("idle runtime event belongs to an unknown session")
 
     def _collect_idle_runtime_events(self) -> list[RuntimeEvent]:
-        """Remove the bounded idle queue once so rotation can route by session."""
+        """Retain one bounded batch until every event has an explicit outcome."""
+        events = self._pending_idle_runtime_events
+        if events:
+            return list(events)
         adapter = getattr(self, "_adapter", None)
         if adapter is None:
             return []
@@ -446,17 +591,17 @@ class TUIProjectionMixin:
             stream = adapter.events()
         except (AttributeError, RuntimeError, TypeError):
             return []
-        events: list[RuntimeEvent] = []
-        while True:
+        while len(events) < _IDLE_PENDING_LIMIT:
             try:
                 event = stream.get(timeout=0)
             except queue.Empty:
-                return events
+                break
             if event is None:
-                return events
+                break
             if not isinstance(event, RuntimeEvent):
                 raise TypeError("idle runtime stream yielded a non-RuntimeEvent")
             events.append(event)
+        return list(events)
 
     def _abort_runtime_stream(self, adapter: Any, handle: Any,
                               error: Exception) -> Exception:
@@ -489,6 +634,9 @@ class TUIProjectionMixin:
 
     def _ingest_runtime_event(self, event: RuntimeEvent) -> None:
         """Fold a trusted envelope synchronously, then cross the UI boundary."""
+        event = self._submitted_runtime_event(event)
+        if event is None:
+            return
         try:
             view = self._event_controller.ingest(event)
         except (OverflowError, RuntimeError, ValueError):
@@ -617,22 +765,40 @@ class TUIProjectionMixin:
         if (not self._projection_driven or not view.turn_id
                 or view.turn_state in TERMINAL_TURN_STATES):
             return False
-        if view.turn_state == TurnState.QUEUED:
-            self._ingest_runtime_event(self._coordinator_event(
-                "turn.started", {"state": TurnState.RUNNING}))
-            view = self._runtime_view
         unknown_allowed = view.turn_state in {
-            TurnState.RUNNING, TurnState.WAITING_APPROVAL,
+            TurnState.QUEUED, TurnState.RUNNING, TurnState.WAITING_APPROVAL,
             TurnState.RECONCILING,
         }
         payload = {"reason": str(reason or "runtime event stream failed")[:2048]}
         if unknown_allowed:
             payload["state"] = TurnState.UNKNOWN
+        event = self._coordinator_event("turn.failed", payload)
         try:
-            self._ingest_runtime_event(self._coordinator_event("turn.failed", payload))
-        except (OverflowError, RuntimeError, ValueError):
+            self._ingest_runtime_event(event)
+        except (OSError, OverflowError, RuntimeError, ValueError) as exc:
+            self._pending_runtime_failure = event
+            self._runtime_blocked_reason = (
+                f"Unable to confirm the saved failure state: {exc}. "
+                "The turn outcome remains unconfirmed. "
+                "Restore storage access, then use `/new` before another task.")
+            self._append_entry("error", self._runtime_blocked_reason)
             return False
+        self._pending_runtime_failure = None
         return self._runtime_view.turn_state in TERMINAL_TURN_STATES
+
+    def _save_pending_runtime_failure(self) -> None:
+        """Save an interrupted observation before draining late provider events.
+
+        A failed append can leave QUEUED in the journal after the consumer has
+        already discarded turn.started. Preserve UNKNOWN before accepting any
+        later events; they cannot supply the missing observation retroactively.
+        Read-only journals retain their trusted prefix and quarantine late events.
+        """
+        event = self._pending_runtime_failure
+        if event is None or self._event_controller.read_only_reason:
+            return
+        self._ingest_runtime_event(event)
+        self._pending_runtime_failure = None
 
     def _coordinator_event(self, kind: str, payload: dict[str, Any]) -> RuntimeEvent:
         view = self._runtime_view

@@ -15,7 +15,9 @@ file (dead pid) is reported with status=dead and can be pruned.
 from __future__ import annotations
 
 import json
+import math
 import os
+import socket
 import sys
 import tempfile
 import threading
@@ -23,6 +25,7 @@ import time
 from pathlib import Path
 
 from .user_dirs import pbatch_runtime_home
+from . import process_identity
 
 HEARTBEAT_INTERVAL = 60  # seconds
 
@@ -92,7 +95,7 @@ def register_run(mode: str, repo: str, session_name: str = "",
     global _own_path
     meta = {
         "pid": os.getpid(),
-        "host": os.uname().nodename,
+        "host": socket.gethostname(),
         "start": time.time(),
         "mode": mode,
         "repo": repo,
@@ -183,8 +186,15 @@ def list_runs() -> list[dict]:
             meta = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        pid = int(meta.get("pid", 0) or 0)
-        meta["status"] = "dead" if not (pid and _alive(pid)) else meta.get("status", "?")
+        if not isinstance(meta, dict):
+            continue
+        pid = meta.get("pid")
+        if not process_identity.valid_pid(pid) or path.stem != str(pid):
+            continue
+        if meta.get("host") != socket.gethostname():
+            meta["status"] = "unknown"
+        else:
+            meta["status"] = "dead" if not _alive(pid) else meta.get("status", "?")
         meta["_file"] = str(path)
         runs.append(meta)
     return runs
@@ -194,7 +204,8 @@ def prune_dead() -> int:
     """Remove registry files whose pid is dead; returns count removed."""
     removed = 0
     for run in list_runs():
-        if run["status"] == "dead":
+        if (run["status"] == "dead" and run.get("host") == socket.gethostname()
+                and not _alive(run.get("pid"))):
             try:
                 Path(run["_file"]).unlink(missing_ok=True)
                 removed += 1
@@ -205,11 +216,15 @@ def prune_dead() -> int:
 
 
 def _alive(pid: int) -> bool:
+    return process_identity.pid_alive(pid)
+
+
+def _timestamp(value: object, fallback: float) -> float:
     try:
-        os.kill(pid, 0)
-        return True
-    except (ProcessLookupError, PermissionError):
-        return False
+        timestamp = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return fallback
+    return timestamp if math.isfinite(timestamp) else fallback
 
 
 def format_ps(runs: list[dict]) -> str:
@@ -219,12 +234,14 @@ def format_ps(runs: list[dict]) -> str:
              f"{'AGE':<7} {'IDLE':<6} STATUS  ARGV"]
     now = time.time()
     for r in runs:
-        age = now - float(r.get("start", now))
-        idle = now - float(r.get("last_active", r.get("start", now)))
-        argv = " ".join(r.get("argv", []))
+        start = _timestamp(r.get("start"), now)
+        age = now - start
+        idle = now - _timestamp(r.get("last_active"), start)
+        argv = r.get("argv", [])
+        argv = " ".join(str(arg) for arg in argv) if isinstance(argv, list) else ""
         if len(argv) > 60:
             argv = argv[:57] + "..."
-        repo = r.get("repo", "?")
+        repo = str(r.get("repo", "?"))
         if len(repo) > 44:
             repo = "..." + repo[-41:]
         lines.append(f"{r.get('pid', 0):<8} {str(r.get('mode', '?')):<10} "

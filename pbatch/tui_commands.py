@@ -11,10 +11,12 @@ import os
 from pathlib import Path
 import queue
 import time
+import threading
 import uuid
 from typing import Any, Optional
 
 from . import review
+from .tui_lifecycle import TUIRuntimeLifecycleMixin, next_runtime_event, operation_timeout
 from .product import format_product_brief, product_brief
 from .tui_review import (
     REVIEW_TIMEOUT_SECONDS,
@@ -75,6 +77,8 @@ class TUIReviewMixin:
         self._review_runtime = False
         self._review_handle = None
         self._review_output = None
+        self._review_cancel = threading.Event()
+        self._review_started, self._review_finished = threading.Event(), threading.Event()
         self._review_source_scope = ReviewRuntimeScope()
         self._review_source_report = ""
         self._pending_review_fix = None
@@ -82,16 +86,23 @@ class TUIReviewMixin:
 
     def _run_review_worker(self, request: ReviewRequest, cwd: Path,
                            output: Path) -> None:
+        self._review_started.set()
+        operation = self._runtime_operation if self._review_runtime else None
         if self._review_runtime:
             payload, outcome, error = self._run_appserver_review(request, output)
         else:
             try:
                 payload, outcome = review.run_review(
-                    request.scope, request.scope_argv, cwd, REVIEW_TIMEOUT_SECONDS,
-                    output, runner=self._review_runner)
+                    request.scope, request.scope_argv, cwd,
+                    operation_timeout(self, REVIEW_TIMEOUT_SECONDS), output,
+                    runner=self._review_runner, cancellation=self._review_cancel)
                 error = None
             except Exception as exc:
                 payload, outcome, error = {}, None, exc
+        error = self._finish_runtime_operation(operation, error)
+        # Signal provider teardown before call_from_thread: unmount may be
+        # synchronously waiting here and cannot dispatch a UI callback.
+        self._review_finished.set()
         if error is None:
             try:
                 write_review_report(output, payload, bool(outcome.timed_out))
@@ -108,6 +119,7 @@ class TUIReviewMixin:
         capture = AppServerReviewCapture()
         started = time.monotonic()
         try:
+            self._runtime_operation.check()
             adapter = self._adapter
             if adapter is None:
                 raise RuntimeError("App Server review adapter is unavailable")
@@ -118,8 +130,11 @@ class TUIReviewMixin:
                 "session_id": self._adapter_session_id,
                 "run_id": f"review-run-{uuid.uuid4().hex}",
                 "turn_id": f"review-turn-{uuid.uuid4().hex}",
+                **self._runtime_submission_request(),
             })
+            self._bind_runtime_submission(handle)
             self._review_handle = handle
+            self._runtime_operation.bind(handle)
             terminal_kind, terminal_payload = self._consume_appserver_review(
                 stream, handle, capture)
             outcome = review.RunOutcome(
@@ -142,27 +157,31 @@ class TUIReviewMixin:
             self, stream: Any, handle: Any,
             capture: AppServerReviewCapture) -> tuple[str, dict[str, Any]]:
         while True:
+            self._runtime_operation.check()
             try:
-                event = stream.get(timeout=0.1)
+                event = next_runtime_event(stream, handle, "App Server review")
             except queue.Empty:
-                if getattr(handle, "done", False):
-                    raise RuntimeError("App Server review ended without a terminal event")
                 continue
+            self._runtime_operation.check()
             if event is None:
                 raise RuntimeError("App Server review event stream closed")
             kind, payload = self._runtime_event_context(handle, event)
+            terminal = kind in {"turn.completed", "turn.failed", "turn.interrupted"}
+            if terminal:
+                self._runtime_operation.complete()
             self._ingest_runtime_event(event)
             capture_runtime_review_event(capture, event)
-            if kind in {"turn.completed", "turn.failed", "turn.interrupted"}:
+            if terminal:
                 return kind, payload
 
     def _finish_review(self, payload: dict[str, Any], outcome: Any,
                        output: Path, error: Optional[Exception]) -> None:
         runtime_mode = self._review_runtime
         if error is not None:
+            self._reconcile_runtime_failure(str(error))
             self._review_source_scope = ReviewRuntimeScope()
             self._review_source_report = ""
-            self._append_entry("error", f"Review report could not be written: {error}")
+            self._append_entry("error", f"Review failed: {error}")
             self._last_status = "Review failed"
         else:
             self._review_source_scope = ReviewRuntimeScope.from_mapping(
@@ -183,7 +202,9 @@ class TUIReviewMixin:
             self._append_entry(
                 "system", f"{body}\n\nReport: `{_short_path(str(output), 120)}`")
             count = len(payload.get("findings", ()))
-            self._last_status = f"Review finished ({count} finding(s); inspect report)"
+            self._last_status = ("Review cancelled" if outcome.cancelled else
+                                 "Review timed out" if outcome.timed_out else
+                                 f"Review finished ({count} finding(s); inspect report)")
         self._review_busy = False
         self._review_runtime = False
         self._review_handle = None
@@ -192,13 +213,23 @@ class TUIReviewMixin:
         self._set_busy(False)
         self._mark_agent_operation_finished()
 
-    def _slash_review(self, args: tuple[str, ...]) -> None:
+    def _cancel_review(self, *, wait: bool = False) -> None:
+        self._review_cancel.set()
+        if self._review_runtime and self._runtime_operation is not None:
+            self._runtime_operation.cancel()
+        if wait and self._review_started.is_set():
+            self._review_finished.wait(timeout=3)
+        self._last_status = "Review cancellation requested"
+        if self.is_mounted and not getattr(self, "_unmounting", False):
+            self._refresh_status()
+
+    def _slash_review(self, args: tuple[str, ...]) -> bool:
         try:
             request = parse_review_args(args)
         except ValueError as exc:
             self._append_entry("error", str(exc))
-            return
-        self._start_review(request)
+            return False
+        return self._start_review(request)
 
     def _appserver_review_mode(self) -> tuple[bool, str]:
         adapter = getattr(self, "_adapter", None)
@@ -219,22 +250,26 @@ class TUIReviewMixin:
         except Exception as exc:
             return False, f"Unable to inspect App Server review capability: {exc}"
 
-    def _start_review(self, request: ReviewRequest) -> None:
+    def _start_review(self, request: ReviewRequest) -> bool:
         if self._busy or self._native_pipeline_is_running():
             self.notify("Wait for the active operation before starting a review.",
                         severity="warning")
-            return
+            return False
         use_runtime, blocked = self._appserver_review_mode()
         if blocked:
             self._append_entry("error", blocked)
             self._last_status = "Review unavailable"
             self._refresh_status()
-            return
+            return False
+        if use_runtime and not self._prepare_runtime_action(review=True):
+            return False
         cwd = self._review_cwd()
         output = review_output_path(cwd)
         self._review_runtime = use_runtime
+        self._review_cancel = threading.Event()
+        self._review_started, self._review_finished = threading.Event(), threading.Event()
         if use_runtime:
-            self._prepare_runtime_projection()
+            self._begin_runtime_operation("AI review", REVIEW_TIMEOUT_SECONDS)
         self._review_busy = True
         self._review_findings = FindingsSnapshot()
         self._review_output = output
@@ -247,6 +282,7 @@ class TUIReviewMixin:
             lambda: self._run_review_worker(request, cwd, output),
             name="review", group="agent", exit_on_error=False,
             exclusive=True, thread=True)
+        return True
 
     def _review_cwd(self) -> Path:
         value = getattr(self._backend, "cwd", "") or self.options.cwd or os.getcwd()

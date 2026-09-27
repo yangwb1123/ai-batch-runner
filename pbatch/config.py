@@ -7,6 +7,7 @@ import math
 import os
 import re
 import shutil
+import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import NamedTuple, Optional
@@ -15,6 +16,7 @@ from .assets import (PACKAGE_ROOT, TOOL_ROOT, asset_candidates, expand_validator
                      is_tool_asset, placeholder_values, resolve_asset_path)
 from .config_device import _bool_setting, load_device_fabric
 from .config_values import _choice_setting, _float_setting, _int_setting, _string_setting
+from .config_document import MAX_CONFIG_BYTES, load_config_yaml
 from .validator_schema import schema_validator_command
 
 try:
@@ -38,20 +40,32 @@ CONFIG_SCHEMA_VERSION = 1
 
 
 def _batch_config_candidates() -> list[Path]:
-    """Return config candidates in the same order used by the loader."""
+    """Return explicit project candidates in the portable shim's order."""
     candidates = []
     script_dir = os.environ.get("PBATCH_SCRIPT_DIR", "")
     if script_dir:
         candidates.append(Path(script_dir) / "pi-batch.yaml")
     candidates.append(Path(__file__).resolve().parent / "pi-batch.yaml")
     candidates.append(Path("pi-batch.yaml"))
-    candidates.append(Path(TOOL_ROOT) / "pi-batch.yaml")
     return candidates
+
+
+def _project_config_path() -> Optional[Path]:
+    """Keep packaged defaults separate from operator-owned configuration."""
+    return next((path for path in _batch_config_candidates() if path.exists()), None)
+
+
+def _default_config_path() -> Optional[Path]:
+    path = Path(TOOL_ROOT) / "pi-batch.yaml"
+    project = _project_config_path()
+    if project and project.resolve() == path.resolve():
+        return None
+    return path if path.exists() else None
 
 
 def _batch_config_path() -> Optional[Path]:
     """Return the first existing project/tool config path, if any."""
-    return next((path for path in _batch_config_candidates() if path.exists()), None)
+    return _project_config_path() or _default_config_path()
 
 
 def _validate_config_version(data: dict, path: Path) -> None:
@@ -67,6 +81,42 @@ def _validate_config_version(data: dict, path: Path) -> None:
             f"version {CONFIG_SCHEMA_VERSION}")
 
 
+def _yaml_error_detail(exc: Exception) -> str:
+    """Describe parser failures without echoing potentially secret YAML text."""
+    mark = getattr(exc, "problem_mark", None)
+    location = f" at line {mark.line + 1}, column {mark.column + 1}" if mark else ""
+    return f"invalid YAML{location} ({type(exc).__name__})"
+
+
+def _read_config_document(path: Path, max_bytes: int = MAX_CONFIG_BYTES) -> dict:
+    """Read a bounded configuration mapping or raise an actionable error."""
+    if not yaml:
+        raise ValueError(f"{path}: PyYAML is unavailable")
+    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
+        raise ValueError(f"{path}: configuration byte limit must be a positive integer")
+    limit = min(max_bytes, MAX_CONFIG_BYTES)
+    try:
+        with path.open("rb") as stream:
+            raw = stream.read(limit + 1)
+        if len(raw) > limit:
+            raise ValueError(f"file exceeds {limit} byte limit")
+        return load_config_yaml(raw.decode("utf-8"), yaml)
+    except (yaml.YAMLError, RecursionError) as exc:
+        raise ValueError(f"{path}: {_yaml_error_detail(exc)}") from None
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"{path}: cannot read YAML ({type(exc).__name__})") from None
+    except ValueError as exc:
+        raise ValueError(f"{path}: {exc}") from None
+
+
+def _load_config_document(path: Optional[Path]) -> dict:
+    if path is None:
+        return {}
+    data = _read_config_document(path)
+    _validate_config_version(data, path)
+    return data
+
+
 def _find_batch_config() -> Optional[dict]:
     """Locate and parse pi-batch.yaml: the entry script directory
     (PBATCH_SCRIPT_DIR, set by the pi-batch.py shim) wins, then the package
@@ -76,11 +126,7 @@ def _find_batch_config() -> Optional[dict]:
     path = _batch_config_path()
     if path is None:
         return None
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    if isinstance(data, dict):
-        _validate_config_version(data, path)
-        return data
-    return None
+    return _load_config_document(path)
 
 def _load_batch_config(path: str = "pi-batch.yaml") -> dict:
     """Optional defaults for pi-batch. Missing file -> {} (built-in defaults
@@ -98,14 +144,7 @@ def _find_user_config() -> dict:
     path = user_dirs.user_settings_path()
     if not path.exists():
         return {}
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except (OSError, ValueError):
-        log.warning("User settings %s unreadable; ignoring", path)
-        return {}
-    if isinstance(data, dict):
-        _validate_config_version(data, path)
-    return data if isinstance(data, dict) else {}
+    return _load_config_document(path)
 
 def _merge_config(project: dict, user: dict) -> dict:
     """项目配置覆盖用户配置（节内键级合并）。"""
@@ -119,7 +158,31 @@ def _merge_config(project: dict, user: dict) -> dict:
             merged[section_name] = proj if section_name in project else usr
     return merged
 
-_BATCH_CFG = _merge_config(_load_batch_config(), _find_user_config())
+def _startup_config() -> tuple[dict, tuple[str, ...]]:
+    """Permit broken-file inspection, while refusing normal execution early."""
+    # Copied stdlib-only tools (e.g. json_schema_cli.py under python -S)
+    # historically run without YAML support, regardless of ambient settings.
+    if not yaml:
+        return {}, ()
+    loaders = (lambda: _load_config_document(_default_config_path()),
+               _find_user_config,
+               lambda: _load_config_document(_project_config_path()))
+    merged, errors = {}, []
+    for load in loaders:
+        try:
+            merged = _merge_config(load(), merged)
+        except ValueError as exc:
+            errors.append(str(exc))
+    if errors and sys.argv[1:2] not in (["config"], ["doctor"]):
+        for error in errors:
+            print(f"Configuration error: {error}", file=sys.stderr)
+        print("Run 'pi-batch config check' or 'pi-batch doctor' for diagnostics.",
+              file=sys.stderr)
+        raise SystemExit(2)
+    return merged, tuple(errors)
+
+
+_BATCH_CFG, CONFIG_ERRORS = _startup_config()
 
 def _section(name: str) -> dict:
     """Return a mapping config section, falling back on malformed input."""
@@ -321,6 +384,15 @@ _DEFAULT_PROVIDER_ERROR_PATTERNS = (
     r"rate_?limit_?error",
     r"insufficient_?quota",
     r"quota_?exceeded",
+    # opencode-go / Go-gateway usage limits. The emitted shape is
+    # `429: {"type":"GoUsageLimitError","message":"Go usage limit exceeded"}`
+    # — camelCase class name and a SPACE-separated phrase — so none of the
+    # underscore/`_?exceeded` patterns above match it. Without these two the
+    # shared provider breaker never tripped during the 2026-09-19 iris-ui 24h
+    # campaign and ~1412 provider errors burned 8h of wall clock at one
+    # empty round every ~2 minutes.
+    r"go_?usage_?limit_?error",
+    r"usage_?limit_?exceeded",
     r"credit_?balance_?too_?low",
     r"insufficient\s+(?:balance|funds)",
     r"billing_?error",

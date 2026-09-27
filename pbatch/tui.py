@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
-import queue
 import sys
 import threading
 import uuid
@@ -38,7 +38,7 @@ from .tui_transcript import (
     trim_transcript,
 )
 from .tui_commands import (
-    TUIActorControlMixin, TUIProductMixin, TUIReviewMixin, TUIPipelineMixin,
+    TUIRuntimeLifecycleMixin, TUIActorControlMixin, TUIProductMixin, TUIReviewMixin, TUIPipelineMixin,
     TUIWorkspaceMixin)
 from .tui_agent_runs import TUIAgentsMixin
 from .tui_inspector import TUIInspectorMixin
@@ -60,10 +60,10 @@ def _default_backend_factory(emit: Callable[[str, str], None], **kwargs):
     """Load the execution backend only when an interactive app actually mounts."""
     from .tui_backend import TUIBackend
     return TUIBackend(emit, **kwargs)
-def _default_appserver_factory(cwd: str):
+def _default_appserver_factory(cwd: str, **kwargs):
     from .tui_adapter_appserver import CodexAppServerAdapter
-    return CodexAppServerAdapter(cwd)
-class PiBatchTUI(TUISettingsMixin, TUISessionMixin, TUISessionControlMixin,
+    return CodexAppServerAdapter(cwd, **kwargs)
+class PiBatchTUI(TUIRuntimeLifecycleMixin, TUISettingsMixin, TUISessionMixin, TUISessionControlMixin,
                  TUIApprovalMixin,
                  TUIFollowUpMixin, TUIAgentsMixin, TUIActorControlMixin,
                  TUIPipelineMixin,
@@ -129,7 +129,7 @@ class PiBatchTUI(TUISettingsMixin, TUISessionMixin, TUISessionControlMixin,
         *,
         backend: Any = None,
         backend_factory: Optional[Callable[..., Any]] = None,
-        appserver_factory: Optional[Callable[[str], Any]] = None,
+        appserver_factory: Optional[Callable[..., Any]] = None,
         pi_rpc_factory: Optional[Callable[..., Any]] = None,
         review_runner: Optional[Callable[..., Any]] = None,
     ) -> None:
@@ -143,7 +143,7 @@ class PiBatchTUI(TUISettingsMixin, TUISessionMixin, TUISessionControlMixin,
         self._review_runner = review_runner
         self._adapter = None
         self._adapter_session_id = ""
-        self._turn_handle = None
+        self._turn_handle = self._runtime_operation = None
         self._structured_backend = False
         self._strict_adapter = False
         self._runtime_blocked_reason = ""
@@ -209,6 +209,7 @@ class PiBatchTUI(TUISettingsMixin, TUISessionMixin, TUISessionControlMixin,
 
     def on_unmount(self) -> None:
         self._unmounting = True
+        self._cancel_before_exit(wait_review=True)
         self._invalidate_runtime_completions()
         try:
             self.detach_native_pipeline()
@@ -300,6 +301,7 @@ class PiBatchTUI(TUISettingsMixin, TUISessionMixin, TUISessionControlMixin,
             return
         self._adapter = adapter
         self._adapter_session_id = str(session.session_id)
+        self._adapter_workspace_id = str(session.workspace_id)
         self._strict_adapter = True
         self._enable_runtime_projection()
     def _attach_appserver(self, provider: str) -> None:
@@ -311,7 +313,9 @@ class PiBatchTUI(TUISettingsMixin, TUISessionMixin, TUISessionControlMixin,
             return
         adapter = None
         try:
-            adapter = self._appserver_factory(self._session_cwd())
+            startup = self.options.startup_timeout
+            kwargs = {} if startup is None else {"startup_timeout": startup}
+            adapter = self._appserver_factory(self._session_cwd(), **kwargs)
             adapter.initialize({})
             session = adapter.start_session({
                 "name": self.options.session_name, "model": self.options.model})
@@ -323,6 +327,7 @@ class PiBatchTUI(TUISettingsMixin, TUISessionMixin, TUISessionControlMixin,
             return
         self._adapter = adapter
         self._adapter_session_id = str(session.session_id)
+        self._adapter_workspace_id = str(session.workspace_id)
         self._strict_adapter = True
         self._enable_runtime_projection()
     def _attach_structured_backend(self, agent: str) -> bool:
@@ -363,6 +368,7 @@ class PiBatchTUI(TUISettingsMixin, TUISessionMixin, TUISessionControlMixin,
             return
         self._adapter = adapter
         self._adapter_session_id = str(session.session_id)
+        self._adapter_workspace_id = str(session.workspace_id)
         self._strict_adapter = False
         self._enable_runtime_projection()
     def get_system_commands(self, screen: Screen) -> Iterable[SystemCommand]:
@@ -382,11 +388,13 @@ class PiBatchTUI(TUISettingsMixin, TUISessionMixin, TUISessionControlMixin,
         if self._handle_busy_submission(value, invocation):
             return
         if invocation is not None:
-            self._dispatch_slash(invocation)
+            if self._dispatch_slash(invocation) is False:
+                event.input.value = value
             return
-        self._start_turn(value)
+        if not self._start_turn(value):
+            event.input.value = value
 
-    def _dispatch_slash(self, command: SlashInvocation) -> None:
+    def _dispatch_slash(self, command: SlashInvocation) -> Optional[bool]:
         if command.error:
             self._append_entry("error", f"Invalid slash command: {command.error}")
             return
@@ -395,7 +403,7 @@ class PiBatchTUI(TUISettingsMixin, TUISessionMixin, TUISessionControlMixin,
             self._append_entry(
                 "error", f"Unknown slash command `/{command.name}`. Use `/help` for commands.")
             return
-        getattr(self, spec.handler_name)(command.args)
+        return getattr(self, spec.handler_name)(command.args)
 
     def _start_turn(self, prompt: str) -> bool:
         if self._busy or self._session_control_busy():
@@ -414,6 +422,8 @@ class PiBatchTUI(TUISettingsMixin, TUISessionMixin, TUISessionControlMixin,
         if self._runtime_blocked_reason:
             self._append_entry("error", self._runtime_blocked_reason)
             return False
+        if not self._prepare_runtime_action():
+            return False
         self._last_task_prompt = prompt
         self._append_entry("user", prompt, render=False)
         self._assistant_index = len(self._entries)
@@ -422,13 +432,13 @@ class PiBatchTUI(TUISettingsMixin, TUISessionMixin, TUISessionControlMixin,
         self._error_index = None
         self._turn_stdout_seen = False
         self._turn_stderr_seen = False
-        self._prepare_runtime_projection()
         self._timeline = TimelineLog()
         self._cancel_pending = False
         self._cancel_retry_count = 0
         self._timeline_mode, self._timeline_summary = "summary", ""
         self._refresh_timeline()
         self._set_busy(True)
+        self._begin_runtime_operation("Agent turn")
         self._mark_agent_operation_started("turn", prompt)
         self._render_conversation()
         self._worker = self.run_worker(
@@ -441,38 +451,6 @@ class PiBatchTUI(TUISettingsMixin, TUISessionMixin, TUISessionControlMixin,
         )
         return True
 
-    def _run_turn_worker(self, prompt: str) -> None:
-        result, error = None, None
-        adapter = self._adapter
-        if adapter is None:
-            result, error = self._run_backend_turn(prompt)
-        else:
-            try:
-                stream = adapter.events()
-                handle = adapter.start_turn({
-                    "prompt": prompt, "session_id": self._adapter_session_id,
-                    "model": self._option_value("model"),
-                })
-                self._turn_handle = handle
-            except Exception as exc:
-                if self._strict_adapter:
-                    error = exc
-                else:
-                    self._disable_adapter(adapter)
-                    result, error = self._run_backend_turn(prompt)
-            else:
-                try:
-                    result = self._consume_adapter_turn(stream, handle)
-                except Exception as exc:
-                    error = self._abort_runtime_stream(adapter, handle, exc)
-                finally:
-                    self._turn_handle = None
-        self._capture_runtime_finish()
-        try:
-            self.call_from_thread(self._finish_turn, result, error)
-        except RuntimeError:
-            pass  # application closed while the backend was unwinding
-
     def _run_backend_turn(self, prompt: str) -> tuple[Any, Optional[Exception]]:
         try:
             method = (self._backend.run_turn_structured if self._structured_backend
@@ -481,31 +459,13 @@ class PiBatchTUI(TUISettingsMixin, TUISessionMixin, TUISessionControlMixin,
         except Exception as exc:  # backend errors are rendered, never crash the UI
             return None, exc
 
-    def _consume_adapter_turn(self, stream: Any, handle: Any) -> dict[str, Any]:
-        while True:
-            try:
-                event = stream.get(timeout=0.1)
-            except queue.Empty:
-                if getattr(handle, "done", False):
-                    raise RuntimeError("runtime turn ended without a terminal event")
-                continue
-            if event is None:
-                raise RuntimeError("runtime event stream closed during a turn")
-            kind, payload = self._runtime_event_context(handle, event)
-            self._ingest_runtime_event(event)
-            if kind in {"turn.completed", "turn.failed", "turn.interrupted"}:
-                return {
-                    "success": kind == "turn.completed", "stdout": "", "stderr": "",
-                    "reason": payload.get("reason", ""),
-                    "returncode": payload.get("returncode", 0),
-                }
-
     def _disable_adapter(self, adapter: Any) -> None:
         try:
             adapter.close()
         finally:
             self._adapter = None
             self._adapter_session_id = ""
+            self._adapter_workspace_id = ""
             self._strict_adapter = False
             self._disable_runtime_projection()
             setter = getattr(self._backend, "set_emit", None)
@@ -745,7 +705,9 @@ class PiBatchTUI(TUISettingsMixin, TUISessionMixin, TUISessionControlMixin,
             return
         adapter_switch_attempted = False
         try:
-            if self._adapter is None:
+            if self._restart_stopped_runtime():
+                snapshot = self._backend_snapshot()
+            elif self._adapter is None:
                 snapshot = self._backend.new_session(name)
             else:
                 self._prepare_runtime_session_switch()
@@ -756,6 +718,7 @@ class PiBatchTUI(TUISettingsMixin, TUISessionMixin, TUISessionControlMixin,
                     "name": name, "session_id": target_session_id,
                     "model": self._option_value("model")})
                 self._adapter_session_id = str(session.session_id)
+                self._adapter_workspace_id = str(session.workspace_id)
                 snapshot = self._backend_snapshot()
             self._prepare_runtime_projection()
             self._reset_follow_ups_for_session_switch()
@@ -803,8 +766,7 @@ class PiBatchTUI(TUISettingsMixin, TUISessionMixin, TUISessionControlMixin,
                         severity="warning")
             return
         if self._review_busy:
-            self.notify("AI review is bounded and cannot be cancelled from this view.",
-                        severity="warning")
+            self._cancel_review()
             return
         if getattr(self, "_pipeline_busy", False):
             try:
@@ -850,6 +812,8 @@ class PiBatchTUI(TUISettingsMixin, TUISessionMixin, TUISessionControlMixin,
             request_cancel = getattr(channel, "request_cancel", None)
             return bool(callable(request_cancel) and request_cancel(scope))
         handle = self._turn_handle
+        if self._runtime_operation is not None:
+            return self._runtime_operation.cancel()
         if self._adapter is not None and handle is not None:
             self._adapter.interrupt_turn({"turn_id": handle.turn_id})
             return True
@@ -879,9 +843,10 @@ class PiBatchTUI(TUISettingsMixin, TUISessionMixin, TUISessionControlMixin,
         self._cancel_before_exit()
         self.exit()
 
-    def _cancel_before_exit(self) -> None:
+    def _cancel_before_exit(self, *, wait_review: bool = False) -> None:
         """Cover the race where a submitted worker starts while TUI exits."""
         if self._review_busy:
+            self._cancel_review(wait=wait_review)
             return
         if getattr(self, "_pipeline_busy", False):
             try:
@@ -947,6 +912,8 @@ def _build_parser() -> argparse.ArgumentParser:
         default="auto", help="TUI runtime selection")
     parser.add_argument("--memory-mode", choices=("auto", "on", "off"), default="")
     parser.add_argument("--timeout", type=int, default=0, help="turn timeout in seconds")
+    parser.add_argument("--startup-timeout", type=float, default=None,
+                        help="App Server initialization timeout in seconds (default: 15)")
     parser.add_argument("--cwd", default="", help="workspace directory")
     parser.add_argument("--session-name", default="tui", help="stable session display name")
     parser.add_argument("--pipeline", default="",
@@ -957,6 +924,12 @@ def _build_parser() -> argparse.ArgumentParser:
 def _options_from_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> TuiOptions:
     if args.timeout < 0:
         parser.error("--timeout must be non-negative")
+    if args.startup_timeout is not None:
+        if (not math.isfinite(args.startup_timeout)
+                or not 0 < args.startup_timeout <= threading.TIMEOUT_MAX):
+            parser.error("--startup-timeout must be finite, positive and within the platform limit")
+        if args.runtime != "app-server":
+            parser.error("--startup-timeout requires --runtime app-server")
     cwd = ""
     if args.cwd:
         path = Path(args.cwd).expanduser().resolve()
@@ -968,6 +941,7 @@ def _options_from_args(parser: argparse.ArgumentParser, args: argparse.Namespace
     return TuiOptions(cwd=cwd, agent=args.agent_bin, model=args.model,
                       provider=args.provider, memory_mode=args.memory_mode,
                       timeout=args.timeout, session_name=args.session_name,
+                      startup_timeout=args.startup_timeout,
                       runtime=args.runtime, pipeline=args.pipeline, native_session=args.native_session)
 
 def _interactive_terminal() -> bool:
@@ -980,7 +954,7 @@ def tui_main(
     *,
     backend: Any = None,
     backend_factory: Optional[Callable[..., Any]] = None,
-    appserver_factory: Optional[Callable[[str], Any]] = None,
+    appserver_factory: Optional[Callable[..., Any]] = None,
     pi_rpc_factory: Optional[Callable[..., Any]] = None,
 ) -> int:
     """Parse TUI options and run interactively; non-TTY execution exits 2."""

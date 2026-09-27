@@ -470,6 +470,43 @@ def test_materialize_pipeline_scopes_all_outputs(tmp_path):
     assert task_output.parent.parent.name == "artifacts"
 
 
+def test_materialized_pipeline_keeps_a_committing_gate_stage_writable(tmp_path):
+    """`gate: true` must not force a stage read-only when that stage COMMITS.
+
+    The iris-ui 24h template attaches the review gate to the implement stage
+    (`gate: true` + `git_commit: true`). Inferring read-only from `gate` made
+    the runner reject the very diff its own gate had just validated and halt
+    the pipeline at implement — 0 commits across 98 PIPELINE_FAILED rounds in
+    2026-09. Dedicated review gates (no commit) must still be read-only.
+    """
+    template = tmp_path / "pipeline.yaml"
+    template.write_text(
+        "stages:\n"
+        "  - name: requirements\n    from_prompt: old\n    output: r.md\n"
+        "  - name: implement\n    from_outputs: requirements\n    gate: true\n"
+        "    git_commit: true\n    output: impl.md\n"
+        "    tasks:\n      - prompt: '{input_content}'\n        output: impl.md\n"
+        "  - name: review\n    from_outputs: implement\n    gate: true\n"
+        "    output: review.md\n"
+        "    tasks:\n      - prompt: '{input_content}'\n        output: review.md\n",
+        encoding="utf-8")
+    analysis = tmp_path / "analysis.json"
+    analysis.write_text("[]", encoding="utf-8")
+    direction = Direction.from_mapping("src", {
+        "title": "Fix", "problem": "gap", "evidence": ["pipeline.yaml"],
+        "acceptance": ["test"],
+    })
+    settings = CampaignSettings(pipeline_template="pipeline.yaml", output_dir="out")
+
+    path = materialize_pipeline(tmp_path, settings, direction, analysis)
+    stages = {stage["name"]: stage for stage in
+              yaml.safe_load(path.read_text(encoding="utf-8"))["stages"]}
+
+    assert stages["requirements"].get("read_only") is True
+    assert not stages["implement"].get("read_only")
+    assert stages["review"].get("read_only") is True
+
+
 def test_tool_digest_in_fingerprints_and_version_event(tmp_path):
     """The tool's own code is part of every fingerprint (real-world lesson:
     a mid-campaign tool fix silently changed parser behaviour; the running
@@ -912,12 +949,52 @@ def test_campaign_loop_refreshes_repository_snapshot_each_round(monkeypatch, tmp
     context = C.CampaignContext(tmp_path, settings, args,
                                 StateStore(tmp_path / "state.jsonl"), {})
     monkeypatch.setattr(C, "git_snapshot", lambda _root, _excludes: next(snapshots))
-    monkeypatch.setattr(C, "run_campaign",
-                        lambda ctx: observed.append(dict(ctx.snapshot)) or 0)
+
+    def _fake_round(ctx):
+        observed.append(dict(ctx.snapshot))
+        # Each simulated round passes a direction. Without progress the round
+        # stall safety circuit stops the loop after 2 rounds
+        # (campaign_recovery.update_round_recovery) and this test would be
+        # asserting snapshot refresh through a truncated loop.
+        ctx.round_progress = 1
+        return 0
+
+    monkeypatch.setattr(C, "run_campaign", _fake_round)
 
     assert C.run_campaign_loop(context) == 0
     assert observed == [{"head": "one", "dirty": "a"},
                         {"head": "two", "dirty": "b"}]
+
+
+def test_campaign_loop_stops_fail_closed_on_consecutive_stalled_rounds(
+        monkeypatch, tmp_path):
+    """A campaign whose rounds keep passing nothing must stop, even though
+    recovery.enabled defaults to false.
+
+    This is the loop-level guard for the 2026-09-19 iris-ui outage: the stall
+    stop was gated behind the opt-in stash-based self-repair, so 123
+    zero-progress rounds ran for ~8h against a provider quota wall.
+    """
+    from pbatch import campaign as C
+
+    rounds_run = []
+    settings = CampaignSettings(output_dir="out", worktree_root="worktrees")
+    args = SimpleNamespace(dry_run=False, rounds=0, round_commit=False,
+                           round_delay=0, log_file="")
+    context = C.CampaignContext(tmp_path, settings, args,
+                                StateStore(tmp_path / "state.jsonl"), {})
+    monkeypatch.setattr(C, "git_snapshot", lambda _root, _excludes: {"head": "one"})
+
+    def _stalled_round(ctx):
+        rounds_run.append(1)
+        ctx.round_progress = 0
+        return 0
+
+    monkeypatch.setattr(C, "run_campaign", _stalled_round)
+
+    # Fail-closed exit code (4), not an unbounded loop.
+    assert C.run_campaign_loop(context) == 4
+    assert len(rounds_run) == settings.recovery_stop_after_stalled_rounds
 
 
 def test_campaign_rounds_rejects_negative_and_nonfinite(tmp_path):

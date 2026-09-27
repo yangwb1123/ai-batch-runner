@@ -13,6 +13,7 @@ from .tui_codex_support import _bound, _stop_process
 from .provider_env import provider_child_env
 from .tui_protocol import RUNTIME_PROTOCOL_VERSION, RuntimeCapabilities
 from .tui_runtime import RuntimeInfo
+from .tui_transport_io import close_process_pipes, open_process_pipes, read_chunk
 
 
 RUNTIME_NAME = "pi-rpc"
@@ -238,21 +239,31 @@ class DefaultPiRpcTransport:
         self.argv = tuple(argv)
         self._process = (spawn or _default_spawn)(argv, cwd)
         if self._process.stdin is None or self._process.stdout is None:
-            _stop_process(self._process)
+            try:
+                _stop_process(self._process)
+            finally:
+                close_process_pipes(self._process)
             raise RuntimeError("Pi RPC process pipes are unavailable")
-        self._reader = _LfReader(self._process.stdout, max_line_bytes)
+        self._pipes = open_process_pipes(self._process, _stop_process)
+        self._reader = _LfReader(self._pipes.stdout, max_line_bytes)
         self._stderr: deque[bytes] = deque()
         self._stderr_size = 0
         self._lock, self._stderr_lock = threading.Lock(), threading.Lock()
+        self._close_lock = threading.Lock()
         self._closed = False
         self._stderr_thread = threading.Thread(
             target=self._read_stderr, name="pi-rpc-stderr", daemon=True)
         self._stderr_thread.start()
 
     def _read_stderr(self) -> None:
-        stream = self._process.stderr
+        stream = self._pipes.stderr
         while stream is not None:
-            chunk = stream.read(4096)
+            try:
+                chunk = read_chunk(stream, 4096)
+            except (OSError, ValueError):
+                if self._closed:
+                    return
+                raise
             if not chunk:
                 return
             raw = chunk.encode("utf-8", "replace") if isinstance(chunk, str) else bytes(chunk)
@@ -271,8 +282,8 @@ class DefaultPiRpcTransport:
         with self._lock:
             if self._closed or self._process.stdin is None:
                 raise EOFError("Pi RPC input is closed")
-            self._process.stdin.write(encoded)
-            self._process.stdin.flush()
+            self._pipes.stdin.write(encoded)
+            self._pipes.stdin.flush()
 
     def recv_line(self) -> Optional[str]:
         return self._reader.read_line()
@@ -286,15 +297,15 @@ class DefaultPiRpcTransport:
         return f"{status}: {_bound(detail, 8192)[0]}" if detail else status
 
     def close(self) -> None:
-        with self._lock:
+        with self._close_lock:
             if self._closed:
                 return
             self._closed = True
-            stream = self._process.stdin
-        if stream is not None:
             try:
-                stream.close()
-            except OSError:
-                pass
-        _stop_process(self._process)
-        self._stderr_thread.join(timeout=0.5)
+                _stop_process(self._process)
+            finally:
+                try:
+                    self._stderr_thread.join(timeout=0.5)
+                finally:
+                    self._pipes.close()
+                    self._stderr_thread.join(timeout=0.1)

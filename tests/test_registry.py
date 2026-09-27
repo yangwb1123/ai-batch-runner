@@ -45,6 +45,13 @@ def test_register_mark_list_unregister(tmp_path: Path):
     assert registry.list_runs() == []
 
 
+def test_registration_does_not_require_unix_uname(monkeypatch, tmp_path):
+    monkeypatch.delattr(os, "uname", raising=False)
+    monkeypatch.setattr(registry.socket, "gethostname", lambda: "windows-host")
+    path = registry.register_run(mode="batch", repo=str(tmp_path))
+    assert json.loads(path.read_text())["host"] == "windows-host"
+
+
 def test_heartbeat_updates_last_active(tmp_path: Path):
     registry.register_run(mode="pipeline", repo=str(tmp_path))
     before = registry.list_runs()[0]["last_active"]
@@ -73,7 +80,7 @@ def test_read_only_home_registry_uses_per_user_fallback(
 def test_dead_pid_marked_and_pruned(tmp_path: Path):
     # a registry file whose pid cannot exist on this host
     dead = registry._registry_dir() / "99999999.json"
-    dead.write_text(json.dumps({"pid": 99999999, "host": "x", "start": time.time(),
+    dead.write_text(json.dumps({"pid": 99999999, "host": registry.socket.gethostname(), "start": time.time(),
                                 "mode": "batch", "repo": "/tmp", "status": "running",
                                 "last_active": time.time(), "argv": []}), encoding="utf-8")
     runs = registry.list_runs()
@@ -97,3 +104,58 @@ def test_format_ps_smoke(tmp_path: Path):
     assert "campaign" in table
     assert "PID" in table
     assert "REPO" in table
+
+
+@pytest.mark.parametrize("record", [None, [], 3, "bad", {"pid": None}, {"pid": True},
+                                   {"pid": -1}, {"pid": 0}, {"pid": "123"},
+                                   {"pid": 1.5}, {"pid": 2 ** 64}])
+def test_malformed_registry_records_are_neither_probed_nor_pruned(monkeypatch, record):
+    path = registry._registry_dir() / "123.json"
+    path.write_text(json.dumps(record), encoding="utf-8")
+    def forbidden(_pid):
+        pytest.fail("malformed registry PID was probed")
+    monkeypatch.setattr(registry, "_alive", forbidden)
+    assert registry.list_runs() == []
+    assert "PID" in registry.format_ps(registry.list_runs())
+    assert registry.prune_dead() == 0 and path.exists()
+
+
+@pytest.mark.parametrize("host", [None, "", "unrelated-host.invalid"])
+def test_registry_does_not_probe_or_prune_foreign_or_unknown_host(monkeypatch, host):
+    path = registry._registry_dir() / "99999999.json"
+    path.write_text(json.dumps({"pid": 99999999, "host": host, "status": "dead"}))
+    def forbidden(_pid):
+        pytest.fail("registry probed a PID from another or unknown host")
+    monkeypatch.setattr(registry, "_alive", forbidden)
+    runs = registry.list_runs()
+    assert len(runs) == 1 and runs[0]["status"] == "unknown"
+    assert registry.prune_dead() == 0 and path.exists()
+
+
+def test_ps_tolerates_malformed_display_fields_and_prune_rechecks_live_pid():
+    path = registry._registry_dir() / f"{os.getpid()}.json"
+    record = {"pid": os.getpid(), "host": registry.socket.gethostname(),
+              "start": [], "last_active": float("nan"), "argv": [1, None, {}],
+              "repo": None, "session": {}, "status": "dead"}
+    path.write_text(json.dumps(record), encoding="utf-8")
+    assert "PID" in registry.format_ps(registry.list_runs())
+    assert registry.prune_dead() == 0 and path.exists()
+    record.update(start="invalid", last_active={}, argv=123, repo=123)
+    path.write_text(json.dumps(record), encoding="utf-8")
+    assert "PID" in registry.format_ps(registry.list_runs())
+
+
+def test_bad_registry_file_reference_cannot_remove_another_registration():
+    live = registry.register_run(mode="batch", repo="workspace")
+    dead = registry._registry_dir() / "99999999.json"
+    dead.write_text(json.dumps({"pid": 99999999, "host": registry.socket.gethostname(),
+                                "_file": str(live)}), encoding="utf-8")
+    assert registry.prune_dead() == 1
+    assert live.exists() and not dead.exists()
+
+
+def test_registry_pid_must_match_its_filename():
+    path = registry._registry_dir() / f"{os.getpid()}.json"
+    path.write_text(json.dumps({"pid": 99999999, "host": registry.socket.gethostname()}))
+    assert registry.list_runs() == []
+    assert registry.prune_dead() == 0 and path.exists()

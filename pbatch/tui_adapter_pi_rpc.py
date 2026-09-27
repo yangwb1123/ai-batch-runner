@@ -205,7 +205,11 @@ class PiRpcAdapter:
         self._require_initialized()
         self._ensure_session_replaceable()
         first = not self._startup_claimed
-        if not first:
+        if first:
+            # Pi emits session_info_changed before set_session_name replies.
+            # Bind the startup session before that event enters the idle queue.
+            self._bind_startup_session(request)
+        else:
             self._session_command("new_session")
         name = self._request_text(request, "name", maximum=4096)
         if name:
@@ -215,6 +219,13 @@ class PiRpcAdapter:
         session = self._adopt_state(state, request, event)
         self._startup_claimed = True
         return session
+
+    def _bind_startup_session(self, request: Any) -> None:
+        requested = self._request_text(request, "session_id", maximum=4096)
+        workspace = self._request_text(request, "workspace_id", maximum=4096)
+        with self._lock:
+            self._session.session_id = requested or self._session.session_id
+            self._session.workspace_id = workspace or self._session.workspace_id
 
     def _session_command(self, command: str, **params: Any) -> dict[str, Any]:
         result = self._call(command, **params)
@@ -269,8 +280,11 @@ class PiRpcAdapter:
         requested = self._request_text(request, "session_id", maximum=4096)
         workspace = self._request_text(request, "workspace_id", maximum=4096)
         self._set_provider_state(state)
+        local_id = (self._session.session_id
+                    if event == "session.created" and not self._startup_claimed
+                    else _id("ses"))
         self._session = RuntimeSession(
-            requested or _id("ses"), provider_id,
+            requested or local_id, provider_id,
             workspace or self._session.workspace_id, _now(), "ACTIVE")
         with self._lock:
             if self._active is not None and self._active.done:

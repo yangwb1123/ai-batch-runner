@@ -14,7 +14,6 @@ import os
 import re
 import signal
 import subprocess
-import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -24,6 +23,7 @@ from typing import Optional, Sequence
 from . import config
 from .config import log, yaml
 from .isolate import SCOPE_BLOCKED_EXIT, _repo_root
+from .launcher import cli_argv
 from .lock import (_default_lock_path, _lock_path, acquire_lock,
                    release_lock)
 from .text_io import read_text_bounded
@@ -202,8 +202,8 @@ def _tool_entrypoint() -> Path:
 
 def _child_command(plan: AgentPlan, worktree: Path, patch: Path,
                    args: argparse.Namespace, logfile: Path, branch: str) -> list[str]:
-    command = [sys.executable, str(_tool_entrypoint()), "isolate",
-               "-b", branch, "-d", str(worktree)]
+    command = cli_argv("isolate", "-b", branch, "-d", str(worktree),
+                       entrypoint=_tool_entrypoint())
     for path in plan.seed_dirty:
         command.extend(["--seed-dirty", path])
     for path in plan.write_scope:

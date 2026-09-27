@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .campaign_models import safe_slug
 from .config import data_dir
+from . import process_identity
 
 _MAX_LEASE_BYTES = 16 * 1024
 _LEASE_WRITE_INTERVAL = 15.0
@@ -121,20 +122,13 @@ def _read_json(path: Path) -> dict:
 
 
 def _pid_is_same_process(payload: dict) -> bool:
-    try:
-        pid = int(payload.get("pid", 0))
-    except (TypeError, ValueError):
-        return False
-    if pid <= 0:
+    pid = payload.get("pid")
+    if not process_identity.pid_alive(pid):
         return False
     expected = _bounded_text(payload.get("process_start_ticks"))
     actual = process_start_ticks(pid)
     if expected and actual:
         return expected == actual
-    try:
-        os.kill(pid, 0)
-    except (OSError, ProcessLookupError):
-        return False
     return True
 
 

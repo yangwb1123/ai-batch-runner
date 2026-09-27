@@ -64,6 +64,7 @@ PBATCH = REPO_ROOT / "pbatch"
 # The three data files that must ship inside the pbatch package.
 EXPECTED_DATA_FILES = ("role_keywords.yaml", "task_keywords.yaml", "README.md")
 EXPECTED_RUNTIME_ASSETS = (
+    "examples/llm-pool.yaml", "docs/LLM_ACCOUNT_POOL.md",
     "pi-batch.yaml", "quality.py", "scripts/check-ui-spec.py",
     "scripts/check-frontend-quality.py", "scripts/check-evidence.py",
     "scripts/check-completion-report.py", "ui-specs/rules.yaml",

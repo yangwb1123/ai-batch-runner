@@ -65,8 +65,9 @@ def _capture_codex_thread(stdout_lines: list, name: str, sid: str,
                           workdir: str, bin_name: str = "",
                           provider: str = "") -> bool:
     """Capture a provider thread using the task executor's adapter."""
+    lines = "".join(stdout_lines).split("\n")
     return capture_codex_thread(
-        stdout_lines, name, sid, workdir, bin_name or config.AGENT_BIN,
+        lines, name, sid, workdir, bin_name or config.AGENT_BIN,
         provider)
 
 

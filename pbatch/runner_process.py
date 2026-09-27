@@ -7,6 +7,7 @@ import threading
 import time
 
 from .runner_cancel import cancel_requested
+from .process_exec import StreamStatus
 
 
 def drain_process(proc, prefix, start, timeout, cap, emit,
@@ -14,7 +15,7 @@ def drain_process(proc, prefix, start, timeout, cap, emit,
                   read_stream, kill_group, poll_wait, timeout_type,
                   cancelled_type, join_threads):
     stdout_lines, stderr_lines = [], []
-    stdout_overflow, stderr_overflow = [False], [False]
+    stdout_overflow, stderr_overflow = StreamStatus(), StreamStatus()
     stdout_sink = stdout_target or sys.stdout
     stderr_sink = stderr_target or sys.stderr
     out_args = (cap, stdout_overflow, emit, stdout_sink)
@@ -26,30 +27,24 @@ def drain_process(proc, prefix, start, timeout, cap, emit,
     terr = threading.Thread(
         target=read_stream, args=(proc.stderr, prefix, stderr_lines, *err_args),
         daemon=True)
-    tout.start()
-    terr.start()
     deadline = start + timeout
-    for thread in (tout, terr):
-        while thread.is_alive():
+    try:
+        tout.start()
+        terr.start()
+        while tout.is_alive() or terr.is_alive() or proc.poll() is None:
             if cancel_requested(cancel_event):
-                kill_group(proc)
-                join_threads((tout, terr))
                 raise cancelled_type(stdout_lines, stderr_lines, (tout, terr))
+            if (stdout_overflow[0] or stderr_overflow[0]
+                    or stdout_overflow.error or stderr_overflow.error):
+                break
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise timeout_type(proc.args, timeout, stdout_lines, stderr_lines,
                                    (stdout_overflow[0], stderr_overflow[0]),
                                    (tout, terr))
-            thread.join(timeout=min(0.05, remaining))
-    while proc.poll() is None:
-        if cancel_requested(cancel_event):
-            kill_group(proc)
-            join_threads((tout, terr))
-            raise cancelled_type(stdout_lines, stderr_lines, (tout, terr))
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise timeout_type(proc.args, timeout, stdout_lines, stderr_lines,
-                               (stdout_overflow[0], stderr_overflow[0]),
-                               (tout, terr))
-        poll_wait.wait(min(0.05, remaining))
+            poll_wait.wait(min(0.05, remaining))
+    finally:
+        kill_group(proc)
+        join_threads(tuple(thread for thread in (tout, terr)
+                           if thread.ident is not None))
     return stdout_lines, stderr_lines, stdout_overflow, stderr_overflow

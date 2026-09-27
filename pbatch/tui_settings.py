@@ -94,11 +94,22 @@ class TUISettingsMixin(TUIModelControlMixin):
                 "Clear it with `/provider \"\"` before switching.")
             return
         was_blocked = bool(self._runtime_blocked_reason)
+        rebind = self._option_rebinds_runtime(name, was_blocked)
+        if rebind and not self._prepare_runtime_action(session_switch=True):
+            return
         setattr(self.options, name, value)
         if not self._set_backend_option(name, value):
             return
-        if self._option_rebinds_runtime(name, was_blocked):
-            self._rebind_runtime()
+        if rebind:
+            try:
+                self._rebind_runtime()
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                self._runtime_blocked_reason = (
+                    "Runtime setting change did not complete; resolve the journal "
+                    "or runtime error, then use `/new` before running a turn.")
+                self._append_entry("error", f"Unable to apply {name}: {exc}. "
+                                   f"{self._runtime_blocked_reason}")
+                return
         self._last_status = f"{name} updated; applies to the next turn"
         self._refresh_status()
         self._append_entry("system", f"`{name}` set to `{value or 'default'}`.")
@@ -148,6 +159,7 @@ class TUISettingsMixin(TUIModelControlMixin):
         if callable(setter):
             setter(None)
         self._adapter_session_id = ""
+        self._adapter_workspace_id = ""
         self._structured_backend = False
         self._strict_adapter = False
         self._disable_runtime_projection()

@@ -38,6 +38,21 @@ def test_event_bus_deduplicates_event_id_before_delivery():
         bus.get(timeout=0.01)
 
 
+def test_sequence_preview_neither_reserves_nor_delivers_events():
+    bus = EventBus()
+    future = _event(seq=10)
+    assert bus.validate_sequence(future)
+    assert bus.validate_sequence(future)
+    with pytest.raises(queue.Empty):
+        bus.get(timeout=0)
+    first = _event(seq=1)
+    assert bus.publish(first)
+    assert not bus.validate_sequence(first)
+    with pytest.raises(ValueError, match="non-monotonic"):
+        bus.validate_sequence(_event(seq=1, event_id="evt_backwards"))
+    assert bus.publish(_event(seq=2))
+
+
 def test_event_bus_rejects_non_monotonic_sequence_per_run():
     bus = EventBus()
     assert bus.publish(_event(seq=3)) is True

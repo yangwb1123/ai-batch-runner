@@ -226,6 +226,13 @@ def test_malformed_fabric_observations_do_not_report_eligible(system, mutation):
     with pytest.raises(HubAccessError) as rejected:
         placement(system, task)
     assert rejected.value.code == "placement_unavailable"
+    system.compute.tick()
+    assert system.compute.store.get("team", task["task_id"])["state"] == "queued"
+    assert not system.fabric.requests
+    system.fabric.inventory = original
+    system.compute._attempt(system.compute.store.get("team", task["task_id"], private=True))
+    assert system.compute.store.get("team", task["task_id"])["state"] == "running"
+    assert len(system.fabric.requests) == 1
 
 
 @pytest.mark.parametrize("section,name,value", [("resources", "cpu_cores", float("inf")),

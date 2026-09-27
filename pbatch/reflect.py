@@ -28,10 +28,12 @@ import argparse
 import json
 import re
 import subprocess
-import sys
 import time
 from pathlib import Path
 from typing import Optional
+
+from . import config
+from .launcher import script_argv
 
 def reflections_file(cwd: str = "") -> Path:
     """反思账本（data_dir 感知）。"""
@@ -165,10 +167,9 @@ def _complexity_check(code_dir: str) -> list:
         return []
     try:
         result = subprocess.run(
-            [sys.executable, str(Path(__file__).resolve().parent.parent
-                                 / "quality.py"), "--strict", code_dir],
+            script_argv(Path(config.TOOL_ROOT) / "quality.py", "--strict", code_dir),
             capture_output=True, text=True, timeout=120)
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, ValueError, subprocess.TimeoutExpired):
         return []
     matches = re.findall(r"(.+\.py):\d+ func '(\w+)' (\d+) lines? > (\d+)",
                          result.stdout)

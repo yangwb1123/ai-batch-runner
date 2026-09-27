@@ -114,7 +114,7 @@ class _AppServerReviewRuntime:
         return handle
 
     def start_turn(self, request):
-        run_id, turn_id = "fix-run", "fix-turn"
+        run_id, turn_id = request["run_id"], request["turn_id"]
         handle = TurnHandle(
             self.session.session_id, run_id, turn_id, "agent_main", "now")
         scope = {
@@ -257,6 +257,10 @@ def test_appserver_review_uses_runtime_events_and_associates_findings(tmp_path):
             fix_report = fix_reports[0].read_text(encoding="utf-8")
             assert "Source review association: yes" in fix_report
             assert "pytest" in fix_report
+            app._prepare_runtime_session_switch()
+            snapshot = app._event_controller.snapshot()
+            assert snapshot.workspace.changed
+            assert not app._runtime_blocked_reason
 
     _run(scenario())
 

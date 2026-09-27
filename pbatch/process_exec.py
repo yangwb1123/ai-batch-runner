@@ -7,6 +7,9 @@ hard deadline, process-group kill and bounded diagnostic contract.
 
 from __future__ import annotations
 
+import codecs
+import io
+import math
 import os
 import signal
 import subprocess
@@ -23,6 +26,14 @@ class ValidationResult(NamedTuple):
     stdout: str
     stderr: str
     timed_out: bool
+
+
+class StreamStatus(list):
+    """Preserve the legacy overflow flag while reporting reader failures."""
+
+    def __init__(self):
+        super().__init__([False])
+        self.error = ""
 
 
 class _CancelledDrain(RuntimeError):
@@ -50,29 +61,35 @@ class _DrainTimeout(subprocess.TimeoutExpired):
 def run_bounded(cmd, cwd: str, timeout: float, output_cap: int,
                 shell: bool, label: str, cancel_event=None) -> ValidationResult:
     """Spawn one command, drain both pipes and fail closed on every boundary."""
+    validate_timeout(timeout, label)
+    if isinstance(output_cap, bool) or not isinstance(output_cap, int) or output_cap < 1:
+        raise ValueError(f"{label} output cap must be a positive integer")
+    if _cancel_requested(cancel_event):
+        return ValidationResult(False, -1, "", f"{label} cancelled", False)
     try:
         proc = subprocess.Popen(
             cmd, shell=shell, cwd=cwd, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, start_new_session=True)
+            stderr=subprocess.PIPE, text=True, errors="replace",
+            start_new_session=True)
     except Exception as exc:
         return ValidationResult(False, -1, "", str(exc), False)
     start = time.monotonic()
     try:
         output = _drain_process(proc, start, timeout, output_cap, cancel_event)
     except _CancelledDrain as exc:
-        _kill_group(proc)
-        _join_drainers(exc.threads)
-        return ValidationResult(False, -1, *_partial_output(exc), False)
+        stdout, stderr = _partial_output(exc)
+        return ValidationResult(False, -1, stdout, stderr + f"{label} cancelled", False)
     except _DrainTimeout as exc:
-        _kill_group(proc)
-        _join_drainers(exc.threads)
         stdout, stderr = _partial_output(exc)
         if any(exc.overflow):
             stderr += f"{label} output exceeds {output_cap} bytes"
         return ValidationResult(False, -1, stdout, stderr, True)
     except subprocess.TimeoutExpired:
-        _kill_group(proc)
         return ValidationResult(False, -1, "", "", True)
+    except Exception as exc:
+        return ValidationResult(False, -1, "", str(exc), False)
+    finally:
+        _kill_group(proc)
     stdout, stderr, overflow = output
     if any(overflow):
         stderr += f"{label} output exceeds {output_cap} bytes"
@@ -86,11 +103,26 @@ def _partial_output(exc) -> tuple[str, str]:
     return "".join(exc.stdout_lines), "".join(exc.stderr_lines)
 
 
-def _kill_group(proc: subprocess.Popen) -> None:
-    """Kill the command group and reap its direct child."""
+def validate_timeout(timeout: float, label: str) -> None:
+    """Reject unbounded or malformed deadlines before a subprocess can start."""
     try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
+        valid = (not isinstance(timeout, bool) and isinstance(timeout, (int, float))
+                 and timeout >= 0 and math.isfinite(timeout))
+    except OverflowError:
+        valid = False
+    if not valid:
+        raise ValueError(f"{label} timeout must be finite and non-negative")
+
+
+def _kill_group(proc: subprocess.Popen) -> None:
+    """Kill the POSIX command group; otherwise kill/reap only the direct child."""
+    try:
+        killpg = getattr(os, "killpg", None)
+        if killpg is None:
+            proc.kill()
+        else:
+            killpg(proc.pid, signal.SIGKILL)
+    except OSError:
         try:
             proc.kill()
         except Exception:
@@ -101,18 +133,35 @@ def _kill_group(proc: subprocess.Popen) -> None:
         pass
 
 
+def read_chunks(stream, errors="replace"):
+    """Read available pipe bytes without waiting for a newline or full chunk."""
+    buffered = getattr(stream, "buffer", None)
+    if buffered is None:
+        yield from iter(lambda: stream.readline(8192), "")
+        return
+    decoder = codecs.getincrementaldecoder(stream.encoding or "utf-8")(errors)
+    decoder = io.IncrementalNewlineDecoder(decoder, translate=True)
+    for chunk in iter(lambda: buffered.read1(8192), b""):
+        text = decoder.decode(chunk)
+        if text:
+            yield text
+    tail = decoder.decode(b"", final=True)
+    if tail:
+        yield tail
+
+
 def _read_stream(stream, collector: list, cap: int, overflow: list) -> None:
     """Drain a text pipe in fixed chunks while retaining only bounded data."""
     total = 0
     try:
-        for line in iter(lambda: stream.readline(8192), ""):
+        for line in read_chunks(stream):
             total += len(line.encode("utf-8", errors="replace"))
             if total <= cap:
                 collector.append(line)
             else:
                 overflow[0] = True
-    except ValueError:
-        pass
+    except (OSError, ValueError) as exc:
+        overflow.error = f"process output read failed: {exc}"
     finally:
         stream.close()
 
@@ -121,7 +170,7 @@ def _drain_process(proc: subprocess.Popen, start: float, timeout: float,
                    cap: int, cancel_event=None) -> tuple[str, str, tuple[bool, bool]]:
     """Drain both pipes against one absolute deadline."""
     stdout, stderr = [], []
-    overflow = [[False], [False]]
+    overflow = [StreamStatus(), StreamStatus()]
     threads = (
         threading.Thread(target=_read_stream,
                          args=(proc.stdout, stdout, cap, overflow[0]),
@@ -130,30 +179,25 @@ def _drain_process(proc: subprocess.Popen, start: float, timeout: float,
                          args=(proc.stderr, stderr, cap, overflow[1]),
                          daemon=True),
     )
-    for thread in threads:
-        thread.start()
     deadline = start + timeout
-    for thread in threads:
-        while thread.is_alive():
+    try:
+        for thread in threads:
+            thread.start()
+        while any(thread.is_alive() for thread in threads) or proc.poll() is None:
             if _cancel_requested(cancel_event):
-                _kill_group(proc)
-                _join_drainers(threads)
                 raise _CancelledDrain(stdout, stderr, threads)
+            if any(value[0] or value.error for value in overflow):
+                break
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise _DrainTimeout(proc.args, timeout, stdout, stderr,
                                     (overflow[0][0], overflow[1][0]), threads)
-            thread.join(timeout=min(0.05, remaining))
-    while proc.poll() is None:
-        if _cancel_requested(cancel_event):
-            _kill_group(proc)
-            _join_drainers(threads)
-            raise _CancelledDrain(stdout, stderr, threads)
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise _DrainTimeout(proc.args, timeout, stdout, stderr,
-                                (overflow[0][0], overflow[1][0]), threads)
-        time.sleep(min(0.05, remaining))
+            time.sleep(min(0.05, remaining))
+    finally:
+        _kill_group(proc)
+        _join_drainers(threads)
+    if error := next((value.error for value in overflow if value.error), ""):
+        raise ValueError(error)
     return "".join(stdout), "".join(stderr), (
         overflow[0][0], overflow[1][0])
 
@@ -169,4 +213,5 @@ def _join_drainers(threads: tuple, maximum: float = 1.0) -> None:
     """Bound the post-kill wait while allowing partial pipe data to arrive."""
     deadline = time.monotonic() + max(0.0, maximum)
     for thread in threads:
-        thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        if thread.ident is not None:
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))

@@ -8,6 +8,7 @@ Deferred here, they run once at stage end and observe the finished tree.
 
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 
@@ -76,6 +77,50 @@ def capture_stage_dirty_paths(workdir: str, excludes: list[str] | tuple[str, ...
         status.stdout, _relative_excludes(root, list(excludes)))
 
 
+def _dirty_digests(root: str, paths) -> dict[str, str]:
+    """Content digest per dirty path, so a read-only stage can tell whether it
+    MODIFIED an already-dirty file rather than merely coexisting with it.
+
+    Missing/unreadable entries get a sentinel instead of raising: a deleted or
+    permission-denied worktree file must not crash an unattended run, and the
+    sentinel differs from any real digest, so a transition into or out of that
+    state still registers as a change.
+    """
+    digests: dict[str, str] = {}
+    for rel in paths:
+        candidate = Path(root) / rel
+        try:
+            if candidate.is_symlink() or not candidate.is_file():
+                digests[rel] = "absent"
+                continue
+            digest = hashlib.sha256()
+            with candidate.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(65536), b""):
+                    digest.update(chunk)
+            digests[rel] = digest.hexdigest()
+        except OSError:
+            digests[rel] = "unreadable"
+    return digests
+
+
+def capture_stage_baseline(workdir: str,
+                           excludes: list[str] | tuple[str, ...] = (),
+                           *, read_only: bool = False,
+                           ) -> tuple[str, object, object] | tuple[str, object]:
+    """Snapshot the dirty baseline for a stage.
+
+    ``read_only`` additionally captures per-path content digests, so a
+    read-only stage can be validated against a worktree that was ALREADY dirty
+    when the stage started — the normal case for a shared worktree, and
+    explicitly expected by the campaign pipeline template that tells
+    implementers to preserve unrelated dirty changes.
+    """
+    root, paths = capture_stage_dirty_paths(workdir, excludes)
+    if not read_only or paths is None or not root:
+        return root, paths
+    return root, paths, _dirty_digests(root, sorted(paths))
+
+
 def _relative_repo_path(path: str, root: str, wd: str) -> str:
     candidate = Path(path)
     if not candidate.is_absolute():
@@ -88,7 +133,10 @@ def _relative_repo_path(path: str, root: str, wd: str) -> str:
 
 def _stage_owned_paths(outputs: list, wd: str,
                        baseline: tuple[str, object]) -> list[str] | None:
-    root, before = baseline
+    # Indexed rather than unpacked: a read-only baseline carries a third element
+    # (content digests) that ownership does not need. See
+    # capture_read_only_baseline().
+    root, before = baseline[0], baseline[1]
     end_root, after = capture_stage_dirty_paths(wd)
     if before is None or after is None or not root or root != end_root:
         log.warning("git commit refused: stage dirty baseline unavailable or changed")
@@ -147,21 +195,28 @@ def _report_commit_failure(commit, paths: list, untracked: list, wd: str,
 def read_only_violations(stage, outputs: list, dirty_baseline) -> list[str]:
     """Return source paths changed by a declared read-only stage.
 
-    A read-only stage must start clean so the path comparison is meaningful;
-    declared deliverables are allowed.  Unknown Git state is a violation,
-    never an implicit pass.
+    A read-only stage must not INTRODUCE changes. It does not need an empty
+    worktree to prove that: the baseline is compared instead of being required
+    to be empty. Requiring emptiness made every read-only stage fail closed on
+    a shared dirty worktree (campaign logs 2026-09-18/19: 43 occurrences, each
+    halting the pipeline at requirements), which contradicts the campaign
+    template's own instruction to preserve unrelated dirty changes.
+
+    Violations are:
+      * paths that became dirty during the stage but are not declared outputs;
+      * pre-existing dirty paths whose CONTENT changed during the stage (only
+        checkable when the baseline carried digests).
     """
     if dirty_baseline is None:
         return ["read-only baseline unavailable"]
-    root, before = dirty_baseline
+    root, before = dirty_baseline[0], dirty_baseline[1]
+    before_digests = dirty_baseline[2] if len(dirty_baseline) > 2 else None
     if not root and before == frozenset():
         log.warning("read-only stage cannot observe source changes without Git; "
                     "continuing for non-Git compatibility")
         return []
     if before is None or not root:
         return ["read-only Git baseline unavailable"]
-    if before:
-        return ["read-only stage started with existing changes"]
     end_root, after = capture_stage_dirty_paths(
         stage.cwd or os.getcwd(), stage.read_only_paths)
     if end_root != root or after is None:
@@ -169,7 +224,15 @@ def read_only_violations(stage, outputs: list, dirty_baseline) -> list[str]:
     declared = {_relative_repo_path(path, root, stage.cwd or os.getcwd())
                 for path in outputs}
     declared.discard("")
-    return sorted(set(after) - declared)
+    previous = set(before)
+    violations = set(after) - previous - declared
+    if before_digests:
+        for path, digest in _dirty_digests(root, sorted(previous & set(after))).items():
+            if path in declared:
+                continue
+            if before_digests.get(path) != digest:
+                violations.add(path)
+    return sorted(violations)
 
 
 def commit_stage_outputs(stage, outputs: list, dirty_baseline=None) -> bool:

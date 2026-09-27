@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Optional
 
 from .config import log
+from . import process_identity
 
 def state_dir(cwd: str = "") -> Path:
     """状态标记目录（data_dir 感知：PBATCH_DATA_DIR 可移出项目）。"""
@@ -143,14 +144,8 @@ def write_cmd_failure_diagnostics(cmd: str, exit_code: int, stderr: str,
 
 
 def pid_alive(pid: int) -> bool:
-    """True when the pid is a live process in this host's pid namespace."""
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except (ProcessLookupError, PermissionError, OSError):
-        return False
+    """True when a local PID is alive or cannot safely be proven dead."""
+    return process_identity.pid_alive(pid)
 
 
 def kill_orphan(pid: int) -> None:

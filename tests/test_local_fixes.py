@@ -586,7 +586,7 @@ class TestInstanceLock:
         stale.write_text(json.dumps({
             "pid": 99999999,  # almost certainly dead
             "start": 1,       # ancient
-            "host": "x", "argv": "y"}), encoding="utf-8")
+            "host": lock.socket.gethostname(), "argv": "y"}), encoding="utf-8")
         got = lock.acquire_lock(str(tmp_path))
         assert got == lock._lock_path(str(tmp_path))
         assert json.loads(got.read_text(encoding="utf-8"))["pid"] == os.getpid()

@@ -120,7 +120,7 @@ def test_terminal_turn_state_rejects_every_transition():
 
 EXPECTED_TRANSITIONS = {
     TurnState.QUEUED: {
-        TurnState.RUNNING, TurnState.INTERRUPTING, TurnState.FAILED,
+        TurnState.RUNNING, TurnState.INTERRUPTING, TurnState.FAILED, TurnState.UNKNOWN,
     },
     TurnState.RUNNING: {
         TurnState.SUCCEEDED, TurnState.FAILED, TurnState.INTERRUPTING,

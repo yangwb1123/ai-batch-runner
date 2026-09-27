@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
+from . import file_lock as fcntl
 import json
 import os
 import shutil

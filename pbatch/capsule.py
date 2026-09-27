@@ -24,6 +24,7 @@ from typing import Optional
 
 from . import config
 from .fabric import FABRIC_VERSION
+from .launcher import cli_argv
 from .world import WorldStore, _module_versions
 
 RULE_REGISTRIES = ("ui-specs/rules.yaml", "backend-specs/rules.yaml",
@@ -80,7 +81,7 @@ def _run_eval() -> tuple:
     import subprocess
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "pbatch", "eval"],
+            cli_argv("eval"),
             capture_output=True, text=True, timeout=300)
         return (result.returncode == 0,
                 (result.stdout + result.stderr).strip()[-300:])

@@ -14,12 +14,14 @@ import unicodedata
 from typing import Any, Mapping, Optional, Protocol, runtime_checkable
 
 from .tui_codex_support import (
-    _bound, _bounded_changes, _bounded_id, _request_value, _stop_process,
+    _bound, _bounded_changes, _bounded_id, _id, _request_value, _stop_process,
 )
 from .tui_protocol import (
     RUNTIME_PROTOCOL_VERSION, RuntimeCapabilities, RuntimeEvent, TurnState,
 )
 from .provider_env import provider_child_env
+from .tui_transport_io import BoundedLineReader, open_process_pipes, read_chunk
+from .tui_appserver_startup import DEFAULT_TIMEOUT, run_startup, startup_timeouts
 from .tui_runtime import (
     ListSessionsRequest, RuntimeInfo, RuntimeSessionObservation, RuntimeSessionPage,
     RuntimeSessionSummary,
@@ -28,7 +30,6 @@ from .tui_view_support import clean_text, one_line
 
 RUNTIME_NAME = "codex-app-server"
 DEFAULT_QUEUE_SIZE = 256
-DEFAULT_TIMEOUT = 5.0
 DEFAULT_APPROVAL_TTL = 120.0
 DEFAULT_MAX_PENDING_APPROVALS = 32
 MAX_ACTIVE_FLAGS = 32
@@ -37,6 +38,8 @@ MAX_SESSION_CURSOR_BYTES = 4 * 1024
 MAX_SESSION_NAME_BYTES = 4 * 1024
 MAX_SESSION_PREVIEW_BYTES = 4 * 1024
 MAX_SESSION_PROVIDER_BYTES = 512
+MAX_RPC_LINE_BYTES = 8 * 1024 * 1024
+MAX_STDERR_BYTES = 64 * 1024
 THREAD_STATUS_TYPES = frozenset({"notLoaded", "idle", "systemError", "active"})
 SESSION_SORT_KEYS = frozenset({"created_at", "updated_at", "recency_at"})
 SESSION_SORT_DIRECTIONS = frozenset({"asc", "desc"})
@@ -65,6 +68,19 @@ APPROVAL_METHODS = {
     "item/fileChange/requestApproval": "file_change",
     "item/permissions/requestApproval": "permissions",
 }
+
+
+def decline_on_close(send, approvals) -> None:
+    """Try denials without allowing a blocked write to hold transport teardown."""
+    for entry in approvals:
+        if entry is None:
+            continue
+        result = decision_result(entry, {"decision": "deny"})
+        try:
+            send({"id": entry.request_id,
+                  "result": result or {"decision": "decline"}})
+        except Exception:
+            break
 
 
 def make_runtime_info(initialized: bool, server_info: Mapping[str, Any]) -> RuntimeInfo:
@@ -141,6 +157,24 @@ class Transport(Protocol):
     def close(self) -> None: ...
 
 
+def start_adapter_transport(adapter: Any, factory: Any) -> None:
+    """Adopt a created transport only while startup still owns a live adapter."""
+    if adapter._reader is not None:
+        return
+    if adapter._transport is None:
+        transport = factory(adapter._daemon_socket, cwd=adapter._cwd)
+        with adapter._lock:
+            adapter._transport = transport
+            closed = adapter._closed
+        if closed:
+            transport.close()
+    with adapter._lock:
+        adapter._ensure_open()
+        adapter._reader = threading.Thread(
+            target=adapter._read_loop, name="codex-app-server-reader", daemon=True)
+        adapter._reader.start()
+
+
 class DefaultTransport:
     """Local App Server transport; the child is always its own process group.
 
@@ -150,55 +184,69 @@ class DefaultTransport:
     """
     def __init__(self, daemon_socket: Optional[str] = None, *, cwd: Optional[str] = None):
         argv = app_server_argv(daemon_socket)
-        self._stderr: deque[str] = deque(maxlen=16)
+        self._stderr = bytearray()
+        self._stderr_lock = threading.Lock()
         self._lock, self._closed = threading.Lock(), False
+        self._close_lock = threading.Lock()
         self._process = subprocess.Popen(
             argv, cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, start_new_session=True,
+            stderr=subprocess.PIPE, start_new_session=True,
             env=provider_child_env(),
         )
+        self._pipes = open_process_pipes(self._process, _stop_process)
+        self._reader = BoundedLineReader(
+            self._pipes.stdout, MAX_RPC_LINE_BYTES, "App Server")
         self._stderr_thread = threading.Thread(
             target=self._read_stderr, name="codex-app-server-stderr", daemon=True)
         self._stderr_thread.start()
 
     def _read_stderr(self) -> None:
-        for line in self._process.stderr or ():
-            text = line.strip()
-            if text:
-                self._stderr.append(_bound(text, 4096)[0])
+        stream = self._pipes.stderr
+        while stream is not None:
+            try:
+                chunk = read_chunk(stream)
+            except (OSError, ValueError):
+                if self._closed:
+                    return
+                raise
+            if not chunk:
+                return
+            with self._stderr_lock:
+                self._stderr.extend(chunk)
+                del self._stderr[:-MAX_STDERR_BYTES]
 
     def send_line(self, line: str) -> None:
         with self._lock:
             if self._closed or self._process.stdin is None:
                 raise EOFError("proxy input is closed")
-            self._process.stdin.write(line.rstrip("\r\n") + "\n")
-            self._process.stdin.flush()
+            self._pipes.stdin.write((line.rstrip("\r\n") + "\n").encode("utf-8"))
+            self._pipes.stdin.flush()
 
     def recv_line(self) -> Optional[str]:
         if self._process.stdout is None:
             return None
-        line = self._process.stdout.readline()
-        return line if line else None
+        return self._reader.read_line()
 
     def unavailable_reason(self) -> str:
-        detail = " | ".join(self._stderr)
+        with self._stderr_lock:
+            detail = self._stderr[-8192:].decode("utf-8", "replace").strip()
         code = self._process.poll()
         status = f"proxy exited with code {code}" if code is not None else "proxy disconnected"
         return f"{status}: {detail}" if detail else status
 
     def close(self) -> None:
-        with self._lock:
+        with self._close_lock:
             if self._closed:
                 return
             self._closed = True
-            stream = self._process.stdin
-        if stream is not None:
             try:
-                stream.close()
-            except OSError:
-                pass
-        _stop_process(self._process)
-        self._stderr_thread.join(timeout=0.5)
+                _stop_process(self._process)
+            finally:
+                try:
+                    self._stderr_thread.join(timeout=0.5)
+                finally:
+                    self._pipes.close()
+                    self._stderr_thread.join(timeout=0.1)
 
 
 def app_server_argv(daemon_socket: Optional[str] = None) -> list[str]:
@@ -271,6 +319,17 @@ class RuntimeEventStream:
         if event is None:
             raise StopIteration
         return event
+
+
+def session_local_id(previous, requested: str, mode: str, force_new: bool) -> str:
+    """Keep initialization notifications in the first adopted local session."""
+    if force_new:
+        return _id("ses")
+    if requested:
+        return requested
+    if mode == "created" and not previous.provider_session_id:
+        return previous.session_id
+    return _id("ses")
 
 
 @dataclass

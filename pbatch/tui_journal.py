@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import errno
-import fcntl
+from . import file_lock as fcntl
 import hashlib
 import json
 import os

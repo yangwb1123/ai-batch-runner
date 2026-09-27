@@ -505,6 +505,7 @@ class TUISessionMixin:
             if not child_id:
                 raise RuntimeError("provider fork returned no local session id")
             self._adapter_session_id = child_id
+            self._adapter_workspace_id = str(session.workspace_id)
             return child_id
         fork = getattr(self._backend, "fork_session", None)
         if not callable(fork):
@@ -613,6 +614,7 @@ class TUISessionMixin:
                 "workspace_id": self._session_cwd(),
             })
             self._adapter_session_id = str(session.session_id)
+            self._adapter_workspace_id = str(session.workspace_id)
             return
         resume = getattr(self._backend, "resume_session", None)
         if not callable(resume):

@@ -117,7 +117,24 @@ def test_binary_builder_contains_platform_assets_without_source_checkout_at_runt
     assert "share/ai-batch-runner" in joined
     assert "share/ai-batch-runner/scripts" in joined
     assert "share/ai-batch-runner/ui-specs" in joined
+    assert "share/ai-batch-runner/pbatch" in joined
+    assert any(
+        str(ROOT / "pbatch" / "selfcheck.py") in value for value in args)
+    assert not any("__pycache__" in value for value in args)
     assert BINARY_MODULE["binary_label"]()
+
+
+def test_binary_builder_embeds_utf8_for_redirected_multilingual_output(tmp_path, monkeypatch):
+    commands = []
+    def build_stub(command, **kwargs):
+        commands.append(command)
+        (tmp_path / "pi-batch.exe").write_bytes(b"frozen executable")
+    monkeypatch.setattr(BINARY_MODULE["platform"], "system", lambda: "Windows")
+    monkeypatch.setattr(BINARY_MODULE["subprocess"], "run", build_stub)
+    executable = BINARY_MODULE["build"](tmp_path)
+    command = commands[0]
+    assert command[command.index("--python-option") + 1] == "X utf8=1"
+    assert executable.name == "pi-batch.exe"
 
 
 def test_release_workflow_builds_and_publishes_platform_binaries() -> None:
@@ -125,10 +142,12 @@ def test_release_workflow_builds_and_publishes_platform_binaries() -> None:
         encoding="utf-8")
     assert "build-binaries:" in workflow
     assert "release-assets:" in workflow
-    assert '.[binary]' in workflow
+    assert "uses: ./.github/workflows/binary-verify.yml" in workflow
     assert "gh release upload" in workflow
+    binary = (ROOT / ".github/workflows/binary-verify.yml").read_text(encoding="utf-8")
+    assert '.[binary]' in binary
     for target in ("linux-x86_64", "macos-x86_64", "macos-arm64", "windows-x86_64"):
-        assert target in workflow
+        assert target in binary
 
 
 def test_release_workflow_uses_oidc_and_a_protected_environment() -> None:
@@ -142,12 +161,15 @@ def test_release_workflow_uses_oidc_and_a_protected_environment() -> None:
 
 
 def test_release_workflow_pins_every_action_to_a_commit() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = "\n".join(
+        (ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
+        for name in ("release.yml", "binary-verify.yml"))
     raw_uses = re.findall(r"^\s*-?\s*uses:\s+(.+?)\s*$", workflow, re.M)
     uses = []
     for raw in raw_uses:
+        if raw == "./.github/workflows/binary-verify.yml":
+            assert (ROOT / raw).is_file()
+            continue
         match = re.fullmatch(
             r"([^@\s]+)@([0-9a-f]{40})\s+#\s+(\S+)", raw)
         assert match is not None, f"action is not pinned to a full SHA: {raw}"

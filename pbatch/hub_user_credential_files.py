@@ -85,7 +85,7 @@ def _entry_identity(directory: int, name: str):
 
 
 def _acquire(descriptor: int, timeout: float) -> None:
-    import fcntl
+    from . import file_lock as fcntl
 
     deadline = time.monotonic() + timeout
     while True:
