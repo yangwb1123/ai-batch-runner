@@ -50,6 +50,16 @@ def test_reuse_resolves_cwd_and_fingerprint_tracks_dirty_state(tmp_path):
     assert fp_dirty != fp_clean
 
 
+def test_reuse_fingerprint_binds_tool_permissions(tmp_path):
+    output = tmp_path / "artifact.md"
+    enabled = Task(prompt="prompt", output=str(output), cwd=str(tmp_path))
+    tool_free = Task(prompt="prompt", output=str(output), cwd=str(tmp_path),
+                     no_tools=True)
+
+    assert reuse.reuse_fingerprint(enabled, "") != reuse.reuse_fingerprint(
+        tool_free, "")
+
+
 def test_reuse_fingerprint_binds_effective_agent_and_rejects_v1(tmp_path):
     output = tmp_path / "artifact.md"
     output.write_text("artifact", encoding="utf-8")

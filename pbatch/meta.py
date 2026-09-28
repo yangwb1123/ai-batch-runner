@@ -300,7 +300,8 @@ def _retry_failed_roles(stage: Stage, failed_results: list, role_outputs: list,
                     write_sidecar(str(task.output_path_unresolved()), task.prompt,
                                   validate_cmd, task.model, task.provider,
                                   task.workdir(), task.effective_agent(),
-                                  task.thinking)
+                                  task.thinking, task.tools, task.exclude_tools,
+                                  task.no_tools)
             record_task(retry)
             if retry.success:
                 break
@@ -340,7 +341,8 @@ def _run_role_task(item, validate_cmd: str, session_name: str, reuse: bool,
     output = str(task.output_path_unresolved())
     expected = (reuse_fp(task.prompt, output, validate_cmd, task.model,
                          task.provider, task.workdir(),
-                         task.effective_agent(), task.thinking)
+                         task.effective_agent(), task.thinking, task.tools,
+                         task.exclude_tools, task.no_tools)
                 if fingerprint_mode else None)
     if reuse and reuse_decision(
             output, validate_cmd, task.workdir(), reuse_legacy, expected):
@@ -357,7 +359,8 @@ def _run_role_task(item, validate_cmd: str, session_name: str, reuse: bool,
         elif fingerprint_mode:
             write_sidecar(output, task.prompt, validate_cmd, task.model,
                           task.provider, task.workdir(),
-                          task.effective_agent(), task.thinking)
+                          task.effective_agent(), task.thinking, task.tools,
+                          task.exclude_tools, task.no_tools)
     record_task(result)
     return role, result
 
@@ -392,10 +395,16 @@ def _build_meta_prompt_task(stage: Stage, role_names: list, combined: str, model
     meta_prompt = meta_prompt.replace("{max_roles}", str(max(1, stage.max_roles_per_iteration)))
     meta_prompt = meta_prompt.replace("{input_content}", combined)
     meta_prompt = meta_prompt.replace("{prompt}", original_prompt)
-    task = Task(prompt=meta_prompt, agent=stage.agent, cwd=stage.cwd)
+    if stage.delegation_only:
+        meta_prompt = (
+            "DELEGATION-ONLY CONTROLLER: do not inspect files, call tools, or "
+            "perform the requested work yourself. Select bounded child roles "
+            "and return only the required JSON role plan.\n\n" + meta_prompt)
+    task = Task(prompt=meta_prompt, agent=stage.agent, cwd=stage.cwd,
+                no_tools=stage.delegation_only)
     task.memory = {"stage": stage.name, "role": "orchestrator"}
-    task.model = stage.model or task.model
-    task.provider = stage.provider or task.provider
+    task.model = stage.orchestrator_model or stage.model or task.model
+    task.provider = stage.orchestrator_provider or stage.provider or task.provider
     if model_override:
         task.model = model_override
     if stage.meta_timeout:
@@ -441,8 +450,10 @@ def _build_role_tasks(stage: Stage, roles: list, combined: str,
                     cwd=stage.cwd)
         task.memory = {"stage": stage.name, "role": role}
         add_task_context_paths(task, evidence_outputs, strict=False)
-        task.model = stage.model or task.model
-        task.provider = stage.provider or task.provider
+        task.model = (stage.role_models.get(role) or stage.worker_model
+                      or stage.model or task.model)
+        task.provider = (stage.role_providers.get(role) or stage.worker_provider
+                         or stage.provider or task.provider)
         if model_override:
             task.model = model_override
         if stage.meta_timeout:

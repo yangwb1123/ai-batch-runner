@@ -300,11 +300,32 @@ def agent_argument_flags(bin_name: str = "") -> dict[str, tuple]:
     return resolved
 
 
+def agent_no_tools_args(bin_name: str = "") -> tuple[str, ...]:
+    """Return the adapter's explicit tool-disable argv, or empty if unsupported."""
+    section = _agent_section(bin_name or AGENT_BIN)
+    value = section.get("no_tools_args", _AGENT_CFG.get("no_tools_args"))
+    if isinstance(value, str):
+        return (value,) if value else ()
+    if isinstance(value, (list, tuple)) and all(
+            isinstance(token, str) and token for token in value):
+        return tuple(value)
+    if value is not None:
+        log.warning("agent no_tools_args must be a string or non-empty string list")
+    return ()
+
+
 def build_agent_argv(bin_name: str, prompt: str, *, model: str = "",
                      provider: str = "", thinking: str = "", tools: str = "",
-                     exclude_tools: str = "",
+                     exclude_tools: str = "", no_tools: bool = False,
                      session_flags: Optional[list] = None) -> list[str]:
     """Build an agent argv from the configured adapter, without a shell."""
+    if no_tools and tools:
+        raise ValueError("no_tools cannot be combined with an explicit tools allowlist")
+    no_tools_args = agent_no_tools_args(bin_name) if no_tools else ()
+    if no_tools and not no_tools_args:
+        raise ValueError(
+            f"agent adapter for {bin_name!r} cannot disable tools; "
+            "configure agent.agents.<name>.no_tools_args")
     flags = agent_argument_flags(bin_name)
     session_led = bool(session_flags) and any(
         "{prompt}" in token for token in session_flags)
@@ -322,6 +343,7 @@ def build_agent_argv(bin_name: str, prompt: str, *, model: str = "",
             raise ValueError(
                 f"agent adapter for {bin_name!r} does not support {key}")
         cmd.extend([*flags[key], value])
+    cmd.extend(no_tools_args)
     if session_flags and not session_led:
         cmd.extend(session_flags)
     # Extra args are appended with dedup against tokens already present:

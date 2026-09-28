@@ -5,7 +5,9 @@ from __future__ import annotations
 
 _TOP_LEVEL_FIELDS = frozenset(("stages", "decision_log", "archive_dir", "git_commit"))
 _STAGE_FIELDS = frozenset((
-    "name", "agent", "model", "provider", "from_dir", "from_outputs", "suffix",
+    "name", "agent", "model", "provider", "orchestrator_model",
+    "orchestrator_provider", "worker_model", "worker_provider", "role_models",
+    "role_providers", "delegation_only", "from_dir", "from_outputs", "suffix",
     "output_suffix", "mode", "workers", "aggregate", "validate",
     "validate_cmd", "meta", "meta_prompt", "role_dir", "role_keywords",
     "output_dir", "max_iterations", "max_roles_per_iteration", "meta_timeout",
@@ -18,17 +20,20 @@ _STAGE_FIELDS = frozenset((
 ))
 _TASK_FIELDS = frozenset((
     "prompt", "prompt_template", "output", "agent", "model", "provider", "thinking",
-    "tools", "exclude_tools", "cwd", "timeout", "env", "validate",
+    "tools", "exclude_tools", "no_tools", "cwd", "timeout", "env", "validate",
     # `role` is descriptive metadata used by the shipped pipeline templates.
     # `validate_cmd` is the legacy spelling of the task-level `validate` alias.
     "role", "validate_cmd",
 ))
-_STRING_FIELDS = ("agent", "model", "provider", "from_dir", "suffix", "output_suffix",
+_STRING_FIELDS = ("agent", "model", "provider", "orchestrator_model",
+                  "orchestrator_provider", "worker_model", "worker_provider",
+                  "from_dir", "suffix", "output_suffix",
                   "meta_prompt", "role_dir", "role_keywords", "output_dir",
                   "from_prompt", "output", "cwd", "commit_message",
                   "gate_fix_prompt")
-_BOOL_FIELDS = ("aggregate", "meta", "relevance_enabled", "gate", "approval",
-                "commands_parallel", "git_commit", "read_only", "or_tasks")
+_BOOL_FIELDS = ("aggregate", "meta", "delegation_only", "relevance_enabled",
+                "gate", "approval", "commands_parallel", "git_commit",
+                "read_only", "or_tasks")
 _TASK_STRING_FIELDS = ("prompt", "prompt_template", "output", "agent", "model", "provider",
                        "thinking", "tools", "exclude_tools", "cwd", "role")
 _NULLABLE_TASK_STRINGS = ("model", "provider", "thinking", "tools", "exclude_tools")
@@ -107,11 +112,40 @@ def _field_errors(stage: dict, prefix: str) -> list[str]:
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
             errors.append(f"{prefix}.{key} must be an integer >= {minimum}")
     errors.extend(_read_only_path_errors(stage, prefix))
+    errors.extend(_role_model_errors(stage, prefix))
     errors.extend(_command_list_errors(stage, prefix))
+    errors.extend(_meta_route_errors(stage, prefix))
     for key in ("validate", "validate_cmd", "gate_fix_validate"):
         value = stage.get(key)
         if value is not None and not isinstance(value, str):
             errors.append(f"{prefix}.{key} must be a string or null")
+    return errors
+
+
+def _meta_route_errors(stage: dict, prefix: str) -> list[str]:
+    if stage.get("meta"):
+        return []
+    fields = ("orchestrator_model", "orchestrator_provider", "worker_model",
+              "worker_provider", "role_models", "role_providers",
+              "delegation_only")
+    if stage.get("delegation_only"):
+        return [f"{prefix}.delegation_only requires meta: true"]
+    return ([f"{prefix} meta routing fields require meta: true"]
+            if any(key in stage for key in fields) else [])
+
+
+def _role_model_errors(stage: dict, prefix: str) -> list[str]:
+    errors = []
+    for field in ("role_models", "role_providers"):
+        value = stage.get(field, {})
+        if not isinstance(value, dict):
+            errors.append(f"{prefix}.{field} must be a mapping of role names to strings")
+            continue
+        if any(not isinstance(role, str) or not role.strip()
+               or not isinstance(target, str) or not target.strip()
+               for role, target in value.items()):
+            errors.append(
+                f"{prefix}.{field} must map non-empty role names to non-empty strings")
     return errors
 
 
@@ -183,6 +217,7 @@ def _one_task_errors(task, label: str) -> list[str]:
     errors.extend(f"{label}.{key} must be a string" for key in _TASK_STRING_FIELDS
                   if key in task and not isinstance(task[key], str)
                   and not (key in _NULLABLE_TASK_STRINGS and task[key] is None))
+    errors.extend(_no_tools_errors(task, label))
     if not any(isinstance(task.get(key), str) and task[key].strip()
                for key in ("prompt", "prompt_template")):
         errors.append(f"{label} requires a non-empty prompt or prompt_template")
@@ -195,6 +230,12 @@ def _one_task_errors(task, label: str) -> list[str]:
         if key in task and task[key] is not None and not isinstance(task[key], str):
             errors.append(f"{label}.{key} must be a string or null")
     return errors
+
+
+def _no_tools_errors(task: dict, label: str) -> list[str]:
+    if "no_tools" in task and not isinstance(task["no_tools"], bool):
+        return [f"{label}.no_tools must be boolean"]
+    return []
 
 
 def _valid_env(value) -> bool:

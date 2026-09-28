@@ -42,6 +42,9 @@ agent:
   # Per-agent overrides (win over the global agent.* keys): claude/codex/
   # gemini have different session-flag syntax and failure signatures.
   agents:
+    pi:
+      # Delegation-only meta planners must be mechanically unable to run tools.
+      no_tools_args: ["--no-tools"]
     codex:
       # Codex non-interactive mode is a subcommand: `codex exec <prompt>`.
       # The prompt flag is positional (empty = positional); "exec" is the

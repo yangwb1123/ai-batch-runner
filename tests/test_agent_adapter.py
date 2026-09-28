@@ -155,6 +155,20 @@ def test_stdout_banner_reason_line_anchored_only():
     ) != ""
 
 
+def test_agent_argv_enforces_tool_free_mode_only_when_adapter_supports_it(monkeypatch):
+    monkeypatch.setattr(config, "_AGENT_CFG", {})
+    monkeypatch.setattr(config, "_AGENTS_CFG", {
+        "pi": {"no_tools_args": ["--no-tools"]},
+    })
+    assert config.build_agent_argv("pi", "plan", no_tools=True) == [
+        "pi", "-p", "plan", "--no-tools",
+    ]
+    with pytest.raises(ValueError, match="cannot disable tools"):
+        config.build_agent_argv("codex", "plan", no_tools=True)
+    with pytest.raises(ValueError, match="cannot be combined"):
+        config.build_agent_argv("pi", "plan", tools="read", no_tools=True)
+
+
 def test_agent_argv_rejects_value_for_disabled_capability(monkeypatch):
     monkeypatch.setattr(config, "_AGENT_CFG", {
         "argument_flags": {"provider": ""},

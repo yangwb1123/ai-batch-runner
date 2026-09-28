@@ -115,6 +115,8 @@ def _task_data_error(value) -> str:
 
 
 def _task_string_error(value: dict) -> str:
+    if "no_tools" in value and not isinstance(value["no_tools"], bool):
+        return ".no_tools must be a boolean"
     fields = ("output", "model", "provider", "thinking", "tools", "exclude_tools", "cwd")
     nullable = ("model", "provider", "thinking", "tools", "exclude_tools")
     invalid = next((key for key in fields if key in value

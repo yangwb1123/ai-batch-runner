@@ -384,6 +384,10 @@ def _run_configured(args, lock_path) -> None:
     if args.provider and pipeline is not None:
         for stage in pipeline.stages:
             stage.provider = args.provider
+            stage.orchestrator_provider = args.provider
+            stage.worker_provider = args.provider
+            stage.role_providers = {
+                role: args.provider for role in stage.role_providers}
 
     session_name = _derive_session_name(args)
     _validate_session_flags(args)

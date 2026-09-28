@@ -20,8 +20,8 @@ class Stage:
     """One stage in a pipeline."""
     name: str
     agent: str = ""      # T13: executor for this stage's tasks ("" = global)
-    model: str = ""      # T11: model for the stage's orchestrator/role tasks
-    provider: str = ""   # T11: provider override for the stage
+    model: str = ""      # shared model fallback for stage tasks
+    provider: str = ""   # shared provider fallback for stage tasks
     from_dir: str = ""
     from_outputs: object = ""  # previous stage name, or a list for a DAG evidence join
     suffix: str = ".md"
@@ -67,10 +67,27 @@ class Stage:
     # Deliverable files remain allowed; the runner checks unexpected Git paths.
     read_only: bool = False
     read_only_paths: list[str] = field(default_factory=list)
-    
+    orchestrator_model: str = ""  # meta planner model; falls back to model
+    orchestrator_provider: str = ""  # meta planner provider; falls back to provider
+    worker_model: str = ""  # meta role-worker model; falls back to model
+    worker_provider: str = ""  # meta role-worker provider; falls back to provider
+    role_models: dict = field(default_factory=dict)  # role -> model override
+    role_providers: dict = field(default_factory=dict)  # role -> provider override
+    delegation_only: bool = False  # meta planner gets no execution tools
+
     def to_dict(self):
         return {
             "name": self.name,
+            "agent": self.agent,
+            "model": self.model,
+            "provider": self.provider,
+            "orchestrator_model": self.orchestrator_model,
+            "orchestrator_provider": self.orchestrator_provider,
+            "worker_model": self.worker_model,
+            "worker_provider": self.worker_provider,
+            "role_models": dict(self.role_models),
+            "role_providers": dict(self.role_providers),
+            "delegation_only": self.delegation_only,
             "from_dir": self.from_dir,
             "from_outputs": self.from_outputs,
             "suffix": self.suffix,
@@ -134,6 +151,7 @@ class Task:
     env: dict = field(default_factory=dict)
     validate: Optional[str] = None  # per-task engineering gate; None = inherit, "" = disabled
     memory: dict = field(default_factory=dict)  # stage/role/task metadata for the memory index
+    no_tools: bool = False  # adapter-enforced; fail closed when unsupported
 
     def effective_agent(self) -> str:
         """Executor selected for this task after applying the global default."""
@@ -145,7 +163,8 @@ class Task:
             provider=self.provider,
             thinking=config.AGENT_THINKING_OVERRIDE or self.thinking,
             tools=self.tools,
-            exclude_tools=self.exclude_tools, session_flags=session_flags)
+            exclude_tools=self.exclude_tools, no_tools=self.no_tools,
+            session_flags=session_flags)
 
     def workdir(self) -> str:
         return self.cwd or os.getcwd()

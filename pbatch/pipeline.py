@@ -14,7 +14,7 @@ from typing import Optional
 
 from . import config
 from . import metering
-from .config import AGENT_DEFAULT_TIMEOUT, AGENT_DEFAULT_WORKERS, log, yaml
+from .config import AGENT_DEFAULT_TIMEOUT, log, yaml
 from .context_inject import prepare_task_context
 from .models import Pipeline, Stage, Task, TaskResult
 from .pipeline_archive import (archive_output_pairs,
@@ -22,6 +22,7 @@ from .pipeline_archive import (archive_output_pairs,
 from .pipeline_decisions import (append_decision_log as _append_decision_log,
                                  extract_decisions as _extract_decisions)
 from .pipeline_schema import validate_pipeline
+from .pipeline_loader import parse_stage_def as _parse_stage_def
 from .pipeline_resources import normalize_bundled_resources as _normalize_bundled_resources
 from .evidence import combine_outputs, source_manifest
 from .gate_contract import evaluate_gate_artifacts, gate_verdict as _gate_verdict
@@ -71,56 +72,6 @@ def load_pipeline(path: str) -> Pipeline:
     
     return Pipeline(stages=stages, decision_log=data.get("decision_log", ""),
                     archive_dir=data.get("archive_dir", ""), name=Path(path).stem)
-
-def _parse_stage_def(s: dict, global_git_commit: bool) -> Stage:
-    """Map one schema-validated YAML stage definition onto a Stage."""
-    return Stage(
-        name=s.get("name", ""),
-        agent=s.get("agent", ""), model=s.get("model", ""), provider=s.get("provider", ""),
-        from_dir=s.get("from_dir", ""),
-        from_outputs=s.get("from_outputs", ""),
-        suffix=s.get("suffix", ".md"),
-        output_suffix=s.get("output_suffix", ".out.md"),
-        mode=s.get("mode", "serial"),
-        workers=s.get("workers", AGENT_DEFAULT_WORKERS),
-        aggregate=s.get("aggregate", False),
-        # Public YAML uses `validate`; `validate_cmd` remains the explicit
-        # spelling and wins when both are present.
-        validate_cmd=s.get("validate_cmd", s.get("validate")),
-        meta=s.get("meta", False),
-        meta_prompt=s.get("meta_prompt", ""),
-        role_dir=s.get("role_dir", ""),
-        role_keywords=s.get("role_keywords", ""),
-        output_dir=s.get("output_dir", ""),
-        max_iterations=s.get("max_iterations", 3),
-        max_roles_per_iteration=s.get("max_roles_per_iteration", 3),
-        meta_timeout=s.get("meta_timeout", 0),
-        relevance_enabled=s.get("relevance_enabled", True),
-        relevance_min_score=s.get("relevance_min_score", 0),
-        meta_max_failed_roles=s.get("meta_max_failed_roles", 0),
-        meta_role_retries=s.get("meta_role_retries", 1),
-        gate=s.get("gate", False),
-        gate_fix_rounds=s.get("gate_fix_rounds", 0),
-        gate_fix_prompt=s.get("gate_fix_prompt", ""),
-        # None inherits the final effective stage validator after aliases and
-        # CLI fallback are resolved; only this key is an explicit override.
-        gate_fix_validate=s.get("gate_fix_validate"),
-        approval=s.get("approval", False),
-        from_prompt=s.get("from_prompt", ""),
-        output=s.get("output", ""),
-        tasks=s.get("tasks", []),
-        commands=s.get("commands", []),
-        commands_parallel=s.get("commands_parallel", False),
-        command_timeout=s.get("command_timeout", config.COMMAND_TIMEOUT),
-        command_output_max_bytes=s.get(
-            "command_output_max_bytes", config.COMMAND_OUTPUT_MAX_BYTES),
-        verify_experiment=s.get("verify_experiment", []),
-        cwd=s.get("cwd", ""),
-        git_commit=s.get("git_commit", global_git_commit),
-        commit_message=s.get("commit_message", ""),
-        read_only=s.get("read_only", False),
-        read_only_paths=list(s.get("read_only_paths", [])),
-    )
 
 def _pipeline_resource_errors(data: dict) -> list[str]:
     errors = []
@@ -174,7 +125,8 @@ def _task_prompt(task_def: dict, input_content: str, input_stem: str, input_path
                  .replace("{prompt}", original_prompt))
 def _expected_fp(prompt: str, out: str, validate_cmd: str, model: str,
                  provider: str, fp_mode: bool, workdir: str = "",
-                 agent: str = "", thinking: str = "") -> Optional[str]:
+                 agent: str = "", thinking: str = "", tools: str = "",
+                 exclude_tools: str = "", no_tools: bool = False) -> Optional[str]:
     """T9: fingerprint for a reuse candidate when --reuse-fingerprint is on
     (None otherwise); a mismatch regenerates the artifact. model/provider
     are the TASK's EFFECTIVE values (overrides included) — hashing the raw
@@ -183,7 +135,7 @@ def _expected_fp(prompt: str, out: str, validate_cmd: str, model: str,
     if not fp_mode:
         return None
     return reuse_fp(prompt, out, validate_cmd or "", model, provider,
-                    workdir, agent, thinking)
+                    workdir, agent, thinking, tools, exclude_tools, no_tools)
 
 def _task_from_def(task_def: dict, prompt: str, output_path: str, model_override: str = "",
                    timeout_override: int = 0, stage: Optional[Stage] = None) -> Task:
@@ -199,6 +151,7 @@ def _task_from_def(task_def: dict, prompt: str, output_path: str, model_override
         thinking=task_def.get("thinking") or "",
         tools=task_def.get("tools") or "",
         exclude_tools=task_def.get("exclude_tools") or "",
+        no_tools=task_def.get("no_tools", False),
         cwd=task_def.get("cwd", stage.cwd if stage else ""),
         timeout=task_def.get("timeout", AGENT_DEFAULT_TIMEOUT),
         env=dict(task_def.get("env", {})),
@@ -247,7 +200,8 @@ def _aggregate_tasks(stage: Stage, prev_outputs: list, model_override: str = "",
         effective_validate = task.validate if task.validate is not None else validate_cmd
         fp = _expected_fp(task.prompt, out_resolved, effective_validate, task.model,
                           task.provider, fingerprint_mode, task.workdir(),
-                          task.effective_agent(), task.thinking)
+                          task.effective_agent(), task.thinking, task.tools,
+                          task.exclude_tools, task.no_tools)
         if _maybe_reuse_task(stage, task, out_resolved, output_path,
                               effective_validate, reuse_legacy, fp, reuse, reused):
             continue
@@ -286,7 +240,8 @@ def _stage_from_prompt_tasks(stage: Stage, reuse: bool, model_override: str, tim
     out_resolved = str(task.output_path_unresolved()) if task.output else ""
     fp = _expected_fp(task.prompt, out_resolved, validate_cmd, task.model,
                       task.provider, fingerprint_mode, task.workdir(),
-                      task.effective_agent(), task.thinking)
+                      task.effective_agent(), task.thinking, task.tools,
+                      task.exclude_tools, task.no_tools)
     if reuse and reuse_decision(out_resolved, validate_cmd, task.workdir(),
                                 reuse_legacy, fp):
         log.info("REUSE: %s (reused+validated)", stage.output)
@@ -334,7 +289,8 @@ def _stage_from_dir_tasks(stage: Stage, reuse: bool, model_override: str, timeou
         prepare_task_context(task, [fpath.resolve()], strict=False)
         fp = _expected_fp(task.prompt, str(out_path), validate_cmd, task.model,
                           task.provider, fingerprint_mode, task.workdir(),
-                          task.effective_agent(), task.thinking)
+                          task.effective_agent(), task.thinking, task.tools,
+                          task.exclude_tools, task.no_tools)
         if reuse and reuse_decision(str(out_path), validate_cmd, str(fpath.parent), reuse_legacy, fp):
             log.info("REUSE: %s (reused+validated)", out_path.name)
             reused.append(str(out_path))
@@ -384,7 +340,8 @@ def _stage_from_outputs_tasks(stage: Stage, stage_outputs: dict, reuse: bool, mo
             effective_validate = task.validate if task.validate is not None else validate_cmd
             fp = _expected_fp(task.prompt, out_resolved, effective_validate, task.model,
                               task.provider, fingerprint_mode, task.workdir(),
-                              task.effective_agent(), task.thinking)
+                              task.effective_agent(), task.thinking, task.tools,
+                              task.exclude_tools, task.no_tools)
             if _maybe_reuse_task(stage, task, out_resolved, output_path,
                                   effective_validate, reuse_legacy, fp, reuse, reused):
                 continue
@@ -526,7 +483,8 @@ def _write_stage_sidecars(results: list, stage_validate: str) -> None:
             eff = r.task.validate if r.task.validate is not None else stage_validate
             write_sidecar(str(r.task.output_path_unresolved()), r.task.prompt, eff,
                           r.task.model, r.task.provider, r.task.workdir(),
-                          r.task.effective_agent(), r.task.thinking)
+                          r.task.effective_agent(), r.task.thinking, r.task.tools,
+                          r.task.exclude_tools, r.task.no_tools)
 
 def _log_stage_completion(stage: Stage, done: int, total_tasks: int) -> None:
     log.info("")

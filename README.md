@@ -98,6 +98,7 @@ private key 等）只显示 `<redacted>`。
   （evolution：形态分类/规律分级路由/项目宪法/管线形状推荐）**
 - **1086+ 回归测试 + 42 eval 用例**；`pi-batch check` 8 门禁聚合自检
 - 零 LLM 确定性核心：所有检测/路由/校验纯 stdlib + ast，可测试、fail closed
+- Meta 流水线可把规划器与并行角色分配给不同模型；`delegation_only` 在适配器层禁用规划器工具，见 [`docs/MODEL_DELEGATION.md`](docs/MODEL_DELEGATION.md)
 - 详见 `docs/`（AADM 理论四卷、AGENT_ORGANIZATION、CAMPAIGN_LESSONS）与 `AGENTS.md`
 
 ```

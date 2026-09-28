@@ -378,7 +378,7 @@ def _write_sidecars(args, tasks: list, results: list, cli_validate: str) -> None
             eff = t.validate if t.validate is not None else cli_validate
             write_sidecar(str(t.output_path_unresolved()), t.prompt, eff, t.model,
                           t.provider, t.workdir(), t.effective_agent(),
-                          t.thinking)
+                          t.thinking, t.tools, t.exclude_tools, t.no_tools)
 
 def _batch_git_baseline(args, tasks: list):
     if not (args.git_commit and not args.no_git_commit):

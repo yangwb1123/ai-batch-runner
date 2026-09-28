@@ -218,7 +218,8 @@ def parallel_output_conflict(mode: str, tasks: list,
 
 def fingerprint(prompt: str, output: str, validate_cmd: Optional[str],
                 model: str = "", provider: str = "", workdir: str = "",
-                agent: str = "", thinking: str = "") -> str:
+                agent: str = "", thinking: str = "", tools: str = "",
+                exclude_tools: str = "", no_tools: bool = False) -> str:
     """sha256 of canonical task inputs (T9 / decision D1), including the
     effective reasoning level so a max-thinking run cannot reuse an artifact
     produced with a different invocation policy."""
@@ -226,9 +227,12 @@ def fingerprint(prompt: str, output: str, validate_cmd: Optional[str],
     state_cwd = workdir or str(Path(resolved).parent)
     repo_state = _repository_state(state_cwd, resolved)
     effective_thinking = thinking or config.AGENT_THINKING_OVERRIDE
-    canon = json.dumps([prompt, resolved, validate_cmd, agent, model, provider,
-                        effective_thinking, repo_state],
-                       sort_keys=True, ensure_ascii=False)
+    canonical = [prompt, resolved, validate_cmd, agent, model, provider,
+                 effective_thinking, repo_state]
+    if tools or exclude_tools or no_tools:
+        canonical.append({"tools": tools, "exclude_tools": exclude_tools,
+                          "no_tools": bool(no_tools)})
+    canon = json.dumps(canonical, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
 
@@ -237,7 +241,8 @@ def reuse_fingerprint(task, validate_cmd: Optional[str]) -> str:
     reuse path."""
     return fingerprint(task.prompt, str(task.output_path_unresolved()), validate_cmd,
                        task.model, task.provider, task.workdir(),
-                       task.effective_agent(), task.thinking)
+                       task.effective_agent(), task.thinking, task.tools,
+                       task.exclude_tools, task.no_tools)
 
 
 def sidecar_path(output: str) -> Path:
@@ -320,7 +325,8 @@ def _read_sidecar(path: Path) -> Optional[dict]:
 
 def write_sidecar(output: str, prompt: str, validate_cmd: Optional[str],
                   model: str = "", provider: str = "", workdir: str = "",
-                  agent: str = "", thinking: str = "") -> None:
+                  agent: str = "", thinking: str = "", tools: str = "",
+                  exclude_tools: str = "", no_tools: bool = False) -> None:
     """Persist the artifact's input fingerprint next to it (frozen format
     version 2; only written under --reuse-fingerprint)."""
     resolved = str(_resolved_output(output, workdir))
@@ -332,8 +338,9 @@ def write_sidecar(output: str, prompt: str, validate_cmd: Optional[str],
     effective_thinking = thinking or config.AGENT_THINKING_OVERRIDE
     meta = {
         "version": 2,
-        "fingerprint": fingerprint(prompt, resolved, validate_cmd, model,
-                                   provider, workdir, agent, effective_thinking),
+        "fingerprint": fingerprint(
+            prompt, resolved, validate_cmd, model, provider, workdir, agent,
+            effective_thinking, tools, exclude_tools, no_tools),
         "artifact_sha256": artifact[0],
         "artifact_size": artifact[1],
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -341,6 +348,9 @@ def write_sidecar(output: str, prompt: str, validate_cmd: Optional[str],
         "model": model,
         "provider": provider,
         "thinking": effective_thinking,
+        "tools": tools,
+        "exclude_tools": exclude_tools,
+        "no_tools": bool(no_tools),
     }
     payload = json.dumps(meta, ensure_ascii=False)
     try:
