@@ -8,6 +8,7 @@ from typing import Any
 from . import ratelimit
 from .config import log
 from .models import Task, TaskResult
+from .process_shutdown import shutdown_requested
 
 
 class CancelledDrain(RuntimeError):
@@ -21,6 +22,8 @@ class CancelledDrain(RuntimeError):
 
 
 def cancel_requested(cancel_event: Any) -> bool:
+    if shutdown_requested():
+        return True
     try:
         return bool(cancel_event is not None and cancel_event.is_set())
     except (AttributeError, TypeError):

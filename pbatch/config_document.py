@@ -1,4 +1,4 @@
-"""Bound YAML construction and admit only finite, JSON-compatible settings."""
+"""Bound YAML construction for configuration and declarative task documents."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ def _children(node):
     if node.id == "mapping" and node.tag == _TAG_PREFIX + "map":
         for key, value in node.value:
             if key.tag not in {_TAG_PREFIX + "str", _TAG_PREFIX + "merge"}:
-                _fail(key, "configuration mapping keys must be strings")
+                _fail(key, "YAML mapping keys must be strings")
             yield key
             yield value
     elif node.id == "sequence" and node.tag == _TAG_PREFIX + "seq":
@@ -39,7 +39,7 @@ def _scalar_cost(node) -> tuple[int, int, int]:
         _fail(node, "unsupported YAML type; use JSON-compatible values")
     if node.tag in {_TAG_PREFIX + "int", _TAG_PREFIX + "float"}:
         if len(node.value) > MAX_NUMERIC_LITERAL_CHARS:
-            _fail(node, "numeric literal exceeds configuration limit")
+            _fail(node, "numeric literal exceeds YAML limit")
     return 1, len(node.value.encode("utf-8")) + 2, 1
 
 
@@ -55,7 +55,7 @@ class _DocumentBudget:
         if identity in self.active:
             _fail(node, "cyclic YAML aliases are not supported")
         if depth > MAX_CONFIG_DEPTH:
-            _fail(node, "configuration depth exceeds limit")
+            _fail(node, "YAML depth exceeds limit")
         if identity not in self.costs:
             self.active.add(identity)
             try:
@@ -64,7 +64,7 @@ class _DocumentBudget:
                 self.active.remove(identity)
         cost = self.costs[identity]
         if depth + cost[2] - 1 > MAX_CONFIG_DEPTH:
-            _fail(node, "configuration depth exceeds limit")
+            _fail(node, "YAML depth exceeds limit")
         return cost
 
     def _measure(self, node, depth: int) -> tuple[int, int, int]:
@@ -77,9 +77,9 @@ class _DocumentBudget:
             size += child_size + 2
             height = max(height, child_height + 1)
             if count > MAX_CONFIG_EXPANDED_NODES:
-                _fail(node, "configuration expanded node count exceeds limit")
+                _fail(node, "YAML expanded node count exceeds limit")
             if size > MAX_CONFIG_EXPANDED_BYTES:
-                _fail(node, "configuration expanded byte size exceeds limit")
+                _fail(node, "YAML expanded byte size exceeds limit")
         return count, size, height
 
 
@@ -92,37 +92,66 @@ def _check_constructed(value, visited: set) -> None:
         visited.add(identity)
         if isinstance(value, dict):
             if any(not isinstance(key, str) for key in value):
-                raise ValueError("configuration mapping keys must be strings")
+                raise ValueError("YAML mapping keys must be strings")
             values = value.values()
         else:
             values = value
         for child in values:
             _check_constructed(child, visited)
     elif type(value) is float and not math.isfinite(value):
-        raise ValueError("configuration numbers must be finite")
+        raise ValueError("YAML numbers must be finite")
     elif type(value) is int and value.bit_length() > MAX_CONFIG_INTEGER_BITS:
-        raise ValueError("configuration integer exceeds supported size")
+        raise ValueError("YAML integer exceeds supported size")
     elif type(value) not in (str, bool, int, float, type(None)):
         raise ValueError("unsupported YAML type; use JSON-compatible values")
 
 
-def load_config_yaml(text: str, yaml_module) -> dict:
+class _CompositionBudget:
+    """Bound the parser's node graph as well as its later alias expansion."""
+
+    def __init__(self, text):
+        self._composed_nodes = self._composition_depth = 0
+        super().__init__(text)
+
+    def compose_node(self, parent, index):
+        self._composed_nodes += 1
+        if self._composed_nodes > MAX_CONFIG_EXPANDED_NODES:
+            _fail(self.peek_event(), "YAML node count exceeds limit")
+        if self._composition_depth >= MAX_CONFIG_DEPTH:
+            _fail(self.peek_event(), "YAML depth exceeds limit")
+        self._composition_depth += 1
+        try:
+            return super().compose_node(parent, index)
+        finally:
+            self._composition_depth -= 1
+
+
+def load_yaml_document(text: str, yaml_module):
     """Check the node graph before SafeLoader can flatten YAML merge aliases."""
-    loader = yaml_module.SafeLoader(text)
+    class BudgetedLoader(_CompositionBudget, yaml_module.SafeLoader):
+        pass
+
+    loader = BudgetedLoader(text)
     try:
         node = loader.get_single_node()
         if node is None:
-            return {}
+            return None
         _DocumentBudget().visit(node)
         try:
             data = loader.construct_document(node)
         except (ValueError, KeyError, TypeError, OverflowError):
             _fail(node, "invalid YAML scalar value")
-        if data is None:
-            return {}
-        if not isinstance(data, dict):
-            raise ValueError("top-level YAML value must be a mapping")
         _check_constructed(data, set())
         return data
     finally:
         loader.dispose()
+
+
+def load_config_yaml(text: str, yaml_module) -> dict:
+    """Load a bounded configuration mapping, preserving empty-document defaults."""
+    data = load_yaml_document(text, yaml_module)
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError("top-level YAML value must be a mapping")
+    return data

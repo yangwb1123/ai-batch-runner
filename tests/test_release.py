@@ -126,9 +126,13 @@ def test_binary_builder_contains_platform_assets_without_source_checkout_at_runt
 
 def test_binary_builder_embeds_utf8_for_redirected_multilingual_output(tmp_path, monkeypatch):
     commands = []
+    original_run = subprocess.run
     def build_stub(command, **kwargs):
+        if command[1:3] != ["-m", "PyInstaller"]:
+            return original_run(command, **kwargs)
         commands.append(command)
-        (tmp_path / "pi-batch.exe").write_bytes(b"frozen executable")
+        output = Path(command[command.index("--distpath") + 1])
+        (output / "pi-batch.exe").write_bytes(b"frozen executable")
     monkeypatch.setattr(BINARY_MODULE["platform"], "system", lambda: "Windows")
     monkeypatch.setattr(BINARY_MODULE["subprocess"], "run", build_stub)
     executable = BINARY_MODULE["build"](tmp_path)
@@ -143,7 +147,9 @@ def test_release_workflow_builds_and_publishes_platform_binaries() -> None:
     assert "build-binaries:" in workflow
     assert "release-assets:" in workflow
     assert "uses: ./.github/workflows/binary-verify.yml" in workflow
-    assert "gh release upload" in workflow
+    assert "gh release create" in workflow
+    assert "--clobber" not in workflow
+    assert "sha256sum pi-batch-* > SHA256SUMS" in workflow
     binary = (ROOT / ".github/workflows/binary-verify.yml").read_text(encoding="utf-8")
     assert '.[binary]' in binary
     for target in ("linux-x86_64", "macos-x86_64", "macos-arm64", "windows-x86_64"):
@@ -163,7 +169,7 @@ def test_release_workflow_uses_oidc_and_a_protected_environment() -> None:
 def test_release_workflow_pins_every_action_to_a_commit() -> None:
     workflow = "\n".join(
         (ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
-        for name in ("release.yml", "binary-verify.yml"))
+        for name in ("release.yml", "binary-verify.yml", "release-binary.yml"))
     raw_uses = re.findall(r"^\s*-?\s*uses:\s+(.+?)\s*$", workflow, re.M)
     uses = []
     for raw in raw_uses:

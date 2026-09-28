@@ -10,7 +10,7 @@ from pathlib import Path
 from . import config
 from .config import AGENT_DEFAULT_TIMEOUT, log, yaml
 from .models import Task
-from .text_io import read_text_bounded
+from .text_io import read_text_bounded, parse_yaml_bounded
 
 
 def load_tasks(source: str) -> list[Task]:
@@ -41,7 +41,7 @@ def load_tasks(source: str) -> list[Task]:
             log.error("Task file '%s' requires PyYAML. Run: pip install pyyaml", source)
             sys.exit(1)
         try:
-            data = yaml.safe_load(raw)
+            data = parse_yaml_bounded(raw, yaml, "task source")
         except Exception as e:
             log.error("Task file '%s' is not valid YAML: %s", source, e)
             sys.exit(1)

@@ -766,7 +766,7 @@ class TUIProjectionMixin:
                 or view.turn_state in TERMINAL_TURN_STATES):
             return False
         unknown_allowed = view.turn_state in {
-            TurnState.QUEUED, TurnState.RUNNING, TurnState.WAITING_APPROVAL,
+            TurnState.QUEUED, TurnState.RUNNING, TurnState.INTERRUPTING, TurnState.WAITING_APPROVAL,
             TurnState.RECONCILING,
         }
         payload = {"reason": str(reason or "runtime event stream failed")[:2048]}

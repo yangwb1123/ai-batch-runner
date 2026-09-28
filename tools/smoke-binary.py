@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Callable
 
 from binary_smoke_lock import check_instance_locks
+from binary_smoke_yaml import check_yaml_inputs
 
 OUTPUT_LIMIT = 1024 * 1024
 CHECK_STEPS = ("quality", "registry", "refusal", "org", "capabilities",
@@ -99,10 +100,13 @@ def _stop_process(process: subprocess.Popen) -> None:
 
 def run_command(command: list[str], cwd: Path, env: dict[str, str],
                 timeout: float, label: str, expected: tuple[int, ...] = (0,),
-                validate: Callable[[str], None] | None = None) -> str:
+                validate: Callable[[str], None] | None = None, *,
+                input_bytes: bytes | None = None, include_stderr: bool = False) -> str:
     started = time.monotonic()
     try:
-        output = _command_output(command, cwd, env, timeout, label, expected)
+        options = ({"input_bytes": input_bytes, "include_stderr": include_stderr}
+                   if input_bytes is not None or include_stderr else {})
+        output = _command_output(command, cwd, env, timeout, label, expected, **options)
         if validate is not None:
             validate(output)
     except Exception as exc:
@@ -113,17 +117,22 @@ def run_command(command: list[str], cwd: Path, env: dict[str, str],
 
 
 def _command_output(command: list[str], cwd: Path, env: dict[str, str],
-                    timeout: float, label: str, expected: tuple[int, ...]) -> str:
+                    timeout: float, label: str, expected: tuple[int, ...], *,
+                    input_bytes: bytes | None = None, include_stderr: bool = False) -> str:
     """Bound wall time and diagnostics, including commands with noisy output."""
     with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
         try:
-            process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+            process = subprocess.Popen(command, cwd=cwd, env=env,
+                                       stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
                                        stdout=stdout, stderr=stderr,
                                        start_new_session=os.name == "posix")
         except OSError as exc:
             raise SmokeFailure(f"{label}: cannot start: {exc}") from exc
         try:
-            process.wait(timeout=timeout)
+            if input_bytes is None:
+                process.wait(timeout=timeout)
+            else:
+                process.communicate(input=input_bytes, timeout=timeout)
         except subprocess.TimeoutExpired as exc:
             _stop_process(process)
             raise SmokeFailure(f"{label}: exceeded {timeout:g}s deadline") from exc
@@ -135,7 +144,7 @@ def _command_output(command: list[str], cwd: Path, env: dict[str, str],
     if process.returncode not in expected:
         tail = (output + errors).decode("utf-8", "replace")[-6000:]
         raise SmokeFailure(f"{label}: exit {process.returncode}, expected {expected}\n{tail}")
-    return output.decode("utf-8", "replace")
+    return (output + errors if include_stderr else output).decode("utf-8", "replace")
 
 
 def _json_object(output: str, label: str) -> dict:
@@ -219,6 +228,59 @@ def check_tasks(command: list[str], workspace: Path, env: dict, timeout: float) 
     run_command([*command, str(path), *_task_flags()], workspace, env,
                 timeout, "pipeline and bundled validators",
                 validate=lambda _output: check_artifact(workspace / "pipeline.json"))
+
+
+def _stdin_case(workspace: Path, environment: dict, name: str) -> tuple[Path, dict, list[str]]:
+    root = workspace.parent / "stdin-checks" / name
+    case_workspace = root / "workspace"
+    case_workspace.mkdir(parents=True)
+    agent = root / "unexpected-agent.py"
+    agent.write_text("from pathlib import Path\nPath(" + repr(str(root / "agent-started"))
+                     + ").write_text('started', encoding='utf-8')\nprint('{\"ok\": true}')\n",
+                     encoding="utf-8")
+    config = {"config_version": 1, "input": {"max_bytes": 32}, "agent": {
+        "bin": sys.executable, "default_model": "", "argument_flags": {"prompt": [str(agent)]},
+        "session_flags": {"start": [], "continue": [], "fork": []}}}
+    (case_workspace / "pi-batch.yaml").write_text(json.dumps(config), encoding="utf-8")
+    env = {**environment, "PBATCH_SCRIPT_DIR": str(case_workspace),
+           "PBATCH_HOME": str(root / "user"), "PBATCH_RUNTIME_HOME": str(root / "runtime")}
+    flags = ["--agent-bin", sys.executable, "--memory-mode", "off", "--stream-output", "none",
+             "--timeout", "5", "--max-rounds", "1", "--retries", "0", "--log-file", str(root / "operation.log")]
+    return case_workspace, env, flags
+
+
+def _check_stdin_result(output: str, workspace: Path, reason: str) -> None:
+    root = workspace.parent
+    if (root / "agent-started").exists():
+        raise SmokeFailure("stdin boundary unexpectedly started the provider")
+    if not reason:
+        lines = {line.strip() for line in output.splitlines()}
+        if "Tasks: 1" not in lines or "[1] 中文🙂 binary-pipe..." not in lines:
+            raise SmokeFailure("stdin UTF-8 dry-run did not preserve its one exact prompt")
+        return
+    if "Input rejected:" not in output or reason not in output or "Traceback" in output:
+        raise SmokeFailure("stdin rejection did not produce its bounded input diagnostic")
+    if "binary-smoke-private" in output:
+        raise SmokeFailure("stdin rejection exposed the invalid input body")
+    if (root / "operation.log").exists():
+        raise SmokeFailure("stdin rejection created an operation log before rejecting input")
+    if any(path.is_file() for path in (root / "runtime").rglob("*")):
+        raise SmokeFailure("stdin rejection created runtime or lock state before rejecting input")
+
+
+def check_stdin(command: list[str], workspace: Path, env: dict, timeout: float) -> None:
+    cases = (("utf8", "stdin UTF-8 pipe dry-run", "中文🙂 binary-pipe".encode(), ""),
+             ("oversized", "stdin oversized whitespace rejected before side effects", b" " * 33,
+              "stdin prompt exceeds 32 bytes"),
+             ("invalid", "stdin invalid UTF-8 rejected before side effects", b"binary-smoke-private-\xff",
+              "stdin prompt is not valid UTF-8"))
+    for name, label, payload, reason in cases:
+        case_workspace, case_env, flags = _stdin_case(workspace, env, name)
+        run_command([*command, *flags, *([] if reason else ["--dry-run"])],
+                    case_workspace, case_env, timeout, label, expected=(2,) if reason else (0,),
+                    input_bytes=payload, include_stderr=True,
+                    validate=lambda output, cwd=case_workspace, message=reason:
+                    _check_stdin_result(output, cwd, message))
 
 
 def check_isolate(command: list[str], workspace: Path, env: dict, timeout: float) -> None:
@@ -315,6 +377,8 @@ def run_checks(command: list[str], workspace: Path, env: dict, timeout: float) -
     run_command([*command, "config", "explain", "--json"], workspace,
                 env, timeout, "bundled validator configuration",
                 validate=lambda output: prepare_fake_agent(workspace, output))
+    check_stdin(command, workspace, env, timeout)
+    check_yaml_inputs(command, workspace, env, timeout, execute=run_command)
     check_tasks(command, workspace, env, timeout)
     check_instance_locks(command, workspace, env, timeout, flags=_task_flags(),
                          execute=_command_output, verify=check_artifact,

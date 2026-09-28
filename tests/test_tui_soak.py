@@ -20,6 +20,7 @@ TOOLS = ROOT / "tools"
 sys.path.insert(0, str(TOOLS))
 try:
     import tui_soak_support as SUPPORT
+    from tui_soak_provider_log import append_provider_event
     SPEC = importlib.util.spec_from_file_location("tui_soak", TOOLS / "tui-soak.py")
     SOAK = importlib.util.module_from_spec(SPEC)
     SPEC.loader.exec_module(SOAK)
@@ -105,12 +106,34 @@ def test_final_journal_validation_rejects_unconsumed_partial_tail(tmp_path):
         evidence.close()
 
 
+@pytest.mark.parametrize("bad_final_record", [False, True])
+def test_final_provider_export_consumes_all_batches_and_rejects_bad_commits(tmp_path, bad_final_record):
+    run = SOAK.SoakRun([sys.executable], tmp_path)
+    connection = sqlite3.connect(tmp_path / "provider.sqlite")
+    try:
+        connection.executemany("INSERT INTO events (payload) VALUES (?)",
+                               [(b'{"kind":"control"}\n',)] * 400)
+        if bad_final_record:
+            connection.execute("INSERT INTO events (payload) VALUES (?)", (b'not-json\n',))
+        connection.commit()
+        if bad_final_record:
+            with pytest.raises(SUPPORT.SoakFailure, match="invalid committed"):
+                run._finish_provider_log(time.monotonic() + 5)
+        else:
+            run._finish_provider_log(time.monotonic() + 5)
+            assert run.provider_log.offset == 400 and run.provider_log.exhausted
+            assert len((tmp_path / "provider.jsonl").read_bytes().splitlines()) == 400
+    finally:
+        connection.close()
+        run.journal.close()
+
+
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux PTY and /proc evidence")
 def test_cleanup_reaps_provider_even_when_its_parent_already_disappeared(tmp_path):
     run = SOAK.SoakRun([sys.executable], tmp_path)
     process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"],
                                start_new_session=True)
-    SUPPORT.append_json(tmp_path / "provider.jsonl", {
+    append_provider_event(tmp_path / "provider.jsonl", {
         "kind": "started", "pid": process.pid, "ppid": 999999999})
     try:
         with pytest.raises(SUPPORT.SoakFailure, match="disappeared"):

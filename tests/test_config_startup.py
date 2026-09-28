@@ -185,7 +185,8 @@ def test_deep_yaml_has_bounded_diagnostic(first_use):
     result = _run(first_use, "config", "check", "--json")
     assert result.returncode == 1
     report = json.loads(result.stdout)
-    assert any("RecursionError" in error for error in report["validation"]["errors"])
+    assert any("YAML depth exceeds limit" in error
+               for error in report["validation"]["errors"])
     assert len(result.stdout) < 4000
     _assert_no_spawn(first_use, result)
 

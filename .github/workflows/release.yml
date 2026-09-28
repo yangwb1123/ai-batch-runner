@@ -107,11 +107,12 @@ jobs:
           path: dist/
           merge-multiple: true
 
-      - name: Create or update GitHub Release
+      - name: Create GitHub Release without overwriting an existing version
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 || \
-            gh release create "${GITHUB_REF_NAME}" --verify-tag --generate-notes
-          sha256sum dist/pi-batch-* > dist/SHA256SUMS
-          gh release upload "${GITHUB_REF_NAME}" dist/pi-batch-* dist/SHA256SUMS --clobber
+          cd dist
+          sha256sum pi-batch-* > SHA256SUMS
+          gh release create "${GITHUB_REF_NAME}" pi-batch-* SHA256SUMS \
+            --verify-tag --target "${GITHUB_SHA}" --generate-notes

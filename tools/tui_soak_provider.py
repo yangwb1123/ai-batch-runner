@@ -8,13 +8,13 @@ import sys
 import time
 from pathlib import Path
 
+from tui_soak_provider_log import append_provider_event
+
 
 def record(kind: str, **fields) -> None:
     path = Path(os.environ["TUI_SOAK_PROVIDER_LOG"])
     value = {"kind": kind, "pid": os.getpid(), "ppid": os.getppid(), **fields}
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(value) + "\n")
-        handle.flush()
+    append_provider_event(path, value)
 
 
 def emit(value: dict) -> None:

@@ -19,11 +19,12 @@ import tempfile
 import time
 
 from tui_soak_support import (
-    JournalEvidence, JsonTail, SoakFailure, Terminal, append_json, is_alive,
+    JournalEvidence, SoakFailure, Terminal, append_json, is_alive,
     executable_evidence, kill_owned_process, kill_tui_process,
     prepare_environment, process_identity, resource_growth,
     resource_sample,
 )
+from tui_soak_provider_log import ProviderLog
 
 
 class SoakRun:
@@ -36,7 +37,7 @@ class SoakRun:
         self.max_fd_growth, self.max_rss_growth_mib = max_fd_growth, max_rss_growth_mib
         self.journal = JournalEvidence(root / "runtime")
         self.journal_report = None
-        self.provider_log = JsonTail(root / "provider.jsonl")
+        self.provider_log = ProviderLog(root / "provider.jsonl", SoakFailure)
         self.providers, self.samples = {}, []
         self.provider_count = self.sample_count = self.prompt_matches = 0
         self.expected_prompt = ""
@@ -234,7 +235,16 @@ class SoakRun:
         self.exit_code = self.terminal.process.returncode
         if self.exit_code != 0 or self._live_providers():
             raise SoakFailure(f"unclean TUI exit: {self.exit_code}; providers: {self._live_providers()}")
+        self._finish_provider_log(time.monotonic() + self.step_timeout)
         self.journal.finish(time.monotonic() + self.step_timeout)
+
+    def _finish_provider_log(self, deadline: float) -> None:
+        while True:
+            if time.monotonic() > deadline:
+                raise SoakFailure("final provider evidence export exceeded its deadline")
+            self._read_provider_log()
+            if self.provider_log.exhausted:
+                return
 
     def _cleanup(self) -> None:
         try:
@@ -269,6 +279,9 @@ class SoakRun:
                 "last_command": self.last_command, "phase": self.phase,
                 "ui": self.terminal.composer.summary() if self.terminal else {},
                 "provider": "deterministic local Pi RPC simulation; no live model",
+                "provider_event_storage": {"authoritative": "provider.sqlite committed rows",
+                                           "export": "provider.jsonl written by the harness",
+                                           "records_exported": self.provider_log.offset},
                 "fixture_release": "success/failure replies require an observed busy composer frame",
                 "platform": sys.platform, "single_tui_process": bool(self.tui_identity),
                 "tui_pid": self.tui_identity["pid"] if self.tui_identity else None,

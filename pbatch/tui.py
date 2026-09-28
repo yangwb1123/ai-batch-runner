@@ -967,8 +967,7 @@ def tui_main(
     app = PiBatchTUI(
         options, backend=backend, backend_factory=backend_factory,
         appserver_factory=appserver_factory, pi_rpc_factory=pi_rpc_factory)
-    app.run()
-    return 0
+    return app.run_interactive()
 
 if __name__ == "__main__":
     raise SystemExit(tui_main())

@@ -358,7 +358,7 @@ TURN_TRANSITIONS = {
         TurnState.WAITING_APPROVAL, TurnState.DISCONNECTED, TurnState.UNKNOWN,
     }),
     TurnState.INTERRUPTING: frozenset({
-        TurnState.INTERRUPTED, TurnState.FAILED,
+        TurnState.INTERRUPTED, TurnState.FAILED, TurnState.UNKNOWN,
     }),
     TurnState.WAITING_APPROVAL: frozenset({
         TurnState.RUNNING, TurnState.DENIED, TurnState.INTERRUPTING,

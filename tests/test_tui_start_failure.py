@@ -166,11 +166,22 @@ def _assert_unknown(journal, request):
     assert all(event.run_id == request["run_id"] and
                event.turn_id == request["turn_id"] for event in events)
     assert events[0].seq < events[1].seq
+    original = journal.path.read_bytes()
     recovered = TUIEventController(journal=RuntimeEventJournal(
         events[0].workspace_id, journal.session_id))
-    assert recovered.snapshot().turn_state == TurnState.UNKNOWN
-    assert not recovered.read_only_reason
-    recovered.close()
+    try:
+        assert recovered.snapshot().turn_state == TurnState.UNKNOWN
+        assert recovered.recovery.read_only
+        assert recovered.recovery.unresolved_state == TurnState.UNKNOWN
+        assert "reconciliation" in recovered.read_only_reason
+        with pytest.raises(RuntimeError, match="read-only"):
+            recovered.ingest(replace(
+                events[-1], event_id=f"evt_{uuid.uuid4().hex}", seq=events[-1].seq + 1,
+                kind="turn.completed", payload={"state": TurnState.SUCCEEDED}))
+        assert recovered.snapshot().turn_state == TurnState.UNKNOWN
+        assert journal.path.read_bytes() == original
+    finally:
+        recovered.close()
 
 
 @pytest.mark.parametrize("mode,review", _PATHS)

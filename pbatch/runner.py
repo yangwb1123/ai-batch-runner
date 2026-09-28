@@ -49,6 +49,7 @@ from .process_exec import (ValidationResult, _DrainTimeout, run_bounded,
                            read_chunks, validate_timeout,
                            _kill_group as _kill_command_group)
 from .provider_env import provider_child_env
+from .process_shutdown import forget_process, interrupt_after_spawn, spawn_registered
 from .runner_cancel import (
     CancelledDrain as _CancelledDrain, cancel_requested as _cancel_requested,
     cancelled_result as _cancelled_result,
@@ -62,7 +63,7 @@ from .runner_process import drain_process as _drain_process_impl
 # registry of live agent subprocesses (parallel mode: a budget cap must be
 # able to kill in-flight agents so the executor shutdown is prompt)
 _ACTIVE_PROCS: set = set()
-_ACTIVE_LOCK = threading.Lock()
+_ACTIVE_LOCK = threading.RLock()
 _PROCESS_POLL_WAIT = threading.Event()
 _BUDGET_MESSAGE = ("BUDGET: invocation limit reached; stopping — 调整 "
                    "--max-rounds/limits 后可续跑（已保留现场）")
@@ -77,9 +78,11 @@ def _scheduled_sleep(seconds: float) -> None:
 def _register_proc(proc: subprocess.Popen) -> None:
     with _ACTIVE_LOCK:
         _ACTIVE_PROCS.add(proc)
+    interrupt_after_spawn()
 def _unregister_proc(proc: subprocess.Popen) -> None:
     with _ACTIVE_LOCK:
         _ACTIVE_PROCS.discard(proc)
+    forget_process(proc)
 def proc_snapshot() -> tuple[subprocess.Popen, ...]:
     with _ACTIVE_LOCK:
         return tuple(_ACTIVE_PROCS)
@@ -160,9 +163,10 @@ def _spawn_agent(cmd: list, workdir: str, env: dict) -> subprocess.Popen:
     arrive via argv (piped stdin prompts are buffered by the CLI first),
     so an inherited pipe would let stdin-hungry agents (e.g. codex exec
     appends piped stdin as a <stdin> block) swallow or hang on batch input."""
-    return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            stdin=subprocess.DEVNULL, text=True, cwd=workdir,
-                            env=provider_child_env(env), start_new_session=True)
+    return spawn_registered(lambda: subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL, text=True, cwd=workdir,
+        env=provider_child_env(env), start_new_session=True), _kill_group)
 def _agent_not_found(task: Task) -> TaskResult:
     """The agent binary is missing from PATH: a permanent, non-retryable
     failure (never saved as an artifact)."""
@@ -556,17 +560,18 @@ def _save_validated(task: Task, result: TaskResult, validate_cmd: str,
     fd, tmp_name = tempfile.mkstemp(prefix=out_path.name + ".", suffix=".tmp", dir=str(out_path.parent))
     os.close(fd)
     tmp = Path(tmp_name)
-    tmp.write_text(result.stdout, encoding="utf-8")
-    # Local fix (self-iteration round 2, F3): shell-escape {output}/{cwd}
-    # substitutions so paths with spaces/quotes cannot inject commands.
-    if not _apply_gate_commands(tmp, task, commands, result, cancel_event):
-        return False
-    if _cancel_requested(cancel_event):
+    try:
+        tmp.write_text(result.stdout, encoding="utf-8")
+        # Placeholder expansion shell-quotes the temporary path and cwd.
+        if not _apply_gate_commands(tmp, task, commands, result, cancel_event):
+            return False
+        if _cancel_requested(cancel_event):
+            return False
+        tmp.rename(out_path)
+        log.info("WROTE %s (validated)", out_path)
+        return True
+    finally:
         tmp.unlink(missing_ok=True)
-        return False
-    tmp.rename(out_path)
-    log.info("WROTE %s (validated)", out_path)
-    return True
 
 def _json_status(stdout: str) -> str:
     """T12a: extract a validator's JSON status ({"status": "pass|warn|fail"});

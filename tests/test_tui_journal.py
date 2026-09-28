@@ -809,10 +809,8 @@ def test_hidden_nonterminal_run_also_makes_recovery_read_only(journal_env):
     ([_event(2, "turn.failed")], TurnState.FAILED),
     ([_event(2, "turn.interrupting"), _event(3, "turn.interrupted")],
      TurnState.INTERRUPTED),
-    ([_event(2, "turn.failed", payload={"state": TurnState.UNKNOWN})],
-     TurnState.UNKNOWN),
 ])
-def test_recovered_terminal_states_remain_writable(
+def test_recovered_confirmed_terminal_states_remain_writable(
         journal_env, tail, state):
     session = f"ses_{state.lower()}"
     journal = RuntimeEventJournal(str(journal_env), session)

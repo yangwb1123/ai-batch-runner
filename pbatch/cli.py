@@ -31,7 +31,7 @@ from .pipeline import (_append_decision_log, _archive_outputs, load_pipeline,
                        load_tasks, load_tasks_from_dir, run_pipeline)
 from .runner import (judge_verdict, kill_active_procs, print_summary, run_argv,
                      run_parallel, run_serial, run_validation)
-from .text_io import read_text_bounded
+from .text_io import read_stream_bounded, read_yaml_bounded
 from .version import VERSION
 
 def build_parser() -> argparse.ArgumentParser:
@@ -199,9 +199,18 @@ def _sigterm(signum, frame):
     """S1 (SRE round-4 finding): SIGTERM (systemd stop, operator kill)
     behaves like Ctrl-C — children are killed, the lock released, exit
     130 — instead of stranding agent process groups and the lock."""
-    log.warning("\nSIGTERM received; stopping children and releasing the lock (exit 130)")
+    from .process_shutdown import shutdown_processes
+    if not shutdown_processes():
+        return
+    log.warning("\n%s received; stopping children and releasing the lock (exit 130)",
+                signal.Signals(signum).name)
     kill_active_procs()
     raise KeyboardInterrupt()
+
+
+def _install_shutdown_handlers() -> None:
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(signum, _sigterm)
 
 
 def _apply_verbosity(verbosity: int) -> None:
@@ -225,20 +234,27 @@ def _planned_outputs(args) -> list:
     source = getattr(args, "source", None)
     if source and isinstance(source, str) and Path(source).is_file():
         try:
-            data = yaml.safe_load(Path(source).read_text(
-                encoding="utf-8", errors="replace"))
+            data = read_yaml_bounded(Path(source), config.INPUT_MAX_BYTES, yaml, "task source")
         except Exception:
             data = None
         if isinstance(data, dict):
-            for task in data.get("tasks") or []:
+            for task in _output_rows(data.get("tasks")):
                 if isinstance(task, dict) and task.get("output"):
                     collected.append(str(task["output"]))
-            for stage in data.get("stages") or []:
+            for stage in _output_rows(data.get("stages")):
                 if isinstance(stage, dict) and stage.get("output"):
                     collected.append(str(stage["output"]))
     # Preserve one overflow item so lock metadata can select exclusive mode
     # instead of treating a truncated declaration as proof of disjointness.
     return collected[:17]
+
+
+def _output_rows(value) -> list:
+    """Only schema-compatible output declarations may relax the instance lock."""
+    if not isinstance(value, list):
+        return []
+    return [row for row in value if isinstance(row, dict)
+            and isinstance(row.get("output"), str)]
 
 
 def main() -> None:
@@ -258,7 +274,7 @@ def main() -> None:
     if args.session_max_bytes != config.SESSION_MAX_BYTES:
         config.SESSION_MAX_BYTES = args.session_max_bytes
 
-    signal.signal(signal.SIGTERM, _sigterm)
+    _install_shutdown_handlers()
 
     _wire_metering(args)
     _wire_limits(args)
@@ -514,7 +530,12 @@ def _buffer_stdin(args) -> None:
     args.stdin_prompt = ""
     if args.pipeline or args.prompt or args.source or args.from_dir:
         return
-    args.stdin_prompt = sys.stdin.read().strip()
+    try:
+        args.stdin_prompt = read_stream_bounded(
+            sys.stdin, config.INPUT_MAX_BYTES, "stdin prompt").strip()
+    except ValueError as exc:
+        log.error("Input rejected: %s", exc)
+        raise SystemExit(2) from exc
 
 
 def _validate_session_flags(args) -> None:

@@ -7,6 +7,8 @@ import time
 import queue
 from typing import Any
 
+from .tui_signals import tui_signal_handlers
+
 
 INTERRUPT_GRACE_SECONDS = 0.2
 CLOSE_WAIT_SECONDS = 3.0
@@ -138,6 +140,12 @@ def next_runtime_event(stream: Any, handle: Any, label: str = "runtime turn") ->
 
 class TUIRuntimeLifecycleMixin:
     """Keep managed runtime workers bounded, including the start RPC."""
+
+    def run_interactive(self) -> int:
+        """Own OS shutdown handlers for exactly one interactive app lifetime."""
+        with tui_signal_handlers(self) as stopped:
+            self.run()
+        return stopped.return_code or self.return_code
 
     def _begin_runtime_operation(self, label: str, fallback: float = 0) -> None:
         self._runtime_operation = (RuntimeOperation(

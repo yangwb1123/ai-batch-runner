@@ -2,27 +2,58 @@ name: Verify platform binaries
 
 on:
   workflow_call:
+    inputs:
+      platform:
+        description: Platform selection (all or linux-x86_64)
+        type: string
+        default: all
+      source_sha:
+        description: Exact source commit; defaults to the triggering commit
+        type: string
+        default: ""
   workflow_dispatch:
+    inputs:
+      platform:
+        description: Platforms to verify
+        type: choice
+        options: [all, linux-x86_64]
+        default: all
+      source_sha:
+        description: Exact 40-character source commit (optional)
+        type: string
+        default: ""
   pull_request:
     paths:
       - '.github/workflows/binary-verify.yml'
       - '.github/workflows/release.yml'
+      - '.github/workflows/release-binary.yml'
       - 'pbatch/**'
       - 'tools/build-binary.py'
+      - 'tools/binary_manifest.py'
       - 'tools/smoke-binary.py'
       - 'tools/binary_smoke*.py'
       - 'tools/tui-soak*.py'
       - 'tools/tui_soak*.py'
+      - 'tools/smoke-tui-signals.py'
+      - 'tools/tui_signal_provider.py'
+      - 'tools/smoke-tui-recovery.py'
+      - 'tools/tui_recovery_provider.py'
+      - 'tools/smoke-batch-signals.py'
+      - 'tests/test_tui_signals.py'
+      - 'tests/test_tui_unknown_recovery.py'
+      - 'tests/test_batch_signals.py'
+      - 'tests/test_tui_soak*.py'
       - 'tests/test_binary*.py'
       - 'tests/test_file_lock*.py'
       - 'tests/test_process_identity.py'
       - 'tests/test_instance_lock*.py'
       - 'tests/test_lock_domain.py'
-      - 'tests/test_release.py'
+      - 'tests/test_release*.py'
       - 'pi-batch.py'
       - 'pi-batch.yaml'
       - 'pyproject.toml'
       - 'MANIFEST.in'
+      - 'LICENSE'
       - 'quality.py'
       - 'scripts/**'
       - 'evals/**'
@@ -37,8 +68,43 @@ permissions:
   contents: read
 
 jobs:
+  plan:
+    name: Resolve verification platforms and source
+    runs-on: ubuntu-22.04
+    timeout-minutes: 2
+    outputs:
+      matrix: ${{ steps.targets.outputs.matrix }}
+      source_sha: ${{ steps.targets.outputs.source_sha }}
+    steps:
+      - name: Select exact build targets
+        id: targets
+        timeout-minutes: 1
+        env:
+          PLATFORM_SELECTION: ${{ inputs.platform || 'all' }}
+          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          platforms = [
+              {"os": "ubuntu-22.04", "asset": "linux-x86_64", "python-arch": "x64", "extension": ""},
+              {"os": "macos-15-intel", "asset": "macos-x86_64", "python-arch": "x64", "extension": ""},
+              {"os": "macos-15", "asset": "macos-arm64", "python-arch": "arm64", "extension": ""},
+              {"os": "windows-2022", "asset": "windows-x86_64", "python-arch": "x64", "extension": ".exe"},
+          ]
+          selection, source = os.environ["PLATFORM_SELECTION"], os.environ["SOURCE_SHA"]
+          if selection not in {"all", "linux-x86_64"}:
+              raise SystemExit("platform must be all or linux-x86_64")
+          if re.fullmatch(r"[0-9a-f]{40}", source) is None:
+              raise SystemExit("source_sha must be an exact 40-character commit")
+          matrix = {"include": [row for row in platforms
+                                if selection == "all" or row["asset"] == selection]}
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"matrix={json.dumps(matrix)}\nsource_sha={source}\n")
+          PY
+
   verify:
     name: Verify ${{ matrix.asset }} binary
+    needs: plan
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     defaults:
@@ -46,20 +112,17 @@ jobs:
         shell: bash
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - {os: ubuntu-22.04, asset: linux-x86_64, python-arch: x64, extension: ""}
-          - {os: macos-15-intel, asset: macos-x86_64, python-arch: x64, extension: ""}
-          - {os: macos-15, asset: macos-arm64, python-arch: arm64, extension: ""}
-          - {os: windows-2022, asset: windows-x86_64, python-arch: x64, extension: ".exe"}
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
       BINARY_ASSET: ${{ matrix.asset }}
+      SOURCE_SHA: ${{ needs.plan.outputs.source_sha }}
       PYTHONUTF8: "1"
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         timeout-minutes: 3
         with:
+          ref: ${{ needs.plan.outputs.source_sha }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -76,17 +139,20 @@ jobs:
         run: |
           mkdir -p validation
           python - <<'PY'
-          import json, os, platform, runpy, sys
+          import json, os, platform, runpy, subprocess, sys
           from pathlib import Path
           observed = runpy.run_path("tools/build-binary.py")["binary_label"]()
           report = {"expected": os.environ["BINARY_ASSET"], "observed": observed,
                     "platform": platform.platform(), "python": sys.version,
                     "runner_image": os.environ.get("ImageOS"),
                     "runner_image_version": os.environ.get("ImageVersion"),
-                    "commit": os.environ["GITHUB_SHA"]}
+                    "commit": subprocess.check_output(
+                        ["git", "rev-parse", "HEAD"], text=True).strip()}
           Path("validation/platform.json").write_text(json.dumps(report, indent=2) + "\n")
           if observed != report["expected"]:
               raise SystemExit(f"unexpected build architecture: {report}")
+          if report["commit"] != os.environ["SOURCE_SHA"]:
+              raise SystemExit("checkout does not match the requested source commit")
           PY
 
       - name: Install package and binary builder
@@ -117,6 +183,13 @@ jobs:
           set -o pipefail
           python tools/smoke-binary.py "dist/pi-batch-${BINARY_ASSET}${{ matrix.extension }}" --report validation/smoke.json 2>&1 | tee validation/smoke.log
 
+      - name: Verify executable provenance
+        id: manifest
+        timeout-minutes: 2
+        run: |
+          set -o pipefail
+          python tools/binary_manifest.py verify --manifest "dist/pi-batch-${BINARY_ASSET}${{ matrix.extension }}.manifest.json" --source-root . 2>&1 | tee validation/manifest.log
+
       - name: Verify Linux TUI repeated fault recovery
         id: soak
         if: matrix.asset == 'linux-x86_64'
@@ -124,6 +197,30 @@ jobs:
         run: |
           set -o pipefail
           python tools/tui-soak.py dist/pi-batch-linux-x86_64 --cycles 3 --output validation/soak 2>&1 | tee validation/soak.log
+
+      - name: Verify Linux TUI signal shutdown
+        id: signals
+        if: matrix.asset == 'linux-x86_64'
+        timeout-minutes: 2
+        run: |
+          set -o pipefail
+          python tools/smoke-tui-signals.py --binary dist/pi-batch-linux-x86_64 --output-dir validation/signals 2>&1 | tee validation/signals.log
+
+      - name: Verify Linux persisted TUI recovery
+        id: recovery
+        if: matrix.asset == 'linux-x86_64'
+        timeout-minutes: 3
+        run: |
+          set -o pipefail
+          python tools/smoke-tui-recovery.py --binary dist/pi-batch-linux-x86_64 --output-dir validation/recovery 2>&1 | tee validation/recovery.log
+
+      - name: Verify Linux batch signal cleanup and lock handoff
+        id: batch-signals
+        if: matrix.asset == 'linux-x86_64'
+        timeout-minutes: 2
+        run: |
+          set -o pipefail
+          python tools/smoke-batch-signals.py --binary dist/pi-batch-linux-x86_64 --output-dir validation/batch-signals 2>&1 | tee validation/batch-signals.log
 
       - name: Record verification outcomes
         if: always()
@@ -139,7 +236,7 @@ jobs:
           steps = json.loads(os.environ["STEP_OUTCOMES"])
           report = {"asset": os.environ["BINARY_ASSET"],
                     "steps": {name: steps.get(name, {}).get("outcome", "skipped")
-                              for name in ("platform", "install", "file-locks", "build", "smoke", "soak")}}
+                              for name in ("platform", "install", "file-locks", "build", "smoke", "manifest", "soak", "signals", "recovery", "batch-signals")}}
           (root / "outcomes.json").write_text(json.dumps(report, indent=2) + "\n")
           PY
 
@@ -158,6 +255,9 @@ jobs:
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: pi-batch-binary-${{ matrix.asset }}
-          path: dist/pi-batch-${{ matrix.asset }}${{ matrix.extension }}
+          path: |
+            dist/pi-batch-${{ matrix.asset }}${{ matrix.extension }}
+            dist/pi-batch-${{ matrix.asset }}${{ matrix.extension }}.manifest.json
+            dist/pi-batch-${{ matrix.asset }}${{ matrix.extension }}.LICENSE
           if-no-files-found: error
           retention-days: 14

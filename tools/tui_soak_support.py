@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -11,11 +12,13 @@ import select
 import shlex
 import signal
 import sqlite3
+import stat
 import subprocess
 import sys
 import time
 
 from tui_soak_terminal import ComposerObservation
+from tui_soak_watch import JournalHints
 
 
 class SoakFailure(RuntimeError):
@@ -122,7 +125,7 @@ class JsonTail:
 
 class JournalEvidence:
     def __init__(self, root: Path):
-        self.root = root
+        self.root = root.resolve()
         self.tails, self.counts = {}, Counter()
         self.latest = {}
         self.duplicates = self.regressions = 0
@@ -132,8 +135,9 @@ class JournalEvidence:
         self.database.executescript(
             "CREATE TABLE events (id TEXT PRIMARY KEY, session TEXT, run TEXT, seq INTEGER);"
             "CREATE INDEX sequence_lookup ON events (session, run, seq);"
-            "CREATE TABLE files (path TEXT PRIMARY KEY, bytes INTEGER);")
+            "CREATE TABLE files (path TEXT PRIMARY KEY, bytes INTEGER, verified INTEGER DEFAULT 0);")
         self._scan = self._entries()
+        self._hints = JournalHints(self.root, SoakFailure)
 
     def _entries(self):
         if not self.root.exists():
@@ -146,6 +150,8 @@ class JournalEvidence:
                     pending.pop().close()
                     continue
                 if entry.is_dir(follow_symlinks=False):
+                    if len(pending) >= 32:
+                        raise SoakFailure("journal evidence exceeded its directory-depth limit")
                     pending.append(os.scandir(entry.path))
                 yield Path(entry.path) if entry.name == "events.jsonl" else None
         finally:
@@ -161,24 +167,49 @@ class JournalEvidence:
                 return
             if path is None or path in self.tails:
                 continue
-            row = self.database.execute("SELECT bytes FROM files WHERE path=?", (str(path),)).fetchone()
-            offset = row[0] if row else 0
-            if path.stat().st_size == offset:
-                continue
-            if len(self.tails) == 4:
-                self.tails.pop(next(iter(self.tails)))
-            tail = JsonTail(path)
-            tail.offset = offset
-            self.tails[path] = tail
+            self._follow(path)
+
+    def _follow(self, path: Path) -> JsonTail | None:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or path.parent.is_symlink():
+            raise SoakFailure("journal evidence must be a local regular file")
+        if path in self.tails:
+            return self.tails[path]
+        row = self.database.execute("SELECT bytes FROM files WHERE path=?", (str(path),)).fetchone()
+        offset = row[0] if row else 0
+        if info.st_size < offset:
+            raise SoakFailure(f"evidence was truncated: {path}")
+        if row and info.st_size == offset:
+            if offset:
+                self._hints.acknowledge(path)
+            return None
+        if len(self.tails) == 4:
+            self.tails.pop(next(iter(self.tails)))
+        tail = JsonTail(path)
+        tail.offset = offset
+        self.tails[path] = tail
+        return tail
 
     def poll(self) -> None:
+        for path in self._hints.poll():
+            if path.exists():
+                tail = self._follow(path)
+                if tail is not None:
+                    self._read_tail(tail)
         self._discover()
         for tail in self.tails.values():
-            for event in tail.read():
-                self._accept(event)
-            self.database.execute("INSERT OR REPLACE INTO files VALUES (?, ?)",
-                                  (str(tail.path), tail.offset))
+            self._read_tail(tail)
         self.database.commit()
+
+    def _read_tail(self, tail: JsonTail, *, follow: bool = True) -> None:
+        for event in tail.read():
+            self._accept(event)
+        self.database.execute("INSERT OR REPLACE INTO files (path, bytes) VALUES (?, ?)",
+                              (str(tail.path), tail.offset))
+        if tail.offset:
+            if follow:
+                self._hints.observe(tail.path)
+            self._hints.acknowledge(tail.path)
 
     def _accept(self, event: dict) -> None:
         strings = ("event_id", "session_id", "run_id", "kind")
@@ -210,21 +241,48 @@ class JournalEvidence:
                 "sequence_regressions": self.regressions}
 
     def finish(self, deadline: float) -> None:
-        """Do not silently ignore an unfinished or modified evidence tail at exit."""
-        self.poll()
+        """After the writer exits, consume every file, including undiscovered ones."""
+        self._scan.close()
+        self.database.execute("UPDATE files SET verified=0")
+        with closing(self._entries()) as entries:
+            for path in entries:
+                if time.monotonic() > deadline:
+                    raise SoakFailure("final journal verification exceeded its deadline")
+                if path is not None:
+                    self._finish_file(path, deadline)
+        missing = self.database.execute("SELECT path FROM files WHERE verified=0 LIMIT 1").fetchone()
+        if missing:
+            raise SoakFailure(f"journal disappeared before final verification: {missing[0]}")
         for name, offset in self.database.execute("SELECT path, bytes FROM files"):
             if time.monotonic() > deadline:
                 raise SoakFailure("final journal verification exceeded its deadline")
             if Path(name).stat().st_size != offset:
                 raise SoakFailure(f"journal has unconsumed or partial records: {name}")
+        self.database.commit()
+
+    def _finish_file(self, path: Path, deadline: float) -> None:
+        tail = self._follow(path)
+        if tail is not None:
+            while True:
+                if time.monotonic() > deadline:
+                    raise SoakFailure("final journal verification exceeded its deadline")
+                before = tail.offset
+                self._read_tail(tail, follow=False)
+                if path.stat().st_size == tail.offset:
+                    break
+                if tail.offset == before:
+                    raise SoakFailure(f"journal has unconsumed or partial records: {path}")
+        self.database.execute("UPDATE files SET verified=1 WHERE path=?", (str(path),))
 
     def close(self) -> None:
         self._scan.close()
+        self._hints.close()
         self.database.close()
 
 
 class Terminal:
-    def __init__(self, command: list[str], root: Path, env: dict, provider: Path, timeout: int):
+    def __init__(self, command: list[str], root: Path, env: dict, provider: Path, timeout: int,
+                 *, runtime: str = "pi-rpc"):
         import fcntl
         import pty
         import struct
@@ -236,7 +294,7 @@ class Terminal:
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 36, 140, 0, 0))
         try:
             self.process = subprocess.Popen(
-                [*command, "tui", "--runtime", "pi-rpc", "--agent-bin", str(provider),
+                [*command, "tui", "--runtime", runtime, "--agent-bin", str(provider),
                  "--timeout", str(timeout), "--memory-mode", "off"],
                 cwd=root / "workspace", env=env, stdin=slave, stdout=slave, stderr=slave,
                 start_new_session=True)

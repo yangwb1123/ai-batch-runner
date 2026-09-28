@@ -29,7 +29,7 @@ from .runner import (_json_status, judge_verdict, kill_active_procs,
                      print_summary, run_parallel, run_serial, run_validation)
 from .cmd_expand import expand_cmd
 from .execution_ids import new_run_id
-from .text_io import read_text_bounded
+from .text_io import read_stream_bounded, read_yaml_bounded
 from .task_loading import task_from_prompt
 from .cli_residue import _warn_residue_markers  # noqa: E402
 
@@ -90,8 +90,7 @@ def _auto_detect_pipeline(args) -> None:
     src = Path(args.source)
     if src.exists() and src.suffix in (".yaml", ".yml"):
         try:
-            data = yaml.safe_load(read_text_bounded(
-                src, config.INPUT_MAX_BYTES, "pipeline source")) or {}
+            data = read_yaml_bounded(src, config.INPUT_MAX_BYTES, yaml, "pipeline source") or {}
         except Exception as exc:
             if isinstance(exc, ValueError):
                 log.error("Source rejected: %s", exc)
@@ -191,9 +190,12 @@ def _load_batch_tasks(args, stdin_tasks) -> list:
         return load_tasks(args.source)
     if stdin_tasks is not None:
         return stdin_tasks
-    if getattr(args, "stdin_prompt", ""):
-        return [_prompt_task(args.stdin_prompt)]
-    stdin = sys.stdin.read().strip()
+    try:
+        stdin = (args.stdin_prompt if hasattr(args, "stdin_prompt") else
+                 read_stream_bounded(sys.stdin, config.INPUT_MAX_BYTES, "stdin prompt").strip())
+    except ValueError as exc:
+        log.error("Input rejected: %s", exc)
+        raise SystemExit(2) from exc
     if stdin:
         return [_prompt_task(stdin)]
     log.error("Provide a prompt (-p), a task file, --from-dir, or --pipeline")

@@ -389,6 +389,7 @@ class TUIEventController:
         applied = skipped = 0
         accepted: list[RuntimeEvent] = []
         degraded = recovery.degraded
+        unknown_observed = False
         for index, event in enumerate(recovery.events, 1):
             try:
                 if not self.bus.restore_event(event):
@@ -398,6 +399,7 @@ class TUIEventController:
                     skipped += 1
                     continue
                 self._fold(event)
+                unknown_observed = unknown_observed or self._turn_state == TurnState.UNKNOWN
                 self._revision += 1
                 applied += 1
                 accepted.append(event)
@@ -407,7 +409,7 @@ class TUIEventController:
                 self._block_mutation(detail, mark_journal=True)
                 degraded = True
                 break
-        unresolved = self._mark_recovered_turns_unknown(warnings)
+        unresolved = self._mark_recovered_turns_unknown(warnings, unknown_observed)
         self._recovery_blocked = degraded or bool(unresolved)
         self._recovery_block_reason = (
             "recovered TUI journal is degraded and read-only" if degraded else
@@ -484,13 +486,18 @@ class TUIEventController:
             expected_bytes=expected_bytes)
 
     def _requires_reconciliation(self) -> bool:
-        return any(turn.state == TurnState.UNKNOWN
+        return bool(self._recovery_report.unresolved_state) or any(turn.state == TurnState.UNKNOWN
                    or turn.state not in TERMINAL_TURN_STATES
                    for turn in self.projection.turns.values())
 
-    def _mark_recovered_turns_unknown(self, warnings: list[str]) -> str:
+    def _mark_recovered_turns_unknown(self, warnings: list[str], unknown_observed: bool = False) -> str:
         unresolved: list[str] = []
         for turn_id, turn in tuple(self.projection.turns.items()):
+            if turn.state == TurnState.UNKNOWN:
+                unresolved.append(turn.state)
+                warnings.append(
+                    f"recovered turn {turn_id} remains UNKNOWN and requires reconciliation")
+                continue
             if turn.state in TERMINAL_TURN_STATES:
                 continue
             state = turn.state
@@ -500,6 +507,9 @@ class TUIEventController:
             unresolved.append(state)
             warnings.append(
                 f"recovered non-terminal turn {turn_id} state {state} as UNKNOWN")
+        if unknown_observed and TurnState.UNKNOWN not in unresolved:
+            unresolved.append(TurnState.UNKNOWN)
+            warnings.append("recovered UNKNOWN outcome requires reconciliation after projection eviction")
         if unresolved:
             self._revision += 1
         return ",".join(dict.fromkeys(unresolved))

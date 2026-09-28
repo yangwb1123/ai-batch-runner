@@ -35,7 +35,7 @@ from .reuse import fingerprint as reuse_fp
 from .reuse import parallel_output_conflict, reuse_decision, write_sidecar
 from .runner import (_save_validated, print_summary, run_parallel,
                      run_serial, run_task, run_validation)
-from .text_io import read_text_bounded
+from .text_io import read_text_bounded, read_yaml_bounded
 from .task_loading import (load_tasks, load_tasks_from_dir, _task_data_error,
                            _task_string_error, _tasks_from_data)
 from .pipeline_native import execute_stage_tasks as _execute_stage_tasks_native
@@ -52,8 +52,7 @@ def load_pipeline(path: str) -> Pipeline:
         sys.exit(1)
     
     try:
-        data = yaml.safe_load(read_text_bounded(
-            fpath, config.INPUT_MAX_BYTES, "pipeline file"))
+        data = read_yaml_bounded(fpath, config.INPUT_MAX_BYTES, yaml, "pipeline file")
     except Exception as exc:
         log.error("Invalid pipeline YAML: %s", exc)
         sys.exit(1)

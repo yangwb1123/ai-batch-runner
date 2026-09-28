@@ -17,6 +17,10 @@ import threading
 import time
 from typing import NamedTuple
 
+from .process_shutdown import (
+    forget_process, interrupt_after_spawn, shutdown_requested, spawn_registered,
+)
+
 
 class ValidationResult(NamedTuple):
     """Bounded command outcome; timeout/crash uses exit code ``-1``."""
@@ -67,14 +71,16 @@ def run_bounded(cmd, cwd: str, timeout: float, output_cap: int,
     if _cancel_requested(cancel_event):
         return ValidationResult(False, -1, "", f"{label} cancelled", False)
     try:
-        proc = subprocess.Popen(
+        proc = spawn_registered(lambda: subprocess.Popen(
             cmd, shell=shell, cwd=cwd, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, errors="replace",
-            start_new_session=True)
+            start_new_session=True), _kill_group)
     except Exception as exc:
+        interrupt_after_spawn()
         return ValidationResult(False, -1, "", str(exc), False)
     start = time.monotonic()
     try:
+        interrupt_after_spawn()
         output = _drain_process(proc, start, timeout, output_cap, cancel_event)
     except _CancelledDrain as exc:
         stdout, stderr = _partial_output(exc)
@@ -90,7 +96,10 @@ def run_bounded(cmd, cwd: str, timeout: float, output_cap: int,
         return ValidationResult(False, -1, "", str(exc), False)
     finally:
         _kill_group(proc)
+        forget_process(proc)
     stdout, stderr, overflow = output
+    if _cancel_requested(cancel_event):
+        return ValidationResult(False, -1, stdout, stderr + f"{label} cancelled", False)
     if any(overflow):
         stderr += f"{label} output exceeds {output_cap} bytes"
         return ValidationResult(False, -1, stdout, stderr, False)
@@ -203,6 +212,8 @@ def _drain_process(proc: subprocess.Popen, start: float, timeout: float,
 
 
 def _cancel_requested(cancel_event) -> bool:
+    if shutdown_requested():
+        return True
     try:
         return bool(cancel_event is not None and cancel_event.is_set())
     except (AttributeError, TypeError):

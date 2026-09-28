@@ -126,7 +126,7 @@ EXPECTED_TRANSITIONS = {
         TurnState.SUCCEEDED, TurnState.FAILED, TurnState.INTERRUPTING,
         TurnState.WAITING_APPROVAL, TurnState.DISCONNECTED, TurnState.UNKNOWN,
     },
-    TurnState.INTERRUPTING: {TurnState.INTERRUPTED, TurnState.FAILED},
+    TurnState.INTERRUPTING: {TurnState.INTERRUPTED, TurnState.FAILED, TurnState.UNKNOWN},
     TurnState.WAITING_APPROVAL: {
         TurnState.RUNNING, TurnState.DENIED, TurnState.INTERRUPTING,
         TurnState.DISCONNECTED, TurnState.UNKNOWN,
