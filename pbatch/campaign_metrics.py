@@ -43,7 +43,9 @@ def build_efficiency_metrics(outcomes: list, wall_seconds: float,
     wall = max(0.0, _number(wall_seconds))
     slots = max(1, int(concurrency or 1))
     utilization = min(1.0, work_seconds / (wall * slots)) if wall else 0.0
-    total_tokens = max(0, int(usage.total_tokens or 0))
+    telemetry = usage.token_telemetry
+    total_tokens = (max(0, int(usage.total_tokens or 0))
+                    if telemetry != "unknown" else None)
     attempt_count = max(0, int(attempts))
     retry_count = min(attempt_count, max(0, int(retries)))
     return {
@@ -58,8 +60,11 @@ def build_efficiency_metrics(outcomes: list, wall_seconds: float,
         "concurrency_slot_utilization": round(utilization, 6),
         "analysis_calls": max(0, int(usage.calls or 0)),
         "analysis_tokens": total_tokens,
+        "analysis_token_telemetry": telemetry,
+        "analysis_calls_with_usage": max(0, int(usage.calls_with_usage)),
         "analysis_tokens_per_successful_direction": (
-            round(total_tokens / passed, 3) if passed else None),
+            round(total_tokens / passed, 3)
+            if passed and total_tokens is not None else None),
         "execution_attempts": attempt_count,
         "retry_attempts": retry_count,
         "retry_ratio": round(retry_count / attempt_count, 6) if attempt_count else 0.0,

@@ -87,23 +87,54 @@ def _preflight_run_one(name: str, spec, root: Path) -> bool:
     return False
 
 
+def _preflight_isolated_runtime(context) -> None:
+    """Prove hypothetical worktrees cannot share runtime or lock identities."""
+    if getattr(context.settings, "pipeline_concurrency", 1) <= 1:
+        return
+    from .user_dirs import project_runtime_dir
+
+    worktree_root = context.settings.effective_worktree_root(context.root)
+    if worktree_root.is_symlink():
+        log.error("PREFLIGHT: worktree root must not be a symlink: %s", worktree_root)
+        raise SystemExit(4)
+    first = project_runtime_dir(str(worktree_root / "__preflight-a__"))
+    second = project_runtime_dir(str(worktree_root / "__preflight-b__"))
+    if first == second or first in second.parents or second in first.parents:
+        log.error("PREFLIGHT: isolated worktree runtime paths collide")
+        raise SystemExit(4)
+    if first == config.data_dir(str(context.root)) or second == config.data_dir(str(context.root)):
+        log.error("PREFLIGHT: child runtime aliases the coordinator runtime")
+        raise SystemExit(4)
+    log.info("PREFLIGHT: isolated worktree runtime/lock identities are disjoint")
+
+
 def _preflight_validators(context) -> int:
-    """Surface red repository gates before any direction pipeline starts."""
+    """Validate pipeline schema, isolation and repo gates before model calls."""
     from .campaign_pipeline import load_pipeline
 
     template = context.settings.path(
         context.root, context.settings.pipeline_template)
-    if not template.exists():
-        log.warning("PREFLIGHT: pipeline template %s missing — skipped", template)
-        return 0
+    if not template.is_file() or template.is_symlink():
+        log.error("PREFLIGHT: pipeline template %s missing or unsafe", template)
+        raise SystemExit(4)
     try:
         pipeline = load_pipeline(str(template))
-    except SystemExit:
-        log.warning("PREFLIGHT: pipeline template %s unloadable — skipped", template)
-        return 0
+    except (SystemExit, OSError, ValueError, TypeError) as exc:
+        log.error("PREFLIGHT: pipeline schema rejected before model calls: %s", exc)
+        raise SystemExit(4) from exc
+    _preflight_isolated_runtime(context)
     specs = _preflight_collect_specs(pipeline)
+    required = tuple(getattr(context.settings, "preflight_required_validators", ()))
+    missing = [name for name in required if name not in {item[0] for item in specs}]
+    require_any = bool(getattr(context.settings,
+                               "preflight_require_repo_validator", False))
+    if missing or (require_any and not specs):
+        detail = ("missing required repo-scoped validators: " + ", ".join(missing)
+                  if missing else "pipeline has no repo-scoped validator")
+        log.error("PREFLIGHT: %s", detail)
+        raise SystemExit(4)
     if not specs:
-        log.info("PREFLIGHT: no repo-scoped validators in pipeline template — skipped")
+        log.warning("PREFLIGHT: no repo-scoped validators in pipeline template")
         return 0
     log.info("PREFLIGHT: %d repo-scoped validator(s) against the target repo",
              len(specs))

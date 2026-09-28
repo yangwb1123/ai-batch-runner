@@ -18,7 +18,7 @@ from pathlib import Path
 from . import config
 from .campaign_pipeline import parallel_ready
 from .campaign_recovery import update_round_recovery
-from .campaign_state import StateStore, _git_output, git_snapshot, git_worktree_evidence
+from .campaign_state import StateStore, _git_output, digest, git_snapshot, git_worktree_evidence
 from .config import log
 from .lock import acquire_lock, release_lock
 from .registry import mark_running, unregister
@@ -99,11 +99,28 @@ def main(argv: list[str] | None = None) -> None:
                        settings.name)
     excluded = _snapshot_excludes(root, settings, args)
     context = CampaignContext(root, settings, args, store, git_snapshot(root, excluded))
-    _register_campaign_run(root, args)
+    from . import metering
+    context.run_id = metering.RUN_ID
+    context.round_id = ""
+    context.config_fingerprint = digest({
+        "settings": settings.__dict__, "model": args.model,
+        "provider": args.provider, "thinking": getattr(args, "thinking", ""),
+    })
+    if not args.dry_run:
+        store.append({
+            "campaign": settings.name, "module": "__campaign__",
+            "direction_id": "__run__", "status": "CAMPAIGN_RUN_STARTED",
+            "run_id": context.run_id, "round_id": "",
+            "head_commit": str(context.snapshot.get("head", ""))[:128],
+            "model": str(args.model)[:120], "provider": str(args.provider)[:120],
+            "config_fingerprint": context.config_fingerprint,
+        })
+        _register_campaign_run(root, args)
     try:
         lock_path = acquire_lock(cwd=str(root), no_lock=args.no_lock or args.dry_run,
                                  wait_minutes=getattr(args, "wait_lock", 0))
-        mark_running()
+        if not args.dry_run:
+            mark_running()
     except SystemExit:
         unregister()
         raise
@@ -111,21 +128,27 @@ def main(argv: list[str] | None = None) -> None:
         code = _run_campaign_supervised(context)
     finally:
         release_lock(lock_path)
-        unregister()
+        if not args.dry_run:
+            unregister()
     raise SystemExit(code)
 
 def _run_campaign_supervised(context: CampaignContext) -> int:
     """Optionally resume after SIGTERM without losing durable campaign state."""
     auto_resume = bool(getattr(context.args, "auto_resume_on_signal", False))
     delay = max(0.0, float(getattr(context.args, "resume_delay", 30)))
+    max_resumes = max(0, int(getattr(context.args, "max_signal_resumes", 3)))
+    resumes = 0
     while True:
         try:
             return _implementation().run_campaign_loop(context)
         except CampaignSignalInterrupt:
-            if not auto_resume:
-                log.warning("CAMPAIGN interrupted; rerun with --reuse --retry-failed")
+            if not auto_resume or resumes >= max_resumes:
+                log.warning("CAMPAIGN interrupted; resume limit reached (%d/%d); "
+                            "rerun with --reuse --retry-failed", resumes, max_resumes)
                 return 130
-            log.warning("CAMPAIGN interrupted; preserving state and resuming in %.0fs", delay)
+            resumes += 1
+            log.warning("CAMPAIGN interrupted; preserving state and resuming "
+                        "(%d/%d) in %.0fs", resumes, max_resumes, delay)
             if delay:
                 time.sleep(delay)
         except KeyboardInterrupt:
@@ -151,6 +174,7 @@ def run_campaign_loop(context: CampaignContext) -> int:
         log.info("")
         log.info("========== CAMPAIGN ROUND %d/%s ==========", round_no, label)
         _refresh_repository_snapshot(context)
+        context.round_id = f"{getattr(context, 'run_id', 'campaign')}-r{round_no}"
         context.round_progress = 0
         context.recovery_blocked = False
         rc = _implementation().run_campaign(context)

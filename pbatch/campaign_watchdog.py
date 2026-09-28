@@ -21,6 +21,8 @@ _MAX_LEASE_BYTES = 16 * 1024
 _LEASE_WRITE_INTERVAL = 15.0
 _POLL_SECONDS = 1.0
 _STOP_GRACE_SECONDS = 15.0
+_MAX_PROGRESS_DIRS = 64
+_MAX_PROGRESS_FILES = 512
 
 
 @dataclass(frozen=True)
@@ -208,6 +210,38 @@ def _marker(paths: tuple[Path, ...]) -> tuple[tuple[str, int, int], ...]:
     return tuple(result)
 
 
+def _artifact_marker(pipeline: Path) -> tuple[tuple[str, int, int], ...]:
+    """Fingerprint a bounded prefix of deliverables, never heartbeat logs."""
+    root = pipeline.parent / "artifacts"
+    if root.is_symlink() or not root.is_dir():
+        return ()
+    pending = [root]
+    result = []
+    visited = 0
+    while pending and visited < _MAX_PROGRESS_DIRS and len(result) < _MAX_PROGRESS_FILES:
+        current = pending.pop()
+        visited += 1
+        try:
+            with os.scandir(current) as scan:
+                entries = sorted(scan, key=lambda item: item.name)
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.is_symlink():
+                continue
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(Path(entry.path))
+                elif entry.is_file(follow_symlinks=False):
+                    info = entry.stat(follow_symlinks=False)
+                    result.append((entry.path, int(info.st_mtime_ns), int(info.st_size)))
+                    if len(result) >= _MAX_PROGRESS_FILES:
+                        break
+            except OSError:
+                continue
+    return tuple(sorted(result))
+
+
 def _stop_group(proc: subprocess.Popen, grace: float = _STOP_GRACE_SECONDS) -> None:
     """Ask the whole child group to stop, then reap/kill it deterministically."""
     if proc.poll() is not None:
@@ -239,22 +273,20 @@ def _stop_group(proc: subprocess.Popen, grace: float = _STOP_GRACE_SECONDS) -> N
 def wait_for_pipeline(proc: subprocess.Popen, *, logfile: Path, pipeline: Path,
                       timeout: int, no_progress_timeout: int,
                       lease_path: Path, lease: dict) -> PipelineWait:
-    """Monitor total deadline, progress markers, the child, and its lease.
+    """Monitor deadlines and bounded deliverable artifacts.
 
-    A zero no-progress timeout disables the stall policy.  The hard pipeline
-    timeout always remains active.  Progress is deliberately evidence-based:
-    only bounded runner artifacts changing on disk reset the stall clock.
+    Logs, lease writes, and the static pipeline manifest are not progress.
     """
     started = time.monotonic()
     last_progress = started
-    previous_marker = _marker((logfile, pipeline))
+    previous_marker = _artifact_marker(pipeline)
     last_lease_write = started
     while True:
         returncode = proc.poll()
         if returncode is not None:
             return PipelineWait(returncode)
         now = time.monotonic()
-        current_marker = _marker((logfile, pipeline))
+        current_marker = _artifact_marker(pipeline)
         progressed = current_marker != previous_marker
         if progressed:
             previous_marker = current_marker

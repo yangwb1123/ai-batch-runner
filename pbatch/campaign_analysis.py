@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .campaign_models import CampaignSettings, Direction, safe_slug
 from .memory_io import reverse_lines
-from .campaign_state import digest, tool_digest, tree_digest
+from .campaign_state import digest, failure_fingerprint, tool_digest, tree_digest
 from . import config
 from .evolution import load_constitution
 from .meta import _extract_json_array
@@ -20,7 +20,8 @@ from .triage import is_retryable
 
 _PLANNING_FAILURE_STATUSES = frozenset({
     "FAILED", "VALIDATION_FAILED", "GATE_REJECTED", "GATE_REJECTED_OBSERVED",
-    "PIPELINE_FAILED", "PROVIDER_BREAKER_PAUSED", "ANALYSIS_FAILED",
+    "PIPELINE_FAILED", "PROVIDER_BREAKER_PAUSED", "BUDGET_BLOCKED",
+    "ANALYSIS_FAILED",
     "FAILED_OBSERVED",
 })
 
@@ -288,6 +289,8 @@ def run_analysis_tasks(tasks: list[Task], jobs: int, retries: int,
     """Run independent analyses in parallel and retry only failed tasks."""
     pending = list(tasks)
     final = {}
+    prior_failures = {}
+    from .provider_breaker import is_provider_failure_reason
     for attempt in range(retries + 1):
         if not pending:
             break
@@ -301,8 +304,19 @@ def run_analysis_tasks(tasks: list[Task], jobs: int, retries: int,
                     result.reason += f"; rejected artifact: {preserved}"
                 result.task.output_path().unlink(missing_ok=True)
             final[str(result.task.output_path())] = result
-        pending = [result.task for result in results
-                   if not result.success and is_retryable(result.reason)]
+        pending = []
+        if attempt < retries:
+            for result in results:
+                if result.success or not is_retryable(result.reason):
+                    continue
+                if is_provider_failure_reason(result.reason):
+                    continue
+                key = str(result.task.output_path())
+                signature = failure_fingerprint("", "ANALYSIS", result.reason)
+                if prior_failures.get(key) == signature:
+                    continue
+                prior_failures[key] = signature
+                pending.append(result.task)
         if pending and attempt < retries:
             time.sleep(max(0, retry_delay) * (2 ** attempt))
     return final

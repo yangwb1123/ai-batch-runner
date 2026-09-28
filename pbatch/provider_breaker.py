@@ -21,6 +21,7 @@ from __future__ import annotations
 from . import file_lock as fcntl
 import hashlib
 import json
+from email.utils import parsedate_to_datetime
 import math
 import os
 import re
@@ -49,6 +50,14 @@ _PROVIDER_FAILURE_PREFIXES = (
     "agent reported provider failure (",
     "agent replied with a provider failure (",
 )
+_QUOTA_EXHAUSTION_RE = re.compile(
+    r"go_?usage_?limit_?error|usage_?limit_?exceeded|insufficient_?quota|"
+    r"quota_?exceeded|credit_?balance_?too_?low|insufficient\s+(?:balance|funds)",
+    re.IGNORECASE)
+_RETRY_AFTER_RE = re.compile(
+    r"(?im)^\s*(?:retry-after|x-ratelimit-reset|ratelimit-reset|reset_at|reset)"
+    r"\s*[:=]\s*(.*?)\s*$")
+_MAX_RETRY_AFTER = 7 * 24 * 60 * 60
 
 
 def _state_path(data_dir=None) -> str:
@@ -260,6 +269,15 @@ def _max_cooldown() -> float:
         return float(_DEFAULT_MAX)
 
 
+def _quota_cooldown() -> float:
+    value = _settings().get("quota_cooldown", 24 * 60 * 60)
+    try:
+        number = float(value)
+        return min(_MAX_RETRY_AFTER, max(1.0, number)) if math.isfinite(number) else 86400.0
+    except (TypeError, ValueError, OverflowError):
+        return 86400.0
+
+
 def enabled() -> bool:
     return threshold() > 0
 
@@ -286,6 +304,38 @@ def _streak_after(streak: int, limit: int) -> int:
 def is_provider_failure_reason(reason: str) -> bool:
     """Return whether a runner rejection represents provider health."""
     return str(reason or "").startswith(_PROVIDER_FAILURE_PREFIXES)
+
+
+def is_quota_exhaustion(text: str) -> bool:
+    """Distinguish exhausted account/provider quota from transient 429s."""
+    return bool(_QUOTA_EXHAUSTION_RE.search(str(text or "")))
+
+
+def retry_after_seconds(text: str, *, now: float | None = None) -> float:
+    """Read bounded Retry-After/reset metadata from provider diagnostics."""
+    current = _now() if now is None else float(now)
+    delays = []
+    for match in _RETRY_AFTER_RE.finditer(str(text or "")[:64 * 1024]):
+        value = match.group(1).strip().strip("\"'")
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError):
+            try:
+                parsed = parsedate_to_datetime(value)
+                number = parsed.timestamp() - current
+            except (TypeError, ValueError, OverflowError):
+                try:
+                    from datetime import datetime
+                    number = datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() - current
+                except (TypeError, ValueError, OverflowError):
+                    continue
+            else:
+                number -= current
+        if number >= 1_000_000_000:
+            number -= current
+        if math.isfinite(number) and number > 0:
+            delays.append(min(number, _MAX_RETRY_AFTER))
+    return max(delays, default=0.0)
 
 
 def provider_failure_reason(stderr: str, stdout: str = "",
@@ -459,23 +509,38 @@ def _cooldown_for_step(step: int) -> float:
 
 
 def register_provider_failure(signature: str = "", data_dir=None,
-                              provider: str = "") -> bool:
-    """记录一次 provider 失败签名拒绝；达到阈值进入共享冷却。"""
+                              provider: str = "", retry_after: float = 0.0,
+                              quota_exhausted: bool = False) -> bool:
+    """Record provider health; exhausted quotas trip immediately."""
     limit = threshold()
     if limit <= 0:
         return False
     identity = provider or "default"
+    try:
+        retry_delay = float(retry_after)
+    except (TypeError, ValueError, OverflowError):
+        retry_delay = 0.0
+    if not math.isfinite(retry_delay) or retry_delay < 0:
+        retry_delay = 0.0
+    retry_delay = min(retry_delay, _MAX_RETRY_AFTER)
 
     def update(state):
         entries = _entries_for_update(state, identity)
         entry = _entry_for_update(entries, identity)
+        if quota_exhausted:
+            step = _state_int(entry, "step") + 1
+            cooldown = retry_delay or _quota_cooldown()
+            until = max(_state_float(entry, "cooldown_until"), _now() + cooldown)
+            entry.update({"streak": 0, "step": step,
+                          "cooldown_until": until, "updated_at": _now()})
+            return True, cooldown, step
         streak = _streak_after(_state_int(entry, "streak") + 1, limit)
         entry["streak"] = streak
         entry["updated_at"] = _now()
         if streak != 0:
             return False, 0.0, 0
         step = _state_int(entry, "step") + 1
-        cooldown = _cooldown_for_step(step)
+        cooldown = max(_cooldown_for_step(step), retry_delay)
         entry.update({"step": step, "cooldown_until": _now() + cooldown})
         return True, cooldown, step
 
@@ -484,10 +549,11 @@ def register_provider_failure(signature: str = "", data_dir=None,
     if not result or not result[0]:
         return False
     _, cooldown, step = result
+    detail = "quota exhausted" if quota_exhausted else f"{limit} consecutive provider failures"
     log.error(
-        "PROVIDER BREAKER [%s]: %d consecutive provider failures '%s' — "
-        "cooldown %.0fs (step %d); tasks will wait before spawning.",
-        identity, limit, signature[:80], cooldown, step)
+        "PROVIDER BREAKER [%s]: %s '%s' — cooldown %.0fs (step %d); "
+        "campaign admission paused before more provider calls.",
+        identity, detail, signature[:80], cooldown, step)
     _emit("provider_breaker", signature[:80], cooldown, step, identity)
     return True
 

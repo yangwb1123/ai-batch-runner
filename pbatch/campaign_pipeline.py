@@ -16,7 +16,7 @@ from .campaign_models import CampaignSettings, Direction, safe_slug
 from .campaign_state import (digest, file_digest, git_worktree_evidence,
                              tool_digest, tree_digest)
 from .campaign_recovery import (RECOVERY_BLOCKED, RECOVERY_DISABLED,
-                                RecoveryResult, apply_recovery_profile,
+                                RECOVERY_PRESERVED, RecoveryResult, apply_recovery_profile,
                                 has_failed_attempt, recover_worktree,
                                 recovery_attempt_count,
                                 write_wreckage_report)
@@ -310,6 +310,17 @@ def run_direction(root: Path, settings: CampaignSettings, direction: Direction,
     start_state = git_worktree_evidence(
         root, excludes=(settings.output_dir,))
     start_clean = bool(baseline and start_state["clean_commit"] == baseline)
+    if baseline and not start_clean:
+        detail = " | ".join(start_state["dirty_evidence"][:5])
+        return PipelineOutcome(
+            direction, PipelineStatus.PIPELINE_FAILED,
+            "refusing campaign execution in a pre-existing dirty worktree"
+            + (f": {detail}" if detail else ""), 0,
+            [str(analysis_path)], baseline_commit=baseline,
+            dirty_evidence=start_state["dirty_evidence"],
+            dirty_digest=start_state["dirty_digest"],
+            recovery_status=RECOVERY_BLOCKED,
+            recovery_reason="pre-existing worktree changes preserved")
     recovery_root = config.data_dir(str(root)) / "campaign-recovery"
     run_dir = settings.path(root, settings.output_dir) / "runs" / direction.direction_id
     recovery_mode = settings.recovery_enabled and has_failed_attempt(run_dir)
@@ -325,8 +336,8 @@ def run_direction(root: Path, settings: CampaignSettings, direction: Direction,
     recovery = _recover_direction(
         root, settings, direction, baseline, branch, start_clean,
         pipeline_path, status, reason, evidence)
-    if recovery.status == RECOVERY_BLOCKED:
-        reason = f"{reason}; self-repair blocked: {recovery.reason}"
+    if recovery.status in (RECOVERY_BLOCKED, RECOVERY_PRESERVED):
+        reason = f"{reason}; automatic retry blocked: {recovery.reason}"
     repository = git_worktree_evidence(
         root, excludes=(settings.output_dir,))
     return PipelineOutcome(
@@ -489,7 +500,7 @@ def _recover_isolated_worktree(settings, direction, worktree, baseline, branch,
         start_clean=start_clean, enabled=True,
         restore=settings.recovery_restore_on_failure, reason=reason,
         preserve_paths=(settings.output_path(worktree),))
-    if recovery.status == RECOVERY_BLOCKED:
-        reason = f"{reason}; self-repair blocked: {recovery.reason}"
+    if recovery.status in (RECOVERY_BLOCKED, RECOVERY_PRESERVED):
+        reason = f"{reason}; automatic retry blocked: {recovery.reason}"
     repository = git_worktree_evidence(worktree, excludes=(settings.output_dir,))
     return recovery, repository, reason

@@ -1,8 +1,9 @@
 # Campaign self-repair
 
-Repository Campaigns can opt into a bounded self-repair loop. It is designed
-for execution failures such as a timeout, a provider interruption, or an agent
-editing source during a requirements/design/review stage.
+Repository Campaigns can opt into a bounded, evidence-driven repair prompt for
+clean failures. Recovery is deliberately non-destructive: the coordinator never
+runs `git stash`, `git reset`, checkout, or automatic cleanup to make a retry
+possible.
 
 ```yaml
 selection:
@@ -11,8 +12,8 @@ selection:
 
 recovery:
   enabled: true
-  max_attempts: 1               # automatic retries per direction
-  restore_on_failure: true
+  max_attempts: 1               # bounded targeted retry per direction
+  restore_on_failure: false     # legacy field; automated restoration is disabled
   narrow_scope: true
   max_roles_per_iteration: 2
   allow_failed_roles: 1         # final Gate still decides PASS/FAIL
@@ -22,28 +23,27 @@ recovery:
 ## Contract
 
 1. The runner records the baseline HEAD, branch and clean-tree fact before a
-   direction starts.
-2. A failed direction writes the existing bounded wreckage report, then saves
-   all uncommitted and untracked changes in a Git stash. If the agent created a
-   commit, the commit is retained under `refs/ai-batch/recovery/...`.
-3. Only an attempt that started from a clean, known branch may be restored.
-   Pre-existing dirty trees, branch changes, unknown Git state and divergent
-   commits fail closed and stop the campaign.
-4. The worktree is reset to the original baseline only after the stash/backup
-   is verified. A recovery JSON record contains status, hashes, bounded paths,
-   stash/ref evidence and the failure reason; it never copies prompts,
-   assistant bodies or command output.
-5. A retry receives bounded failure feedback and a smaller profile: fewer meta
-   roles, no redundant role retry, and an explicit instruction to keep the
-   implementation slice small. This changes orchestration only; it never
-   weakens the final engineering or verdict gate.
-6. `max_attempts` and `stop_after_stalled_rounds` prevent `rounds: 0` from
-   burning provider budget forever. A blocked recovery stops immediately.
+direction starts. Campaign execution refuses a pre-existing dirty worktree.
+2. A failed direction writes bounded wreckage and recovery evidence. Changes and
+commits are left exactly where the agent produced them; nothing is stashed,
+reset, discarded, or automatically restored.
+3. A recovery report binds the failure to the original baseline, branch, and
+bounded Git status. It contains no prompts, assistant bodies, or command output.
+A dirty/changed failed worktree blocks automatic retries so they cannot build on
+unreviewed source. Inspect it and create a fresh, clean worktree for further
+work.
+4. A retry is only available when the failed attempt left the tracked source
+worktree clean. It receives bounded failure feedback and a smaller profile:
+fewer meta roles, no redundant role retry, and an instruction to keep the
+implementation slice small. The final engineering and verdict gates are never
+weakened.
+5. `max_attempts` and `stop_after_stalled_rounds` prevent `rounds: 0` from
+burning provider budget forever. Provider quota failures are circuit-broken
+before another agent call; a blocked recovery stops immediately.
 
-The recovery stash and records live under the configured `data_dir` in
-`campaign-recovery/`. They are evidence for human triage, not an automatic
-merge. Passed isolated branches still require the normal merge controller and
-repository gate.
+Recovery reports live under the configured `data_dir` in `campaign-recovery/`.
+They are evidence for human triage, not an automatic merge. Passed isolated
+branches still require the normal merge controller and repository gate.
 
 ## Read-only phase protection
 

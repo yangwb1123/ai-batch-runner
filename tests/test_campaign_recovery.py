@@ -6,7 +6,7 @@ from pathlib import Path
 
 from pbatch.campaign_recovery import (
     RECOVERY_BLOCKED,
-    RECOVERY_RESTORED,
+    RECOVERY_PRESERVED,
     recover_worktree,
     recovery_attempt_count,
 )
@@ -34,7 +34,7 @@ def _repo(tmp_path: Path) -> tuple[Path, str, str]:
         tmp_path, "branch", "--show-current")
 
 
-def test_failed_attempt_is_stashed_and_restored(tmp_path: Path) -> None:
+def test_failed_attempt_is_preserved_without_stash_or_reset(tmp_path: Path) -> None:
     root, baseline, branch = _repo(tmp_path)
     (root / "source.py").write_text("agent change\n", encoding="utf-8")
     (root / "new.py").write_text("untracked agent change\n", encoding="utf-8")
@@ -44,16 +44,16 @@ def test_failed_attempt_is_stashed_and_restored(tmp_path: Path) -> None:
         root, baseline, branch, recovery_root, "direction-one",
         start_clean=True, reason="design timeout")
 
-    assert result.status == RECOVERY_RESTORED
-    assert result.stash_ref
+    assert result.status == RECOVERY_PRESERVED
+    assert not result.stash_ref
     assert result.report and Path(result.report).is_file()
     assert _git(root, "rev-parse", "HEAD") == baseline
-    assert _git(root, "status", "--porcelain") == ""
+    assert "source.py" in _git(root, "status", "--porcelain")
+    assert (root / "new.py").read_text(encoding="utf-8") == "untracked agent change\n"
     payload = json.loads(Path(result.report).read_text(encoding="utf-8"))
-    assert payload["status"] == RECOVERY_RESTORED
+    assert payload["status"] == RECOVERY_PRESERVED
     assert payload["failure"] == "design timeout"
     assert recovery_attempt_count(root, recovery_root, "direction-one") == 1
-    assert "new.py" in _git(root, "stash", "show", "--name-only", "-u", "refs/stash")
 
 
 def test_recovery_refuses_to_touch_preexisting_dirty_tree(tmp_path: Path) -> None:
@@ -229,17 +229,60 @@ def test_failed_read_only_pipeline_is_recovered_before_retry(tmp_path: Path, mon
     outcome = run_direction(root, settings, direction, analysis)
 
     assert outcome.status == "PIPELINE_FAILED"
-    assert outcome.recovery_status == "RESTORED"
+    assert outcome.recovery_status == "PRESERVED"
     from pbatch.campaign_state import git_worktree_evidence
     assert _git(root, "rev-parse", "HEAD") == baseline
-    assert git_worktree_evidence(root, excludes=("out",))["clean_commit"] == baseline
-    assert "source.py" not in _git(root, "status", "--porcelain")
-    assert (root / "source.py").read_text(encoding="utf-8") == "original\n"
+    assert git_worktree_evidence(root, excludes=("out",))["clean_commit"] == ""
+    assert "source.py" in _git(root, "status", "--porcelain")
+    assert (root / "source.py").read_text(encoding="utf-8") == "mutated\n"
     second = run_direction(root, settings, direction, analysis)
-    assert second.recovery_status == "RESTORED"
-    third = run_direction(root, settings, direction, analysis)
-    assert third.recovery_status == "BLOCKED"
-    assert "attempt budget exhausted" in third.reason
+    assert second.recovery_status == "BLOCKED"
+    assert "pre-existing dirty worktree" in second.reason
+    assert (root / "source.py").read_text(encoding="utf-8") == "mutated\n"
+
+
+def test_campaign_deduplicates_an_unchanged_failure_after_one_repair(
+        tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from pbatch import campaign_exec
+    from pbatch.campaign_state import StateStore, failure_fingerprint
+    from pbatch.campaign_models import CampaignSettings, Direction
+
+    source = tmp_path / "source.py"
+    source.write_text("pass\n", encoding="utf-8")
+    direction = Direction(
+        module="src", title="Repeated failure", problem="same failure",
+        evidence=("source.py",), acceptance=("same result",))
+    fingerprint = "input-fingerprint"
+    signature = failure_fingerprint(fingerprint, "PIPELINE_FAILED", "unchanged gate error")
+    store = StateStore(tmp_path / "state.jsonl", campaign="campaign")
+    store.append({
+        "campaign": "campaign", "module": "src",
+        "direction_id": direction.direction_id,
+        "status": "PIPELINE_FAILED", "fingerprint": fingerprint,
+        "failure_fingerprint": signature, "failure_status": "PIPELINE_FAILED",
+        "same_failure_count": 2,
+    })
+    context = SimpleNamespace(
+        root=tmp_path, settings=CampaignSettings(max_directions=1),
+        args=SimpleNamespace(force=False, reuse=False, skip_passed=False,
+                             retry_failed=True, model="", provider=""),
+        store=store, snapshot={})
+    events = []
+    monkeypatch.setattr(campaign_exec, "direction_fingerprint",
+                        lambda *_args: fingerprint)
+    monkeypatch.setattr(campaign_exec, "_analysis_path",
+                        lambda *_args: tmp_path / "analysis.json")
+    monkeypatch.setattr(campaign_exec, "_direction_event",
+                        lambda _context, _direction, status, *_args, **kwargs:
+                        events.append((status, kwargs.get("extra", {}))))
+
+    selected, failures = campaign_exec._select(context, ["src"], {"src": [direction]})
+
+    assert selected == []
+    assert failures == 1
+    assert events[0][0] == "DIRECTION_DEDUPLICATED"
+    assert events[0][1]["same_failure_count"] == 2
 
 
 def test_global_direction_cap_limits_one_pipeline_per_round(tmp_path, monkeypatch) -> None:

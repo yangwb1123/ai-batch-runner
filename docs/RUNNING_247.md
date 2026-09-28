@@ -318,7 +318,9 @@ and `schemas/` roots are the freshness boundary. `--focus` is advisory to the
 agent only after deterministic module selection; it cannot invent evidence.
 The shipped `examples/repository-campaign.yaml` uses a four-module cold-start
 batch template; set `analysis.batch_size: 0` only when an exhaustive pass is
-intentional and no adaptive cap is available.
+intentional and no adaptive cap is available. Pipeline schema, configured repo
+validators, baseline gates, and isolated runtime identities are checked before
+analysis calls.
 
 Pi session files remain append-only and untouched. Metering caches each file's
 device/inode, byte offset, and cumulative numeric usage, then scans only newly
@@ -329,7 +331,10 @@ changing the raw file. Emitted task usage is the before/after invocation delta.
 Analysis parallelism stays inside the one lock-owning process. Implementation
 is serial by default. `--parallel-pipelines N` requires a clean Git worktree at
 campaign start and creates one persistent branch/worktree/output/decision-log/
-run-log namespace per direction under the private runtime directory. This prevents concurrent agents and validators
+run-log namespace per direction under the private runtime directory. Each child
+also receives a worktree-specific `PBATCH_DATA_DIR` and drops inherited
+`PBATCH_LOCK_FILE`; provider rate limits, breaker state, and run-scoped metering
+remain shared intentionally. This prevents concurrent agents and validators
 from observing each other's partial repository changes. Isolated branches are
 not auto-merged; state records the branch, commit, and worktree evidence for the
 repository's normal review/merge process. `implementation.timeout` (14400s by
@@ -344,26 +349,30 @@ a duplicate owner, while a stale lease is removed only after the owner is no
 longer verifiable. This is coordination evidence, not an execution grant.
 
 The optional `implementation.no_progress_timeout` YAML value or
-`--no-progress-timeout SECONDS` CLI flag watches only child progress markers
-(the direction log and materialized pipeline). `0` disables the stall policy;
+`--no-progress-timeout SECONDS` CLI flag watches a bounded fingerprint of
+materialized deliverable artifacts. Log heartbeats, lease writes, and the
+static pipeline manifest do not reset the timer. `0` disables the stall policy;
 the hard pipeline timeout is still enforced. On a stall or hard deadline the
-watchdog terminates the complete child process group, records the reason, and
-lets the next `--rounds 0` iteration retry it with `--reuse --retry-failed`.
-Choose the value above the longest legitimate quiet model-thinking interval;
+watchdog terminates the complete child process group and records the reason.
+Choose a threshold above the longest legitimate quiet model-thinking interval;
 no provider-side cancellation is sent.
 
 For a coordinator that must survive an external graceful stop, opt in with
-`--auto-resume-on-signal --resume-delay 30`. SIGTERM stops active child groups,
-leaves append-only state and worktree evidence intact, and resumes the loop in
-the same lock-owning process. Without the flag SIGTERM remains a normal exit
-(130), so service managers can still stop the campaign. Avoid a forced
+`--auto-resume-on-signal --resume-delay 30`; at most three signal-triggered
+resumes are allowed by default (`--max-signal-resumes` adjusts the cap).
+SIGTERM stops active child groups, leaves append-only state and worktree
+evidence intact, and resumes the loop in the same lock-owning process. Without
+the flag SIGTERM remains a normal exit (130), so service managers can still stop
+the campaign. Avoid a forced
 SIGKILL when recovery is required.
 
 After each implementation round, `SUMMARY.md` contains a bounded
-`Efficiency (latest round)` section: analysis tokens per successful direction,
-wall/work time, retry ratio, gate-rejection ratio, no-progress duration, and
-concurrency-slot utilization. These are observations for scheduling and cost
-control only; they do not authorize code changes or merge branches.
+`Efficiency (latest round)` section and a recent-run table. Events bind metrics
+to run/round ID, HEAD, model/provider, and configuration fingerprint; cumulative
+direction history remains separate. Missing usage is reported as `unknown`, not
+zero. Metrics include analysis/pipeline time, retry and gate-rejection ratios,
+no-progress duration, and effective concurrency. They are observations for
+scheduling and cost control only; they do not authorize code changes or merges.
 
 ### 多 campaign 串行协作（同仓库锁 + 排队）
 

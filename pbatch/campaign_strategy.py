@@ -41,6 +41,17 @@ class UsageSummary:
     calls: int = 0
     cost_usd: float = 0.0
     truncated: bool = False
+    calls_with_usage: int = 0
+
+    @property
+    def token_telemetry(self) -> str:
+        if not self.calls:
+            return "no_calls"
+        observed = (self.calls_with_usage or self.total_tokens > 0
+                    or self.input_tokens > 0 or self.output_tokens > 0)
+        if not observed:
+            return "unknown"
+        return "partial" if self.calls_with_usage and self.calls_with_usage < self.calls else "observed"
 
     @property
     def observed_average(self) -> int:
@@ -83,6 +94,8 @@ class CampaignPlan:
                 "total_tokens": self.usage.total_tokens,
                 "cache_tokens": self.usage.cache_tokens,
                 "calls": self.usage.calls,
+                "calls_with_usage": self.usage.calls_with_usage,
+                "token_telemetry": self.usage.token_telemetry,
                 "cost_usd": self.usage.cost_usd,
                 "truncated": self.usage.truncated,
                 "diagnostics": list(self.usage.diagnostics(
@@ -208,12 +221,17 @@ def read_usage(path: str, *, run_id: str = "") -> UsageSummary:
     rows, truncated = _read_rows(path)
     total: dict[str, float] = {}
     calls = 0
+    calls_with_usage = 0
     for row in rows:
         if not _is_analysis_event(row, run_id):
             continue
         calls += 1
         usage = row.get("usage")
         if isinstance(usage, dict):
+            if any(_TOKEN_FIELDS.get(str(key)) in {
+                    "input_tokens", "output_tokens", "total_tokens", "cache_tokens"}
+                   for key in usage):
+                calls_with_usage += 1
             _add_usage(total, usage)
     observed = total.get("total_tokens", 0)
     if not observed:
@@ -221,7 +239,7 @@ def read_usage(path: str, *, run_id: str = "") -> UsageSummary:
     cost = total.get("cost_usd", 0.0) or _cost_from_rows(rows, run_id)
     return UsageSummary(total.get("input_tokens", 0), total.get("output_tokens", 0),
                         observed, total.get("cache_tokens", 0), calls,
-                        float(cost), truncated)
+                        float(cost), truncated, calls_with_usage)
 
 
 def _read_rows(path: str) -> tuple[list[dict], bool]:

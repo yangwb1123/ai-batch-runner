@@ -1,12 +1,9 @@
-"""Fail-closed recovery for repository campaign execution.
+"""Fail-closed, non-destructive recovery evidence for campaigns.
 
-A failed campaign attempt may leave source changes behind even when the
-failing stage was requirements, design, or review. This module preserves the
-attempt in a Git stash plus an audit record, then restores the exact clean
-baseline so a retry cannot consume an unreviewed dirty tree. It never
-silently touches a tree that was already dirty when the attempt started.
+Failed changes remain in their original worktree for inspection. The
+coordinator never stashes, resets, checks out, or cleans them; a dirty failed
+tree blocks subsequent automatic execution.
 """
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -24,7 +21,8 @@ MAX_STATUS_LINES = 40
 MAX_REASON_BYTES = 2_000
 FEEDBACK_MAX_BYTES = 24 * 1024
 
-RECOVERY_RESTORED = "RESTORED"
+RECOVERY_RESTORED = "RESTORED"  # legacy evidence only; recovery never resets a worktree
+RECOVERY_PRESERVED = "PRESERVED"
 RECOVERY_NOOP = "NOOP"
 RECOVERY_BLOCKED = "BLOCKED"
 RECOVERY_DISABLED = "DISABLED"
@@ -59,15 +57,15 @@ def recovery_attempt_count(root: Path, recovery_root: Path,
 def update_round_recovery(context, stalled_rounds: int) -> tuple[int, str]:
     """Return updated stall count and a fail-closed stop reason.
 
-    The stall stop is a SAFETY circuit, not part of the opt-in stash-based
-    self-repair. It must fire even when ``recovery.enabled`` is false (its
+    The stall stop is a SAFETY circuit, not part of opt-in repair prompting.
+    It must fire even when ``recovery.enabled`` is false (its
     default), because a round that made no progress is the exact condition an
     unattended run must not keep paying for. Coupling the two made the stop
     unreachable by default: on 2026-09-19 an iris-ui campaign ran 123
     consecutive zero-progress rounds against a provider-wide quota outage
     (~8h, 1412 provider errors) because ``recovery_enabled`` defaulted to
     false and this function returned ``(0, "")``, resetting the counter every
-    round. Only the destructive restore/self-repair behaviour stays opt-in.
+    round. Only bounded retry-prompt narrowing stays opt-in.
     """
     if getattr(context, "recovery_blocked", False):
         return stalled_rounds, "CAMPAIGN self-repair blocked; stopping fail-closed"
@@ -174,7 +172,8 @@ def recover_worktree(root: Path, baseline: str, expected_branch: str,
                      start_clean: bool, enabled: bool = True,
                      restore: bool = True, reason: str = "",
                      preserve_paths: tuple[Path, ...] = ()) -> RecoveryResult:
-    """Preserve a failed attempt and restore its clean Git baseline."""
+    """Record failure evidence without stashing, resetting, or rewriting Git."""
+    del restore  # retained for compatibility; automated restoration is unsafe
     before = _git_state(root, preserve_paths)
     dirty_digest = digest(before["status"])
     if not enabled:
@@ -193,28 +192,13 @@ def recover_worktree(root: Path, baseline: str, expected_branch: str,
                                 dirty_digest=dirty_digest)
         return _record(recovery_root, direction_id, result, root, before,
                        baseline, expected_branch, reason)
-    if not restore:
-        return _blocked(recovery_root, direction_id, root, before, baseline,
-                        expected_branch, reason, dirty_digest,
-                        "recovery refused: restore_on_failure is disabled")
     report_path = _report_path(recovery_root, direction_id)
-    stash_ref = _stash_changes(
-        root, before["status"], direction_id, preserve_paths)
-    if before["status"] and not stash_ref:
-        return _blocked(recovery_root, direction_id, root, before, baseline,
-                        expected_branch, reason, dirty_digest,
-                        "recovery refused: Git stash did not preserve dirty changes",
-                        report_path=report_path)
-    backup_ref = (_backup_head(root, before["head"], direction_id)
-                  if before["head"] != baseline else "")
-    if before["head"] != baseline and not backup_ref:
-        return _blocked(recovery_root, direction_id, root, before, baseline,
-                        expected_branch, reason, dirty_digest,
-                        "recovery refused: failed to retain changed HEAD",
-                        report_path=report_path, stash_ref=stash_ref)
-    return _reset_to_baseline(
-        root, recovery_root, direction_id, before, baseline, expected_branch,
-        reason, dirty_digest, report_path, stash_ref, backup_ref, preserve_paths)
+    result = RecoveryResult(
+        RECOVERY_PRESERVED,
+        "failed attempt preserved in place; inspect before retrying",
+        str(report_path), dirty_digest=dirty_digest)
+    return _record(recovery_root, direction_id, result, root, before,
+                   baseline, expected_branch, reason, after=before)
 
 
 def _precondition_error(root: Path, before: dict, baseline: str,
@@ -231,26 +215,6 @@ def _precondition_error(root: Path, before: dict, baseline: str,
     return ""
 
 
-def _reset_to_baseline(root: Path, recovery_root: Path, direction_id: str,
-                       before: dict, baseline: str, expected_branch: str,
-                       reason: str, dirty_digest: str, report_path: Path,
-                       stash_ref: str, backup_ref: str,
-                       preserve_paths: tuple[Path, ...]) -> RecoveryResult:
-    reset = _git(root, ["reset", "--hard", baseline])
-    after = _git_state(root, preserve_paths)
-    if reset.returncode != 0 or after["head"] != baseline or after["status"]:
-        return _blocked(recovery_root, direction_id, root, before, baseline,
-                        expected_branch, reason, dirty_digest,
-                        "recovery failed: baseline reset did not produce a clean tree",
-                        report_path=report_path, stash_ref=stash_ref,
-                        backup_ref=backup_ref)
-    result = RecoveryResult(RECOVERY_RESTORED,
-                            "failed attempt preserved and worktree restored",
-                            str(report_path), stash_ref, backup_ref, dirty_digest)
-    return _record(recovery_root, direction_id, result, root, before, baseline,
-                   expected_branch, reason, after=after)
-
-
 def _blocked(recovery_root: Path, direction_id: str, root: Path,
              before: dict, baseline: str, branch: str, failure: str,
              dirty_digest: str, reason: str, *,
@@ -261,35 +225,6 @@ def _blocked(recovery_root: Path, direction_id: str, root: Path,
                             stash_ref, backup_ref, dirty_digest)
     return _record(recovery_root, direction_id, result, root, before, baseline,
                    branch, failure)
-
-
-def _stash_changes(root: Path, status: list[str], direction_id: str,
-                   preserve_paths: tuple[Path, ...]) -> str:
-    if not status:
-        return ""
-    before = _git_text(root, ["rev-parse", "--verify", "refs/stash"])
-    args = ["stash", "push", "--include-untracked", "--message",
-            f"pi-batch recovery {safe_slug(direction_id)}", "--", "."]
-    args.extend(_exclude_pathspecs(root, preserve_paths))
-    result = _git(root, args)
-    if result.returncode != 0:
-        log.warning("self-repair stash failed: exit=%d", result.returncode)
-        return ""
-    after = _git_text(root, ["rev-parse", "--verify", "refs/stash"])
-    if not after:
-        return ""
-    if after == before and _git_state(root, preserve_paths)["status"]:
-        return ""
-    return after
-
-
-def _backup_head(root: Path, head: str, direction_id: str) -> str:
-    if not head:
-        return ""
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    ref = f"refs/ai-batch/recovery/{safe_slug(direction_id)}-{stamp}"
-    result = _git(root, ["update-ref", ref, head])
-    return ref if result.returncode == 0 else ""
 
 
 def _record(recovery_root: Path, direction_id: str, result: RecoveryResult,
@@ -364,11 +299,6 @@ def _relative_path(root: Path, path: Path) -> str:
         return path.resolve().relative_to(root.resolve()).as_posix()
     except (OSError, ValueError):
         return ""
-
-
-def _exclude_pathspecs(root: Path, paths: tuple[Path, ...]) -> list[str]:
-    values = [_relative_path(root, path) for path in paths]
-    return [f":(exclude){value}" for value in values if value]
 
 
 def _preserved_status(line: str, root: Path,

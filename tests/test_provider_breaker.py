@@ -447,6 +447,41 @@ def test_go_gateway_usage_limit_is_a_shipped_default_signature(monkeypatch):
     assert breaker.is_provider_failure_reason(reason)
 
 
+def test_retry_after_and_quota_exhaustion_trip_immediately(monkeypatch):
+    monkeypatch.setattr(breaker, "_settings", lambda: {
+        "threshold": 5, "base_cooldown": 60.0, "max_cooldown": 60.0})
+    diagnostics = (
+        '429: {"type":"GoUsageLimitError","message":"Go usage limit exceeded"}\n'
+        "Retry-After: 120")
+    assert breaker.is_quota_exhaustion(diagnostics)
+    assert breaker.retry_after_seconds(diagnostics) == 120
+
+    identity = "provider:cloud-a"
+    assert breaker.register_provider_failure(
+        "go usage limit", provider=identity, retry_after=120,
+        quota_exhausted=True)
+    state = breaker.breaker_state(provider=identity)
+    assert state["active"]
+    assert state["cooldown_remaining_s"] >= 119
+    assert state["step"] == 1
+
+
+def test_provider_quota_failure_is_not_retried_in_runner(monkeypatch):
+    from pbatch import runner
+    from pbatch.models import Task, TaskResult
+
+    calls = []
+    def fail_once(task, *_args, **_kwargs):
+        calls.append(True)
+        return TaskResult(task, False, returncode=1,
+                          reason="agent reported provider failure (go usage limit)")
+    monkeypatch.setattr(runner, "_run_with_gate", fail_once)
+    result = runner._run_retried(
+        Task("quota"), "", 1, 1, retries=4, retry_delay=0, backoff=1)
+    assert not result.success
+    assert calls == [True]
+
+
 def test_go_gateway_session_banner_alone_is_not_a_provider_failure(monkeypatch):
     """The session-recovery warning that precedes the quota line is CLI noise,
     not provider health — it must not trip the shared breaker on its own."""

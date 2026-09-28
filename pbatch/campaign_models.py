@@ -90,7 +90,7 @@ def _recovery_values(recovery: dict) -> dict:
     return {
         "recovery_enabled": _bool_value(recovery, "enabled", False),
         "recovery_max_attempts": _int_value(recovery, "max_attempts", 1),
-        "recovery_restore_on_failure": _bool_value(recovery, "restore_on_failure", True),
+        "recovery_restore_on_failure": _bool_value(recovery, "restore_on_failure", False),
         "recovery_narrow_scope": _bool_value(recovery, "narrow_scope", True),
         "recovery_max_roles_per_iteration": _int_value(recovery, "max_roles_per_iteration", 2),
         "recovery_allow_failed_roles": _int_value(recovery, "allow_failed_roles", 1),
@@ -134,15 +134,16 @@ class CampaignSettings:
     worktree_root: str = ""  # 空 = data_dir/worktrees（PBATCH_DATA_DIR 感知）
     analysis_minutes: float = 3
     pipeline_minutes: float = 20
-    # Failed campaign attempts are preserved and restored before a retry.
-    # Disabled by default for compatibility; production campaigns should opt in.
+    # Bounded prompt narrowing is opt-in; failed worktrees are never reset.
     recovery_enabled: bool = False
     recovery_max_attempts: int = 1
-    recovery_restore_on_failure: bool = True
+    recovery_restore_on_failure: bool = False
     recovery_narrow_scope: bool = True
     recovery_max_roles_per_iteration: int = 2
     recovery_allow_failed_roles: int = 1
     recovery_stop_after_stalled_rounds: int = 2
+    preflight_require_repo_validator: bool = False
+    preflight_required_validators: tuple[str, ...] = ()
 
     def effective_worktree_root(self, root: Path) -> Path:
         """worktree 根：显式配置优先；空 = data_dir/worktrees（可移出项目）。"""
@@ -160,6 +161,7 @@ class CampaignSettings:
         state = _section(data, "state")
         estimates = _section(data, "estimates")
         recovery = _section(data, "recovery")
+        preflight = _section(data, "preflight")
         return cls(
             name=_string_value(data, "name", "repository-improvements"),
             roots=_string_list(discovery, "roots", cls.roots),
@@ -188,6 +190,10 @@ class CampaignSettings:
             pipeline_no_progress_timeout=_int_value(
                 implementation, "no_progress_timeout", 0),
             worktree_root=_string_value(implementation, "worktree_root", ""),
+            preflight_require_repo_validator=_bool_value(
+                preflight, "require_repo_validator", False),
+            preflight_required_validators=_string_list(
+                preflight, "required_repo_validators", ()),
             analysis_minutes=_float_value(estimates, "analysis_minutes", 3),
             pipeline_minutes=_float_value(estimates, "pipeline_minutes", 20),
             **_recovery_values(recovery),

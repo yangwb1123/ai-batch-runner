@@ -362,12 +362,13 @@ pi-batch campaign --rounds 0 --reuse --retry-failed \
 # and max reasoning (implementation remains worktree/commit governed)
 pi-batch campaign --rounds 0 --round-delay 120 --jobs 4 --max-directions 1 \
   --model gpt-5.6-luna --provider openai-codex --thinking max --reuse --retry-failed
-# Optional isolated-pipeline watchdog and SIGTERM recovery. Both are opt-in:
+# Optional artifact-progress watchdog and bounded SIGTERM recovery:
 pi-batch campaign --rounds 0 --reuse --retry-failed \
-  --no-progress-timeout 7200 --auto-resume-on-signal --resume-delay 30
+  --no-progress-timeout 7200 --auto-resume-on-signal --resume-delay 30 \
+  --max-signal-resumes 3
 
-# Bounded campaign self-repair: preserve failed edits, restore the clean
-# baseline, narrow the next retry, and stop after a stalled/recovery budget.
+# Bounded campaign repair: preserve failed edits without stash/reset, narrow
+# one clean retry, preflight repo gates, and stop on repeated identical failures.
 # See docs/CAMPAIGN_SELF_REPAIR.md and examples/repository-campaign.yaml.
 pi-batch campaign --config examples/repository-campaign.yaml \
   --rounds 0 --max-directions 1 --max-total-directions 1 \

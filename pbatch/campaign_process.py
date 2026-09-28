@@ -15,14 +15,25 @@ _ACTIVE_PIPELINES: set[subprocess.Popen] = set()
 _ACTIVE_LOCK = threading.Lock()
 
 
+def isolated_child_environment(worktree: Path) -> dict[str, str]:
+    """Give each pipeline private runtime/lock state, retaining shared quotas."""
+    from .user_dirs import project_runtime_dir
+
+    env = os.environ.copy()
+    env["PBATCH_DATA_DIR"] = str(project_runtime_dir(str(worktree)))
+    env.pop("PBATCH_LOCK_FILE", None)
+    return env
+
+
 def run_isolated_child(
     cmd: list[str], settings, direction, worktree: Path,
     pipeline_path: Path, logfile: Path,
 ) -> tuple[int, bool, bool, float]:
     """Run one child with a lease, hard deadline, and progress watchdog."""
     proc = subprocess.Popen(
-        cmd, cwd=worktree, stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL, start_new_session=True,
+        cmd, cwd=worktree, env=isolated_child_environment(worktree),
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
     )
     with _ACTIVE_LOCK:
         _ACTIVE_PIPELINES.add(proc)

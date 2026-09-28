@@ -59,16 +59,18 @@ selection:
   max_total_directions: 1  # one bounded implementation at a time
   minimum_score: 0
 
-# Failed attempts are preserved and restored before a retry. This keeps an
-# unattended campaign from repeatedly analyzing or building on dirty source.
+# Failed changes are preserved in place; dirty worktrees block automatic retries.
 recovery:
   enabled: true
   max_attempts: 1
-  restore_on_failure: true
+  restore_on_failure: false  # legacy setting; campaign recovery never resets Git
   narrow_scope: true
   max_roles_per_iteration: 2
   allow_failed_roles: 1
   stop_after_stalled_rounds: 2
+
+preflight:
+  require_repo_validator: true
 
 implementation:
   pipeline: examples/repository-campaign-pipeline.yaml

@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import config
-from .campaign_state import digest, git_worktree_evidence
+from .campaign_state import digest, failure_fingerprint, git_worktree_evidence
 from .pipeline_status import PipelineStatus
 from .lock import acquire_lock, release_lock
 from .text_io import read_text_bounded
@@ -67,6 +67,21 @@ def _record_outcome(context, outcome, fingerprint: str, event) -> None:
              "recovery_status": getattr(outcome, "recovery_status", ""),
              "recovery_reason": getattr(outcome, "recovery_reason", ""),
              "recovery_evidence": getattr(outcome, "recovery_evidence", [])}
+    if outcome.status != PipelineStatus.PASSED:
+        signature = failure_fingerprint(fingerprint, outcome.status, outcome.reason)
+        previous = context.store.latest_event(
+            outcome.direction.module, outcome.direction.direction_id)
+        prior_signature = (previous.get("prior_failure_fingerprint")
+                           or previous.get("failure_fingerprint", ""))
+        try:
+            prior_count = max(0, int(previous.get(
+                "prior_failure_count", previous.get("same_failure_count", 0)) or 0))
+        except (TypeError, ValueError, OverflowError):
+            prior_count = 0
+        count = prior_count + 1 if prior_signature == signature else 1
+        extra.update({"failure_fingerprint": signature,
+                      "failure_status": outcome.status,
+                      "same_failure_count": count})
     if outcome.merge_status:
         extra.update({"merge_status": outcome.merge_status,
                       "merge_reason": outcome.merge_reason,

@@ -817,6 +817,54 @@ def test_isolated_pipeline_has_no_progress_watchdog(tmp_path, monkeypatch):
     assert outcome.elapsed < 6
 
 
+def test_isolated_child_runtime_is_private_and_drops_inherited_lock(
+        tmp_path, monkeypatch):
+    from pbatch.campaign_process import isolated_child_environment
+
+    monkeypatch.setenv("PBATCH_DATA_DIR", str(tmp_path / "shared-runtime"))
+    monkeypatch.setenv("PBATCH_LOCK_FILE", str(tmp_path / "shared.lock"))
+    monkeypatch.setenv("PBATCH_PROVIDER_BREAKER_FILE", str(tmp_path / "breaker.json"))
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+
+    env = isolated_child_environment(worktree)
+
+    assert env["PBATCH_DATA_DIR"] != str(tmp_path / "shared-runtime")
+    assert "PBATCH_LOCK_FILE" not in env
+    assert env["PBATCH_PROVIDER_BREAKER_FILE"] == str(tmp_path / "breaker.json")
+
+
+def test_isolated_watchdog_ignores_heartbeat_log_updates(tmp_path, monkeypatch):
+    (tmp_path / "pi-batch.py").write_text(
+        "import pathlib, sys, time\n"
+        "log = pathlib.Path(sys.argv[sys.argv.index('--log-file') + 1])\n"
+        "while True:\n"
+        "    log.write_text(str(time.time()))\n"
+        "    time.sleep(0.1)\n",
+        encoding="utf-8")
+    monkeypatch.setattr(config, "TOOL_ROOT", str(tmp_path))
+    (tmp_path / "pipeline.yaml").write_text(
+        "stages:\n  - name: requirements\n    from_prompt: old\n    output: report.md\n",
+        encoding="utf-8")
+    analysis = tmp_path / "analysis.json"
+    analysis.write_text("[]", encoding="utf-8")
+    _init_git(tmp_path, extra=["pi-batch.py", "pipeline.yaml", "analysis.json"])
+    settings = CampaignSettings(
+        pipeline_template="pipeline.yaml", output_dir="docs/auto",
+        worktree_root=".worktrees", pipeline_timeout=10,
+        pipeline_no_progress_timeout=1)
+    direction = Direction(module="src", title="Ignore heartbeats",
+                          problem="logs are not delivery", evidence=("source.py",),
+                          acceptance=("stall on no artifacts",))
+
+    outcome = run_directions_isolated(
+        tmp_path, settings, [(direction, analysis)], 1, [])[0]
+
+    assert outcome.status == "PIPELINE_FAILED"
+    assert "made no progress for 1s" in outcome.reason
+    assert outcome.elapsed < 6
+
+
 def test_isolated_command_falls_back_to_tool_runner_and_keeps_worktree_cwd(
         tmp_path, monkeypatch):
     from pbatch.campaign_runtime import isolated_command
@@ -888,6 +936,20 @@ def test_campaign_auto_resume_on_signal_preserves_round_loop(monkeypatch):
     assert campaign_exec._run_campaign_supervised(context) == 0
     assert calls == [0, 1]
     assert sleeps == [3]
+
+
+def test_campaign_signal_resume_limit_bounds_supervisor_restarts(monkeypatch):
+    from pbatch import campaign_exec
+    context = SimpleNamespace(args=SimpleNamespace(
+        auto_resume_on_signal=True, resume_delay=0, max_signal_resumes=1))
+    calls = []
+    def interrupt(_context):
+        calls.append(True)
+        raise campaign_exec.CampaignSignalInterrupt
+    monkeypatch.setattr(campaign_exec, "run_campaign_loop", interrupt)
+
+    assert campaign_exec._run_campaign_supervised(context) == 130
+    assert len(calls) == 2
 
 
 def test_campaign_signal_without_auto_resume_returns_interrupt_code(monkeypatch):

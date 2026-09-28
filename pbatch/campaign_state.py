@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import tempfile
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,6 +25,14 @@ def utc_now() -> str:
 def digest(value) -> str:
     canonical = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def failure_fingerprint(input_fingerprint: str, status: str, reason: str) -> str:
+    """Stable bounded signature for unchanged campaign failures."""
+    normalized = " ".join(str(reason or "").casefold().split())
+    normalized = re.sub(r"\bpid\s+\d+\b", "pid <n>", normalized)
+    normalized = re.sub(r"\b\d+(?:\.\d+)?s\b", "<duration>", normalized)
+    return digest([str(input_fingerprint)[:128], str(status)[:80], normalized[:2000]])
 
 
 def file_digest(path: Path) -> str:
@@ -199,6 +209,10 @@ class StateStore:
         """Compatibility snapshot; operational lookups stream or use latest cache."""
         return list(self._iter_events())
 
+    def recent_events(self, limit: int = 1000) -> list[dict]:
+        """Return a bounded tail for human summaries and run accounting."""
+        return list(deque(self._iter_events() or (), maxlen=max(1, int(limit))))
+
     def append(self, event: dict) -> dict:
         if self.path.is_symlink():
             raise ValueError(f"refusing symlink state file: {self.path}")
@@ -231,6 +245,11 @@ class StateStore:
     def _key(event: dict) -> tuple[str, str, str]:
         return (str(event.get("campaign", "")), str(event.get("module", "")),
                 str(event.get("direction_id", "")))
+
+    def latest_event(self, module: str, direction_id: str,
+                     campaign: str | None = None) -> dict:
+        """Return the latest state fact for a campaign-owned direction."""
+        return self._latest_for(campaign, module, direction_id)
 
     def reusable(self, module: str, direction_id: str, fingerprint: str,
                  statuses: tuple[str, ...], campaign: str | None = None) -> bool:
@@ -320,7 +339,44 @@ def write_summary(store: StateStore, path: Path, campaign_name: str) -> None:
             lines.extend(["", f"### {campaign}", ""])
             lines.extend(f"- {key}: {bucket[key]}" for key in sorted(bucket))
     _append_efficiency_section(lines, metric_events)
+    _append_recent_runs(lines, store, campaign_name)
     _atomic_text(path, "\n".join(lines) + "\n")
+
+
+def _append_recent_runs(lines: list[str], store: StateStore,
+                        campaign_name: str) -> None:
+    runs = {}
+    for event in store.recent_events(2048):
+        if (event.get("campaign") != campaign_name
+                or event.get("status") != "CAMPAIGN_METRICS"):
+            continue
+        run_id = str(event.get("run_id", ""))
+        metrics = event.get("metrics")
+        if not run_id or not isinstance(metrics, dict):
+            continue
+        round_id = str(event.get("round_id", ""))
+        runs[(run_id, round_id)] = event
+    if not runs:
+        return
+    lines.extend(["", "## Recent runs", "",
+                  "| Run / round | Started/updated | HEAD | Model / provider | Directions | Analysis tokens | Pipeline seconds |",
+                  "|---|---|---|---|---:|---:|---:|"])
+    for (run_id, round_id), event in list(runs.items())[-10:]:
+        metrics = event["metrics"]
+        directions = "%s attempted / %s passed" % (
+            metrics.get("directions_attempted", "?"),
+            metrics.get("directions_passed", "?"))
+        tokens = metrics.get("analysis_tokens")
+        telemetry = metrics.get("analysis_token_telemetry", "unknown")
+        token_text = "unknown" if tokens is None else f"{tokens} ({telemetry})"
+        model = str(event.get("model", "?"))
+        provider = str(event.get("provider", "?"))
+        identity = run_id + (f" / {round_id}" if round_id else "")
+        lines.append("| %s | %s | %s | %s / %s | %s | %s | %s |" % (
+            _cell(identity), _cell(event.get("updated_at", "")),
+            _cell(event.get("head_commit", ""))[:12], _cell(model),
+            _cell(provider), _cell(directions), _cell(token_text),
+            _cell(metrics.get("pipeline_work_seconds", "?"))))
 
 
 def _append_efficiency_section(lines: list[str], metric_events: list[dict]) -> None:

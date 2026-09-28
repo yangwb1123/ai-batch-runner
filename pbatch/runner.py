@@ -31,10 +31,13 @@ from .runner_results import (agent_result_reason as _agent_result_reason,
                              projected_agent_stdout as _projected_agent_stdout,
                              prompt_limit_result as _prompt_limit_result)
 from .provider_breaker import (cooldown_failure as _pb_cooldown,
+                               is_provider_failure_reason as _pb_is_provider_failure,
+                               is_quota_exhaustion as _pb_quota_exhausted,
                                provider_identity as _pb_identity,
                                provider_failure_reason as _pb_reason,
                                register_provider_failure as _pb_register_fail,
-                               register_success as _pb_register_ok)
+                               register_success as _pb_register_ok,
+                               retry_after_seconds as _pb_retry_after)
 from . import metering
 from .metering import budget_try_consume, record_event
 from .memory import record_task
@@ -709,7 +712,7 @@ def _revalidation_passed(spec, path: Path, cmd: str, v) -> bool:
     return True
 
 def _agent_output_reasons(task: Task, stdout_text: str, stderr_text: str,
-                          provider_stdout: Optional[str] = None) -> tuple[str, str]:
+                          provider_stdout: Optional[str] = None) -> tuple[str, str, str]:
     agent = task.effective_agent()
     stderr_reason = (agent_failure_reason(0, stderr_text, agent)
                      if stderr_text.strip() else "")
@@ -719,14 +722,20 @@ def _agent_output_reasons(task: Task, stdout_text: str, stderr_text: str,
                        f"{stderr_text}\n{provider_stdout}")
     provider_reason = _pb_reason(
         provider_stderr, stdout_text if provider_stdout is None else "", agent)
-    return stderr_reason or stdout_reason, provider_reason
+    return stderr_reason or stdout_reason, provider_reason, provider_stderr
 
 
 def _record_provider_health(task: Task, success: bool,
-                            provider_reason: str) -> None:
+                            provider_reason: str, diagnostics: str = "") -> None:
     identity = _pb_identity(task)
     if provider_reason:
-        _pb_register_fail(provider_reason, provider=identity)
+        try:
+            _pb_register_fail(
+                provider_reason, provider=identity,
+                retry_after=_pb_retry_after(diagnostics),
+                quota_exhausted=_pb_quota_exhausted(diagnostics))
+        except TypeError:  # compatibility with injected legacy breaker adapters
+            _pb_register_fail(provider_reason, provider=identity)
     elif success:
         _pb_register_ok(provider=identity)
 
@@ -736,7 +745,7 @@ def _result_from_proc(task: Task, proc: subprocess.Popen, stdout_lines: list, st
     stderr_text = "".join(stderr_lines)
     stdout_text, transcript_reason, provider_stdout = _projected_agent_stdout(
         task, stdout_lines, proc.returncode)
-    output_reason, provider_reason = _agent_output_reasons(
+    output_reason, provider_reason, provider_diagnostics = _agent_output_reasons(
         task, stdout_text, stderr_text, provider_stdout)
     # Exit code first, then body presence, then signatures: operational
     # signatures apply to stderr; the stdout body only rejects line-anchored
@@ -754,7 +763,7 @@ def _result_from_proc(task: Task, proc: subprocess.Popen, stdout_lines: list, st
         first_err = (stderr_text or "").strip().splitlines()
         hint = f" | {first_err[0][:200]}" if first_err and first_err[0] else ""
         log.warning("agent output REJECTED: %s%s", reason, hint)
-    _record_provider_health(task, success, provider_reason)
+    _record_provider_health(task, success, provider_reason, provider_diagnostics)
     if success:
         log.info("OK  done  [%.1fs]  [output=%s]", elapsed, task.output or "(stdout)")
     else:
@@ -862,6 +871,11 @@ def _run_retried(task: Task, validate_cmd: str, index: int, total: int,
     established = result.session_established
     for attempt in range(1, retries + 1):
         if result.success or _cancel_requested(cancel_event):
+            break
+        if _pb_is_provider_failure(result.reason):
+            log.error("RETRY SKIPPED for task [%d/%d]: provider failure; "
+                      "breaker admission controls the next attempt (%s)",
+                      index, total, result.reason or "provider unavailable")
             break
         if not is_retryable(result.reason):
             log.warning("RETRY SKIPPED for task [%d/%d]: permanent failure (%s)",

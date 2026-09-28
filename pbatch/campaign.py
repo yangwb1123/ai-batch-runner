@@ -118,6 +118,9 @@ def _add_round_args(parser: argparse.ArgumentParser) -> None:
         "--auto-resume-on-signal", action="store_true",
         help="after SIGTERM, preserve state and resume the next campaign round")
     parser.add_argument(
+        "--max-signal-resumes", type=int, default=3,
+        help="maximum signal-triggered campaign resumes (0 disables resumes)")
+    parser.add_argument(
         "--resume-delay", type=float, default=30,
         metavar="SECONDS", help="delay before signal-triggered campaign resume")
     parser.add_argument(
@@ -185,6 +188,7 @@ def _validate_runtime_args(args: argparse.Namespace) -> None:
               "analysis-budget-tokens": getattr(args, "analysis_budget_tokens", 0) or 0,
               "no-progress-timeout": getattr(args, "no_progress_timeout", 0) or 0,
               "round-delay": args.round_delay, "resume-delay": args.resume_delay,
+              "max-signal-resumes": getattr(args, "max_signal_resumes", 3),
               "rate-limit": args.rate_limit,
               "rate-burst": args.rate_burst,
               "max-total-directions": getattr(args, "max_total_directions", 0) or 0,

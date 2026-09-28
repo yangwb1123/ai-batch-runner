@@ -125,6 +125,24 @@ def test_preflight_no_validators_is_noop(tmp_path, caplog):
     assert "no repo-scoped validators" in caplog.text
 
 
+def test_preflight_requires_registered_repository_gate(tmp_path, repo_validators):
+    _write_template(tmp_path, "testfile_red")
+    context = _make_context(tmp_path, "pipeline.yaml")
+    context.settings.preflight_require_repo_validator = True
+    with pytest.raises(SystemExit) as exc:
+        _preflight_validators(context)
+    assert exc.value.code == 4
+
+
+def test_preflight_rejects_invalid_pipeline_schema_before_calls(tmp_path):
+    template = tmp_path / "pipeline.yaml"
+    template.write_text("stages: []\n", encoding="utf-8")
+    context = _make_context(tmp_path, "pipeline.yaml")
+    with pytest.raises(SystemExit) as exc:
+        _preflight_validators(context)
+    assert exc.value.code == 4
+
+
 def test_preflight_substitutes_cwd_placeholder(tmp_path, monkeypatch):
     from pbatch import config as pbatch_config
 

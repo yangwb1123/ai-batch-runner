@@ -71,6 +71,27 @@ def test_read_usage_is_scoped_to_analysis_run(tmp_path: Path):
     assert read_usage(str(events), run_id="r").calls == 1
 
 
+def test_missing_token_usage_is_unknown_not_zero(tmp_path: Path):
+    from pbatch.campaign_metrics import build_efficiency_metrics
+
+    events = tmp_path / "events.jsonl"
+    events.write_text(
+        '{"run_id":"r","stage_id":"campaign-analysis","event":"task_finish",'
+        '"usage":null}\n', encoding="utf-8")
+    usage = read_usage(str(events), run_id="r")
+    assert usage.token_telemetry == "unknown"
+    metrics = build_efficiency_metrics([], 1, 1, usage)
+    assert metrics["analysis_tokens"] is None
+
+    events.write_text(
+        '{"run_id":"r","stage_id":"campaign-analysis","event":"task_finish",'
+        '"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}\n',
+        encoding="utf-8")
+    usage = read_usage(str(events), run_id="r")
+    assert usage.token_telemetry == "observed"
+    assert usage.total_tokens == 0
+
+
 def test_pipeline_lease_acquisition_is_atomic(tmp_path: Path):
     lease_path = tmp_path / "lease.json"
     payload = prepare_lease(
@@ -93,6 +114,34 @@ def test_pipeline_lease_acquisition_is_atomic(tmp_path: Path):
             worktree=tmp_path, pipeline=tmp_path / "pipeline.yaml",
             logfile=tmp_path / "pipeline.log", timeout=60,
             no_progress_timeout=10)
+
+
+def test_summary_retains_recent_run_metrics_separately(tmp_path: Path):
+    from pbatch.campaign_state import StateStore, write_summary
+
+    store = StateStore(tmp_path / "state.jsonl", campaign="campaign")
+    for run_id, round_id, tokens, telemetry in (
+            ("run-a", "run-a-r1", 0, "observed"),
+            ("run-b", "run-b-r1", None, "unknown")):
+        store.append({
+            "campaign": "campaign", "module": "__campaign__",
+            "direction_id": "__metrics__", "status": "CAMPAIGN_METRICS",
+            "run_id": run_id, "round_id": round_id,
+            "head_commit": "abc123", "model": "model-x", "provider": "p-x",
+            "metrics": {"directions_attempted": 1, "directions_passed": 0,
+                        "analysis_tokens": tokens,
+                        "analysis_token_telemetry": telemetry,
+                        "pipeline_work_seconds": 2.5},
+        })
+    summary = tmp_path / "SUMMARY.md"
+
+    write_summary(store, summary, "campaign")
+
+    text = summary.read_text(encoding="utf-8")
+    assert "run-a / run-a-r1" in text
+    assert "run-b / run-b-r1" in text
+    assert "0 (observed)" in text
+    assert "unknown" in text
 
 
 def test_efficiency_metrics_report_bounded_round_observations(tmp_path: Path):
