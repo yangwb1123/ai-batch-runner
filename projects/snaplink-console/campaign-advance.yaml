@@ -1,0 +1,90 @@
+# snaplink-console B6 推进 campaign（第二轮：B6-2 client_id 收尾 + B6-1 模块隔离落地）
+# 前置：第一轮 console-b6-audit-read-path 已落地
+#   - B6-1a admin 审计时间线服务器读取（AuditReadClient + AuditEventRow）
+#   - B6-1b localStorage 环降级 debug-only + 源码/产物双门禁
+#   - B6-1c 契约守卫（trio 字面量扫描 + 变异演练）
+#   - B6-2 oidc_login 锚点 + census + 集成 drill（client_id=sso-admin-console）
+# 本轮目标：把剩余 pending 提案推进到落地（见各分析 prompt 的清单）
+name: console-b6-advance
+
+discovery:
+  roots:
+    - lib/screens
+    - lib/api
+    - lib/services
+    - lib/i18n
+  exclude:
+    - build
+    - docs
+    - examples
+    - logs
+    - test
+    - tests
+    - .git
+    - .pi-batch
+    - __pycache__
+    - generated
+  max_depth: 1
+  fallback_top_level: true
+
+analysis:
+  jobs: 2
+  retries: 2
+  candidate_limit: 3
+  prompt: |
+    Analyze module '{module}' at {module_path} of snaplink-console
+    (Flutter Web SSO 控制面：capability-driven 导航，后端契约为准)。
+    已落地（不要重复提出）：
+    - B6-1a：lib/api/audit_read_client.dart + audit_event_row.dart 已落地，
+      AuditLogTab 服务器读取 + supportsAuditLog 能力门控 + 契约守卫测试
+      （test/audit_contract_guard_scans.dart, mutation drill）。
+    - B6-1b：audit_log_service.dart 环已降级 debug-only（kDebugMode 常量
+      折叠 + _storageEnabled seam），checks/b6_1b_gates.py + Makefile
+      release-artifact-check 已落地。
+    - B6-1 环隔离守卫：lib/screens/device 与 lib/screens/oidc_login 的
+      zero-ring 静态守卫测试已落地（test/device_audit_visibility_guard_test.dart、
+      test/oidc_login_audit_visibility_guard_test.dart）。
+    - B6-2 oidc_login：_handleSuccess census + client_id 对齐 + 集成 drill
+      （tests/integration/audit_login_drill.py）已落地。
+    Pending 提案（docs/proposals/ 下的设计/规格，若其验收项在 HEAD 未全部
+    满足即为本轮候选，按价值排序）：
+    - b6-2-lib-api-client-id-alignment-{design,spec}.md：把
+      'sso-admin-console' 提升为 lib/api/sso_client.dart 单一来源常量
+      （Branch B），与已落地的 oidc_login 锚点做原子共变。
+    - b6-2-lib-screens-client-id-alignment-{design,spec}.md（同族）。
+    - b6-2-lib-screens-developer-client-id-alignment-{design,spec}.md。
+    - b6-2-lib-screens-device-client-id-alignment-{design,spec}.md。
+    - b6-1-lib-screens-developer-capability-boundary-{design,spec}.md。
+    - b6-1-lib-screens-developer-ring-isolation-{design,spec}.md。
+    - b6-1-lib-screens-oidc-login-read-carrier-resolution-{design,spec}.md。
+    - b6-1-lib-screens-portal-negative-boundary-spec.md（守卫固化，test-only）。
+    - b6-2-lib-screens-portal-edge-generation-spec.md（仅 spec，缺 design）。
+    约束：保持 capability-driven 导航模式；不猜测后端接口；证据必须来自
+    仓库内 file/symbol；claims 无仓库证据必须标注 proposed。
+    Return ONLY a JSON array with at most {candidate_limit} high-value
+    directions, sorted by value. Each object must contain: title, problem,
+    value (1-10), risk_reduction (1-10), effort (1-10), confidence (1-10),
+    evidence (array of existing file/symbol paths), acceptance (array of
+    testable checks). Do not modify code.
+
+selection:
+  max_directions: 2
+  minimum_score: 0
+
+implementation:
+  pipeline: examples/repository-campaign-pipeline.yaml
+  requirement_stage: requirements
+  concurrency: 1
+  # 每个方向的隔离管线硬墙钟上限。
+  timeout: 14400
+  worktree_root: .pi-batch/worktrees
+
+state:
+  output_dir: docs/auto
+  state_file: docs/auto/state.jsonl
+  summary_file: docs/auto/SUMMARY.md
+  line_max_bytes: 262144
+
+estimates:
+  analysis_minutes: 3
+  pipeline_minutes: 25
