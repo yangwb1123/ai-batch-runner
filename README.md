@@ -98,7 +98,7 @@ private key 等）只显示 `<redacted>`。
   （evolution：形态分类/规律分级路由/项目宪法/管线形状推荐）**
 - **1086+ 回归测试 + 42 eval 用例**；`pi-batch check` 8 门禁聚合自检
 - 零 LLM 确定性核心：所有检测/路由/校验纯 stdlib + ast，可测试、fail closed
-- Meta 流水线可把规划器与并行角色分配给不同模型；`delegation_only` 在适配器层禁用规划器工具，见 [`docs/MODEL_DELEGATION.md`](docs/MODEL_DELEGATION.md)
+- Meta 流水线可把规划器与并行角色分配给不同模型；`delegation_only` 在适配器层禁用规划器工具；`routing-eval` 以账本观测报告延迟、完成率、返工与 usage，并支持同任务指纹的基线配对比较，见 [`docs/MODEL_DELEGATION.md`](docs/MODEL_DELEGATION.md)
 - 详见 `docs/`（AADM 理论四卷、AGENT_ORGANIZATION、CAMPAIGN_LESSONS）与 `AGENTS.md`
 
 ```
@@ -235,7 +235,9 @@ exponential-backoff retries, and optional auto git-commit after each stage.
 >   token-per-successful-direction, stall, and concurrency-slot observations.
 > - meta stages score role templates with `pbatch/role_keywords.yaml`, inject
 >   matched-keyword evidence, deduplicate the model plan, and enforce
->   `max_roles_per_iteration` at runtime.
+>   `max_roles_per_iteration` at runtime. `meta_task_dag: true` opts into a
+>   fail-closed dependency graph with deterministic parallel waves and artifact
+>   handoff from prerequisites; see `docs/MODEL_DELEGATION.md`.
 
 ## Switching agents
 
@@ -512,8 +514,21 @@ facts through `run_pipeline(..., event_sink=...)`. In the TUI, `/pipeline FILE [
 or `pi-batch tui --pipeline FILE` starts an explicit workspace Pipeline and projects
 its typed lifecycle read-only; approval decisions use an opt-in, run-scoped
 native IPC channel; Ctrl+C cancels the active local task and stops later
-stages cooperatively, without sending provider stop/cancel. The
-full startup, trust-boundary, and release contract is documented in
+stages cooperatively, without sending provider stop/cancel. For a tool-free Pi
+controller, `--orchestrator-only` disables root-session tools and returns
+bounded worker results to the same session for review (for example,
+`pi-batch tui --orchestrator-only --model provider/flagship --pipeline FILE`).
+Pipeline worker model routing remains independent of the controller override.
+`--persistent-pipelines` (for example,
+`pi-batch tui --orchestrator-only --persistent-pipelines --pipeline FILE`) runs a
+detached worker that continues after the TUI closes; the live UI polls progress,
+Ctrl+C requests cooperative cancellation,
+and completion returns to the same controller session. Restart recovery uses
+`--reuse` and checks the pipeline/controller identity; interactive approval
+stages are rejected. A detached supervisor retries worker crashes and deferred
+locks; if it exits, recovery resumes when the TUI next launches with
+`--persistent-pipelines`. It is not an OS service and does not survive host reboot
+by itself. The full startup, trust-boundary, and release contract is documented in
 [`docs/TUI_PRODUCT.md`](docs/TUI_PRODUCT.md).
 
 The automatic TUI never activates when either stdin or stdout is redirected,

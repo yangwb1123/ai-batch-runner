@@ -39,7 +39,7 @@ def finish_task_result(result: TaskResult, task: Task, session_id: str,
     attach_session(result, session_id, session_name, workdir,
                    task.effective_agent())
     annotate_result(result, task_id, str(task.memory.get("stage", "")), attempt)
-    metering.record_event(
+    result.usage = metering.record_event(
         "task_finish" if result.success else "task_fail", task.prompt,
         result.reason, workdir, session_id or session_name, usage_before,
         run_id=result.run_id, task_id=result.task_id,
@@ -47,7 +47,7 @@ def finish_task_result(result: TaskResult, task: Task, session_id: str,
         module=str(task.memory.get("module", "")))
     if config.AGENT_LEDGER_ENABLED:
         from .agent_ledger import record_result
-        record_result(result, task, workdir)
+        record_result(result, task, workdir, phase="execution")
     return result
 
 
@@ -61,6 +61,6 @@ def record_validation_event(result: TaskResult, task: Task) -> None:
         task_id=result.task_id, stage_id=result.stage_id,
         attempt=result.attempt, phase="validation",
         module=str(task.memory.get("module", "")))
-    if not result.success and config.AGENT_LEDGER_ENABLED:
+    if config.AGENT_LEDGER_ENABLED:
         from .agent_ledger import record_result
-        record_result(result, task, task.workdir())
+        record_result(result, task, task.workdir(), phase="validation")

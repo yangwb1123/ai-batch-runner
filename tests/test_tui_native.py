@@ -301,6 +301,21 @@ def test_native_pipeline_control_requires_exact_scope_and_interrupts():
         "turn.interrupting"]
 
 
+def test_private_control_channel_cancels_its_bound_run():
+    events = []
+    channel = NativePipelineControlChannel()
+    observer = NativePipelineObserver(
+        events.append, "/tmp/project", session_id="session", run_id="run",
+        turn_id="turn", actor_id="pipeline")
+    channel.bind(observer)
+    observer.bind_approval_channel(channel)
+    observer.start("demo", 1)
+
+    assert channel.cancel_current_run() is True
+    assert channel.cancelled is True
+    assert any(event.kind == "turn.interrupting" for event in events)
+
+
 def test_native_pipeline_cancel_finishes_as_interrupted(tmp_path, monkeypatch):
     events = []
     channel = NativePipelineControlChannel()

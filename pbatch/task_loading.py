@@ -64,6 +64,7 @@ def load_tasks(source: str) -> list[Task]:
 def task_from_prompt(prompt: str, base_dir: str = "", output: str = "") -> Task:
     """Create one task and resolve bounded @file references consistently."""
     task = Task(prompt=prompt, output=output)
+    task.memory["model_route_source"] = "agent_default"
     task.prompt = task.resolve_prompt(base_dir or str(Path.cwd()))
     return task
 
@@ -81,6 +82,8 @@ def _tasks_from_data(data, base_dir: str, source: str) -> list[Task]:
             sys.exit(1)
         task = Task(**{key: item for key, item in value.items()
                        if key in Task.__dataclass_fields__})
+        task.memory["model_route_source"] = (
+            "task_model" if value.get("model") else "agent_default")
         try:
             task.prompt = task.resolve_prompt(base_dir)
         except ValueError as exc:
@@ -117,6 +120,8 @@ def _task_data_error(value) -> str:
 def _task_string_error(value: dict) -> str:
     if "no_tools" in value and not isinstance(value["no_tools"], bool):
         return ".no_tools must be a boolean"
+    if value.get("no_tools") and value.get("tools"):
+        return ".no_tools cannot be combined with tools allowlist"
     fields = ("output", "model", "provider", "thinking", "tools", "exclude_tools", "cwd")
     nullable = ("model", "provider", "thinking", "tools", "exclude_tools")
     invalid = next((key for key in fields if key in value
@@ -153,6 +158,7 @@ def load_tasks_from_dir(directory: str, suffix: str = ".md") -> list[Task]:
             prompt=prompt,
             output=str((basedir / out_name).resolve()),
             cwd=str(basedir),
+            memory={"model_route_source": "agent_default"},
         ))
         log.info("loaded task from %s -> %s", fpath.name, out_name)
 

@@ -21,6 +21,30 @@ def test_startup_option_rejects_invalid_budget_before_mount(value):
     assert error.value.code == 2
 
 
+def test_orchestrator_only_requires_managed_pi_rpc_and_disallows_native_replay():
+    parser = _build_parser()
+    options = _options_from_args(parser, parser.parse_args([
+        "--orchestrator-only", "--model", "controller-model"]))
+    assert options.orchestrator_only is True
+    assert options.model == "controller-model"
+    for argv in (
+            ["--orchestrator-only", "--runtime", "legacy"],
+            ["--orchestrator-only", "--native-session", "session-1"]):
+        with pytest.raises(SystemExit) as error:
+            _options_from_args(parser, parser.parse_args(argv))
+        assert error.value.code == 2
+
+
+def test_persistent_pipelines_require_the_tool_free_controller():
+    parser = _build_parser()
+    options = _options_from_args(parser, parser.parse_args([
+        "--orchestrator-only", "--persistent-pipelines"]))
+    assert options.persistent_pipelines is True
+    with pytest.raises(SystemExit) as error:
+        _options_from_args(parser, parser.parse_args(["--persistent-pipelines"]))
+    assert error.value.code == 2
+
+
 def test_startup_option_requires_its_runtime_and_does_not_change_turn_timeout():
     parser = _build_parser()
     with pytest.raises(SystemExit):

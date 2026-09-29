@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 from . import file_lock as fcntl
+import hashlib
 import json
+import math
 import os
 import shutil
 import tempfile
@@ -13,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from itertools import islice
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
 
 from . import config
 from .config import log
@@ -72,10 +74,57 @@ def _output_path(value: object) -> str:
     return _brief(shown, OUTPUT_PATH_MAX_CHARS)
 
 
+def _usage(value: object) -> Optional[dict]:
+    if not isinstance(value, dict):
+        return None
+    result = {}
+    priority = ("cost_total", "total_cost", "cost", "totalTokens",
+                "total_tokens", "inputTokens", "outputTokens",
+                "input_tokens", "output_tokens")
+    keys = [key for key in priority if key in value]
+    keys.extend(key for key in value if key not in priority)
+    for key in keys[:8]:
+        item = value[key]
+        if not isinstance(key, str) or isinstance(item, bool):
+            continue
+        if not isinstance(item, (int, float)):
+            continue
+        try:
+            number = float(item)
+            if not math.isfinite(number) or abs(number) > 1e15:
+                continue
+        except (OverflowError, ValueError):
+            continue
+        result[_brief(key, 32)] = item
+    return result or None
+
+
+def _route_fields(source: str, tier: str, requested_tier: str,
+                 downgraded, profile_mode) -> dict:
+    return {
+        "route_source": _brief(source, 64),
+        "route_tier": _brief(tier, 32),
+        "route_requested_tier": _brief(requested_tier, 32),
+        "route_downgraded": downgraded if isinstance(downgraded, bool) else None,
+        "route_profile_mode": _profile_mode(profile_mode),
+    }
+
+
+def _phase_value(value: object) -> str:
+    return (value if isinstance(value, str)
+            and value in {"execution", "validation"} else "execution")
+
+
 def _entry(*, agent: str, provider: str, run_id: str, session_id: str,
            session_name: str, status: str, task_brief: str,
            outputs: Iterable[object], elapsed_ms: int, exit_code: int,
-           attempt: int = 0, ts=None) -> dict:
+           attempt: int = 0, model: str = "", stage: str = "",
+           role: str = "", task_id: str = "", phase: str = "execution",
+           task_fingerprint: str = "", route_source: str = "",
+           route_tier: str = "", route_requested_tier: str = "",
+           route_downgraded=None,
+           route_profile_mode=None, usage: Optional[dict] = None,
+           ts=None) -> dict:
     return {
         "ts": _timestamp(ts),
         "agent": str(agent or ""),
@@ -90,6 +139,15 @@ def _entry(*, agent: str, provider: str, run_id: str, session_id: str,
         "elapsed_ms": max(0, int(elapsed_ms or 0)),
         "exit_code": int(exit_code or 0),
         "attempt": max(0, int(attempt or 0)),
+        "model": _brief(model, 256),
+        "stage": _brief(stage, 128),
+        "role": _brief(role, 128),
+        "task_id": _brief(task_id, 128),
+        "task_fingerprint": _brief(task_fingerprint, 64),
+        **_route_fields(route_source, route_tier, route_requested_tier,
+                        route_downgraded, route_profile_mode),
+        "phase": _phase_value(phase),
+        "usage": _usage(usage),
     }
 
 
@@ -150,14 +208,23 @@ def _rotate(path: Path, incoming: int) -> None:
 
 def record(data_dir, *, agent, provider="", run_id="", session_id="",
            session_name="", status, task_brief, outputs=(), elapsed_ms=0,
-           exit_code=0, attempt=0, ts=None) -> bool:
+           exit_code=0, attempt=0, model="", stage="", role="", task_id="",
+           phase="execution", task_fingerprint="", route_source="",
+           route_tier="", route_requested_tier="", route_downgraded=None,
+           route_profile_mode=None,
+           usage=None, ts=None) -> bool:
     """Append one atomic JSON line; operational failures only warn."""
     try:
         entry = _entry(
             agent=agent, provider=provider, run_id=run_id,
             session_id=session_id, session_name=session_name, status=status,
             task_brief=task_brief, outputs=outputs, elapsed_ms=elapsed_ms,
-            exit_code=exit_code, attempt=attempt, ts=ts)
+            exit_code=exit_code, attempt=attempt, model=model, stage=stage,
+            role=role, task_id=task_id, phase=phase,
+            task_fingerprint=task_fingerprint, route_source=route_source,
+            route_tier=route_tier, route_requested_tier=route_requested_tier,
+            route_downgraded=route_downgraded,
+            route_profile_mode=route_profile_mode, usage=usage, ts=ts)
         encoded = (json.dumps(entry, ensure_ascii=False, separators=(",", ":")) +
                    "\n").encode("utf-8")
         capacity = min(LEDGER_MAX_LINE_BYTES, LEDGER_MAX_BYTES)
@@ -205,8 +272,14 @@ def query(data_dir, *, agent="", limit=50, since_ts=None) -> list[dict]:
 
 
 def query_snapshot(data_dir, *, agent="", limit=50,
-                   since_ts=None) -> LedgerQuerySnapshot:
-    """Read recent records with corruption and truncation diagnostics."""
+                   since_ts=None,
+                   record_filter: Optional[Callable[[dict], bool]] = None
+                   ) -> LedgerQuerySnapshot:
+    """Read recent records with corruption and truncation diagnostics.
+
+    ``record_filter`` is applied before the result limit so targeted reports
+    do not lose matching older rows behind unrelated recent activity.
+    """
     count = _query_limit(limit)
     path = ledger_path(data_dir)
     if not count:
@@ -217,7 +290,8 @@ def query_snapshot(data_dir, *, agent="", limit=50,
     except OSError as exc:
         return LedgerQuerySnapshot(
             error=_brief(str(exc), 500), path=str(path))
-    records, skipped = _decode_query_lines(lines, agent, since_ts)
+    records, skipped = _decode_query_lines(lines, agent, since_ts,
+                                            record_filter)
     records.sort(key=lambda item: _ts_key(item.get("ts")))
     truncated = len(records) > count
     return LedgerQuerySnapshot(
@@ -232,8 +306,9 @@ def _query_limit(limit: object) -> int:
         return 50
 
 
-def _decode_query_lines(lines: list[bytes], agent: str,
-                        since_ts: object) -> tuple[list[dict], int]:
+def _decode_query_lines(lines: list[bytes], agent: str, since_ts: object,
+                        record_filter: Optional[Callable[[dict], bool]] = None
+                        ) -> tuple[list[dict], int]:
     records, skipped = [], 0
     since_key = _ts_key(since_ts) if since_ts is not None else None
     for raw in lines:
@@ -251,6 +326,8 @@ def _decode_query_lines(lines: list[bytes], agent: str,
         if agent and item.get("agent") != agent:
             continue
         if since_key is not None and _ts_key(item.get("ts")) < since_key:
+            continue
+        if record_filter is not None and not record_filter(item):
             continue
         records.append(item)
     return records, skipped
@@ -288,9 +365,34 @@ def _result_status(result) -> str:
     return "failed"
 
 
-def record_result(result, task, workdir: str) -> bool:
+def _profile_mode(value: object) -> Optional[int]:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return max(0, min(10, value))
+
+
+def _task_fingerprint(task, workdir: str, stage: str, role: str) -> str:
+    """Hash task semantics for paired evaluation without storing its prompt."""
+    try:
+        workspace = str(Path(workdir).resolve())
+    except (OSError, RuntimeError, ValueError):
+        workspace = str(workdir)
+    feedback_marker = "\n\n[validator feedback from previous attempt]\n"
+    prompt = str(task.prompt).split(feedback_marker, 1)[0]
+    fields = (workspace, prompt, stage, role, str(task.validate or ""),
+              str(task.output or ""), task.effective_agent(),
+              str(task.thinking or ""), str(config.AGENT_THINKING_OVERRIDE or ""),
+              str(task.tools or ""), str(task.exclude_tools or ""),
+              str(task.no_tools), str(task.timeout))
+    digest = hashlib.sha256("\0".join(fields).encode("utf-8")).hexdigest()
+    return digest[:32]
+
+
+def record_result(result, task, workdir: str, *, phase: str = "execution") -> bool:
     """Bridge a runner result into the stable ledger record contract."""
     output = task.output_path()
+    stage = str(task.memory.get("stage", ""))
+    role = str(task.memory.get("role", ""))
     return record(
         config.data_dir(workdir), agent=task.effective_agent(),
         provider=task.provider, run_id=result.run_id,
@@ -298,7 +400,17 @@ def record_result(result, task, workdir: str) -> bool:
         status=_result_status(result), task_brief=task.prompt,
         outputs=([str(output)] if output else ()),
         elapsed_ms=round(result.elapsed * 1000), exit_code=result.returncode,
-        attempt=int(getattr(result, "attempt", 0) or 0))
+        attempt=int(getattr(result, "attempt", 0) or 0), model=task.model,
+        stage=stage, role=role,
+        task_id=str(getattr(result, "task_id", "") or ""), phase=phase,
+        task_fingerprint=_task_fingerprint(task, workdir, stage, role),
+        route_source=str(task.memory.get("model_route_source", "")),
+        route_tier=str(task.memory.get("model_route_tier", "")),
+        route_requested_tier=str(
+            task.memory.get("model_route_requested_tier", "")),
+        route_downgraded=task.memory.get("model_route_downgraded"),
+        route_profile_mode=task.memory.get("model_route_profile_mode"),
+        usage=getattr(result, "usage", None))
 
 
 def _positive_limit(value: str) -> int:

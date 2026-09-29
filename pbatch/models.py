@@ -74,6 +74,8 @@ class Stage:
     role_models: dict = field(default_factory=dict)  # role -> model override
     role_providers: dict = field(default_factory=dict)  # role -> provider override
     delegation_only: bool = False  # meta planner gets no execution tools
+    meta_resume: bool = False  # persist named-role plans for explicit --reuse recovery
+    meta_task_dag: bool = False  # planner emits a bounded dependency-aware task DAG
 
     def to_dict(self):
         return {
@@ -88,6 +90,8 @@ class Stage:
             "role_models": dict(self.role_models),
             "role_providers": dict(self.role_providers),
             "delegation_only": self.delegation_only,
+            "meta_resume": self.meta_resume,
+            "meta_task_dag": self.meta_task_dag,
             "from_dir": self.from_dir,
             "from_outputs": self.from_outputs,
             "suffix": self.suffix,
@@ -258,3 +262,6 @@ class TaskResult:
     task_id: str = ""
     stage_id: str = ""
     attempt: int = 0
+    # Provider-reported usage delta; absent when the native session exposes
+    # no trustworthy token/cost accounting.
+    usage: Optional[dict] = None

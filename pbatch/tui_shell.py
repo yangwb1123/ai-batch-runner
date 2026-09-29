@@ -47,8 +47,13 @@ class TuiOptions:
     session_name: str = "tui"
     runtime: str = "auto"
     pipeline: str = ""
+    orchestrator_only: bool = False
     native_session: str = ""
     startup_timeout: Optional[float] = None
+    persistent_pipelines: bool = False
+
+    def orchestrator_runtime_blocked(self, runtime: str) -> bool:
+        return self.orchestrator_only and runtime not in {"auto", "pi-rpc"}
 
     def backend_kwargs(self) -> dict[str, Any]:
         return {

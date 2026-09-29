@@ -309,7 +309,8 @@ def _prepare_task_run(task: Task, cmd: list, task_index: int, total: int, parall
     key = task_key(task)
     write_marker(key, workdir)
     usage_ref = session_id or session_name
-    usage = metering.session_usage(workdir, usage_ref) if metering.EVENTS_FILE else None
+    capture_usage = metering.EVENTS_FILE or config.AGENT_LEDGER_ENABLED
+    usage = metering.session_usage(workdir, usage_ref) if capture_usage else None
     return prefix, env, key, usage
 
 def _rate_gate(task: Task, session_name: str = "", cancel_event=None) -> bool:

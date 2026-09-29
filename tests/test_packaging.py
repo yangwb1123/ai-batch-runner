@@ -65,6 +65,7 @@ PBATCH = REPO_ROOT / "pbatch"
 EXPECTED_DATA_FILES = ("role_keywords.yaml", "task_keywords.yaml", "README.md")
 EXPECTED_RUNTIME_ASSETS = (
     "examples/llm-pool.yaml", "docs/LLM_ACCOUNT_POOL.md",
+    "docs/MODEL_DELEGATION.md",
     "pi-batch.yaml", "quality.py", "scripts/check-ui-spec.py",
     "scripts/check-frontend-quality.py", "scripts/check-evidence.py",
     "scripts/check-completion-report.py", "ui-specs/rules.yaml",
@@ -364,7 +365,8 @@ def test_wheel_ships_data_files(tmp_path: Path) -> None:
     wheel_name = result.stdout.strip().splitlines()[-1]
     with zipfile.ZipFile(out / wheel_name) as wheel:
         names = set(wheel.namelist())
-        for module in ("pbatch/tui.py", "pbatch/tui_backend.py"):
+        for module in ("pbatch/tui.py", "pbatch/tui_backend.py",
+                       "pbatch/tui_pipeline_worker.py", "pbatch/tui_cli_options.py"):
             assert module in names, f"TUI module missing from wheel: {module}"
         metadata_members = [
             name for name in names if name.endswith(".dist-info/METADATA")

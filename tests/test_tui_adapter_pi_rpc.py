@@ -451,6 +451,23 @@ class _FakeProcess:
         return self.returncode
 
 
+def test_adapter_confirms_only_its_owned_no_tools_transport():
+    managed = PiRpcAdapter("/tmp/project", no_tools_args=("--no-tools",))
+    injected = PiRpcAdapter(
+        "/tmp/project", transport=FakeTransport(),
+        no_tools_args=("--no-tools",))
+
+    assert managed.tools_disabled is True
+    assert injected.tools_disabled is False
+
+
+def test_pi_rpc_argv_applies_explicit_no_tools_policy():
+    assert pi_rpc_argv("pi", no_tools_args=("--no-tools",)) == [
+        "pi", "--mode", "rpc", "--no-tools"]
+    with pytest.raises(ValueError, match="no_tools_args"):
+        pi_rpc_argv("pi", no_tools_args="--no-tools")
+
+
 def test_default_transport_builds_pi_rpc_argv_bounds_stderr_and_closes_process():
     process = _FakeProcess()
     calls = []
@@ -461,9 +478,11 @@ def test_default_transport_builds_pi_rpc_argv_bounds_stderr_and_closes_process()
 
     transport = DefaultPiRpcTransport(
         "/tmp/project", agent="my-pi", provider="openai", model="gpt-x",
-        session_name="named", spawn=spawn)
+        session_name="named", spawn=spawn,
+        no_tools_args=("--no-tools",))
     assert calls == [(tuple(pi_rpc_argv(
-        "my-pi", provider="openai", model="gpt-x", session_name="named")),
+        "my-pi", provider="openai", model="gpt-x", session_name="named",
+        no_tools_args=("--no-tools",))),
         "/tmp/project")]
     assert decode_line(transport.recv_line())["type"] == "agent_start"
     transport.send_line('{"type":"get_state"}\n')

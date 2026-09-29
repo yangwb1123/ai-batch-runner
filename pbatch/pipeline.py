@@ -137,6 +137,17 @@ def _expected_fp(prompt: str, out: str, validate_cmd: str, model: str,
     return reuse_fp(prompt, out, validate_cmd or "", model, provider,
                     workdir, agent, thinking, tools, exclude_tools, no_tools)
 
+def _task_model_route_source(task_def: dict, stage: Optional[Stage],
+                             model_override: str) -> str:
+    if model_override:
+        return "cli_override"
+    if task_def.get("model"):
+        return "task_model"
+    if stage and stage.model:
+        return "stage_model"
+    return "agent_default"
+
+
 def _task_from_def(task_def: dict, prompt: str, output_path: str, model_override: str = "",
                    timeout_override: int = 0, stage: Optional[Stage] = None) -> Task:
     """Build a task from a pipeline template definition, applying CLI-level
@@ -160,6 +171,8 @@ def _task_from_def(task_def: dict, prompt: str, output_path: str, model_override
         # stage definition.
         validate=task_def.get("validate", task_def.get("validate_cmd")),
     )
+    task.memory["model_route_source"] = _task_model_route_source(
+        task_def, stage, model_override)
     if task_def.get("role"):
         task.memory["role"] = task_def["role"]
     if model_override:

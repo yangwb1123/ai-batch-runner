@@ -27,6 +27,7 @@ from glob import escape as glob_escape
 from pathlib import Path
 from typing import Optional
 
+from . import config
 from .config import SESSION_LINE_MAX_BYTES, log
 from .execution_ids import new_run_id
 from .session import SESSIONS_DIR, workdir_key
@@ -143,16 +144,18 @@ def _fold_usage_line(raw: bytes, total: dict) -> None:
 def record_event(event: str, task: str = "", detail: str = "", cwd: str = "",
                  session_name: str = "", usage_before: Optional[dict] = None,
                  *, run_id: str = "", task_id: str = "", stage_id: str = "",
-                 attempt: int = 0, phase: str = "", module: str = "") -> None:
+                 attempt: int = 0, phase: str = "", module: str = "") -> Optional[dict]:
     """Append one versioned JSONL event (best-effort, never raises).
 
     The original positional arguments remain compatible.  Trace fields are
     additive so existing consumers can continue reading ``event``, ``task``
     and ``detail`` while newer consumers can correlate retries and stages.
     """
-    if not EVENTS_FILE:
-        return
-    current = _session_usage(cwd, session_name) if event in ("task_finish", "task_fail") else None
+    task_event = event in ("task_finish", "task_fail")
+    capture_usage = task_event and config.AGENT_LEDGER_ENABLED
+    if not EVENTS_FILE and not capture_usage:
+        return None
+    current = _session_usage(cwd, session_name) if task_event else None
     payload = {
         "schema_version": 1,
         "event_id": "evt-" + uuid.uuid4().hex[:16],
@@ -169,17 +172,19 @@ def record_event(event: str, task: str = "", detail: str = "", cwd: str = "",
         "usage": _usage_delta(current, usage_before),
     }
     line = json.dumps(payload, ensure_ascii=False)
-    try:
-        p = Path(EVENTS_FILE)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with _EVENTS_LOCK:
-            with open(p, "a", encoding="utf-8") as f:
-                f.write(line + "\n")
-    except OSError as e:
-        log.warning("events write failed: %s", e)
-        return
-    if WEBHOOK_URL:
-        _post_webhook(line)
+    if EVENTS_FILE:
+        try:
+            p = Path(EVENTS_FILE)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with _EVENTS_LOCK:
+                with open(p, "a", encoding="utf-8") as f:
+                    f.write(line + "\n")
+        except OSError as e:
+            log.warning("events write failed: %s", e)
+            return payload["usage"]
+        if WEBHOOK_URL:
+            _post_webhook(line)
+    return payload["usage"]
 
 
 def _event_phase(event: str) -> str:
@@ -228,9 +233,14 @@ def _read_daily_count() -> int:
         data = json.loads(Path(_DAILY_STATE).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return 0
+    if not isinstance(data, dict):
+        return 0
     if data.get("date") != datetime.now(timezone.utc).strftime("%Y-%m-%d"):
         return 0
-    return int(data.get("count", 0))
+    count = data.get("count", 0)
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return 0
+    return count
 
 
 def budget_spent_today() -> int:

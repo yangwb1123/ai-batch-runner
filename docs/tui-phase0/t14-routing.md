@@ -1,18 +1,19 @@
 # T14 · 难度感知模型路由 + 预算感知降级
 
-> 7×24 无人值守的成本与质量平衡器：按任务难度选 model，按每日 token 配额自动降档。
+> 7×24 无人值守的成本与质量平衡器：按任务难度选 model，按每日 invocation 配额自动降档。
 
 ## 用法
 
 ```bash
 # 规划预览（零 LLM 成本，确定性画像）
-pi-batch route "修复生产环境的偶发空指针崩溃，涉及支付链路，需要尽快上线"
-# tier     low  (DOWNGRADED)
+pi-batch route "修复生产环境的偶发空指针崩溃，涉及支付链路，需要尽快上线" \
+  --daily-budget 200
+# tier     low  (requested critical; DOWNGRADED)
 # model    deepseek-v4-flash
 # thinking max
 # quota    10% remaining today
 #   - profile mode=3 workflow=L3_platform
-#   - daily quota remaining 10% < 25%: downgraded to 'low'
+#   - daily quota remaining 10% < 25%: downgraded to min_tier 'low'
 
 pi-batch route "查一下这个配置怎么改" --json        # 结构化输出
 
@@ -32,7 +33,7 @@ model_routing:
     critical: {model: "gpt-5.6-sol"}   # 支付/生产事故/高风险
   downgrade:
     enabled: true
-    remaining_ratio_threshold: 0.25    # 今日配额剩余 < 25% → 降档
+    remaining_ratio_threshold: 0.25    # 今日 invocation 配额剩余 < 25% → 降档
     min_tier: low                      # 阈值触发后的目标档位
 ```
 

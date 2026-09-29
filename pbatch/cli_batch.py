@@ -217,6 +217,7 @@ def _apply_task_overrides(args, tasks) -> None:
     if args.model:
         for t in tasks:
             t.model = args.model
+            t.memory["model_route_source"] = "cli_override"
     elif getattr(args, "route_model", False) and routing_enabled():
         _inject_route_models(tasks)
     if args.provider:
@@ -232,13 +233,21 @@ def _inject_route_models(tasks) -> None:
     if not routing_enabled():
         return
     for task in tasks:
-        if task.model and task.model != config.AGENT_DEFAULT_MODEL:
+        if (task.memory.get("model_route_source") == "task_model"
+                or task.model and task.model != config.AGENT_DEFAULT_MODEL):
             continue
         try:
             plan = route_task(task.prompt)
         except Exception as exc:
             log.warning("route model injection skipped: %s", exc)
             continue
+        task.memory.update({
+            "model_route_source": "difficulty",
+            "model_route_tier": plan.tier,
+            "model_route_requested_tier": plan.requested_tier or plan.tier,
+            "model_route_downgraded": plan.downgraded,
+            "model_route_profile_mode": plan.profile_mode,
+        })
         if plan.model:
             task.model = plan.model
         if plan.thinking and not task.thinking:

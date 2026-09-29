@@ -21,7 +21,7 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `pbatch/config.py` | 声明式配置解析（pi-batch.yaml）、agent 默认值、会话标志、验证器注册表 |
 | `pbatch/models.py` | 数据模型：Task / TaskResult / Stage / Pipeline |
 | `pbatch/runner.py` | 任务执行：硬超时、失败签名拒绝、重试、验证门禁、摘要 |
-| `pbatch/pipeline.py` | 流水线：阶段构建、meta 角色编排（规划器/worker 可分配不同模型；`delegation_only` 通过 adapter 禁用规划器工具）、gate 裁决（含自动修复循环）、决策日志、归档 |
+| `pbatch/pipeline.py` | 流水线：阶段构建、meta 角色编排（规划器/worker 可分配不同模型；`delegation_only` 通过 adapter 禁用规划器工具；`meta_resume` + `--reuse` 恢复命名角色计划）、gate 裁决（含自动修复循环）、决策日志、归档 |
 | `pbatch/gate_fix.py` | gate-FAIL 自动修复：结构化发现解析（```json）、修复任务构建与门禁（sverp 实战沉淀） |
 | `pbatch/pipeline_schema.py` / `evidence.py` | Pipeline fail-closed schema 与有界证据注入 |
 | `pbatch/relevance.py` | meta 角色关键词评分、命中证据、去重与运行时数量上限 |

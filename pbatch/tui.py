@@ -1,13 +1,10 @@
 """Product terminal UI for interactive pi-batch sessions."""
 from __future__ import annotations
 
-import argparse
-import math
 import os
 import sys
 import threading
 import uuid
-from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
 from textual import events
@@ -17,6 +14,7 @@ from textual.containers import Horizontal, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Input, Markdown, Static
 
+from . import config
 from .tui_adapter_pi_rpc import PiRpcAdapter
 from .tui_composer import (
     SlashComposer,
@@ -203,9 +201,7 @@ class PiBatchTUI(TUIRuntimeLifecycleMixin, TUISettingsMixin, TUISessionMixin, TU
         self._refresh_status()
         self._refresh_timeline()
         self.query_one("#composer", Input).focus()
-        if self.options.pipeline and not self.options.native_session:
-            self.call_after_refresh(
-                self._start_pipeline_path, self.options.pipeline)
+        self._schedule_pipeline_startup()
 
     def on_unmount(self) -> None:
         self._unmounting = True
@@ -251,8 +247,14 @@ class PiBatchTUI(TUIRuntimeLifecycleMixin, TUISettingsMixin, TUISessionMixin, TU
         provider = str(getattr(self._backend, "provider", "") or "").strip()
         mode = str(self.options.runtime or "auto").strip().lower()
         self._runtime_blocked_reason = ""
-        wants_pi_rpc = mode == "pi-rpc" or (
-            mode == "auto" and self._managed_backend and trusted_pi)
+        self._orchestrator_only_ready = False
+        if self.options.orchestrator_runtime_blocked(mode):
+            self._runtime_blocked_reason = (
+                "Orchestrator-only mode requires the Pi RPC runtime.")
+            self._append_entry("error", self._runtime_blocked_reason)
+            return
+        wants_pi_rpc = (mode == "pi-rpc" or self.options.orchestrator_only
+                        or (mode == "auto" and self._managed_backend and trusted_pi))
         if wants_pi_rpc:
             self._attach_pi_rpc(agent, provider, trusted_pi=trusted_pi)
             return
@@ -284,10 +286,20 @@ class PiBatchTUI(TUIRuntimeLifecycleMixin, TUISettingsMixin, TUISessionMixin, TU
             return
         adapter = None
         try:
+            kwargs = {}
+            if self.options.orchestrator_only:
+                no_tools_args = config.agent_no_tools_args(agent)
+                if not no_tools_args:
+                    raise RuntimeError(
+                        "no-tools adapter arguments are not configured")
+                kwargs["no_tools_args"] = no_tools_args
             adapter = self._pi_rpc_factory(
                 self._session_cwd(), agent=agent,
                 model=str(self.options.model or ""), provider=provider,
-                session_name=self.options.session_name)
+                session_name=self.options.session_name, **kwargs)
+            if (self.options.orchestrator_only
+                    and getattr(adapter, "tools_disabled", False) is not True):
+                raise RuntimeError("Pi RPC adapter did not confirm tools are disabled")
             adapter.initialize({})
             session = adapter.start_session({
                 "name": self.options.session_name,
@@ -303,6 +315,7 @@ class PiBatchTUI(TUIRuntimeLifecycleMixin, TUISettingsMixin, TUISessionMixin, TU
         self._adapter_session_id = str(session.session_id)
         self._adapter_workspace_id = str(session.workspace_id)
         self._strict_adapter = True
+        self._orchestrator_only_ready = bool(self.options.orchestrator_only)
         self._enable_runtime_projection()
     def _attach_appserver(self, provider: str) -> None:
         if provider:
@@ -467,6 +480,7 @@ class PiBatchTUI(TUIRuntimeLifecycleMixin, TUISettingsMixin, TUISessionMixin, TU
             self._adapter_session_id = ""
             self._adapter_workspace_id = ""
             self._strict_adapter = False
+            self._orchestrator_only_ready = False
             self._disable_runtime_projection()
             setter = getattr(self._backend, "set_emit", None)
             if callable(setter):
@@ -544,6 +558,7 @@ class PiBatchTUI(TUIRuntimeLifecycleMixin, TUISettingsMixin, TUISessionMixin, TU
         self._set_busy(False)
         self._mark_agent_operation_finished()
         self._refresh_completion_inspector()
+        self._complete_pipeline_handoff_turn(result, error)
         self._schedule_follow_up_after_turn(result, error)
 
     def _finish_turn_error(self, error: Exception) -> None:
@@ -783,6 +798,8 @@ class PiBatchTUI(TUIRuntimeLifecycleMixin, TUISettingsMixin, TUISessionMixin, TU
                     severity="warning")
             return
         if not self._busy or self._backend is None:
+            if self._cancel_persistent_pipeline():
+                return
             self.notify("No active turn to cancel.")
             return
         try:
@@ -898,51 +915,16 @@ class PiBatchTUI(TUIRuntimeLifecycleMixin, TUISettingsMixin, TUISessionMixin, TU
         composer.cursor_position = len(composer.value)
 
 TUIApplication = PiBatchTUI
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="pi-batch tui",
-        description="Interactive Textual UI for pi-batch agent sessions.",
-    )
-    parser.add_argument("--agent-bin", default="", help="agent CLI binary")
-    parser.add_argument("--model", default="", help="model override")
-    parser.add_argument("--provider", default="", help="provider override")
-    parser.add_argument(
-        "--runtime", choices=(
-            "auto", "pi-rpc", "app-server", "structured", "legacy"),
-        default="auto", help="TUI runtime selection")
-    parser.add_argument("--memory-mode", choices=("auto", "on", "off"), default="")
-    parser.add_argument("--timeout", type=int, default=0, help="turn timeout in seconds")
-    parser.add_argument("--startup-timeout", type=float, default=None,
-                        help="App Server initialization timeout in seconds (default: 15)")
-    parser.add_argument("--cwd", default="", help="workspace directory")
-    parser.add_argument("--session-name", default="tui", help="stable session display name")
-    parser.add_argument("--pipeline", default="",
-                        help="start and observe a workspace-relative Pipeline YAML")
-    parser.add_argument("--native-session", default="", help="recover an exact read-only native Pipeline journal")
-    return parser
 
-def _options_from_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> TuiOptions:
-    if args.timeout < 0:
-        parser.error("--timeout must be non-negative")
-    if args.startup_timeout is not None:
-        if (not math.isfinite(args.startup_timeout)
-                or not 0 < args.startup_timeout <= threading.TIMEOUT_MAX):
-            parser.error("--startup-timeout must be finite, positive and within the platform limit")
-        if args.runtime != "app-server":
-            parser.error("--startup-timeout requires --runtime app-server")
-    cwd = ""
-    if args.cwd:
-        path = Path(args.cwd).expanduser().resolve()
-        if not path.is_dir():
-            parser.error(f"--cwd is not a directory: {path}")
-        cwd = str(path)
-    if args.native_session and args.pipeline: parser.error(
-        "--native-session cannot be combined with --pipeline")
-    return TuiOptions(cwd=cwd, agent=args.agent_bin, model=args.model,
-                      provider=args.provider, memory_mode=args.memory_mode,
-                      timeout=args.timeout, session_name=args.session_name,
-                      startup_timeout=args.startup_timeout,
-                      runtime=args.runtime, pipeline=args.pipeline, native_session=args.native_session)
+def _build_parser():
+    from .tui_cli_options import build_parser
+    return build_parser()
+
+
+def _options_from_args(parser, args):
+    from .tui_cli_options import options_from_args
+    return options_from_args(parser, args)
+
 
 def _interactive_terminal() -> bool:
     capable = os.environ.get("TERM", "").lower() != "dumb"

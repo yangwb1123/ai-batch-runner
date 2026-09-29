@@ -27,6 +27,8 @@ def _identity_fields(value: dict) -> dict:
         "role_models": dict(value.get("role_models", {})),
         "role_providers": dict(value.get("role_providers", {})),
         "delegation_only": value.get("delegation_only", False),
+        "meta_resume": value.get("meta_resume", False),
+        "meta_task_dag": value.get("meta_task_dag", False),
     }
 
 

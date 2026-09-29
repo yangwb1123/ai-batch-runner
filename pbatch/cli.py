@@ -405,6 +405,7 @@ _SUBCOMMANDS: dict[str, str] = {
     "tui": "tui:tui_main",
     "fleet": "hub_cli:hub_main",
     "agents": "agent_ledger:agents_main",
+    "routing-eval": "routing_eval:routing_eval_main",
     "config": "config_cli:config_main",
     "pool": "llm_pool_cli:pool_main",
     "memory": "memory:main",

@@ -238,6 +238,13 @@ child actor 必须携带匹配的 `parent_actor_id`，不会改写 root turn act
 `/pipeline FILE [--reuse]` 或 `tui --pipeline FILE` 显式启动既有 Pipeline runner；approval stage 通过单独的 exact-run-scoped
 `NativePipelineControlChannel` 进入 TUI approval modal；whole-pipeline cancel 只做
 本地 cooperative stop，不发送 provider stop，未建立 channel 时仍 fail closed。
+通过 `--orchestrator-only --persistent-pipelines` 可改由 detached worker 执行：
+流水线在 TUI 关闭后继续，UI 存活时轮询进度，空闲时用 Ctrl+C 请求 cooperative cancel，
+完成后仍回到同一 Pi 控制器会话。任务账本只存有界状态、产物路径和最多 8 KiB stdout，
+不存 prompt/产物正文；每个任务最多执行 8 次（含首次执行），恢复前校验 workspace、流水线和控制器指纹。
+该模式拒绝包含交互 approval 的 pipeline。detached supervisor 会在最多 8 次尝试内重试
+锁延期和 worker 崩溃；supervisor 自身退出后，需下次以 `--persistent-pipelines` 启动 TUI 恢复。
+它不是 OS service，主机重启后需外部 service manager 再启动 TUI。
 
 `/agents [agent]` 打开独立只读 Agents overlay，`/runs [agent]` 是兼容别名。
 当前活动 turn/review 只作为当前 TUI 进程已知的 coordinator operation 展示，并明确

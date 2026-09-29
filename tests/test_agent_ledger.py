@@ -146,10 +146,48 @@ def test_record_result_maps_runner_status(
     result = SimpleNamespace(
         success=success, reason=reason, validation_ok=validation_ok,
         run_id="run", session_id="sid", session_name="name",
+        task_id="task-id", attempt=2,
+        usage={"cost_total": 0.12, "totalTokens": 14},
         elapsed=1.25, returncode=0)
-    assert agent_ledger.record_result(result, Task("brief", provider="provider"), str(tmp_path))
+    task = Task("brief", provider="provider", model="model",
+                memory={"stage": "review", "role": "qa_lead",
+                        "model_route_source": "difficulty",
+                        "model_route_tier": "low",
+                        "model_route_requested_tier": "critical",
+                        "model_route_downgraded": True,
+                        "model_route_profile_mode": 3})
+    assert agent_ledger.record_result(result, task, str(tmp_path))
     assert captured["status"] == status
     assert captured["elapsed_ms"] == 1250
+    assert captured["model"] == "model"
+    assert captured["stage"] == "review"
+    assert captured["role"] == "qa_lead"
+    assert captured["route_source"] == "difficulty"
+    assert captured["route_tier"] == "low"
+    assert captured["route_requested_tier"] == "critical"
+    assert captured["route_downgraded"] is True
+    assert captured["route_profile_mode"] == 3
+    assert captured["task_id"] == "task-id"
+    assert captured["attempt"] == 2
+    assert captured["usage"] == {"cost_total": 0.12, "totalTokens": 14}
+    assert len(captured["task_fingerprint"]) == 32
+    assert "brief" not in captured["task_fingerprint"]
+
+
+def test_task_fingerprint_ignores_runner_added_retry_feedback(tmp_path):
+    original = Task("same task", memory={"stage": "implement", "role": "worker"})
+    retried = Task(
+        "same task\n\n[validator feedback from previous attempt]\nfix issue",
+        memory={"stage": "implement", "role": "worker"})
+
+    fingerprint = agent_ledger._task_fingerprint(
+        original, str(tmp_path), "implement", "worker")
+    assert fingerprint == agent_ledger._task_fingerprint(
+        retried, str(tmp_path), "implement", "worker")
+    changed_controls = Task(
+        "same task", thinking="max", memory={"stage": "implement", "role": "worker"})
+    assert fingerprint != agent_ledger._task_fingerprint(
+        changed_controls, str(tmp_path), "implement", "worker")
 
 
 def test_agents_main_list_and_sessions_json(tmp_path, monkeypatch, capsys):

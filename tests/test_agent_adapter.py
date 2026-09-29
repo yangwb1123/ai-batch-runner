@@ -158,15 +158,34 @@ def test_stdout_banner_reason_line_anchored_only():
 def test_agent_argv_enforces_tool_free_mode_only_when_adapter_supports_it(monkeypatch):
     monkeypatch.setattr(config, "_AGENT_CFG", {})
     monkeypatch.setattr(config, "_AGENTS_CFG", {
-        "pi": {"no_tools_args": ["--no-tools"]},
+        "pi": {"no_tools_args": ["--no-tools"],
+               "extra_args": ["--extension", "planning.ts"]},
     })
     assert config.build_agent_argv("pi", "plan", no_tools=True) == [
-        "pi", "-p", "plan", "--no-tools",
+        "pi", "-p", "plan", "--extension", "planning.ts", "--no-tools",
     ]
     with pytest.raises(ValueError, match="cannot disable tools"):
         config.build_agent_argv("codex", "plan", no_tools=True)
     with pytest.raises(ValueError, match="cannot be combined"):
         config.build_agent_argv("pi", "plan", tools="read", no_tools=True)
+
+
+def test_tool_free_task_fails_before_process_spawn_when_adapter_lacks_support(
+        monkeypatch):
+    from pbatch import runner
+    from pbatch.models import Task
+
+    monkeypatch.setattr(config, "_AGENT_CFG", {})
+    monkeypatch.setattr(config, "_AGENTS_CFG", {})
+    spawned = []
+    monkeypatch.setattr(runner, "_spawn_agent",
+                        lambda *_args: spawned.append(True))
+
+    result = runner.run_task(Task(
+        prompt="plan", agent="unsupported-agent", no_tools=True))
+
+    assert not result.success and "cannot disable tools" in result.reason
+    assert spawned == []
 
 
 def test_agent_argv_rejects_value_for_disabled_capability(monkeypatch):

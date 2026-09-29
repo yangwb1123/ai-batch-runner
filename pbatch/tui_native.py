@@ -313,6 +313,19 @@ class NativePipelineControlChannel(NativePipelineApprovalChannel):
                 approval_type=decision.get("approval_type"))
         return super().resolve(decision)
 
+    def cancel_current_run(self) -> bool:
+        """Cancel the exact run bound to this private control channel."""
+        with self._condition:
+            observer = self._observer
+            if observer is None:
+                return False
+            scope = {
+                "workspace_id": observer._cwd, "session_id": observer.session_id,
+                "run_id": observer.run_id, "turn_id": observer.turn_id,
+                "actor_id": observer.actor_id,
+            }
+        return self.request_cancel(scope)
+
     def request_cancel(self, scope: Any, *, request_id: Any = None,
                        approval_type: str = "") -> bool:
         """Announce cancellation only for the channel's bound run identity."""

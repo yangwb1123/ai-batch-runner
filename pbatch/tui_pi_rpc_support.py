@@ -27,7 +27,7 @@ MAX_CLI_VALUE_BYTES = 4096
 
 def pi_rpc_argv(
         agent: str = "pi", *, model: str = "", provider: str = "",
-        session_name: str = "") -> list[str]:
+        session_name: str = "", no_tools_args: Sequence[str] = ()) -> list[str]:
     """Build the public Pi 0.84 RPC invocation without shell expansion."""
     executable = _cli_value(agent, "agent", required=True)
     argv = [executable, "--mode", "rpc"]
@@ -36,7 +36,15 @@ def pi_rpc_argv(
             ("--name", session_name)):
         if value:
             argv.extend((flag, _cli_value(value, flag)))
+    argv.extend(_tool_policy_args(no_tools_args))
     return argv
+
+
+def _tool_policy_args(values: Sequence[str]) -> list[str]:
+    if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+        raise ValueError("no_tools_args must be a string sequence")
+    return [_cli_value(value, "no-tools argument", required=True)
+            for value in values]
 
 
 def _cli_value(value: Any, label: str, *, required: bool = False) -> str:
@@ -230,12 +238,14 @@ class DefaultPiRpcTransport:
     def __init__(
             self, cwd: str, *, agent: str = "pi", model: str = "",
             provider: str = "", session_name: str = "", spawn=None,
-            max_line_bytes: int = MAX_RPC_LINE_BYTES):
+            max_line_bytes: int = MAX_RPC_LINE_BYTES,
+            no_tools_args: Sequence[str] = ()):
         if (isinstance(max_line_bytes, bool) or not isinstance(max_line_bytes, int)
                 or max_line_bytes <= 0):
             raise ValueError("max_line_bytes must be a positive integer")
         argv = pi_rpc_argv(
-            agent, model=model, provider=provider, session_name=session_name)
+            agent, model=model, provider=provider, session_name=session_name,
+            no_tools_args=no_tools_args)
         self.argv = tuple(argv)
         self._process = (spawn or _default_spawn)(argv, cwd)
         if self._process.stdin is None or self._process.stdout is None:

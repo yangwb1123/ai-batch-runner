@@ -7,7 +7,7 @@ _TOP_LEVEL_FIELDS = frozenset(("stages", "decision_log", "archive_dir", "git_com
 _STAGE_FIELDS = frozenset((
     "name", "agent", "model", "provider", "orchestrator_model",
     "orchestrator_provider", "worker_model", "worker_provider", "role_models",
-    "role_providers", "delegation_only", "from_dir", "from_outputs", "suffix",
+    "role_providers", "delegation_only", "meta_resume", "meta_task_dag", "from_dir", "from_outputs", "suffix",
     "output_suffix", "mode", "workers", "aggregate", "validate",
     "validate_cmd", "meta", "meta_prompt", "role_dir", "role_keywords",
     "output_dir", "max_iterations", "max_roles_per_iteration", "meta_timeout",
@@ -31,9 +31,9 @@ _STRING_FIELDS = ("agent", "model", "provider", "orchestrator_model",
                   "meta_prompt", "role_dir", "role_keywords", "output_dir",
                   "from_prompt", "output", "cwd", "commit_message",
                   "gate_fix_prompt")
-_BOOL_FIELDS = ("aggregate", "meta", "delegation_only", "relevance_enabled",
+_BOOL_FIELDS = ("aggregate", "meta", "delegation_only", "meta_resume", "relevance_enabled",
                 "gate", "approval", "commands_parallel", "git_commit",
-                "read_only", "or_tasks")
+                "read_only", "or_tasks", "meta_task_dag")
 _TASK_STRING_FIELDS = ("prompt", "prompt_template", "output", "agent", "model", "provider",
                        "thinking", "tools", "exclude_tools", "cwd", "role")
 _NULLABLE_TASK_STRINGS = ("model", "provider", "thinking", "tools", "exclude_tools")
@@ -112,6 +112,8 @@ def _field_errors(stage: dict, prefix: str) -> list[str]:
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
             errors.append(f"{prefix}.{key} must be an integer >= {minimum}")
     errors.extend(_read_only_path_errors(stage, prefix))
+    errors.extend(_meta_resume_bounds(stage, prefix))
+    errors.extend(_meta_task_dag_bounds(stage, prefix))
     errors.extend(_role_model_errors(stage, prefix))
     errors.extend(_command_list_errors(stage, prefix))
     errors.extend(_meta_route_errors(stage, prefix))
@@ -127,11 +129,32 @@ def _meta_route_errors(stage: dict, prefix: str) -> list[str]:
         return []
     fields = ("orchestrator_model", "orchestrator_provider", "worker_model",
               "worker_provider", "role_models", "role_providers",
-              "delegation_only")
+              "delegation_only", "meta_resume", "meta_task_dag")
     if stage.get("delegation_only"):
         return [f"{prefix}.delegation_only requires meta: true"]
+    if stage.get("meta_resume"):
+        return [f"{prefix}.meta_resume requires meta: true"]
+    if stage.get("meta_task_dag"):
+        return [f"{prefix}.meta_task_dag requires meta: true"]
     return ([f"{prefix} meta routing fields require meta: true"]
             if any(key in stage for key in fields) else [])
+
+
+def _meta_resume_bounds(stage: dict, prefix: str) -> list[str]:
+    if not stage.get("meta_resume"):
+        return []
+    errors = []
+    if stage.get("max_iterations", 3) > 128:
+        errors.append(f"{prefix}.max_iterations exceeds meta_resume limit 128")
+    if stage.get("max_roles_per_iteration", 3) > 64:
+        errors.append(f"{prefix}.max_roles_per_iteration exceeds meta_resume limit 64")
+    return errors
+
+
+def _meta_task_dag_bounds(stage: dict, prefix: str) -> list[str]:
+    if stage.get("meta_task_dag") and stage.get("max_roles_per_iteration", 3) > 64:
+        return [f"{prefix}.meta_task_dag supports at most 64 tasks per iteration"]
+    return []
 
 
 def _role_model_errors(stage: dict, prefix: str) -> list[str]:
@@ -235,6 +258,8 @@ def _one_task_errors(task, label: str) -> list[str]:
 def _no_tools_errors(task: dict, label: str) -> list[str]:
     if "no_tools" in task and not isinstance(task["no_tools"], bool):
         return [f"{label}.no_tools must be boolean"]
+    if task.get("no_tools") and task.get("tools"):
+        return [f"{label}.no_tools cannot be combined with tools allowlist"]
     return []
 
 

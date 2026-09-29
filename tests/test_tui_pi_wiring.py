@@ -10,6 +10,7 @@ from pbatch.tui_runtime import RuntimeSession
 
 class _FakePiRpc:
     def __init__(self) -> None:
+        self.tools_disabled = False
         self.initialized = 0
         self.started = []
         self.closed = False
@@ -90,6 +91,49 @@ def test_explicit_pi_rpc_works_with_injected_backend(tmp_path):
         async with app.run_test(size=(100, 30)):
             assert app._adapter is adapter
             assert not app._runtime_blocked_reason
+
+    _run(scenario())
+
+
+def test_orchestrator_only_forces_pi_rpc_with_explicit_no_tools_policy(
+        tmp_path, monkeypatch):
+    from pbatch import config
+
+    monkeypatch.setattr(config, "agent_no_tools_args",
+                        lambda _agent: ("--no-tools",))
+
+    async def scenario():
+        adapter = _FakePiRpc()
+        adapter.tools_disabled = True
+        calls = []
+
+        class Backend:
+            agent = "pi"
+            provider = ""
+            model = ""
+
+            def set_emit(self, _emit):
+                return None
+
+            def run_turn(self, _prompt):
+                return None
+
+            def snapshot(self):
+                return {}
+
+        def factory(cwd, **kwargs):
+            calls.append((cwd, kwargs))
+            return adapter
+
+        app = PiBatchTUI(
+            TuiOptions(cwd=str(tmp_path), agent="pi", model="controller",
+                       orchestrator_only=True),
+            backend=Backend(), pi_rpc_factory=factory)
+        async with app.run_test(size=(100, 30)):
+            assert app._adapter is adapter
+            assert app._orchestrator_only_ready is True
+            assert calls[0][1]["no_tools_args"] == ("--no-tools",)
+            assert calls[0][1]["model"] == "controller"
 
     _run(scenario())
 

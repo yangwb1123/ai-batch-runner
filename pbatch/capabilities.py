@@ -66,6 +66,7 @@ MANUAL = {
     "formulas": ("governance", "low", "确定性指标参数", "AADM 四项公式分数"),
     "pinned": ("governance", "low", "上下文", "Pinned 块+指纹"),
     "metrics": ("ops", "low", "数据源", "五类指标"),
+    "routing-eval": ("verification", "low", "运行账本", "模型路由实测指标/配对比较"),
     "budget": ("governance", "low", "消耗/配额", "错误预算状态"),
     "recovery": ("governance", "low", "成本参数", "回滚/前向决策"),
     "events": ("ops", "low", "state-dir", "交互事件账本"),

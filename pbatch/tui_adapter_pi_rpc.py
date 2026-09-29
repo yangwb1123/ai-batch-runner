@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import queue
 import threading
-from typing import Any, Iterator, Mapping, Optional
+from typing import Any, Iterator, Mapping, Optional, Sequence
 
 from .pi_version import PiVersionProbe, probe_pi_version
 from .tui_appserver_support import (
@@ -16,7 +16,7 @@ from .tui_codex_support import (
 )
 from .tui_pi_rpc_support import (
     DEFAULT_QUEUE_SIZE, DEFAULT_TIMEOUT, MAX_RPC_LINE_BYTES, RUNTIME_NAME,
-    DefaultPiRpcTransport, Transport, bounded_value, decode_line,
+    DefaultPiRpcTransport, Transport, bounded_value, decode_line, pi_rpc_argv,
     encode_command, make_runtime_info, message_text, normalized_usage,
     session_path,
 )
@@ -33,6 +33,16 @@ from .tui_runtime import (
 _DEFAULT_CALL_TIMEOUT = object()
 
 
+def _tool_disable_policy(agent: str, values: Sequence[str], managed: bool
+                         ) -> tuple[tuple[str, ...], bool]:
+    if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+        raise ValueError("no_tools_args must be a string sequence")
+    arguments = tuple(values)
+    if arguments:
+        pi_rpc_argv(agent, no_tools_args=arguments)
+    return arguments, bool(arguments and managed)
+
+
 class PiRpcAdapter:
     """Translate Pi 0.84 LF-JSONL RPC commands/events to RuntimeEvent."""
 
@@ -43,7 +53,8 @@ class PiRpcAdapter:
             maxsize: int = DEFAULT_QUEUE_SIZE, spawn=None,
             max_line_bytes: int = MAX_RPC_LINE_BYTES,
             allow_persistent_settings: bool = False,
-            version_probe: Optional[PiVersionProbe] = None):
+            version_probe: Optional[PiVersionProbe] = None,
+            no_tools_args: Sequence[str] = ()):
         if timeout <= 0:
             raise ValueError("timeout must be positive")
         if isinstance(maxsize, bool) or not isinstance(maxsize, int) or maxsize <= 0:
@@ -59,6 +70,8 @@ class PiRpcAdapter:
         self._cwd = os.path.realpath(os.path.abspath(os.fsdecode(cwd)))
         self._agent, self._model, self._provider = agent, model, provider
         self._session_name, self._spawn = session_name, spawn
+        self._no_tools_args, self.tools_disabled = _tool_disable_policy(
+            agent, no_tools_args, transport is None)
         self._max_line_bytes, self._timeout = max_line_bytes, timeout
         self._allow_persistent_settings = allow_persistent_settings
         self._version_probe = version_probe
@@ -131,10 +144,13 @@ class PiRpcAdapter:
                 agent = self._version_probe.executable
             elif self._version_probe is not None:
                 agent = self._version_probe.executable
+            kwargs = ({"no_tools_args": self._no_tools_args}
+                      if self._no_tools_args else {})
             self._transport = DefaultPiRpcTransport(
                 self._cwd, agent=agent, model=self._model,
                 provider=self._provider, session_name=self._session_name,
-                spawn=self._spawn, max_line_bytes=self._max_line_bytes)
+                spawn=self._spawn, max_line_bytes=self._max_line_bytes,
+                **kwargs)
         elif self._version_probe is None:
             observed = getattr(self._transport, "pi_version_probe", None)
             if isinstance(observed, PiVersionProbe):

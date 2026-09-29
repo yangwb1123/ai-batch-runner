@@ -343,7 +343,6 @@ def build_agent_argv(bin_name: str, prompt: str, *, model: str = "",
             raise ValueError(
                 f"agent adapter for {bin_name!r} does not support {key}")
         cmd.extend([*flags[key], value])
-    cmd.extend(no_tools_args)
     if session_flags and not session_led:
         cmd.extend(session_flags)
     # Extra args are appended with dedup against tokens already present:
@@ -352,6 +351,7 @@ def build_agent_argv(bin_name: str, prompt: str, *, model: str = "",
     seen = set(cmd)
     cmd.extend(token for token in agent_extra_args(bin_name)
                if token not in seen)
+    cmd.extend(no_tools_args)
     return cmd
 
 

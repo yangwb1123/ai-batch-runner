@@ -31,6 +31,7 @@ def test_meta_planner_and_role_workers_route_independently(tmp_path, monkeypatch
         "evidence", "", 0)
 
     assert planner.model == "planner-flagship"
+    assert planner.memory["model_route_source"] == "orchestrator_model"
     assert planner.provider == "planner-provider"
     assert planner.no_tools is True
     assert "DELEGATION-ONLY CONTROLLER" in planner.prompt
@@ -40,6 +41,8 @@ def test_meta_planner_and_role_workers_route_independently(tmp_path, monkeypatch
         ("security-model", "security-provider"),
         ("worker-cheap", "worker-provider"),
     ]
+    assert [task.memory["model_route_source"] for _, task in workers] == [
+        "role_model", "worker_model"]
 
 
 def test_cli_model_override_remains_authoritative_for_planner_and_workers(
@@ -55,7 +58,9 @@ def test_cli_model_override_remains_authoritative_for_planner_and_workers(
         "evidence", "cli-model", 0)
 
     assert planner.model == "cli-model"
+    assert planner.memory["model_route_source"] == "cli_override"
     assert workers[0][1].model == "cli-model"
+    assert workers[0][1].memory["model_route_source"] == "cli_override"
 
 
 def test_pipeline_schema_accepts_meta_model_routing_and_rejects_bad_policy():
@@ -81,3 +86,15 @@ def test_pipeline_schema_accepts_meta_model_routing_and_rejects_bad_policy():
     errors = validate_pipeline(invalid)
     assert any("delegation_only requires meta" in error for error in errors)
     assert any("role_models must be a mapping" in error for error in errors)
+
+
+def test_pipeline_task_schema_rejects_conflicting_tool_policy():
+    spec = {"stages": [
+        {"name": "source", "from_prompt": "task", "output": "source.md"},
+        {"name": "worker", "from_outputs": "source", "tasks": [
+            {"prompt": "inspect", "output": "out.md", "no_tools": True,
+             "tools": "read"}],
+        },
+    ]}
+    assert any("no_tools cannot be combined" in error
+               for error in validate_pipeline(spec))

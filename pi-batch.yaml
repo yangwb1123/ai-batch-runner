@@ -437,14 +437,14 @@ device_fabric:
       #     allowed_data_classes: [public, internal]
 
 # 共享 agent run 账本（多 Agent 互见）：默认关（与 device_fabric 同款克制）；
-# 开启后每次 run 写一行结构化记录到 data_dir/agents/ledger.jsonl —— 不同
-# agent（pi/codex/claude/gemini/opencode）的任务/会话/产物互相可见，
-# 产物路径即结果共享基础（T11；handoff 接力为 T12）。
+# 开启后每次任务执行尝试及实际 validator 结果写结构化记录到
+# data_dir/agents/ledger.jsonl —— 不同 agent 的任务/会话/产物互相可见；
+# 路由评估使用模型、耗时、usage 和不含 prompt 正文的任务指纹。
 agent_ledger:
   enabled: true
 
 # 难度感知模型路由（T14）：默认关；开启后按任务画像选 model 档位，
-# 每日配额（limits/daily_budget）剩余比例低于阈值时自动降档。
+# 每日 invocation 配额（--daily-budget）剩余比例低于阈值时自动降档。
 # 显式指定的 model（--model / 任务 / 阶段）永不覆盖。
 # 性价比策略：默认档（low）用最具性价比的模型（如 deepseek-v4-flash /
 # gpt-5.6-luna），并配合 default_thinking=max —— 便宜模型 + 满血思维
@@ -459,5 +459,5 @@ model_routing:
     critical: {model: "gpt-5.6-sol"}         # 支付/生产事故/高风险
   downgrade:
     enabled: true                # 配额见底时降级（保护性成本控制）
-    remaining_ratio_threshold: 0.25    # 剩余 < 25% 时最高可用档降一级
+    remaining_ratio_threshold: 0.25    # 剩余 < 25% 时降至 min_tier
     min_tier: low
