@@ -61,7 +61,13 @@ def cmd_check(json_mode: bool = False) -> int:
         ("complexity", _check_complexity),
         ("root-policy", _check_root),
         ("style", _check_style),
+        ("project-gates", _check_project_gates),
     ], json_mode)
+
+
+def _check_project_gates() -> int:
+    from checks.project_gates import run as gates_run
+    return gates_run()
 
 
 def _check_filesize() -> int:

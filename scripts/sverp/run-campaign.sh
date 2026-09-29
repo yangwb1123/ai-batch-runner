@@ -32,6 +32,11 @@ case "$TARGET" in
     ;;
 esac
 
+# The validator registry is project data: it declares the gate this target
+# accepts work on (repo-gate = the target repository's own command). Without it
+# the tool's own registry would win.
+export PBATCH_PROJECT_CONFIG="$ROOT/projects/sverp/pi-batch.yaml"
+
 test -d "$REPO" || { echo "FAIL: $REPO 不存在" >&2; exit 1; }
 
 # 同步 campaign 配置到目标仓库（campaign 要求配置与 pipeline 模板在仓库内）

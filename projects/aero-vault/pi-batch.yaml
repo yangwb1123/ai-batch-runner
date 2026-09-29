@@ -1,0 +1,26 @@
+# aero-vault 的门禁声明
+#
+# source of truth 是目标仓自己的 AGENTS.md / HARNESS.md / Makefile。这里只**调用**
+# 目标仓的门禁，绝不在运行器里复制一份。validator 在目标仓的 cwd 下执行，所以
+# `python3 cli.py check` 跑的是目标仓的 cli.py。
+#
+# campaign / pipeline 的 implement 阶段只允许引用 repo-gate：checks/project_gates.py
+# 会断言这一点。于是"LLM 产出能否被接受"由目标仓的门禁决定，而不是由运行器里一份
+# 可能与目标仓漂移的 validator 列表决定。
+#
+# 依据：HARNESS.md：快速检查（仅核心门禁）make check
+# 备注：含 gofmt/vet/build/test 与若干 -race 专项；test-race-thumbnail 需放宽 180s 预算。
+project:
+  target_repo: "~/aero-vault"
+
+agent:
+  bin: pi
+  default_timeout: 1800
+  default_workers: 1
+
+validators:
+  repo-gate:
+    cmd: "make check"
+  # 产物完成度检查（工具提供的脚本，项目自己声明引用）
+  completion:
+    cmd: "python3 {tool_root}/scripts/check-completion-report.py {output}"

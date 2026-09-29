@@ -90,7 +90,8 @@ stages:
     aggregate: true
     # 本仓工程门禁：gofmt + go build/vet + go test + 仓级 cli.py check +
     # 产物密钥扫描。clirepo/gorepo 已是 repo-scope，阶段末尾对整树跑一次。
-    validate: gofmt, gotest, gobuild, clirepo, secretscan
+    # 目标仓 AGENTS.md 规定的门禁本身（python3 cli.py quality），不是它的组成部分列表
+    validate: repo-gate
     tasks:
       - prompt: |
           Read the repository's AGENTS.md and the approved evidence below,

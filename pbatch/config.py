@@ -38,6 +38,16 @@ log = logging.getLogger("pi-batch")
 # silently interpreted with today's defaults.
 CONFIG_SCHEMA_VERSION = 1
 
+# Explicit project-config path. The validator registry (and agent defaults) is
+# project data, not tool data: a tool checkout that drives campaigns for other
+# repositories must not bake a per-project copy of pi-batch.yaml into itself,
+# and a target repository must not have to vendor a copy of this tool to get
+# its own validators. This variable points the loader at the project's file and
+# takes precedence over the discovery order below. A path that does not exist
+# fails closed instead of silently falling back to the tool's registry, which
+# is exactly the drift this exists to prevent.
+BATCH_CONFIG_ENV = "PBATCH_PROJECT_CONFIG"
+
 
 def _batch_config_candidates() -> list[Path]:
     """Return explicit project candidates in the portable shim's order."""
@@ -51,7 +61,15 @@ def _batch_config_candidates() -> list[Path]:
 
 
 def _project_config_path() -> Optional[Path]:
-    """Keep packaged defaults separate from operator-owned configuration."""
+    """Keep packaged defaults separate from operator-owned configuration.
+
+    An explicit PBATCH_PROJECT_CONFIG wins over the discovery order. It is
+    resolved even when the file is missing, so the caller reports the bad path
+    rather than quietly running with the tool's own registry.
+    """
+    explicit = os.environ.get(BATCH_CONFIG_ENV, "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
     return next((path for path in _batch_config_candidates() if path.exists()), None)
 
 

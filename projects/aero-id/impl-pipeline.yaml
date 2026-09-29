@@ -47,7 +47,7 @@ stages:
   - name: implement
     from_outputs: plan
     aggregate: true
-    validate: gobuild,gotest,completion_go
+    validate: repo-gate,completion
     tasks:
       - prompt: |
           Read the repository AGENTS.md and the approved plan below.

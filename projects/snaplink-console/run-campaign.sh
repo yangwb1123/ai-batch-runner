@@ -17,6 +17,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 REPO="${CONSOLE_REPO:-$HOME/snaplink-console}"
 
+# The validator registry is project data: this project's pi-batch.yaml declares
+# the gate it accepts work on (repo-gate = the target repository's own AGENTS.md
+# / HARNESS.md command). Without this the tool's own registry would win and the
+# campaign would gate on validators the target repository never declared.
+export PBATCH_PROJECT_CONFIG="$HERE/pi-batch.yaml"
+
 CONFIG=campaign.yaml
 if [ "${1:-}" = "--advance" ]; then CONFIG=campaign-advance.yaml; shift; fi
 

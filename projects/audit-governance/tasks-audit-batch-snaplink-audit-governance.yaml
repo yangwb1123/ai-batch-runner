@@ -9,4 +9,4 @@ tasks:
     ## 风险：每项的风险（破坏兼容性/回滚方案）\n## 启动条件：批次门禁（G 编号）通过条件核对\n\n\
     ## 未验证标注：清单中标 [PROPOSED] 或无法验证的路径必须标注，不冒充 Verified"
   output: docs/proposals/audit-contract-batch-snaplink-audit-governance.md
-  validate: python3 {tool_root}/scripts/check-no-refusal.py {output}
+  validate: no-refusal

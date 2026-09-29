@@ -10,4 +10,4 @@ tasks:
     输出提案文档，不修改代码。
     '
   output: docs/proposals/compose-2026-017-audit-governance.md
-  validate: python3 {tool_root}/scripts/check-no-refusal.py {output}
+  validate: no-refusal

@@ -51,7 +51,8 @@ stages:
       - adversarial_review
       - design_gate
     aggregate: true
-    validate: gobuild,gotest
+    # 目标仓自己的门禁（AGENTS.md / HARNESS.md），不是运行器的通用 validator 列表
+    validate: repo-gate
     tasks:
       - prompt: |
           Read the repository's AGENTS.md and the approved evidence below.

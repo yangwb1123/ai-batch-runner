@@ -17,6 +17,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 REPO="${AERO_IM_REPO:-$HOME/aero-im}"
 
+# The validator registry is project data: this project's pi-batch.yaml declares
+# the gate it accepts work on (repo-gate = the target repository's own AGENTS.md
+# / HARNESS.md command). Without this the tool's own registry would win and the
+# campaign would gate on validators the target repository never declared.
+export PBATCH_PROJECT_CONFIG="$HERE/pi-batch.yaml"
+
 test -d "$REPO" || { echo "FAIL: $REPO does not exist (set AERO_IM_REPO)" >&2; exit 1; }
 
 SYNC_DIR="$REPO/.pi-batch/aero-im"

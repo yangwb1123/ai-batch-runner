@@ -15,6 +15,12 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 
 REPO="${AUDIT_GOVERNANCE_REPO:-$HOME/snaplink-audit-governance}"
 
+# The validator registry is project data: this project's pi-batch.yaml declares
+# the gate it accepts work on (repo-gate = the target repository's own AGENTS.md
+# / HARNESS.md command). Without this the tool's own registry would win and the
+# campaign would gate on validators the target repository never declared.
+export PBATCH_PROJECT_CONFIG="$HERE/pi-batch.yaml"
+
 test -d "$REPO" || { echo "FAIL: $REPO 不存在（用 AUDIT_GOVERNANCE_REPO 指定）" >&2; exit 1; }
 
 # campaign 要求配置与 pipeline 模板位于仓内（仓外路径会以

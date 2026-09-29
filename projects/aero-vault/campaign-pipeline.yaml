@@ -68,7 +68,7 @@ stages:
       - adversarial_review
       - design_gate
     aggregate: true
-    validate: gorepo,clirepo,completion_go
+    validate: repo-gate,completion
     tasks:
       - prompt: |
           Read the repository's AGENTS.md and the approved evidence below.

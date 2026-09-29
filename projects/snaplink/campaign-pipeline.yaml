@@ -66,7 +66,8 @@ stages:
     # runs the documented gates itself (AGENTS S4.3). pyquality is NOT used:
     # it always fails on this repo (2172 pre-existing violations in
     # scripts/smoke_*.py).
-    validate: cargocheck
+    # snaplink 是 Go 仓：门禁是 make ci（AGENTS.md），不是 cargocheck
+    validate: repo-gate
     tasks:
       - prompt: |
           Read the repository's AGENTS.md and the approved evidence below.
