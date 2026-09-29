@@ -270,15 +270,40 @@ def _run_gate(worktree: Path, command: str, timeout: int) -> tuple[int, str]:
 
 
 def _merge(root: Path, branch: str, direction_id: str, squash: bool) -> tuple[bool, str]:
+    # `--no-verify`: the direction's own commit already ran the repository
+    # hooks inside its worktree, and the merge gate re-checks scope, the
+    # framework-free rule, the forbidden paths, typecheck/build and the test
+    # suites. Re-running lint-staged on the squash of several independently
+    # merged directions is redundant work that can fail for reasons unrelated
+    # to the direction (it re-lints every previously merged file) and would
+    # block the campaign with no correctness gain.
     if squash:
         result = _git(root, ["merge", "--squash", branch])
-        if result.returncode != 0:
-            return False, _detail(result)
-        result = _git(root, ["commit", "-m", f"[pi-batch campaign] merge {direction_id}"])
+        if result.returncode == 0:
+            result = _git(root, ["commit", "--no-verify", "-m",
+                                 f"[pi-batch campaign] merge {direction_id}"])
     else:
-        result = _git(root, ["merge", "--no-ff", branch, "-m",
+        result = _git(root, ["merge", "--no-ff", "--no-verify", branch, "-m",
                              f"[pi-batch campaign] merge {direction_id}"])
-    return result.returncode == 0, _detail(result)
+    if result.returncode != 0:
+        _abort_partial_merge(root)
+        return False, _detail(result)
+    return True, ""
+
+
+def _abort_partial_merge(root: Path) -> None:
+    """Undo a failed automatic merge so the next direction is not blocked.
+
+    A failed `--squash` merge leaves the campaign repository with the merged
+    result staged but uncommitted, and a failed non-squash merge leaves
+    MERGE_HEAD. Both make the tree dirty, and the merge preflight then refuses
+    every later direction ("repository root is dirty"), so one conflicting
+    direction would stall the whole campaign until a human intervened. The
+    preflight verified a clean repository before merging, so returning to HEAD
+    restores exactly the pre-merge state.
+    """
+    _git(root, ["merge", "--abort"])
+    _git(root, ["reset", "--hard", "HEAD"])
 
 
 def _cleanup(root: Path, branch: str, worktree: Path) -> list[str]:

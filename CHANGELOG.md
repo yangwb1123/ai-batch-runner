@@ -7,6 +7,20 @@
 
 ### 新增
 
+- 隔离实现的交付物现在会被合并门禁看到。方向流水线在子进程里运行，父进程拿不到
+  阶段结果，原先证据只有 worktree、pipeline.yaml 和运行日志；而子进程成功后会把
+  交付物移入带时间戳的 `archive/`，于是自动合并要求的 `VERDICT: PASS` 工件永远
+  不可达——每个通过的隔离方向都被判为 `no bounded VERDICT: PASS artifact`，
+  没有任何一次真正合并（iris-grid-core-24h-v4 现场：9 个方向全部被拦）。
+  现在按 `artifacts/**` 与 `archive/*/` 有界、确定性地收集交付物证据。
+- 自动合并失败不再把仓库留在半合并状态。`git merge --squash` 成功但随后的 commit
+  被拒绝时，已暂存的合并结果会留在仓库里，之后每个方向都被
+  `repository root is dirty` 拒绝，整个 campaign 直到人工介入才恢复。现在失败
+  时执行 `merge --abort` + `reset --hard HEAD`（合并前已校验仓库干净）。
+- 自动合并提交跳过仓库 hook（`--no-verify`）。方向自身的提交已在它的工作树里跑过
+  hook，合并门禁又会重新校验 scope、framework-free、禁用路径、typecheck/build 和
+  测试；再次对若干独立方向的 squash 结果跑 lint-staged 只会重写已合并文件的格式，
+  并以与本方向无关的原因阻断 campaign。
 - Linux x86_64 独立二进制发布入口，复用平台验证并绑定明确的标签提交，
   不依赖 PyPI 发布；同版本资产禁止覆盖，授权未决仍阻断正式发布。
 - 二进制构建清单绑定源码输入、构建环境、可执行文件摘要与完整 LICENSE；
@@ -112,6 +126,13 @@
 - 首次运行没有可选用户 settings.yaml 时，`config explain/check` 正常使用默认配置；
   显式指定的缺失配置和现存坏配置仍然拒绝。
 - 设备清单中的重复 ID 在投影前拒绝，避免字典汇总静默覆盖异常记录并错误派发任务。
+- 供应商熔断器的等待预算不再小于单段冷却。原先 `cooldown_failure` 硬编码
+  300s 预算，而默认 `max_cooldown` 是 900s：冷却时长落在 (300s, 900s] 时
+  `wait_or_fail` 一次都不等待就以「exceeded wait budget」失败——等待闸门退化为
+  立即烧掉任务，campaign 在 provider 退避期持续空转。预算现默认等于
+  `max_cooldown`（可选 `limits.provider_breaker.wait_budget` 覆盖，并以
+  `max_cooldown` 封顶），quota 级冷却（默认 24h）仍超预算快速失败；
+  等待期间若 provider 被再次拉长冷却，仍按预算明确失败而不假装可执行。
 - 供应商熔断器现在识别 opencode-go / Go 网关的额度耗尽签名。实际报文为
   `429: {"type":"GoUsageLimitError","message":"Go usage limit exceeded"}`——
   camelCase 类名 + 空格分隔短语，既有的 `quota_?exceeded` / `rate_?limit_?error`

@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .campaign_artifacts import isolated_run_evidence
 from .campaign_models import CampaignSettings, Direction, safe_slug
 from .campaign_state import (digest, file_digest, git_worktree_evidence,
                              tool_digest, tree_digest)
@@ -478,6 +479,7 @@ def _run_in_worktree(settings: CampaignSettings, direction: Direction, analysis_
         if reason:
             status = PipelineStatus.PIPELINE_FAILED
     evidence = [str(worktree), str(pipeline_path), str(logfile)]
+    evidence.extend(isolated_run_evidence(pipeline_path))
     recovery, repository, reason = _recover_isolated_worktree(
         settings, direction, worktree, baseline, branch, recovery_root,
         start_clean, status, reason, repository)
@@ -504,3 +506,6 @@ def _recover_isolated_worktree(settings, direction, worktree, baseline, branch,
         reason = f"{reason}; automatic retry blocked: {recovery.reason}"
     repository = git_worktree_evidence(worktree, excludes=(settings.output_dir,))
     return recovery, repository, reason
+
+
+    return found

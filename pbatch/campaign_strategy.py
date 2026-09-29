@@ -143,10 +143,10 @@ def plan_modules(modules: Iterable[str], *, focus: str = "",
         ranked = [item for item in ranked if item[0] in matched]
     effective_batch = _effective_batch(batch_size, max_calls)
     ordered = _bounded_order(ranked, effective_batch)
-    if token_budget and usage.truncated:
+    budget_error = _token_budget_error(token_budget, usage)
+    if budget_error:
         return CampaignPlan((), tuple(ordered), focus_text, usage, baseline,
-                            "token telemetry is truncated; use a dedicated events file", True,
-                            baseline)
+                            budget_error, True, baseline)
     estimate = max(1, usage.observed_average or baseline)
     ordered, blocked = _budget_order(ordered, token_budget, usage.total_tokens, estimate)
     if blocked:
@@ -158,6 +158,16 @@ def plan_modules(modules: Iterable[str], *, focus: str = "",
                         _plan_reason(focus_text, effective_batch, token_budget,
                                      max_calls, batch_size), False,
                         baseline)
+
+
+def _token_budget_error(token_budget: int, usage: UsageSummary) -> str:
+    if not token_budget:
+        return ""
+    if usage.truncated:
+        return "token telemetry is truncated; use a dedicated events file"
+    if usage.calls and usage.token_telemetry != "observed":
+        return "token telemetry is unknown or partial; cannot enforce token budget"
+    return ""
 
 
 def _call_limit_plan(values: tuple[str, ...], focus: str,

@@ -37,7 +37,7 @@ filesize:
     - "pbatch/rule_matcher.py"   # 规则三轴匹配器（503 lines, within quality.py 1000 budget；双向校验裁决）
     - "pbatch/agent_session.py"  # agent 会话状态机（596 lines, within quality.py 1000 budget；状态/续跑内聚）
     - "pbatch/assessor.py"       # 需求评估器（528 lines, within quality.py 1000 budget；8 维评审/处方档内聚）
-    - "pbatch/provider_breaker.py" # provider 熔断器（589 lines, within quality.py 1000 budget；令牌/熔断状态内聚）
+    - "pbatch/provider_breaker.py" # provider 熔断器（697 lines, within quality.py 1000 budget；令牌/熔断状态内聚）
     - "pbatch/tui_adapter_appserver.py"  # TUI appserver adapter（756 lines, within quality.py 1000 budget）
     - "pbatch/tui_adapter_codex.py"      # TUI codex adapter（550 lines, within quality.py 1000 budget）
     - "pbatch/tui_adapter_legacy.py"     # TUI legacy adapter（625 lines, within quality.py 1000 budget）

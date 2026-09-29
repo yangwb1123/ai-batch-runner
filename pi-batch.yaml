@@ -134,6 +134,9 @@ limits:
     threshold: 5          # 连续失败数（0 = 关闭）
     base_cooldown: 60     # 首次冷却秒（×2 退避）
     max_cooldown: 900     # 单段冷却上限；超出后任务明确失败
+    # 等待预算：默认 = max_cooldown（并以它封顶），保证单段冷却能被等出来；
+    # 预算小于冷却时任务一次都不等就失败，quota 级冷却（默认 24h）仍然快速失败。
+    # wait_budget: 900
 
   burst: 1             # token bucket capacity
   providers: {}        # provider -> rate, e.g. {openai: 2, local: 0}; 0 = unlimited

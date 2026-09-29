@@ -14,6 +14,7 @@ provider。事件进交互账本、日志清晰可见（retro 可复盘 provider
   threshold     连续 provider 失败数（默认 5；0 = 关闭）
   base_cooldown 首次冷却秒数（默认 60，指数退避 ×2）
   max_cooldown  单段冷却上限（默认 900s；超出后任务直接失败）
+  wait_budget   spawn 前等待预算（默认 = max_cooldown，且以 max_cooldown 封顶）
 """
 
 from __future__ import annotations
@@ -51,13 +52,15 @@ _PROVIDER_FAILURE_PREFIXES = (
     "agent replied with a provider failure (",
 )
 _QUOTA_EXHAUSTION_RE = re.compile(
-    r"go_?usage_?limit_?error|usage_?limit_?exceeded|insufficient_?quota|"
-    r"quota_?exceeded|credit_?balance_?too_?low|insufficient\s+(?:balance|funds)",
-    re.IGNORECASE)
+    r"go[\s_-]*usage[\s_-]*limit[\s_-]*error|"
+    r"usage[\s_-]*limit[\s_-]*exceeded|insufficient[\s_-]*quota|"
+    r"quota[\s_-]*exceeded|credit[\s_-]*balance[\s_-]*too[\s_-]*low|"
+    r"insufficient\s+(?:balance|funds)", re.IGNORECASE)
 _RETRY_AFTER_RE = re.compile(
     r"(?im)^\s*(?:retry-after|x-ratelimit-reset|ratelimit-reset|reset_at|reset)"
     r"\s*[:=]\s*(.*?)\s*$")
 _MAX_RETRY_AFTER = 7 * 24 * 60 * 60
+_WAIT_LOG_INTERVAL = 60.0
 
 
 def _state_path(data_dir=None) -> str:
@@ -269,6 +272,26 @@ def _max_cooldown() -> float:
         return float(_DEFAULT_MAX)
 
 
+def _wait_budget() -> float:
+    """Spawn 前可等待的冷却预算。
+
+    预算必须覆盖单段冷却，否则冷却时长落在 (budget, max_cooldown] 时任务
+    一次都不等待就失败（空转烧任务）。默认取 max_cooldown，并以它封顶：
+    quota 级冷却（默认 24h）仍按“超预算即失败”快速失败。
+    """
+    ceiling = _max_cooldown()
+    value = _settings().get("wait_budget", ceiling)
+    try:
+        if isinstance(value, bool):
+            raise ValueError
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return ceiling
+    if not math.isfinite(number) or number < 0:
+        return ceiling
+    return min(number, ceiling)
+
+
 def _quota_cooldown() -> float:
     value = _settings().get("quota_cooldown", 24 * 60 * 60)
     try:
@@ -320,22 +343,26 @@ def retry_after_seconds(text: str, *, now: float | None = None) -> float:
         try:
             number = float(value)
         except (TypeError, ValueError, OverflowError):
-            try:
-                parsed = parsedate_to_datetime(value)
-                number = parsed.timestamp() - current
-            except (TypeError, ValueError, OverflowError):
-                try:
-                    from datetime import datetime
-                    number = datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp() - current
-                except (TypeError, ValueError, OverflowError):
-                    continue
-            else:
-                number -= current
+            number = _retry_after_date_delay(value, current)
+            if number is None:
+                continue
         if number >= 1_000_000_000:
             number -= current
         if math.isfinite(number) and number > 0:
             delays.append(min(number, _MAX_RETRY_AFTER))
     return max(delays, default=0.0)
+
+
+def _retry_after_date_delay(value: str, current: float) -> float | None:
+    try:
+        return parsedate_to_datetime(value).timestamp() - current
+    except (TypeError, ValueError, OverflowError):
+        try:
+            from datetime import datetime
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed.timestamp() - current
+        except (TypeError, ValueError, OverflowError):
+            return None
 
 
 def provider_failure_reason(stderr: str, stdout: str = "",
@@ -623,7 +650,7 @@ def breaker_state(data_dir=None, provider: str = "") -> dict:
 def cooldown_failure(task, data_dir=None) -> Optional[object]:
     """Runner 集成点：冷却中尝试等待（有界）；超限返回失败 TaskResult，
     可执行返回 None。延迟 import 避免循环依赖。"""
-    reason = wait_or_fail(300.0, data_dir, provider_identity(task))
+    reason = wait_or_fail(_wait_budget(), data_dir, provider_identity(task))
     if reason is None:
         return None
     from .models import TaskResult
@@ -637,6 +664,7 @@ def wait_or_fail(timeout: float, data_dir=None,
     if threshold() <= 0:
         return None
     deadline = time.monotonic() + max(0.0, timeout)
+    logged_at = -1.0
     while True:
         remaining = cooldown_remaining(data_dir, provider)
         if remaining <= 0:
@@ -649,9 +677,12 @@ def wait_or_fail(timeout: float, data_dir=None,
             _emit("provider_breaker_wait_exceeded", "", remaining, 0,
                   provider or "aggregate")
             return reason
-        log.warning(
-            "PROVIDER BREAKER [%s]: waiting %.0fs before next spawn "
-            "(provider recovering)", provider or "aggregate", remaining)
+        current = time.monotonic()
+        if logged_at < 0 or current - logged_at >= _WAIT_LOG_INTERVAL:
+            logged_at = current
+            log.warning(
+                "PROVIDER BREAKER [%s]: waiting %.0fs before next spawn "
+                "(provider recovering)", provider or "aggregate", remaining)
         time.sleep(min(remaining, budget, 10.0))
 
 

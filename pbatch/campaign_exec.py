@@ -529,9 +529,12 @@ def _print_plan(context: CampaignContext, modules: list[str], plan=None) -> None
     if plan is not None:
         usage = plan.usage
         print(f"Strategy: {plan.reason}; estimated analysis tokens: {plan.estimated_tokens}")
-        print("Telemetry: calls=%d input=%d output=%d total=%d cost=$%.4f" %
-              (usage.calls, usage.input_tokens, usage.output_tokens,
-               usage.total_tokens, usage.cost_usd))
+        token_values = ((usage.input_tokens, usage.output_tokens, usage.total_tokens)
+                        if usage.token_telemetry in {"observed", "partial"}
+                        else ("unknown", "unknown", "unknown"))
+        print("Telemetry: calls=%d input=%s output=%s total=%s cost=$%.4f (%s)" %
+              (usage.calls, *token_values, usage.cost_usd,
+               usage.token_telemetry))
         for warning in usage.diagnostics(plan.baseline_tokens or plan.estimated_tokens):
             print("Telemetry warning: " + warning)
         if plan.skipped:

@@ -42,6 +42,15 @@ def test_token_budget_stops_when_current_run_is_exhausted():
     assert plan.blocked is True
 
 
+def test_token_budget_fails_closed_on_unknown_or_partial_usage():
+    for usage in (UsageSummary(calls=2),
+                  UsageSummary(input_tokens=100, calls=2, calls_with_usage=1)):
+        plan = plan_modules(["a", "b"], token_budget=10_000, usage=usage)
+        assert plan.blocked is True
+        assert plan.selected == ()
+        assert "unknown or partial" in plan.reason
+
+
 def test_unmatched_focus_fails_closed():
     plan = plan_modules(["domains/auth"], focus="payments")
     assert plan.blocked is True

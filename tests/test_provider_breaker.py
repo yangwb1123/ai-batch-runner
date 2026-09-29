@@ -24,6 +24,24 @@ def reset_breaker(monkeypatch, tmp_path):
     breaker.register_success()
 
 
+class _FakeClock:
+    """虚拟时钟：wait_or_fail 的 sleep 直接推进时间，测试不真等。"""
+
+    def __init__(self, start: float = 1_000.0):
+        self.now = start
+        self.sleeps: list[float] = []
+
+    def time(self) -> float:
+        return self.now
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
 def test_trips_after_threshold_and_recovers_on_success():
     assert not breaker.register_provider_failure("quota")
     assert not breaker.register_provider_failure("quota")
@@ -75,6 +93,103 @@ def test_wait_budget_exceeded_returns_failure_reason():
     Path(breaker._state_path()).write_text(json.dumps(state), encoding="utf-8")
     reason = breaker.wait_or_fail(0.05)
     assert reason == "provider breaker cooldown exceeded wait budget"
+
+
+def test_wait_budget_covers_a_full_cooldown_segment(monkeypatch):
+    """预算 < 冷却时任务一次都不等就失败：600s 冷却（旧固定 300s
+    预算）必须等出来，而不是直接烧掉一次任务。"""
+    import json
+    from pathlib import Path
+    monkeypatch.setattr(breaker, "_settings", lambda: {
+        "threshold": 3, "base_cooldown": 600.0, "max_cooldown": 900.0})
+    clock = _FakeClock()
+    monkeypatch.setattr(breaker, "time", clock)
+    Path(breaker._state_path()).write_text(json.dumps({
+        "version": 2, "clock": "unix",
+        "streak": 0, "step": 1,
+        "cooldown_until": clock.time() + 600.0}), encoding="utf-8")
+    assert breaker._wait_budget() == 900.0
+    assert breaker.cooldown_remaining() > 300.0
+    assert breaker.wait_or_fail(breaker._wait_budget()) is None
+    assert breaker.cooldown_remaining() == 0
+    assert clock.sleeps  # actually waited, sliced at 10s
+    assert max(clock.sleeps) <= 10.0
+    assert abs(sum(clock.sleeps) - 600.0) < 10.0
+
+
+def test_wait_budget_exhausted_mid_wait_fails_explicitly(monkeypatch):
+    """等待途中 provider 又被拉长冷却 → 超出预算即明确失败。"""
+    import json
+    from pathlib import Path
+    monkeypatch.setattr(breaker, "_settings", lambda: {
+        "threshold": 3, "base_cooldown": 60.0, "max_cooldown": 900.0,
+        "wait_budget": 120.0})
+    clock = _FakeClock()
+    monkeypatch.setattr(breaker, "time", clock)
+    state_file = Path(breaker._state_path())
+    state_file.write_text(json.dumps({
+        "version": 2, "clock": "unix",
+        "streak": 0, "step": 1,
+        "cooldown_until": clock.time() + 60.0}), encoding="utf-8")
+    original_sleep = clock.sleep
+
+    def extend_then_sleep(seconds):
+        state_file.write_text(json.dumps({
+            "version": 2, "clock": "unix",
+            "streak": 0, "step": 2,
+            "cooldown_until": clock.time() + 900.0}), encoding="utf-8")
+        original_sleep(seconds)
+
+    monkeypatch.setattr(clock, "sleep", extend_then_sleep)
+    reason = breaker.wait_or_fail(breaker._wait_budget())
+    assert reason == "provider breaker cooldown exceeded wait budget"
+    assert breaker.cooldown_remaining() > 0  # still cooling, not consumed
+
+
+def test_wait_budget_is_capped_and_fail_closed_on_malformed_config(monkeypatch):
+    for value, expected in [(0.0, 0.0), (120.0, 120.0), (10_000.0, 900.0),
+                            (True, 900.0), ("bad", 900.0),
+                            (float("nan"), 900.0), (float("inf"), 900.0),
+                            (-5.0, 900.0), (None, 900.0)]:
+        monkeypatch.setattr(breaker, "_settings", lambda value=value: {
+            "threshold": 3, "base_cooldown": 60.0, "max_cooldown": 900.0,
+            "wait_budget": value})
+        assert breaker._wait_budget() == expected
+
+
+def test_runner_waits_out_a_mid_range_cooldown(monkeypatch):
+    """Runner 集成点：冷却落在 (300s, max_cooldown] 时等出来，而不是
+    一次都不等就烧掉任务（旧固定 300s 预算）。"""
+    import json
+    from pathlib import Path
+    from pbatch.models import Task
+    monkeypatch.setattr(breaker, "_settings", lambda: {
+        "threshold": 3, "base_cooldown": 600.0, "max_cooldown": 900.0})
+    clock = _FakeClock()
+    monkeypatch.setattr(breaker, "time", clock)
+    Path(breaker._state_path()).write_text(json.dumps({
+        "version": 2, "clock": "unix",
+        "streak": 0, "step": 1,
+        "cooldown_until": clock.time() + 600.0}), encoding="utf-8")
+    assert breaker.cooldown_failure(Task(prompt="p")) is None
+    assert abs(sum(clock.sleeps) - 600.0) < 10.0
+
+
+def test_quota_cooldown_still_fails_fast_beyond_the_wait_budget(monkeypatch):
+    """quota 级冷却（24h）远大于等待预算：仍然快速失败，而不是
+    把任务挂在等待里。"""
+    import json
+    from pathlib import Path
+    from pbatch.models import Task
+    monkeypatch.setattr(breaker, "_settings", lambda: {
+        "threshold": 2, "base_cooldown": 60.0, "max_cooldown": 900.0})
+    Path(breaker._state_path()).write_text(json.dumps({
+        "version": 2, "clock": "unix",
+        "streak": 0, "step": 1,
+        "cooldown_until": time.time() + 24 * 3600.0}), encoding="utf-8")
+    result = breaker.cooldown_failure(Task(prompt="p"))
+    assert result is not None and not result.success
+    assert result.reason == "provider breaker cooldown exceeded wait budget"
 
 
 def test_disabled_when_threshold_zero(monkeypatch):
@@ -455,6 +570,9 @@ def test_retry_after_and_quota_exhaustion_trip_immediately(monkeypatch):
         "Retry-After: 120")
     assert breaker.is_quota_exhaustion(diagnostics)
     assert breaker.retry_after_seconds(diagnostics) == 120
+    assert breaker.is_quota_exhaustion("Go Usage Limit Error: insufficient quota")
+    assert breaker.retry_after_seconds(
+        "Retry-After: Thu, 01 Jan 1970 00:18:40 GMT", now=1000) == 120
 
     identity = "provider:cloud-a"
     assert breaker.register_provider_failure(
