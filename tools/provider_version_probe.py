@@ -34,21 +34,31 @@ def reap_adopted_children() -> bool:
         children = OwnedProcesses._child_pids(os.getpid())
         if not children:
             return found_live
-        for pid in children:
-            identity = process_identity(pid)
-            if identity and is_alive(identity):
-                found_live = True
-                try:
-                    OwnedProcesses(pid).cleanup()
-                except SoakFailure:
-                    if is_alive(identity):
-                        raise
-            try:
-                os.waitpid(pid, os.WNOHANG)
-            except ChildProcessError:
-                pass
+        found_live = _reap_children(children) or found_live
         time.sleep(0.005)
     raise SoakFailure("provider version descendants did not stop within their deadline")
+
+
+def _reap_children(children: set[int]) -> bool:
+    found_live = False
+    for pid in children:
+        identity = process_identity(pid)
+        if identity and is_alive(identity):
+            found_live = True
+            _stop_adopted_child(pid, identity)
+        try:
+            os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            pass
+    return found_live
+
+
+def _stop_adopted_child(pid: int, identity: dict) -> None:
+    try:
+        OwnedProcesses(pid).cleanup()
+    except SoakFailure:
+        if is_alive(identity):
+            raise
 
 
 def inspect_version(provider: Path) -> str:

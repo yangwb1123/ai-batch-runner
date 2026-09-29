@@ -18,6 +18,9 @@ from typing import Any, Iterator, Optional
 
 from . import config
 from .tui_codex_support import MAX_FIELD_BYTES
+from .tui_command_artifact_helpers import (
+    _context_key, _identity_digest, _output_bytes, _positive_int,
+)
 
 
 COMMAND_ARTIFACT_KIND = "command_output"
@@ -341,27 +344,6 @@ class CommandArtifactStore:
             except OSError:
                 pass
             capture.directory_descriptor = -1
-
-
-def _positive_int(value: Any, name: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ValueError(f"{name} must be a positive integer")
-    return value
-
-
-def _output_bytes(value: Any) -> bytes:
-    return str(value if value is not None else "").encode("utf-8", "replace")
-
-
-def _context_key(context: CommandArtifactContext) -> str:
-    raw = "\0".join((
-        context.workspace_id, context.session_id, context.run_id,
-        context.turn_id, context.item_id)).encode("utf-8", "replace")
-    return hashlib.sha256(raw).hexdigest()
-
-
-def _identity_digest(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()[:24]
 
 
 def _artifact_name(context: CommandArtifactContext) -> str:

@@ -13,6 +13,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .campaign_artifacts import isolated_run_evidence
+from .campaign_gate_feedback import (
+    inject_prior_gate_feedback as _inject_prior_gate_feedback,
+    prior_gate_feedback as _prior_gate_feedback,
+)
 from .campaign_models import CampaignSettings, Direction, safe_slug
 from .campaign_state import (digest, file_digest, git_worktree_evidence,
                              tool_digest, tree_digest)
@@ -116,70 +120,6 @@ def materialize_pipeline(root: Path, settings: CampaignSettings, direction: Dire
     pipeline_path = run_dir / "pipeline.yaml"
     _atomic_yaml(pipeline_path, data)
     return pipeline_path
-
-
-_FEEDBACK_MAX_BYTES = 24 * 1024
-_FEEDBACK_MAX_FILES = 6
-
-
-def _prior_gate_feedback(run_dir: Path) -> str:
-    """Collect gate verdicts + reason lines from earlier attempts of this
-    direction (same run_dir). Real-world lesson (aero-vault round 2): a
-    GATE_REJECTED direction was retried from scratch and the design agent
-    never saw the previous verdicts, so the same gaps re-occurred. The
-    coordinator now folds prior verdicts into the retry prompts so the
-    feedback loop is automatic instead of a template-text hack."""
-    if not run_dir.is_dir():
-        return ""
-    blocks: list[str] = []
-    total = 0
-    for path in sorted(run_dir.rglob("*.md")):
-        name = path.name
-        if not any(key in name for key in ("gate", "verdict", "acceptance", "decision")):
-            continue
-        try:
-            text = read_text_bounded(path, _FEEDBACK_MAX_BYTES, "prior gate feedback")
-        except (OSError, ValueError):
-            continue
-        lines = text.splitlines()
-        for idx, line in enumerate(lines):
-            if "VERDICT" not in line.upper():
-                continue
-            block = [line.strip()]
-            for follow in lines[idx + 1:idx + 26]:
-                stripped = follow.strip()
-                if not stripped:
-                    break
-                block.append(stripped[:300])
-            chunk = "\n".join(block)
-            if len(chunk) + total > _FEEDBACK_MAX_BYTES or len(blocks) >= _FEEDBACK_MAX_FILES:
-                break
-            blocks.append(chunk)
-            total += len(chunk)
-        if len(blocks) >= _FEEDBACK_MAX_FILES:
-            break
-    return "\n\n".join(blocks)
-
-
-def _inject_prior_gate_feedback(stages: list, run_dir: Path) -> None:
-    """Append previous gate verdicts to requirements/design/implement prompts
-    so a retry addresses every outstanding finding (bounded, advisory)."""
-    feedback = _prior_gate_feedback(run_dir)
-    if not feedback:
-        return
-    note = (
-        "\n\nPREVIOUS ATTEMPT FEEDBACK — an earlier run of this direction was "
-        "rejected. Verify and address EVERY finding below with evidence (code, "
-        "tests, or an explicit disposition); the gate will re-check them:\n"
-        + feedback
-    )
-    for stage in stages:
-        if stage.get("name") in ("design", "implement"):
-            for task in stage.get("tasks", []):
-                if task.get("prompt"):
-                    task["prompt"] += note
-        if stage.get("from_prompt"):
-            stage["from_prompt"] += note
 
 
 def _scope_pipeline_outputs(data: dict, root: Path, run_dir: Path) -> None:

@@ -28,28 +28,45 @@ def seed_sessions(root: Path, environment: dict) -> dict:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from pbatch.tui_journal import RuntimeEventJournal
     from pbatch.tui_protocol import RuntimeEvent
-    sessions = {}
     with patch.dict(os.environ, environment, clear=True):
-        for state in STATES:
-            session = "recovery-" + state.lower()
-            journal = RuntimeEventJournal(str(root / "workspace"), session)
-            events = [("session.created", {"provider_session_id": "/fixture/" + state.lower()}),
-                      ("turn.queued", {"state": "QUEUED"})]
-            if state != "QUEUED":
-                events.append(("turn.started", {"state": "RUNNING"}))
-            if state == "INTERRUPTING":
-                events.append(("turn.interrupting", {"state": state}))
-            elif state in {"UNKNOWN", "SUCCEEDED"}:
-                events.append(("turn.failed" if state == "UNKNOWN" else "turn.completed", {"state": state}))
-            for seq, (kind, payload) in enumerate(events, 1):
-                journal.append(RuntimeEvent(
-                    event_id=f"evt_{session}_{seq}", seq=seq, occurred_at="2026-09-27T00:00:00Z",
-                    workspace_id=str(root / "workspace"), session_id=session, run_id="seeded-run",
-                    turn_id="" if kind.startswith("session.") else "seeded-turn", actor_id="agent_main",
-                    kind=kind, payload=payload, extensions={"runtime": "pi-rpc"}))
-            sessions[state] = {"session_id": session, "journal": str(journal.path),
-                               "sha256": hashlib.sha256(journal.path.read_bytes()).hexdigest()}
-    return sessions
+        return {state: _seed_session(root, state, RuntimeEventJournal, RuntimeEvent)
+                for state in STATES}
+
+
+def _seed_session(root: Path, state: str, journal_type, event_type) -> dict:
+    session = "recovery-" + state.lower()
+    journal = journal_type(str(root / "workspace"), session)
+    for sequence, (kind, payload) in enumerate(_seed_events(state), 1):
+        journal.append(_seed_event(
+            root, session, sequence, kind, payload, event_type))
+    return {"session_id": session, "journal": str(journal.path),
+            "sha256": hashlib.sha256(journal.path.read_bytes()).hexdigest()}
+
+
+def _seed_events(state: str) -> list[tuple[str, dict]]:
+    events = [("session.created", {
+        "provider_session_id": "/fixture/" + state.lower()}),
+        ("turn.queued", {"state": "QUEUED"})]
+    if state != "QUEUED":
+        events.append(("turn.started", {"state": "RUNNING"}))
+    if state == "INTERRUPTING":
+        events.append(("turn.interrupting", {"state": state}))
+    elif state in {"UNKNOWN", "SUCCEEDED"}:
+        kind = "turn.failed" if state == "UNKNOWN" else "turn.completed"
+        events.append((kind, {"state": state}))
+    return events
+
+
+def _seed_event(root: Path, session: str, sequence: int, kind: str,
+                payload: dict, event_type):
+    return event_type(
+        event_id=f"evt_{session}_{sequence}", seq=sequence,
+        occurred_at="2026-09-27T00:00:00Z",
+        workspace_id=str(root / "workspace"), session_id=session,
+        run_id="seeded-run",
+        turn_id="" if kind.startswith("session.") else "seeded-turn",
+        actor_id="agent_main", kind=kind, payload=payload,
+        extensions={"runtime": "pi-rpc"})
 
 
 def read_jsonl(path: Path) -> list[dict]:

@@ -25,22 +25,31 @@ class ComposerObservation:
     def feed(self, raw: bytes) -> None:
         for char in self.decoder.decode(raw):
             if self.state == "escape":
-                self.state = "csi" if char == "[" else "osc" if char == "]" else "text"
-                self.control = ""
+                self._escape(char)
             elif self.state == "csi":
-                if "@" <= char <= "~":
-                    self._control(char)
-                    self.state = "text"
-                elif len(self.control) < 128:
-                    self.control += char
-                else:
-                    self.state = "text"
+                self._csi(char)
             elif self.state == "osc":
-                if char == "\x07" or char == "\\" and self.control.endswith("\x1b"):
-                    self.state = "text"
-                self.control = char
+                self._osc(char)
             else:
                 self._text(char)
+
+    def _escape(self, char: str) -> None:
+        self.state = "csi" if char == "[" else "osc" if char == "]" else "text"
+        self.control = ""
+
+    def _csi(self, char: str) -> None:
+        if "@" <= char <= "~":
+            self._control(char)
+            self.state = "text"
+        elif len(self.control) < 128:
+            self.control += char
+        else:
+            self.state = "text"
+
+    def _osc(self, char: str) -> None:
+        if char == "\x07" or char == "\\" and self.control.endswith("\x1b"):
+            self.state = "text"
+        self.control = char
 
     def _text(self, char: str) -> None:
         if char == "\x1b":
@@ -52,10 +61,13 @@ class ComposerObservation:
         elif char == "\b":
             self.column = max(1, self.column - 1)
         elif char >= " ":
-            if self.row == self.rows - 1 and 1 <= self.column <= self.columns:
-                self.cells[self.column - 1] = char
-                self._observe_marker()
-            self.column += 1
+            self._paint(char)
+
+    def _paint(self, char: str) -> None:
+        if self.row == self.rows - 1 and 1 <= self.column <= self.columns:
+            self.cells[self.column - 1] = char
+            self._observe_marker()
+        self.column += 1
 
     def _observe_marker(self) -> None:
         line = "".join(self.cells)
@@ -70,18 +82,34 @@ class ComposerObservation:
         if any(char not in "0123456789;" for char in self.control):
             return
         values = [int(part or "0") for part in self.control.split(";")]
-        amount = values[0] or 1
+        self._apply_control(final, values)
+        self._clamp_cursor()
+
+    def _apply_control(self, final: str, values: list[int]) -> None:
         if final in {"H", "f"}:
-            self.row = amount
-            self.column = (values[1] or 1) if len(values) > 1 else 1
+            self._set_position(values)
         elif final in {"A", "B", "d"}:
-            self.row = {"A": self.row - amount, "B": self.row + amount, "d": amount}[final]
+            self._move_vertical(final, values[0] or 1)
         elif final in {"C", "D", "G"}:
-            self.column = {"C": self.column + amount, "D": self.column - amount, "G": amount}[final]
+            self._move_horizontal(final, values[0] or 1)
         elif final == "K" and self.row == self.rows - 1:
             self._erase_line(values[0])
         elif final == "J" and values[0] in {2, 3}:
             self.cells[:] = [" "] * self.columns
+
+    def _set_position(self, values: list[int]) -> None:
+        self.row = values[0] or 1
+        self.column = (values[1] or 1) if len(values) > 1 else 1
+
+    def _move_vertical(self, final: str, amount: int) -> None:
+        self.row = {"A": self.row - amount, "B": self.row + amount,
+                    "d": amount}[final]
+
+    def _move_horizontal(self, final: str, amount: int) -> None:
+        self.column = {"C": self.column + amount, "D": self.column - amount,
+                       "G": amount}[final]
+
+    def _clamp_cursor(self) -> None:
         self.row = max(1, min(self.rows, self.row))
         self.column = max(1, min(self.columns + 1, self.column))
 

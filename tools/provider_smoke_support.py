@@ -180,32 +180,49 @@ class ProviderJournal(JournalEvidence):
     @staticmethod
     def _accept_turn(turn: dict, event: dict) -> None:
         kind = event["kind"]
-        mutable = {"turn.started", "message.delta", "message.completed"}
-        if turn["terminal"] is not None and kind in mutable:
+        if turn["terminal"] is not None and kind in {
+                "turn.started", "message.delta", "message.completed"}:
             raise SoakFailure("turn received mutable evidence after its terminal event")
         if kind.startswith("message.") and turn["starts"] != 1:
             raise SoakFailure("assistant message arrived before its turn started")
         if kind == "turn.started":
-            turn["starts"] += 1
-            if turn["starts"] != 1:
-                raise SoakFailure("turn started more than once")
+            ProviderJournal._accept_start(turn)
         elif kind == "message.delta":
-            text = event["payload"].get("text", "")
-            if not isinstance(text, str) or len(text) > 65536:
-                raise SoakFailure("assistant delta is not bounded text")
-            if text:
-                turn["deltas"] += 1
+            ProviderJournal._accept_delta(turn, event)
         elif kind == "message.completed":
-            text = event["payload"].get("text", "")
-            if not isinstance(text, str) or len(text) > 65536 or len(turn["messages"]) >= 8:
-                raise SoakFailure("assistant response exceeded evidence bounds")
-            turn["messages"].append(text)
+            ProviderJournal._accept_message(turn, event)
         elif kind in TERMINAL_KINDS:
-            if turn["terminal"] is not None:
-                raise SoakFailure("turn has multiple terminal events")
-            turn["terminal"] = {"kind": kind, "event_id": event["event_id"],
-                                "state": event["payload"].get("state", ""),
-                                "reason": event["payload"].get("reason", "")}
+            ProviderJournal._accept_terminal(turn, event)
+
+    @staticmethod
+    def _accept_start(turn: dict) -> None:
+        turn["starts"] += 1
+        if turn["starts"] != 1:
+            raise SoakFailure("turn started more than once")
+
+    @staticmethod
+    def _accept_delta(turn: dict, event: dict) -> None:
+        text = event["payload"].get("text", "")
+        if not isinstance(text, str) or len(text) > 65536:
+            raise SoakFailure("assistant delta is not bounded text")
+        turn["deltas"] += int(bool(text))
+
+    @staticmethod
+    def _accept_message(turn: dict, event: dict) -> None:
+        text = event["payload"].get("text", "")
+        if not isinstance(text, str) or len(text) > 65536 or len(turn["messages"]) >= 8:
+            raise SoakFailure("assistant response exceeded evidence bounds")
+        turn["messages"].append(text)
+
+    @staticmethod
+    def _accept_terminal(turn: dict, event: dict) -> None:
+        if turn["terminal"] is not None:
+            raise SoakFailure("turn has multiple terminal events")
+        turn["terminal"] = {
+            "kind": event["kind"], "event_id": event["event_id"],
+            "state": event["payload"].get("state", ""),
+            "reason": event["payload"].get("reason", ""),
+        }
 
 
 def validate_success(turn: dict, expected: str) -> None:
