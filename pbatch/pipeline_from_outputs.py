@@ -31,8 +31,22 @@ def _verified_note(stage: Stage, prev_outputs: list, reuse: bool) -> str:
     between re-deriving them and building on them. The block is byte-stable
     while upstream is unchanged, so it cannot invalidate the downstream reuse
     fingerprint it rides along with.
+
+    The count is left on the stage so the receipt can record it: deciding
+    whether citation is worth anything needs that split, and it cannot be
+    recovered later from the artifacts alone.
     """
-    return _receipts.verified_knowledge(stage.cwd or "", prev_outputs) if reuse else ""
+    if not reuse:
+        return ""
+    block = _receipts.verified_knowledge(stage.cwd or "", prev_outputs)
+    stage.knowledge_cited = sum(1 for line in block.splitlines()
+                                if line.startswith("- "))
+    return block
+
+
+def _cited_count(block: str) -> int:
+    """How many artifacts a knowledge block actually cited."""
+    return sum(1 for line in block.splitlines() if line.startswith("- "))
 
 
 def _stage_from_outputs_tasks(stage: Stage, stage_outputs: dict, reuse: bool, model_override: str, timeout_override: int,

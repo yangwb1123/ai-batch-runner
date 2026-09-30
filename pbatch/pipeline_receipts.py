@@ -109,6 +109,31 @@ def _knowledge_lines(cwd: str, latest: dict[str, tuple[int, str]]) -> list[str]:
     return lines
 
 
+def knowledge_effect(cwd: str, limit: int = READ_MAX_RECORDS) -> dict:
+    """Stage pass rate split by whether verified upstream was cited.
+
+    This is the evidence needed to decide whether the citation is worth
+    anything, so it reports sample sizes rather than a bare percentage: a 2
+    versus 1 split is noise, and a reader must not mistake it for a result.
+
+    It stays observational. Receipts record what ran, not a controlled
+    comparison, and a stage pass is a deterministic gate outcome, not a
+    measure of whether the deliverable was any good.
+    """
+    groups: dict[str, dict[str, int]] = {
+        "cited": {"stages": 0, "passed": 0},
+        "not_cited": {"stages": 0, "passed": 0},
+    }
+    for record in read_receipts(cwd, limit=limit):
+        key = "cited" if int(record.get("knowledge_cited") or 0) else "not_cited"
+        groups[key]["stages"] += 1
+        groups[key]["passed"] += int(bool(record.get("ok")))
+    return {name: {**counts,
+                   "pass_rate": (round(counts["passed"] / counts["stages"], 3)
+                                 if counts["stages"] else None)}
+            for name, counts in groups.items()}
+
+
 def _absolute(value: Any) -> str:
     try:
         return str(Path(str(value)).resolve())
@@ -130,14 +155,21 @@ def receipts_path(cwd: str = "") -> Path:
 
 
 def record_stage(cwd: str, stage_name: str, results: list, stage_ok: bool,
-                 verdict: Optional[str]) -> bool:
-    """Append one receipt for a completed stage. Best effort by contract."""
+                 verdict: Optional[str], knowledge_cited: int = 0) -> bool:
+    """Append one receipt for a completed stage. Best effort by contract.
+
+    ``knowledge_cited`` is how many upstream artifacts the prompt already
+    declared as previously verified. It is recorded so the effect of that
+    injection can be measured from the ledger instead of guessed at; see
+    :func:`knowledge_effect`.
+    """
     record = {
         "schema_version": RECEIPT_SCHEMA_VERSION,
         "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "stage": _brief(stage_name, 128),
         "ok": bool(stage_ok),
         "verdict": _brief(verdict, 64) if verdict else "",
+        "knowledge_cited": max(0, int(knowledge_cited or 0)),
         "tasks": [_task_receipt(item) for item in results or ()],
     }
     try:

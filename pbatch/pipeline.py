@@ -310,6 +310,9 @@ def execute_stage(stage: Stage, stage_outputs: dict[str, list[str]], model_overr
                   git_baseline=None,
                   session_state: Optional[set] = None) -> tuple[list[TaskResult], bool]:
     """Execute one stage; extra_evidence folds gate-fix reports into it."""
+    # Reset per-execution so a multi-round run cannot carry a previous round's
+    # citation count onto a stage that never cited anything.
+    stage.knowledge_cited = 0
     _log_stage_header(stage, reuse)
     stage_validate = stage.validate_cmd if stage.validate_cmd is not None else validate_cmd
     tasks, reused_outputs, early = _build_stage_tasks(stage, stage_outputs, reuse, model_override, timeout_override,
@@ -322,11 +325,7 @@ def execute_stage(stage: Stage, stage_outputs: dict[str, list[str]], model_overr
                                approval_file, stage_validate, git_baseline)
     duplicate = parallel_output_conflict(stage.mode, tasks, reused_outputs)
     if duplicate:
-        log.error("Stage '%s': parallel tasks share output %s; failing closed",
-                  stage.name, duplicate)
-        from .memory import record_stage
-        record_stage(stage.name, "FAILED", "duplicate parallel output",
-                     [], stage.cwd or os.getcwd(), session_name)
+        _reject_duplicate_outputs(stage, duplicate, session_name)
         return [], False
     if not tasks:
         results, stage_ok = _empty_stage_result(stage, stage_outputs, reused_outputs)
@@ -349,6 +348,16 @@ def execute_stage(stage: Stage, stage_outputs: dict[str, list[str]], model_overr
     return _finalize_stage(stage, results, outputs,
                            all(r.success for r in results), approval_file,
                            stage_validate, git_baseline)
+
+def _reject_duplicate_outputs(stage: Stage, duplicate: str,
+                             session_name: str) -> None:
+    """Two parallel tasks writing one path would race; refuse before any spawn."""
+    log.error("Stage '%s': parallel tasks share output %s; failing closed",
+              stage.name, duplicate)
+    from .memory import record_stage
+    record_stage(stage.name, "FAILED", "duplicate parallel output",
+                 [], stage.cwd or os.getcwd(), session_name)
+
 
 def _finalize_stage(stage: Stage, results: list[TaskResult], outputs: list[str],
                     stage_ok: bool, approval_file: str,
@@ -706,7 +715,8 @@ def _record_receipt(stage: Stage, results: list, stage_ok: bool,
     """
     if not results:
         return
-    _receipts.record_stage(stage.cwd or "", stage.name, results, stage_ok, verdict)
+    _receipts.record_stage(stage.cwd or "", stage.name, results, stage_ok,
+                           verdict, getattr(stage, "knowledge_cited", 0))
 
 
 def _read_only_stage_ok(stage: Stage, outputs: list,

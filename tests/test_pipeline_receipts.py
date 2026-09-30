@@ -217,3 +217,53 @@ def test_rebuild_cites_verified_upstream_and_a_fully_reused_run_cites_nothing(
     assert rebuild.count("Verified upstream artifacts") == 1
     assert "docs/design.md" in rebuild, "the cited artifact is named"
     assert "implement combined" in rebuild, "the real task prompt is still there"
+
+
+def test_receipt_records_the_citation_count_and_effect_splits_by_it(tmp_path, monkeypatch):
+    """The decision to keep or drop verified-upstream citation needs the split,
+    so the receipt carries the count and the ledger can report the split."""
+    monkeypatch.setenv("PBATCH_DATA_DIR", str(tmp_path / "runtime"))
+    for index in range(3):
+        (tmp_path / f"a{index}.md").write_text("a\n", encoding="utf-8")
+        receipts.record_stage(str(tmp_path), f"cited-{index}",
+                              [_result(f"a{index}.md", tmp_path)], True, None,
+                              knowledge_cited=2)
+    for index in range(2):
+        (tmp_path / f"b{index}.md").write_text("b\n", encoding="utf-8")
+        receipts.record_stage(str(tmp_path), f"plain-{index}",
+                              [_result(f"b{index}.md", tmp_path)], index == 0, None)
+
+    effect = receipts.knowledge_effect(str(tmp_path))
+    assert effect["cited"] == {"stages": 3, "passed": 3, "pass_rate": 1.0}
+    assert effect["not_cited"] == {"stages": 2, "passed": 1, "pass_rate": 0.5}
+
+
+def test_knowledge_effect_reports_no_rate_rather_than_guessing_one(tmp_path, monkeypatch):
+    monkeypatch.setenv("PBATCH_DATA_DIR", str(tmp_path / "runtime"))
+    empty = receipts.knowledge_effect(str(tmp_path))
+    assert empty["cited"] == {"stages": 0, "passed": 0, "pass_rate": None}
+    assert empty["not_cited"]["pass_rate"] is None
+
+
+def test_reuse_rerun_records_that_the_rebuild_was_given_verified_upstream(
+        tmp_path, monkeypatch):
+    """End to end: the count reaches the receipt through the real stage."""
+    monkeypatch.setenv("PBATCH_DATA_DIR", str(tmp_path / "runtime"))
+    agent = _two_stage_agent(tmp_path)
+    previous = (config.AGENT_BIN, config.MEMORY_MODE, config.STREAM_OUTPUT)
+    config.AGENT_BIN, config.MEMORY_MODE, config.STREAM_OUTPUT = str(agent), "off", "none"
+    try:
+        pipeline.run_pipeline(_two_stage_pipeline(tmp_path), timeout_override=30)
+        assert receipts.knowledge_effect(str(tmp_path))["cited"]["stages"] == 0
+        (tmp_path / "docs" / "impl.md").unlink()
+        pipeline.run_pipeline(_two_stage_pipeline(tmp_path), timeout_override=30,
+                              reuse=True)
+    finally:
+        config.AGENT_BIN, config.MEMORY_MODE, config.STREAM_OUTPUT = previous
+
+    cited = [item for item in receipts.read_receipts(str(tmp_path))
+             if item.get("knowledge_cited")]
+    assert cited, "the rebuilt stage must be recorded as having been cited"
+    assert cited[-1]["stage"] == "implement"
+    assert cited[-1]["knowledge_cited"] == 1
+    assert receipts.knowledge_effect(str(tmp_path))["cited"]["stages"] == 1
