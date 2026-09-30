@@ -164,8 +164,15 @@ def _cmd_instances(args, cwd: str) -> int:
     """Progress per workspace runtime dir, flagged only on evidence."""
     from .instance_view import instance_rows
     payload = instance_rows(stale_seconds=args.stale_seconds)
+    notified = None
+    if args.notify:
+        from . import instance_alerts
+        rows = payload["workspaces"]
+        notified = instance_alerts.notify(
+            rows, url=args.webhook_url, repeat_seconds=args.repeat_seconds)
     if args.json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        print(json.dumps({"view": payload, "notified": notified},
+                         ensure_ascii=False, indent=2))
         return 0
     if payload["unavailable"]:
         print(f"runtime home unavailable: {payload['unavailable']}")
@@ -186,6 +193,10 @@ def _cmd_instances(args, cwd: str) -> int:
         if row["flag_reason"]:
             print(f"    {row['flag_reason']}")
     print(f"\nflag rule: {payload['flag_rule']}")
+    if notified is not None:
+        target = args.webhook_url or "stdout"
+        print(f"alerts: due={notified['due']} sent={notified['sent']} "
+              f"resolved={notified['resolved']} via {target}")
     return 0
 
 
@@ -309,8 +320,8 @@ def _serve_argv(args) -> list[str]:
     return values + (["--control"] if args.control else [])
 
 
-def ops_main(argv: Optional[list[str]] = None) -> int:
-    """运营控制台：任务/日志/message 可视化。"""
+def _build_parser() -> argparse.ArgumentParser:
+    """Subcommand surface, split out to keep ops_main within budget."""
     parser = argparse.ArgumentParser(
         prog="pi-batch ops", description="运营控制台：任务/日志/message 可视化")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -323,6 +334,12 @@ def ops_main(argv: Optional[list[str]] = None) -> int:
     p = sub.add_parser("instances", help="各工作空间实例进度（只读，不调度）")
     p.add_argument("--stale-seconds", type=int, default=900,
                    help="判定「静默未完成」的秒数（默认 900）")
+    p.add_argument("--notify", action="store_true",
+                   help="向 --webhook-url 推送当前告警（按 --repeat-seconds 去重）")
+    p.add_argument("--webhook-url", default="",
+                   help="告警投递地址；不传则只统计不外发")
+    p.add_argument("--repeat-seconds", type=int, default=3600,
+                   help="同一告警的最短重复间隔（默认 3600）")
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("log", help="运营日志尾部/过滤")
     p.add_argument("--file", default="")
@@ -341,7 +358,12 @@ def ops_main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("serve", help="手机/浏览器监控；--control 开启受保护指令")
     _add_serve_args(p)
-    args = parser.parse_args(argv)
+    return parser
+
+
+def ops_main(argv: Optional[list[str]] = None) -> int:
+    """运营控制台：任务/日志/message 可视化。"""
+    args = _build_parser().parse_args(argv)
     cwd = os.getcwd()
     if args.command == "report" and not args.html:
         args.html = str(config.data_dir(cwd) / "ops" / OPS_REPORT_NAME)
@@ -351,10 +373,10 @@ def ops_main(argv: Optional[list[str]] = None) -> int:
     handlers = {
         "overview": _cmd_overview,
         "runs": _cmd_runs,
+        "instances": _cmd_instances,
         "log": _cmd_log,
         "messages": _cmd_messages,
         "report": _cmd_report,
         "breaker": _cmd_breaker,
-        "instances": _cmd_instances,
     }
     return handlers[args.command](args, cwd)

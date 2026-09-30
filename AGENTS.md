@@ -66,7 +66,7 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `pbatch/studio.py` | Project Studio 设计账本：业务需求→产品/领域/UX/架构/数据/API→实施 DAG 的结构化 artifact 校验与推进预演（只读） |
 | `pbatch/cli.py` | 命令行：参数解析、main、轮循环、单批/流水线分发 |
 | `pbatch/instance_view.py` | **跨工作空间实例进度只读视图**（`pi-batch ops instances [--json] [--stale-seconds N]`）：只读 `data_dir/projects/*` 下已存在的收据账本与 isolate session 账本，按工作空间给出 stage/通过/失败/被引用数/最近活动/静默秒数/未完成 session。**只在有证据时告警**：静默本身不算证据（长 stage 与崩溃进程在收据里长得一样），故「静默」必须叠加独立账本里的未完成 session；连续 2 次验证失败单独成立。空数据报 `None`／「未追踪」而非 0；带 schema_version 但没有 stage 名的记录**不算**完成 stage（宁可少报活跃也不虚报），但原始记录数与 malformed 计数都保留，坏账本可见。纯只读，不写、不调度、不拥有任何执行权 |
-| `quality.py` | 代码组织质量扫描器（纯标准库）：函数 ≤50 行、复杂度 ≤15、文件 ≤1000 行 |
+| `pbatch/instance_alerts.py` | **告警去重与投递**（`pi-batch ops instances --notify [--webhook-url URL] [--repeat-seconds N]`）：把当前 flagged 行与用户级 `data_dir/ops/instance-alerts.json` 对账，得到「本轮应推送」与「已自行解除」。按 flag+重复窗口（默认 3600s）去重——该重复就重复、但不能连续轰炸；条件消失即自动解除，不留幽灵条目；**投递失败不记为已通知**（否则一个挂掉的 webhook 会把后续提醒永久静音），下轮重试。因此这里同步发、5s 超时且不抛异常，与热路径上故意 fire-and-forget 的 `metering._post_webhook` 不同。暂不设人工 ack：条件本身即状态，在有证据说明需要确认什么之前发明 ack 词汇是猜测 || `quality.py` | 代码组织质量扫描器（纯标准库）：函数 ≤50 行、复杂度 ≤15、文件 ≤1000 行 |
 | `ai/run-review.py` | 十阶段评审 runner（`--all`/`--resume`/共享会话/验证门禁） |
 | `ai/prompts/00-09` | 评审阶段模板（产品发现→CTO 决策） |
 | `ai/prompts-shared/` | 评审共享片段（工程原则、输出格式、检查清单、角色定义） |
