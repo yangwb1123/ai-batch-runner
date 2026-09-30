@@ -18,6 +18,7 @@ import io
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 
 def run(*args: str, **kwargs) -> subprocess.CompletedProcess:
@@ -107,6 +108,59 @@ def _call_mode(fn, json_mode: bool) -> int:
     return fn(True) if json_mode else fn()
 
 
+ROOT = Path(__file__).resolve().parent
+
+
+def _project_gate_command(name: str) -> str:
+    """The gate a project declared, read from its own pi-batch.yaml."""
+    import yaml
+    config = ROOT / "projects" / name / "pi-batch.yaml"
+    if not config.exists():
+        raise SystemExit(f"no project definition: projects/{name}/pi-batch.yaml")
+    document = yaml.safe_load(config.read_text(encoding="utf-8")) or {}
+    entry = (document.get("validators") or {}).get("repo-gate") or {}
+    command = entry.get("cmd") if isinstance(entry, dict) else None
+    if not command:
+        raise SystemExit(f"projects/{name}/pi-batch.yaml declares no repo-gate validator")
+    return command
+
+
+def cmd_project_gate() -> int:
+    """List each target's declared gate, or run one of them in its repository.
+
+    The declaration is what a campaign's implement stage validates on (see
+    checks/project_gates.py), so running it here runs exactly the gate that
+    decides whether batch output is accepted — in the target repository, with
+    the target's own tooling.
+    """
+    projects = sorted(p for p in (ROOT / "projects").iterdir()
+                      if p.is_dir() and (p / "pi-batch.yaml").exists())
+    if len(sys.argv) < 3:
+        print(f"{'project':22s} {'gate':52s} repository")
+        for project in projects:
+            try:
+                gate = _project_gate_command(project.name)
+            except SystemExit as error:
+                gate = f"({error})"
+            import yaml
+            document = yaml.safe_load((project / "pi-batch.yaml").read_text(encoding="utf-8")) or {}
+            declared = (document.get("project") or {}).get("target_repo", "")
+            print(f"{project.name:22s} {gate:52s} {declared}")
+        print("\nrun one with: python3 cli.py project-gate <project>")
+        return 0
+    name = sys.argv[2]
+    command = _project_gate_command(name)
+    import yaml
+    document = yaml.safe_load((ROOT / "projects" / name / "pi-batch.yaml").read_text(encoding="utf-8")) or {}
+    declared = (document.get("project") or {}).get("target_repo", "")
+    repo = Path(declared).expanduser() if declared else None
+    if repo is None or not repo.is_dir():
+        print(f"FAIL: {name} declares no reachable target repository", file=sys.stderr)
+        return 1
+    print(f"$ cd {repo} && {command}", flush=True)
+    return run("bash", "-lc", command, cwd=repo)
+
+
 def main() -> int:
     json_mode = "--json" in sys.argv[2:]
     dispatch = {
@@ -124,6 +178,7 @@ def main() -> int:
             lambda mode=False: _aggregate([("style", _check_style)], mode),
             json_mode),
         "check-test": cmd_check_test,
+        "project-gate": cmd_project_gate,
         "harness": lambda: _call_mode(cmd_harness, json_mode),
     }
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
