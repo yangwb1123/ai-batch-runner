@@ -160,6 +160,35 @@ def _cmd_overview(args, cwd: str) -> int:
     return 0
 
 
+def _cmd_instances(args, cwd: str) -> int:
+    """Progress per workspace runtime dir, flagged only on evidence."""
+    from .instance_view import instance_rows
+    payload = instance_rows(stale_seconds=args.stale_seconds)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    if payload["unavailable"]:
+        print(f"runtime home unavailable: {payload['unavailable']}")
+        return 0
+    rows = payload["workspaces"]
+    if not rows:
+        print("no workspace runtime directories found")
+        return 0
+    print(f"{'workspace':<28} {'state':<10} {'idle':>7} {'pass':>5} "
+          f"{'fail':>5} {'cited':>6}  flag")
+    for row in rows:
+        idle = row["idle_seconds"]
+        print(f"{row['workspace'][:28]:<28} "
+              f"{str(row['session_state'] or '-'):<10} "
+              f"{(f'{idle}s' if idle is not None else '-'):>7} "
+              f"{row['passes']:>5} {row['failures']:>5} {row['cited_stages']:>6}  "
+              f"{row['flag'] or '-'}")
+        if row["flag_reason"]:
+            print(f"    {row['flag_reason']}")
+    print(f"\nflag rule: {payload['flag_rule']}")
+    return 0
+
+
 def _cmd_runs(args, cwd: str) -> int:
     rows = runs(_data_dir(cwd), agent=args.agent, limit=args.limit)
     if args.json:
@@ -291,6 +320,10 @@ def ops_main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--agent", default="")
     p.add_argument("--limit", type=int, default=30)
     p.add_argument("--json", action="store_true")
+    p = sub.add_parser("instances", help="各工作空间实例进度（只读，不调度）")
+    p.add_argument("--stale-seconds", type=int, default=900,
+                   help="判定「静默未完成」的秒数（默认 900）")
+    p.add_argument("--json", action="store_true")
     p = sub.add_parser("log", help="运营日志尾部/过滤")
     p.add_argument("--file", default="")
     p.add_argument("--tail", type=int, default=80)
@@ -322,5 +355,6 @@ def ops_main(argv: Optional[list[str]] = None) -> int:
         "messages": _cmd_messages,
         "report": _cmd_report,
         "breaker": _cmd_breaker,
+        "instances": _cmd_instances,
     }
     return handlers[args.command](args, cwd)

@@ -65,6 +65,7 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `pbatch/migrate.py` | source-first 项目对比、迁移契约、证据状态、依赖波次、升级/预算预演（只读） |
 | `pbatch/studio.py` | Project Studio 设计账本：业务需求→产品/领域/UX/架构/数据/API→实施 DAG 的结构化 artifact 校验与推进预演（只读） |
 | `pbatch/cli.py` | 命令行：参数解析、main、轮循环、单批/流水线分发 |
+| `pbatch/instance_view.py` | **跨工作空间实例进度只读视图**（`pi-batch ops instances [--json] [--stale-seconds N]`）：只读 `data_dir/projects/*` 下已存在的收据账本与 isolate session 账本，按工作空间给出 stage/通过/失败/被引用数/最近活动/静默秒数/未完成 session。**只在有证据时告警**：静默本身不算证据（长 stage 与崩溃进程在收据里长得一样），故「静默」必须叠加独立账本里的未完成 session；连续 2 次验证失败单独成立。空数据报 `None`／「未追踪」而非 0；带 schema_version 但没有 stage 名的记录**不算**完成 stage（宁可少报活跃也不虚报），但原始记录数与 malformed 计数都保留，坏账本可见。纯只读，不写、不调度、不拥有任何执行权 |
 | `quality.py` | 代码组织质量扫描器（纯标准库）：函数 ≤50 行、复杂度 ≤15、文件 ≤1000 行 |
 | `ai/run-review.py` | 十阶段评审 runner（`--all`/`--resume`/共享会话/验证门禁） |
 | `ai/prompts/00-09` | 评审阶段模板（产品发现→CTO 决策） |
