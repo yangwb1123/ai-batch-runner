@@ -46,6 +46,7 @@ _ACTOR_ID_MAX_BYTES = 256
 class CodexAppServerAdapter(ItemProjector):
     """Map App Server requests and notifications to provider-neutral events."""
     def __init__(self, cwd: str | os.PathLike[str], *, daemon_socket: Optional[str] = None,
+                 agent: str = "codex",
                  transport: Optional[Transport] = None, maxsize: int = DEFAULT_QUEUE_SIZE,
                  request_timeout: Optional[float] = None,
                  startup_timeout: Optional[float] = None,
@@ -58,6 +59,9 @@ class CodexAppServerAdapter(ItemProjector):
                 or max_pending_approvals <= 0):
             raise ValueError("max_pending_approvals must be a positive integer")
         self._cwd = os.path.realpath(os.path.abspath(os.fsdecode(cwd)))
+        if not isinstance(agent, str) or not agent.strip():
+            raise ValueError("agent must be a non-empty executable name or path")
+        self._agent = agent
         self._daemon_socket = daemon_socket
         self._transport, self._queue = transport, EventQueue(maxsize)
         self._lock, self._write_lock = threading.RLock(), threading.Lock()

@@ -17,6 +17,7 @@ from .assets import (PACKAGE_ROOT, TOOL_ROOT, asset_candidates, expand_validator
 from .config_device import _bool_setting, load_device_fabric
 from .config_values import _choice_setting, _float_setting, _int_setting, _string_setting
 from .config_document import MAX_CONFIG_BYTES, load_config_yaml
+from .text_io import read_text_bounded
 from .validator_schema import schema_validator_command
 
 try:
@@ -114,16 +115,14 @@ def _read_config_document(path: Path, max_bytes: int = MAX_CONFIG_BYTES) -> dict
         raise ValueError(f"{path}: configuration byte limit must be a positive integer")
     limit = min(max_bytes, MAX_CONFIG_BYTES)
     try:
-        with path.open("rb") as stream:
-            raw = stream.read(limit + 1)
-        if len(raw) > limit:
-            raise ValueError(f"file exceeds {limit} byte limit")
-        return load_config_yaml(raw.decode("utf-8"), yaml)
+        return load_config_yaml(read_text_bounded(path, limit, "configuration"), yaml)
     except (yaml.YAMLError, RecursionError) as exc:
         raise ValueError(f"{path}: {_yaml_error_detail(exc)}") from None
     except (OSError, UnicodeError) as exc:
         raise ValueError(f"{path}: cannot read YAML ({type(exc).__name__})") from None
     except ValueError as exc:
+        if isinstance(exc.__cause__, (OSError, UnicodeError)):
+            raise ValueError(f"{path}: cannot read YAML ({type(exc.__cause__).__name__})") from None
         raise ValueError(f"{path}: {exc}") from None
 
 
@@ -402,13 +401,22 @@ def _configured_session_flag_sets(bin_name: str) -> list[list[str]]:
             and all(isinstance(flag, str) for flag in flags)]
 
 
-def agent_preflight_errors(bin_name: str) -> list[str]:
+def agent_preflight_errors(bin_name: str, *, cwd: str = "",
+                           path: Optional[str] = None) -> list[str]:
     """Return adapter/executable errors before logs, locks or agents start."""
     name = str(bin_name or "").strip()
     if not name:
         return ["agent binary is empty"]
     errors = []
-    if shutil.which(name) is None:
+    if cwd or path is not None:
+        root = os.path.abspath(cwd or os.getcwd())
+        candidate = os.path.join(root, name) if os.path.dirname(name) else name
+        search = os.environ.get("PATH", os.defpath) if path is None else path
+        search = os.pathsep.join(os.path.join(root, item) for item in search.split(os.pathsep))
+        executable = shutil.which(candidate, path=search)
+    else:
+        executable = shutil.which(name)
+    if executable is None:
         errors.append(f"agent executable not found or not executable: {name}")
     try:
         agent_argument_flags(name)

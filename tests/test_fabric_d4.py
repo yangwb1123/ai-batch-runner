@@ -548,7 +548,8 @@ def test_config_merge_precedence():
 def test_doctor_reports_environment(capsys, tmp_path, monkeypatch):
     """doctor：环境诊断清单完整（安装/目录/配置/agent/密钥/锁）。"""
     import pytest as _pytest
-    from pbatch import product_cli
+    from pbatch import config, product_cli
+    monkeypatch.setattr(config, "AGENT_BIN", sys.executable)
     monkeypatch.setenv("PBATCH_HOME", str(tmp_path / "home"))
     with _pytest.raises(SystemExit) as exc:
         product_cli.doctor_main([])

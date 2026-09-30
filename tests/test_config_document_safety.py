@@ -134,6 +134,70 @@ def test_every_configuration_layer_checks_tree(configuration_tree, source, comma
                      command, source)
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX named pipes")
+@pytest.mark.parametrize("source", ["user", "project", "defaults"])
+@pytest.mark.parametrize("command", COMMANDS)
+def test_configuration_fifo_is_rejected_before_runtime(configuration_tree, source, command):
+    path = configuration_tree["paths"][source]
+    path.unlink(missing_ok=True)
+    os.mkfifo(path)
+    result = _run(configuration_tree, command)
+    _assert_rejected(configuration_tree, result, command, source)
+    assert "regular file" in result.stdout + result.stderr
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX named pipes")
+@pytest.mark.parametrize("command", COMMANDS)
+def test_explicit_configuration_fifo_never_falls_back(configuration_tree, command):
+    path = configuration_tree["workspace"] / "explicit.yaml"
+    os.mkfifo(path)
+    configuration_tree["env"]["PBATCH_PROJECT_CONFIG"] = str(path)
+    configuration_tree["paths"]["project"] = path
+    result = _run(configuration_tree, command)
+    _assert_rejected(configuration_tree, result, command, "project")
+    assert "regular file" in result.stdout + result.stderr
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX named pipes")
+def test_configuration_replaced_with_fifo_during_open_is_rejected(configuration_tree):
+    path = configuration_tree["paths"]["user"]
+    path.write_text("agent: {}\n", encoding="utf-8")
+    code = """
+import os
+from pathlib import Path
+from pbatch.config import _read_config_document
+path = Path(os.environ['PBATCH_HOME']) / '.config' / 'settings.yaml'
+original = os.open
+def swap(name, flags, *args, **kwargs):
+    path.unlink()
+    os.mkfifo(path)
+    return original(name, flags, *args, **kwargs)
+os.open = swap
+try:
+    _read_config_document(path)
+except ValueError as error:
+    assert 'regular file' in str(error), str(error)
+else:
+    raise AssertionError('FIFO was accepted as a configuration')
+"""
+    result = _run(configuration_tree, (), code=code)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_configuration_regular_symlink_remains_supported(configuration_tree, explicit):
+    path = configuration_tree["workspace"] / "selected.yaml"
+    path.write_text("config_version: 1\nagent: {default_workers: 2}\n", encoding="utf-8")
+    link = configuration_tree["paths"]["project"]
+    link.symlink_to(path)
+    if explicit:
+        configuration_tree["env"]["PBATCH_PROJECT_CONFIG"] = str(link)
+    result = _run(configuration_tree, ("config", "explain", "--json"))
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["resolved_runtime"]["agent.default_workers"] == 2
+
+
 def _alias_expansion_document(*, merge=False):
     if merge:
         lines = ["config_version: 1", "agent:", "  level0: &level0 {leaf: value}"]

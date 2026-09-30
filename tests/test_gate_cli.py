@@ -34,12 +34,13 @@ def test_aggregate_fails_closed_when_gate_crashes(capsys):
 
 def test_cmd_check_runs_all_gates_and_harness_delegates(monkeypatch):
     called = []
-    for name in ("_check_filesize", "_check_complexity", "_check_root", "_check_style"):
+    for name in ("_check_filesize", "_check_complexity", "_check_root", "_check_style",
+                 "_check_project_gates"):
         monkeypatch.setattr(gate_cli, name,
                             lambda name=name: called.append(name) or 0)
     assert gate_cli.cmd_check() == 0
     assert called == ["_check_filesize", "_check_complexity",
-                      "_check_root", "_check_style"]
+                      "_check_root", "_check_style", "_check_project_gates"]
     monkeypatch.setattr(gate_cli, "cmd_check", lambda: 7)
     assert gate_cli.cmd_harness() == 7
 

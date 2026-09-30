@@ -65,9 +65,11 @@ def test_nested_log_directory_and_startup_failure_cleanup(tmp_path):
     assert "OK  done" in log_file.read_text(encoding="utf-8")
     invalid = subprocess.run(
         [sys.executable, str(PI_BATCH), "-p", "question",
+         "--agent-bin", str(_agent(tmp_path)),
          "--session-mode", "per-stage", "--memory-mode", "off"],
         cwd=tmp_path, capture_output=True, text=True, timeout=30)
     assert invalid.returncode == 1
+    assert "per-stage" in invalid.stderr
     assert not (tmp_path / ".pi-batch.lock").exists()
 
 

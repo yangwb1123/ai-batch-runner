@@ -731,11 +731,12 @@ def test_pipeline_schema_allows_stage_and_task_agent():
     assert not errors, errors
 
 
-def test_end_to_end_stages_use_their_own_binaries(tmp_path):
+def test_end_to_end_stages_use_their_own_binaries(tmp_path, monkeypatch):
     """CLI-level: two stages with different --agent style executors; each
     stage's artifact carries its agent's marker."""
     a = _agent(tmp_path, "STAGE_A", "agent-a.sh")
     b = _agent(tmp_path, "STAGE_B", "agent-b.sh")
+    monkeypatch.setenv("PATH", "")
     pipe = tmp_path / "pipe.yaml"
     pipe.write_text(f"""
 stages:

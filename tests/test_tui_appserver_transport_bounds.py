@@ -17,7 +17,7 @@ from pbatch.tui_transport_io import BoundedLineReader
 
 def _transport(tmp_path, monkeypatch, code):
     argv = [sys.executable, "-c", code]
-    monkeypatch.setattr(support, "app_server_argv", lambda _sock: argv)
+    monkeypatch.setattr(support, "app_server_argv", lambda _sock, **_kw: argv)
     return support.DefaultTransport(cwd=str(tmp_path))
 
 

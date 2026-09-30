@@ -224,3 +224,45 @@ def test_pty_startup_failure_records_specific_failed_check(tmp_path, monkeypatch
     report_path = tmp_path / "report.json"
     assert SMOKE.run_smoke(Path(sys.executable).resolve(), 5, report_path) == 1
     _assert_failed_check(report_path, "tui PTY render and Ctrl+Q exit")
+
+
+def test_missing_gofmt_smoke_uses_real_cli_and_empty_path(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    environment = SMOKE.isolated_environment(tmp_path)
+    command = [sys.executable, str(ROOT / "pi-batch.py")]
+    config = SMOKE.run_command([*command, "config", "explain", "--json"],
+                               workspace, environment, 10, "config")
+    SMOKE.prepare_fake_agent(workspace, config)
+    report = {"checks": []}
+    token = SMOKE._REPORT.set(report)
+    try:
+        SMOKE.check_missing_gofmt(command, workspace, environment, 10)
+    finally:
+        SMOKE._REPORT.reset(token)
+    assert not list(Path(environment["PATH"]).iterdir())
+    assert not list(workspace.glob("gofmt-rejected.go*"))
+    assert len(report["checks"]) == 1
+    assert report["checks"][0]["name"] == "missing gofmt rejects artifact"
+    assert report["checks"][0]["status"] == "passed"
+
+
+@pytest.mark.parametrize("failure", ["exit-zero", "wrong-diagnostic", "artifact", "temporary"])
+def test_missing_gofmt_false_success_records_failed_smoke(tmp_path, monkeypatch, failure):
+    fixture = tmp_path / "false-gofmt-rejection.py"
+    fixture.write_text(
+        "from pathlib import Path\n"
+        f"failure = {failure!r}\n"
+        "if failure == 'artifact': Path('gofmt-rejected.go').write_text('published')\n"
+        "if failure == 'temporary': Path('gofmt-rejected.go.leaked.tmp').write_text('temporary')\n"
+        "print('provider unavailable' if failure == 'wrong-diagnostic' "
+        "else 'VALIDATION FAILED: gofmt missing')\n"
+        "raise SystemExit(0 if failure == 'exit-zero' else 1)\n", encoding="utf-8")
+
+    def checks(_command, workspace, environment, timeout):
+        SMOKE.check_missing_gofmt([sys.executable, str(fixture)], workspace, environment, timeout)
+
+    monkeypatch.setattr(SMOKE, "run_checks", checks)
+    report_path = tmp_path / "report.json"
+    assert SMOKE.run_smoke(Path(sys.executable).resolve(), 5, report_path) == 1
+    _assert_failed_check(report_path, "missing gofmt rejects artifact")

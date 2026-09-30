@@ -121,7 +121,7 @@ def test_large_binary_payload_survives_partial_writes_and_bidirectional_backpres
 def _transport(kind, tmp_path, monkeypatch, code=ECHO):
     argv = [sys.executable, "-c", code]
     if kind == "app-server":
-        monkeypatch.setattr(appserver, "app_server_argv", lambda _socket: argv)
+        monkeypatch.setattr(appserver, "app_server_argv", lambda _socket, **_kw: argv)
         return appserver.DefaultTransport(cwd=str(tmp_path))
 
     def spawn(_argv, cwd):

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from pbatch import config
@@ -225,3 +227,15 @@ def test_agent_preflight_checks_selected_executable(monkeypatch):
     assert config.agent_preflight_errors("missing") == [
         "agent executable not found or not executable: missing",
     ]
+
+
+def test_context_preflight_keeps_original_adapter_identity(tmp_path, monkeypatch):
+    agent = tmp_path / "agent"
+    agent.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    agent.chmod(0o755)
+    observed = []
+    monkeypatch.setattr(config, "agent_argument_flags", lambda name: observed.append(name))
+    original_cwd, original_path = os.getcwd(), os.environ.get("PATH")
+    assert config.agent_preflight_errors("./agent", cwd=str(tmp_path), path="") == []
+    assert observed == ["./agent"]
+    assert os.getcwd() == original_cwd and os.environ.get("PATH") == original_path

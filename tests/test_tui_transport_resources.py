@@ -19,7 +19,7 @@ from pbatch.tui_codex_support import _stop_process
 def _transport(kind, tmp_path, monkeypatch, code="import time; time.sleep(30)"):
     argv = [sys.executable, "-c", code]
     if kind == "app-server":
-        monkeypatch.setattr(appserver, "app_server_argv", lambda _sock: argv)
+        monkeypatch.setattr(appserver, "app_server_argv", lambda _sock, **_kw: argv)
         return appserver.DefaultTransport(cwd=str(tmp_path))
 
     def spawn(_argv, cwd):

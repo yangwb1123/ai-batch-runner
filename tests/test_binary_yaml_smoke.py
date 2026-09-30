@@ -1,6 +1,7 @@
 """Ensure packaged YAML guard checks run real commands and reject false success."""
 
 import importlib.util
+import os
 from pathlib import Path
 import sys
 
@@ -29,7 +30,7 @@ def test_yaml_guard_smoke_uses_real_source_cli(tmp_path):
                                 environment, 10, execute=SMOKE.run_command)
     finally:
         SMOKE._REPORT.reset(token)
-    assert len(report["checks"]) == 4
+    assert len(report["checks"]) == (7 if hasattr(os, "mkfifo") else 4)
     assert all(check["status"] == "passed" for check in report["checks"])
 
 

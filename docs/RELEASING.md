@@ -156,6 +156,12 @@ chmod +x pi-batch-linux-x86_64
 
 二进制不是 provider 的替代品；执行真实任务前仍需安装 `pi`/Codex 等 agent。升级时
 只替换二进制，不会删除 `~/.codex/pbatch/projects/` 中的会话和日志。
+流水线按阶段和任务实际使用的 agent 预检；已全部指定可用执行程序时，无需安装
+未使用的默认 agent。默认回退及 gate-fix 会使用的程序仍须可用。
+使用 `--validate gofmt` 时需要目标环境安装 `gofmt`；缺少工具、工具执行失败或
+存在未格式化文件都会拒绝产物落盘。
+Codex 不在 PATH 中时，可用 `pi-batch tui --runtime app-server --agent-bin
+"/absolute/path/codex"` 指定安装位置；路径作为单个参数传给子进程，支持空格。
 
 在没有项目 `pi-batch.yaml` 的目录启动时，包内配置属于默认层，用户
 `settings.yaml` 中的 provider/agent 设置可以覆盖它。优先级为 CLI 参数、项目配置、
@@ -163,7 +169,9 @@ chmod +x pi-batch-linux-x86_64
 `pi-batch config check --json` 或 `pi-batch doctor --json` 查看文件位置和诊断，
 错误信息不展开可能含凭据的 YAML 正文。
 
-每份配置最多读取 2 MiB，`config check --max-bytes` 只能收紧这个上限。YAML 树
+配置只接受普通文件（含指向普通文件的符号链接）；FIFO 等特殊文件及打开时被替换
+成特殊文件的情况立即拒绝，不等待写入端。每份配置最多读取 2 MiB，
+`config check --max-bytes` 只能收紧这个上限。YAML 树
 最多 64 层，按引用展开后的节点与文本分别限制为 100,000 个和约 8 MiB，并在构造
 合并引用前检查；正常共享引用与 `<<` 合并仍受支持。配置值使用 JSON 兼容类型与
 有限数值，键必须为文本；日期若作为文本使用应加引号。循环引用、过大整数和非法

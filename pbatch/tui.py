@@ -328,6 +328,11 @@ class PiBatchTUI(TUIRuntimeLifecycleMixin, TUISettingsMixin, TUISessionMixin, TU
         try:
             startup = self.options.startup_timeout
             kwargs = {} if startup is None else {"startup_timeout": startup}
+            agent = self.options.agent or getattr(self._backend, "agent", "")
+            if not self.options.agent and not _is_codex_binary(os.path.basename(agent)):
+                agent = "codex"
+            if agent != "codex":
+                kwargs["agent"] = agent
             adapter = self._appserver_factory(self._session_cwd(), **kwargs)
             adapter.initialize({})
             session = adapter.start_session({

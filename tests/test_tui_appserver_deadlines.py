@@ -137,7 +137,7 @@ def test_late_created_transport_is_closed_without_starting_protocol(tmp_path, mo
 @pytest.mark.parametrize("phase", ["blocked_write", "delayed_spawn"])
 def test_timeout_reaps_owned_process_during_initialization(tmp_path, monkeypatch, phase):
     argv = [sys.executable, "-c", "import time; time.sleep(30)"]
-    monkeypatch.setattr(tui_appserver_support, "app_server_argv", lambda _sock: argv)
+    monkeypatch.setattr(tui_appserver_support, "app_server_argv", lambda _sock, **_kw: argv)
     if phase == "blocked_write":
         # Fill a real pipe while the owned process never reads.
         monkeypatch.setattr(tui_adapter_appserver, "VERSION", "x" * (512 * 1024))

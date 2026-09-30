@@ -240,7 +240,7 @@ commands:
 #          the finished stage; use {cwd}, not {output}, in their commands.
 validators:
   quick: "python cli.py check"
-  gofmt: 'test -z "$(gofmt -l {output})"'
+  gofmt: 'pbatch_gofmt_files=$(gofmt -l {output}) && test -z "$pbatch_gofmt_files"'
   build: "go build ./... && go vet ./..."
   config: "python cli.py config-validate"
   root: "python cli.py check-root"

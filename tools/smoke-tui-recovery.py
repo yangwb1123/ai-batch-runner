@@ -106,7 +106,8 @@ class RecoveryRun:
         if self.retained_input:
             previous = self.terminal.composer.ready_revision
             self.terminal.send(b"\x05\x15")  # End, then erase; retained drafts restore at column zero.
-            self.wait(lambda: self.terminal.composer.ready_revision > previous, "cleared retained input")
+            self.wait(lambda: self.terminal.composer.ready_revision > previous
+                      and self.composer_shows("Ask pi-batch…"), "cleared retained input")
             self.retained_input = False
         self.terminal.tail.clear()
         self.terminal.send(value)
@@ -115,6 +116,9 @@ class RecoveryRun:
         raw = self.terminal.tail.decode("utf-8", errors="replace")
         plain = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", raw)
         return text in " ".join(plain.split())
+
+    def composer_shows(self, text: str) -> bool:
+        return text in self.terminal.composer.summary()["composer"]
 
     def summary(self, state: str) -> dict:
         path = Path(self.sessions[state]["journal"]).with_name("summary.json")
@@ -129,9 +133,14 @@ class RecoveryRun:
             raise SoakFailure(f"{state} recovery invoked the provider")
         if self.summary(state).get("turn_state") != "UNKNOWN":
             raise SoakFailure(f"{state} recovery did not preserve UNKNOWN")
-        self.send("THIS_UNKNOWN_TURN_MUST_NOT_EXECUTE")
+        draft = "THIS_UNKNOWN_TURN_MUST_NOT_EXECUTE"
+        self.send(draft)
         self.wait(lambda: self.visible("Recovered history is read-only") or self.controls("prompt"),
                   state + " blocked submission")
+        # The resume notice uses the same warning before Input.Submitted has
+        # restored the rejected draft. Do not erase until that draft is painted.
+        self.wait(lambda: self.composer_shows(draft) or self.controls("prompt"),
+                  state + " retained rejected input")
         if self.controls("switch_session") or self.controls("prompt"):
             raise SoakFailure(f"{state} accepted a turn before /new")
         self.retained_input = True

@@ -8,6 +8,7 @@ from pbatch.pipeline_schema import validate_pipeline
 
 
 def test_meta_planner_and_role_workers_route_independently(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "AGENT_BIN", "pi")
     monkeypatch.setattr(config, "_AGENT_CFG", {})
     monkeypatch.setattr(config, "_AGENTS_CFG", {
         "pi": {"no_tools_args": ["--no-tools"]},

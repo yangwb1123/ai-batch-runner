@@ -270,7 +270,6 @@ def main() -> None:
     if args.data_dir:
         config.set_data_dir_override(args.data_dir)
     _wire_agent(args)
-    _preflight_agent(parser, args)
     if args.session_max_bytes != config.SESSION_MAX_BYTES:
         config.SESSION_MAX_BYTES = args.session_max_bytes
 
@@ -281,6 +280,7 @@ def main() -> None:
     _auto_detect_pipeline(args)
     _buffer_stdin(args)
     _maybe_classify_route(args)
+    _preflight_agent(parser, args)
     handler = _configure_run_log(args)
     _register_run(args)
     try:
@@ -522,12 +522,36 @@ def _wire_agent(args) -> None:
 
 
 def _preflight_agent(parser: argparse.ArgumentParser, args) -> None:
-    """Reject an unavailable agent before creating logs or taking locks."""
+    """Check routed executors before creating logs or taking locks."""
     if args.dry_run:
         return
-    errors = config.agent_preflight_errors(args.agent_bin)
+    agents = [(args.agent_bin, "", None)]
+    if args.pipeline:
+        args._preflight_pipeline = load_pipeline(args.pipeline)
+        agents = _pipeline_agents(args._preflight_pipeline, args.agent_bin)
+    errors = [error for agent, cwd, path in dict.fromkeys(agents)
+              for error in config.agent_preflight_errors(agent, cwd=cwd, path=path)]
     if errors:
         parser.error("agent preflight failed: " + "; ".join(errors))
+
+
+def _pipeline_agents(pipeline: Pipeline, default_agent: str) -> list[tuple]:
+    """Mirror stage task selection, including meta and conditional gate fixes."""
+    agents = []
+    for stage in pipeline.stages:
+        fallback = stage.agent or default_agent
+        cwd = stage.cwd or os.getcwd()
+        if stage.meta or stage.from_prompt:
+            agents.append((fallback, cwd, None))
+        elif stage.from_dir:
+            agents.append((fallback, stage.from_dir, None))
+        elif stage.from_outputs:
+            agents.extend((task.get("agent") or fallback,
+                           task.get("cwd", stage.cwd) or os.getcwd(),
+                           task.get("env", {}).get("PATH")) for task in stage.tasks)
+        if stage.gate and stage.gate_fix_rounds:
+            agents.append((fallback, cwd, None))
+    return agents
 
 
 def _buffer_stdin(args) -> None:

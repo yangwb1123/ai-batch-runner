@@ -230,6 +230,22 @@ def check_tasks(command: list[str], workspace: Path, env: dict, timeout: float) 
                 validate=lambda _output: check_artifact(workspace / "pipeline.json"))
 
 
+def _check_missing_gofmt_result(output: str, path: Path) -> None:
+    if "VALIDATION FAILED" not in output or "gofmt" not in output or "Traceback" in output:
+        raise SmokeFailure("missing gofmt did not produce a validator rejection")
+    if path.exists() or list(path.parent.glob(path.name + ".*.tmp")):
+        raise SmokeFailure("missing gofmt left a published or temporary artifact")
+
+
+def check_missing_gofmt(command: list[str], workspace: Path, env: dict, timeout: float) -> None:
+    output = workspace / "gofmt-rejected.go"
+    run_command([*command, "-p", "smoke-valid", "-o", output.name,
+                 *_task_flags(), "--validate", "gofmt"],
+                workspace, env, timeout, "missing gofmt rejects artifact", expected=(1,),
+                include_stderr=True,
+                validate=lambda text: _check_missing_gofmt_result(text, output))
+
+
 def _stdin_case(workspace: Path, environment: dict, name: str) -> tuple[Path, dict, list[str]]:
     root = workspace.parent / "stdin-checks" / name
     case_workspace = root / "workspace"
@@ -380,6 +396,7 @@ def run_checks(command: list[str], workspace: Path, env: dict, timeout: float) -
     check_stdin(command, workspace, env, timeout)
     check_yaml_inputs(command, workspace, env, timeout, execute=run_command)
     check_tasks(command, workspace, env, timeout)
+    check_missing_gofmt(command, workspace, env, timeout)
     check_instance_locks(command, workspace, env, timeout, flags=_task_flags(),
                          execute=_command_output, verify=check_artifact,
                          record=record_step, stop=_stop_process)

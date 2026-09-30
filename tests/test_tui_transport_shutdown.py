@@ -21,7 +21,7 @@ from pbatch.tui_runtime import TurnHandle
 def _transport(kind, tmp_path, monkeypatch):
     argv = [sys.executable, "-c", "import time; time.sleep(30)"]
     if kind == "app-server":
-        monkeypatch.setattr(tui_appserver_support, "app_server_argv", lambda _sock: argv)
+        monkeypatch.setattr(tui_appserver_support, "app_server_argv", lambda _sock, **_kw: argv)
         return tui_appserver_support.DefaultTransport(cwd=str(tmp_path))
     def spawn(_argv, cwd):
         return subprocess.Popen(

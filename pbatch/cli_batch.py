@@ -137,7 +137,7 @@ def _setup_pipeline(args) -> Optional[Pipeline]:
     cannot report defaults), and the commit-message prefix."""
     if not args.pipeline:
         return None
-    pipeline = load_pipeline(args.pipeline)
+    pipeline = getattr(args, "_preflight_pipeline", None) or load_pipeline(args.pipeline)
 
     if args.git_commit and not args.no_git_commit:
         for stage in pipeline.stages:

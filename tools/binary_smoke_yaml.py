@@ -1,6 +1,7 @@
 """Bounded declarative input checks for the packaged CLI; no model calls."""
 
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -54,3 +55,23 @@ def check_yaml_inputs(command: list[str], workspace: Path, environment: dict,
         execute([*command, *prefix, str(source), *flags], directory, environment, timeout,
                 "YAML " + label, expected=(code,), include_stderr=True,
                 validate=lambda output, expected=expected: _validate(output, directory.parent, expected))
+    _check_configuration_fifo(command, directory, environment, timeout, execute)
+
+
+def _check_configuration_fifo(command, directory, environment, timeout, execute):
+    if not hasattr(os, "mkfifo"):
+        return
+    source = directory / "fifo-config.yaml"
+    os.mkfifo(source)
+    environment = {**environment, "PBATCH_PROJECT_CONFIG": str(source)}
+    cases = (("check", ["config", "check", "--json"], 1),
+             ("doctor", ["doctor", "--json"], 1),
+             ("startup", ["-p", "doctor", "--dry-run", "--memory-mode", "off"], 2))
+    for label, arguments, code in cases:
+        runtime = directory.parent / ("fifo-runtime-" + label)
+        env = {**environment, "PBATCH_RUNTIME_HOME": str(runtime)}
+        execute([*command, *arguments], directory, env, timeout,
+                "configuration FIFO " + label, expected=(code,), include_stderr=True,
+                validate=lambda output: _validate(output, directory.parent, "regular file"))
+        if label == "startup" and runtime.exists():
+            raise RuntimeError("invalid configuration created runtime data before rejection")

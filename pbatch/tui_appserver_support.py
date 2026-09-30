@@ -162,7 +162,7 @@ def start_adapter_transport(adapter: Any, factory: Any) -> None:
     if adapter._reader is not None:
         return
     if adapter._transport is None:
-        transport = factory(adapter._daemon_socket, cwd=adapter._cwd)
+        transport = factory(adapter._daemon_socket, cwd=adapter._cwd, agent=adapter._agent)
         with adapter._lock:
             adapter._transport = transport
             closed = adapter._closed
@@ -182,8 +182,9 @@ class DefaultTransport:
     only appropriate when the caller explicitly supplied an already-running
     daemon socket.
     """
-    def __init__(self, daemon_socket: Optional[str] = None, *, cwd: Optional[str] = None):
-        argv = app_server_argv(daemon_socket)
+    def __init__(self, daemon_socket: Optional[str] = None, *, cwd: Optional[str] = None,
+                 agent: str = "codex"):
+        argv = app_server_argv(daemon_socket, agent=agent)
         self._stderr = bytearray()
         self._stderr_lock = threading.Lock()
         self._lock, self._closed = threading.Lock(), False
@@ -249,11 +250,11 @@ class DefaultTransport:
                     self._stderr_thread.join(timeout=0.1)
 
 
-def app_server_argv(daemon_socket: Optional[str] = None) -> list[str]:
+def app_server_argv(daemon_socket: Optional[str] = None, *, agent: str = "codex") -> list[str]:
     """Return the official stdio command or an explicit daemon proxy command."""
     if daemon_socket:
-        return ["codex", "app-server", "proxy", "--sock", str(daemon_socket)]
-    return ["codex", "app-server"]
+        return [agent, "app-server", "proxy", "--sock", str(daemon_socket)]
+    return [agent, "app-server"]
 
 
 class EventQueue:

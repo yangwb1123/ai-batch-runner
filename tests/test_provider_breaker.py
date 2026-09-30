@@ -526,7 +526,7 @@ def test_runner_checks_breaker_before_budget_and_rate(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "AGENT_LEDGER_ENABLED", True)
     monkeypatch.setattr(
         agent_ledger, "record_result",
-        lambda result, *_args, **_kwargs: ledger.append(result) or True)
+        lambda result, *_args, phase: ledger.append((result, phase)) or True)
 
     result = runner.run_task(task)
 
@@ -534,7 +534,7 @@ def test_runner_checks_breaker_before_budget_and_rate(monkeypatch, tmp_path):
     assert metering.INVOCATIONS == 0
     assert rate_calls == []
     assert events == ["task_fail"]
-    assert ledger == [result]
+    assert ledger == [(result, "execution")]
     assert result.task_id and result.attempt == 1
 
 
