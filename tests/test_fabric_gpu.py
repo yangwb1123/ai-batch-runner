@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-from pbatch import fabric, fabric_runner
+from pbatch import fabric, fabric_local, fabric_runner
 from pbatch.fabric import ExecutionEvidence
 from pbatch.fabric_server_util import evidence_digest
 from pbatch.fabric_gpu import (GPU_PROBE_OUTPUT_BYTES, cuda_visible_devices,
@@ -35,7 +35,9 @@ def _fake_gpu_probe(uuid=GPU_A, available=16 * 1024 ** 3):
 
 def _install_fake_gpu(monkeypatch, runner_probe=None):
     provider = lambda: _fake_gpu_probe()
-    monkeypatch.setattr(fabric, "probe_nvidia_gpus", provider)
+    # The local observation lives in fabric_local, so that is the module whose
+    # `probe_nvidia_gpus` binding the provider has to replace.
+    monkeypatch.setattr(fabric_local, "probe_nvidia_gpus", provider)
     monkeypatch.setattr(fabric_runner, "probe_nvidia_gpus",
                         runner_probe or provider)
 
@@ -99,7 +101,7 @@ def test_probe_timeout_kills_process_and_does_not_affect_cpu(monkeypatch,
 
     report = probe_nvidia_gpus(env={"PATH": str(tmp_path)}, timeout=0.1,
                                popen_factory=track_popen)
-    monkeypatch.setattr(fabric, "probe_nvidia_gpus",
+    monkeypatch.setattr(fabric_local, "probe_nvidia_gpus",
                         lambda: {"status": "unavailable", "devices": [],
                                  "observed_at": 1.0})
     local = fabric.local_probe()

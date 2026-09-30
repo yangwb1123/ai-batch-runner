@@ -43,14 +43,14 @@ def counter_agent(tmp_path):
     return path, calls
 
 
-def test_gate_fail_verdict_never_reused(tmp_path, counter_agent):
+def test_gate_fail_verdict_never_reused(tmp_path, counter_agent, monkeypatch):
     """A gate deliverable carrying VERDICT: FAIL must never be reused by
     --reuse: the verdict binds repository state that evidence fingerprints
     cannot see (a code fix after the FAIL does not change the evidence
     docs — aero-id round R5e finding)."""
     mod = load_batch()
     agent, calls = counter_agent
-    mod.config.AGENT_BIN = str(agent)
+    monkeypatch.setattr(mod.config, "AGENT_BIN", str(agent))
     gate_out = tmp_path / "gate.md"
     gate_out.write_text("VERDICT: FAIL - blocking issue remains\n", encoding="utf-8")
     upstream = tmp_path / "upstream.out.md"
@@ -94,13 +94,13 @@ def test_gate_reuse_blocker_deletes_bare_or_missing_verdict(
     "gatekeeper forgot the verdict\n",
 ])
 def test_gate_bare_or_missing_verdict_never_reused(
-        tmp_path, counter_agent, stale_verdict):
+        tmp_path, counter_agent, stale_verdict, monkeypatch):
     """Only a reasoned PASS is reusable; malformed gate artifacts are
     deleted and regenerated instead of being preserved until _handle_gate
     fails later."""
     mod = load_batch()
     agent, calls = counter_agent
-    mod.config.AGENT_BIN = str(agent)
+    monkeypatch.setattr(mod.config, "AGENT_BIN", str(agent))
     gate_out = tmp_path / "gate.md"
     gate_out.write_text(stale_verdict, encoding="utf-8")
     upstream = tmp_path / "upstream.out.md"
@@ -119,11 +119,11 @@ def test_gate_bare_or_missing_verdict_never_reused(
     assert gate_out.read_text(encoding="utf-8") == "reply\n"
 
 
-def test_gate_pass_verdict_reused(tmp_path, fake_agent):
+def test_gate_pass_verdict_reused(tmp_path, fake_agent, monkeypatch):
     """A PASS gate deliverable is still reusable when its evidence is
     unchanged (validated reuse semantics preserved)."""
     mod = load_batch()
-    mod.config.AGENT_BIN = str(fake_agent)
+    monkeypatch.setattr(mod.config, "AGENT_BIN", str(fake_agent))
     gate_out = tmp_path / "gate.md"
     gate_out.write_text("VERDICT: PASS - all checks satisfied\n", encoding="utf-8")
     upstream = tmp_path / "upstream.out.md"
@@ -141,11 +141,11 @@ def test_gate_pass_verdict_reused(tmp_path, fake_agent):
     assert gate_out.read_text() == "VERDICT: PASS - all checks satisfied\n"
 
 
-def test_from_prompt_injects_original_prompt(tmp_path, fake_agent):
+def test_from_prompt_injects_original_prompt(tmp_path, fake_agent, monkeypatch):
     """{prompt} in a from_prompt stage is replaced with the original task
     prompt that launched the pipeline (the -p --classify routing path)."""
     mod = load_batch()
-    mod.config.AGENT_BIN = str(fake_agent)
+    monkeypatch.setattr(mod.config, "AGENT_BIN", str(fake_agent))
     out = tmp_path / "plan.md"
     stage = mod.Stage(
         name="plan",
@@ -159,11 +159,11 @@ def test_from_prompt_injects_original_prompt(tmp_path, fake_agent):
     assert "Original task:" in text
 
 
-def test_from_prompt_without_original_strips_placeholder(tmp_path, fake_agent):
+def test_from_prompt_without_original_strips_placeholder(tmp_path, fake_agent, monkeypatch):
     """Without an original prompt the {prompt} placeholder is replaced with
     an empty string so templates do not leak raw placeholders to the agent."""
     mod = load_batch()
-    mod.config.AGENT_BIN = str(fake_agent)
+    monkeypatch.setattr(mod.config, "AGENT_BIN", str(fake_agent))
     out = tmp_path / "plan.md"
     stage = mod.Stage(
         name="plan",
@@ -175,11 +175,11 @@ def test_from_prompt_without_original_strips_placeholder(tmp_path, fake_agent):
     assert "{prompt}" not in out.read_text()
 
 
-def test_task_template_injects_original_prompt(tmp_path, fake_agent):
+def test_task_template_injects_original_prompt(tmp_path, fake_agent, monkeypatch):
     """{prompt} in an aggregate from_outputs task template is replaced with
     the original task prompt."""
     mod = load_batch()
-    mod.config.AGENT_BIN = str(fake_agent)
+    monkeypatch.setattr(mod.config, "AGENT_BIN", str(fake_agent))
     upstream = tmp_path / "upstream.out.md"
     upstream.write_text("evidence\n", encoding="utf-8")
     out = tmp_path / "combined.md"
@@ -195,12 +195,12 @@ def test_task_template_injects_original_prompt(tmp_path, fake_agent):
     assert "build auth" in out.read_text()
 
 
-def test_rejected_excerpt_saved_for_diagnosis(tmp_path, fake_agent):
+def test_rejected_excerpt_saved_for_diagnosis(tmp_path, fake_agent, monkeypatch):
     """A validator-rejected artifact keeps a bounded excerpt under
     the private runtime/rejected/ directory (diagnostics only) while the output path stays
     clean — the aero-id completion-gate diagnosis finding."""
     mod = load_batch()
-    mod.config.AGENT_BIN = str(fake_agent)
+    monkeypatch.setattr(mod.config, "AGENT_BIN", str(fake_agent))
     output = tmp_path / "report.md"
     results = mod.run_serial([mod.Task(prompt="x", output=str(output), cwd=str(tmp_path))],
                              validate_cmd="exit 7")
@@ -216,13 +216,13 @@ def test_rejected_excerpt_saved_for_diagnosis(tmp_path, fake_agent):
     assert "x" in text                  # the rejected content excerpt
 
 
-def test_meta_prompt_injects_original_prompt(tmp_path, counter_agent):
+def test_meta_prompt_injects_original_prompt(tmp_path, counter_agent, monkeypatch):
     """{prompt} in a meta stage's custom orchestrator prompt is replaced
     with the original task prompt (the orchestrator prompt actually sent
     to the agent carries it)."""
     mod = load_batch()
     agent, calls = counter_agent
-    mod.config.AGENT_BIN = str(agent)
+    monkeypatch.setattr(mod.config, "AGENT_BIN", str(agent))
     upstream = tmp_path / "upstream.out.md"
     upstream.write_text("evidence\n", encoding="utf-8")
     out_dir = tmp_path / "reviews"

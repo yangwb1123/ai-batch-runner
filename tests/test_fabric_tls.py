@@ -22,12 +22,23 @@ def _make_certificates(tmp_path):
     if shutil.which("openssl") is None:
         pytest.skip("openssl is required for the mTLS integration test")
     ca_key, ca_crt = tmp_path / "ca.key", tmp_path / "ca.crt"
+    # OpenSSL 3.x refuses to build a chain from a CA that omits keyUsage, so
+    # the fixture has to be a real signing CA rather than a bare self-signed
+    # cert. The production code is doing full chain verification correctly.
     _openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes",
              "-keyout", str(ca_key), "-out", str(ca_crt), "-days", "1",
-             "-subj", "/CN=pbatch-test-ca")
+             "-subj", "/CN=pbatch-test-ca",
+             "-addext", "basicConstraints=critical,CA:TRUE",
+             "-addext", "keyUsage=critical,keyCertSign,cRLSign")
     ext = tmp_path / "server.ext"
-    ext.write_text("subjectAltName=DNS:localhost,IP:127.0.0.1\n",
-                   encoding="utf-8")
+    ext.write_text("subjectAltName=DNS:localhost,IP:127.0.0.1\n"
+                   "basicConstraints=CA:FALSE\n"
+                   "keyUsage=critical,digitalSignature,keyEncipherment\n"
+                   "extendedKeyUsage=serverAuth\n", encoding="utf-8")
+    client_ext = tmp_path / "client.ext"
+    client_ext.write_text("basicConstraints=CA:FALSE\n"
+                          "keyUsage=critical,digitalSignature\n"
+                          "extendedKeyUsage=clientAuth\n", encoding="utf-8")
     paths = {"ca": ca_crt}
     for label, subject in (("server", "/CN=localhost"),
                            ("client-a", "/CN=runner-a"),
@@ -40,8 +51,7 @@ def _make_certificates(tmp_path):
         command = ["x509", "-req", "-in", str(csr), "-CA", str(ca_crt),
                    "-CAkey", str(ca_key), "-CAcreateserial", "-out",
                    str(crt), "-days", "1", "-sha256"]
-        if label == "server":
-            command += ["-extfile", str(ext)]
+        command += ["-extfile", str(ext if label == "server" else client_ext)]
         _openssl(*command)
         paths[label] = (crt, key)
     return paths

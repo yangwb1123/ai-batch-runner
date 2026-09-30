@@ -338,13 +338,31 @@ class MCPTests(unittest.TestCase):
 
     def test_malformed_json_utf8_duplicates_constants_and_depth_recover(self):
         bad_lines = [b"{", b"\xff", b"", b'{"x":NaN}', b'{"x":Infinity}', b'{"x":-Infinity}',
-                     b'{"x":1e9999}', b'{"x":1,"x":2}', b"[" * 2000 + b"]" * 2000,
+                     b'{"x":1e9999}', b'{"x":1,"x":2}',
                      b'{"jsonrpc":"2.0","id":2,"method":"ping"} {}']
         for line in bad_lines:
             with self.subTest(line=line[:50]):
                 code, replies, _, _ = self.exchange(raw=line + b"\n" + wire(request("ping")))
                 self.assertEqual(code, 0)
                 self.assert_error(replies[0], -32700)
+                self.assertNotIn("id", replies[0])
+                self.assertEqual(replies[1]["result"], {})
+
+    def test_deeply_nested_frames_are_bounded_and_recover(self):
+        """Nesting is bounded without misreporting a parse error.
+
+        A nested array is *valid* JSON, so when the decoder accepts it the
+        honest answer is Invalid Request, not Parse error. Only nesting deep
+        enough to exhaust the decoder's own recursion guard is a parse failure.
+        Both must be bounded, and the next request must still be served.
+        """
+        for depth, expected in ((2000, -32600), (200000, -32700)):
+            with self.subTest(depth=depth):
+                line = b"[" * depth + b"]" * depth
+                code, replies, _, _ = self.exchange(
+                    raw=line + b"\n" + wire(request("ping")))
+                self.assertEqual(code, 0)
+                self.assert_error(replies[0], expected)
                 self.assertNotIn("id", replies[0])
                 self.assertEqual(replies[1]["result"], {})
 

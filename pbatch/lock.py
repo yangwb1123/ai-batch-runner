@@ -48,6 +48,7 @@ escape hatch.
 from __future__ import annotations
 
 import os
+import errno
 import math
 import socket
 import sys
@@ -306,9 +307,38 @@ def _parallel_declarations(holder: dict, pid: int, outputs: tuple,
 def _output_paths(outputs, cwd: str) -> set[Path]:
     root = Path(cwd or os.getcwd())
     try:
-        return {Path(os.path.normcase(str((root / str(path)).resolve()))) for path in outputs}
+        return {_canonical(root / str(path)) for path in outputs}
     except (ValueError, RuntimeError) as exc:
         raise OSError(f"cannot resolve declared output path: {exc}") from exc
+
+
+def _canonical(path: Path) -> Path:
+    """Canonically resolve a declared path, or refuse when it cannot be walked.
+
+    Disjointness is only meaningful between real, comparable paths. From
+    Python 3.13 on, a non-strict `resolve()` gives up *silently* on a symlink
+    loop and hands back the unresolved string, so a declared output pointing
+    into one would be compared as if it were an ordinary path. That is a
+    guess about a path whose real target is unknown, so it fails closed:
+    `acquire_lock` turns the OSError into the standard lock refusal.
+    """
+    target = Path(os.path.normcase(str(path.resolve())))
+    probe = target
+    while True:
+        try:
+            os.lstat(probe)
+            return target
+        except FileNotFoundError:
+            parent = probe.parent
+            if parent == probe:
+                return target  # reached the root: the leaf is simply not there yet
+            probe = parent
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise OSError(
+                    f"declared output path cannot be resolved (symlink loop): "
+                    f"{path}") from exc
+            return target  # EACCES/ENOTDIR: tolerate rather than invent a refusal
 
 
 def _parallel_worktree_blocked(lock_path: Path, holder: dict,

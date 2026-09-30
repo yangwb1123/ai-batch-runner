@@ -10,7 +10,8 @@ ExecutionTarget / ExecutionAttempt / ArtifactRef / ExecutionEvidence，
 - 现在完成抽象隔离，之后再逐步实现远程能力（SSH/Runner/调度）
 
 模块划分：
-- `pbatch/fabric.py`：核心抽象 + 本机探测 + LocalExecutionTarget
+- `pbatch/fabric.py`：核心抽象 + 探测组装 + LocalExecutionTarget
+- `pbatch/fabric_local.py`：本机只读观测（身份/运行时/内存/负载/GPU 快照）
 - `pbatch/fabric_devices.py`：SSH inventory / 远程只读探测 / 状态缓存 /
   Placement Dry-run（D1）
 - `pbatch/fabric_cli.py`：`pi-batch devices` 子命令
@@ -37,8 +38,12 @@ from typing import Optional, Protocol
 
 from .config import log
 from .version import VERSION
-from .fabric_gpu import cuda_visible_devices, probe_nvidia_gpus
-from .fabric_workspace import RUNNER_CAPABILITY, workspace_filesystem_supported
+from .fabric_gpu import cuda_visible_devices
+from .fabric_local import (_capability_fingerprint, _device_id,
+                           _environment_digest, _local_gpu_facts,
+                           _machine_id, _memory_kb, _runner_capabilities,
+                           _runtime_presence, _dynamic_state, gpu_facts,
+                           local_dynamic_state)
 
 FABRIC_VERSION = VERSION
 FABRIC_PROTOCOL = "0.1"
@@ -162,81 +167,6 @@ class ExecutionTarget(Protocol):
         """取消一个执行尝试（尽力而为）。"""
 
 
-# ---------------------------------------------------------------------------
-# 本机探测（P0 注册信息 + P1 运行时存在性，只读）
-# ---------------------------------------------------------------------------
-
-def _machine_id() -> str:
-    for path in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
-        try:
-            value = Path(path).read_text(encoding="utf-8").strip()
-            if value:
-                return value
-        except OSError:
-            continue
-    return platform.node() or "unknown-host"
-
-
-def _device_id() -> str:
-    """稳定设备身份：machine-id + 平台指纹派生。注意：这不是密码学身份
-    （AADM-D §7），D0 仅本地识别；登记/证书在后续阶段引入。"""
-    raw = f"{_machine_id()}|{platform.system()}|{platform.machine()}"
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
-
-
-def _memory_kb() -> tuple:
-    """(total_bytes, available_bytes)；非 Linux 返回 (0, 0)。"""
-    if not sys.platform.startswith("linux"):
-        return (0, 0)
-    total = available = 0
-    try:
-        for line in Path("/proc/meminfo").read_text(encoding="utf-8",
-                                                    errors="replace").splitlines():
-            if line.startswith("MemTotal:"):
-                total = int(line.split()[1]) * 1024
-            elif line.startswith("MemAvailable:"):
-                available = int(line.split()[1]) * 1024
-    except OSError:
-    # best-effort I/O：失败不阻塞主流程（已验证有意）
-        pass
-    return (total, available)
-
-
-def _runtime_presence() -> dict:
-    """P1：常见运行时是否存在（只读 PATH 检查，不安装、不修改）。"""
-    return {tool: bool(shutil.which(tool))
-            for tool in ("docker", "node", "npm", "python3", "go",
-                         "java", "git", "psql")}
-
-
-def _environment_digest() -> str:
-    """环境指纹：平台 + 解释器 + fabric 版本（AADM-D §23 环境可复现）。"""
-    raw = "|".join((platform.system(), platform.release(),
-                    platform.machine(), sys.version.split()[0],
-                    FABRIC_VERSION))
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
-
-
-def _local_gpu_facts() -> tuple[list, dict]:
-    probe = probe_nvidia_gpus()
-    static = [{key: row[key] for key in (
-        "uuid", "name", "vendor", "total_memory_bytes", "mig_mode")}
-        for row in probe["devices"]]
-    return static, {"gpu_status": probe["status"], "gpus": probe["devices"]}
-
-
-def _capability_fingerprint(static: dict, runtimes: dict) -> str:
-    raw = json.dumps({"static": static, "runtimes": runtimes}, sort_keys=True)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
-
-
-def _runner_capabilities() -> list:
-    capabilities = ["task.v1", "grant.v1", "checkpoint.v1", "task.gpu.v1"]
-    if workspace_filesystem_supported():
-        capabilities.append(RUNNER_CAPABILITY)
-    return capabilities
-
-
 def local_probe(depth: str = "basic") -> dict:
     """本机 P0/P1 探测（只读、无副作用、无网络扫描）。"""
     if depth not in ("basic", "full"):
@@ -254,15 +184,7 @@ def local_probe(depth: str = "basic") -> dict:
         "hostname": platform.node(),
         "gpus": gpu_static,
     }
-    load = os.getloadavg() if hasattr(os, "getloadavg") else (0.0, 0.0, 0.0)
-    dynamic = {
-        "status": "online",
-        "load": round(load[0], 2),
-        "available_memory_bytes": available,
-        "running_tasks": 0,
-        "last_seen_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        **gpu_dynamic,
-    }
+    dynamic = _dynamic_state(gpu_dynamic, total, available)
     fingerprint = _capability_fingerprint(static, runtimes)
     capabilities = _runner_capabilities()
     return {

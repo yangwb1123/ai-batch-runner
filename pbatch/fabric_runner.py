@@ -29,7 +29,8 @@ from typing import Optional
 
 from . import config
 from .config import log
-from .fabric import ExecutionSpec, LocalExecutionTarget, local_probe
+from .fabric import (ExecutionSpec, LocalExecutionTarget, gpu_facts,
+                      local_dynamic_state, local_probe)
 from .fabric_devices import DEVICE_STATE_DIR
 from .fabric_exec import _ACTIVE_SSH_PROCS, _ACTIVE_SSH_LOCK
 from .fabric_rpc import RpcClient, tls_context_for_url
@@ -132,10 +133,17 @@ def _refresh_probe_if_due(client: RpcClient, name: str, state_dir: str,
 
 
 def _runner_cycle(client: RpcClient, name: str, state_dir: str,
-                  outbox: EvidenceOutbox, next_probe_refresh: float) -> tuple:
-    """Maintain runner liveness, refresh capability and execute one lease."""
+                  outbox: EvidenceOutbox, next_probe_refresh: float,
+                  gpu: Optional[dict] = None) -> tuple:
+    """Maintain runner liveness, refresh capability and execute one lease.
+
+    The heartbeat carries a *cached* GPU snapshot. `nvidia-smi` is a fork plus
+    an exec (~150ms), so probing it per cycle made the liveness floor depend on
+    an external binary; the inventory it reports is refreshed on the same
+    schedule as the full capability probe instead.
+    """
     flush_evidence(client, outbox)
-    beat = client.heartbeat(local_probe()["dynamic_state"], running_attempts())
+    beat = client.heartbeat(local_dynamic_state(gpu), running_attempts())
     if not beat.get("ok"):
         log.warning("心跳未确认：%s", beat.get("error", "?"))
     due = time.monotonic() >= next_probe_refresh
@@ -165,7 +173,7 @@ def runner_once(base_url: str, name: str, state_dir: str = "",
                 "message": registered.get("message", "pending")}
     outbox = EvidenceOutbox(state_dir or config.data_dir())
     flushed = flush_evidence(client, outbox)
-    beat = client.heartbeat(local_probe()["dynamic_state"], running_attempts())
+    beat = client.heartbeat(local_dynamic_state(gpu_facts()), running_attempts())
     reconciled = client.reconcile(running_attempts())
     return {"approved": True, "device_id": key["device_id"],
             "heartbeat_ok": beat.get("ok", False),
@@ -395,6 +403,7 @@ def run_runner_loop(base_url: str, name: str, state_dir: str = "",
     approved = False
     drill_remaining = max(0, int(drill_skip_heartbeats))
     next_probe_refresh = 0.0
+    gpu: Optional[dict] = None
     log.info("runner %s (%s) → %s", name, key["device_id"], base_url)
     while not (stop_event is not None and stop_event.is_set()):
         try:
@@ -409,6 +418,7 @@ def run_runner_loop(base_url: str, name: str, state_dir: str = "",
                     continue
                 backoff = 2.0
                 next_probe_refresh = time.monotonic() + PROBE_REFRESH_SECONDS
+                gpu = gpu_facts()
                 log.info("runner %s 已批准，进入心跳循环", name)
             if drill_remaining > 0:
                 drill_remaining -= 1
@@ -417,7 +427,7 @@ def run_runner_loop(base_url: str, name: str, state_dir: str = "",
                 _sleep(heartbeat_interval, stop_event)
                 continue
             approved, next_probe_refresh = _runner_cycle(
-                client, name, state_dir, outbox, next_probe_refresh)
+                client, name, state_dir, outbox, next_probe_refresh, gpu)
         except Exception as exc:  # 断线：退避重连（含控制平面重启场景）
             log.warning("控制平面不可达（%s），%gs 后重连", exc, backoff)
             approved = False

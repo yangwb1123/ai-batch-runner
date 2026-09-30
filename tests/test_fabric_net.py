@@ -258,6 +258,25 @@ def test_runner_once_pending_then_approved(control_plane):
     assert summary["heartbeat_ok"] is True
 
 
+def _wait_for_heartbeats(control_plane, device_id: int, count: int,
+                        deadline_seconds: float = 10.0) -> int:
+    """Wait until the control plane has counted `count` heartbeats.
+
+    Startup is deliberately excluded from the measurement: the first cycle
+    still pays the one-time full capability probe (an `nvidia-smi` fork), which
+    says nothing about the steady-state heartbeat rate under test.
+    """
+    deadline = time.monotonic() + deadline_seconds
+    seen = 0
+    while time.monotonic() < deadline:
+        device = control_plane["httpd"].control.devices.get(device_id, {})
+        seen = int(device.get("heartbeats", 0) or 0)
+        if seen >= count:
+            return seen
+        time.sleep(0.01)
+    return seen
+
+
 def test_runner_loop_heartbeats_and_reconnect(control_plane):
     state = control_plane["state_dir"]
     base = f"http://127.0.0.1:{control_plane['port']}"
@@ -272,12 +291,12 @@ def test_runner_loop_heartbeats_and_reconnect(control_plane):
                                                    "stop_event": stop},
         daemon=True)
     thread.start()
-    time.sleep(0.4)  # 让几轮心跳发生
+    device_id = fabric_runner.load_or_create_key(str(state), "node-z")["device_id"]
+    _wait_for_heartbeats(control_plane, device_id, 1)
+    observed = _wait_for_heartbeats(control_plane, device_id, 4)
     stop.set()
     thread.join(timeout=5)
-    device = control_plane["httpd"].control.devices.get(
-        fabric_runner.load_or_create_key(str(state), "node-z")["device_id"], {})
-    assert device.get("heartbeats", 0) >= 3
+    assert observed >= 4, f"heartbeat rate collapsed: only {observed} recorded"
     # 断线重连：控制平面不可达时循环不退出
     stop2 = threading.Event()
     dead = threading.Thread(

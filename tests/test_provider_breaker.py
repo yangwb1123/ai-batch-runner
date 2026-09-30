@@ -526,7 +526,7 @@ def test_runner_checks_breaker_before_budget_and_rate(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "AGENT_LEDGER_ENABLED", True)
     monkeypatch.setattr(
         agent_ledger, "record_result",
-        lambda result, *_args: ledger.append(result) or True)
+        lambda result, *_args, **_kwargs: ledger.append(result) or True)
 
     result = runner.run_task(task)
 

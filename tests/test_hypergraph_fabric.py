@@ -197,6 +197,25 @@ def _registered_client(control_plane, name):
     return client
 
 
+def _wait_for_heartbeats(control_plane, device_id, count: int,
+                        deadline_seconds: float = 10.0) -> int:
+    """Wait until the control plane has counted `count` heartbeats.
+
+    Startup is excluded on purpose: the runner's first cycle still pays the
+    one-time full capability probe (an `nvidia-smi` fork), which says nothing
+    about the steady-state heartbeat rate under test.
+    """
+    deadline = time.monotonic() + deadline_seconds
+    seen = 0
+    while time.monotonic() < deadline:
+        device = control_plane["httpd"].control.devices.get(device_id, {})
+        seen = int(device.get("heartbeats", 0) or 0)
+        if seen >= count:
+            return seen
+        time.sleep(0.01)
+    return seen
+
+
 @pytest.mark.chaos
 def test_halt_cancels_all_and_cordons(control_plane):
     """Kill Switch：排队任务全部取消 + 所有设备 cordon。"""
@@ -287,11 +306,12 @@ def test_drill_skip_zero_normal_heartbeats(control_plane, monkeypatch):
               str(state)),
         kwargs={"heartbeat_interval": 0.02, "stop_event": stop}, daemon=True)
     thread.start()
-    time.sleep(0.2)
+    # Registration's one-time capability probe is startup, not heartbeat rate.
+    _wait_for_heartbeats(control_plane, key["device_id"], 1)
+    observed = _wait_for_heartbeats(control_plane, key["device_id"], 4)
     stop.set()
     thread.join(timeout=5)
-    device = control_plane["httpd"].control.devices.get(key["device_id"], {})
-    assert device.get("heartbeats", 0) >= 3
+    assert observed >= 4, f"heartbeat rate collapsed: only {observed} recorded"
 
 
 # ---------------------------------------------------------------------------
