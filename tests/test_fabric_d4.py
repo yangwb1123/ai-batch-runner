@@ -54,6 +54,23 @@ def _start_runner(control_plane, name, state_dir):
     return thread, stop
 
 
+def _wait_device(control_plane, name, timeout=10.0):
+    """Wait until the named device is registered and approved.
+
+    A fixed sleep after starting the runner thread is a guess: on a loaded
+    machine the first registration cycle can land after it, and the schedule
+    then refuses with "unknown device" instead of exercising the path.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        for device in control_plane["httpd"].control.devices.values():
+            if device.get("name") == name and device.get("approved") is not False:
+                return device
+        time.sleep(0.02)
+    raise AssertionError(f"device {name} never registered: "
+                         f"{control_plane['httpd'].control.devices}")
+
+
 def _wait_task(control_plane, task_id, statuses, timeout=10.0):
     """轮询任务直到状态进入目标集合（默认 done/failed）。"""
     deadline = time.time() + timeout
@@ -294,7 +311,7 @@ def test_cli_schedule_end_to_end(control_plane, tmp_path):
     state = control_plane["state_dir"]
     thread, stop = _start_runner(control_plane, "node-cli", state)
     try:
-        time.sleep(0.2)
+        _wait_device(control_plane, "node-cli")
         with pytest.raises(SystemExit) as exc:
             fabric_cli.devices_main([
                 "schedule", "--device", "node-cli",

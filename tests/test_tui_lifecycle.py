@@ -98,7 +98,11 @@ def _app(tmp_path, runtime, *, timeout=0.12, factory=None):
 
 
 async def _until(predicate, pilot):
-    deadline = time.monotonic() + 5
+    # A wait budget, not a latency assertion. Reaching RUNNING crosses a worker
+    # thread plus a runtime handshake; on a loaded machine that can exceed a few
+    # seconds, and a tight deadline would report a machine-speed problem as a
+    # behavioural one.
+    deadline = time.monotonic() + 20
     while not predicate() and time.monotonic() < deadline:
         await pilot.pause(0.01)
     assert predicate()
@@ -149,7 +153,11 @@ def test_start_rpc_is_covered_by_deadline_and_cancel(tmp_path, review, cancel):
 def test_appserver_review_stops_and_restores_composer(tmp_path, cancel):
     async def scenario():
         runtime = _Runtime(str(tmp_path))
-        app = _app(tmp_path, runtime, timeout=3 if cancel else 0.1)
+        # Without cancellation the turn is ended by its deadline, and that
+        # deadline must be long enough for the poller to observe RUNNING. At
+        # 0.1s the state existed for less than one poll interval, so the test
+        # reported a scheduling race instead of the behaviour it checks.
+        app = _app(tmp_path, runtime, timeout=3 if cancel else 1.0)
         async with app.run_test() as pilot:
             app._slash_review(())
             await _until(lambda: app._runtime_view.turn_state == TurnState.RUNNING, pilot)

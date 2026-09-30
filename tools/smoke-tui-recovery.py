@@ -21,6 +21,12 @@ from tui_soak_support import SoakFailure, Terminal, executable_evidence, prepare
 
 
 STATES = ("QUEUED", "RUNNING", "INTERRUPTING", "UNKNOWN", "SUCCEEDED")
+DRAFT = "THIS_UNKNOWN_TURN_MUST_NOT_EXECUTE"
+PLACEHOLDER = "Ask pi-batch…"
+BUSY_PLACEHOLDER = "Queue follow-up"
+# Whitespace plus the Unicode block-element range the composer cursor is drawn
+# from. None of it is operator input.
+FURNITURE = re.compile(r"[\u2580-\u259f\s]+")
 
 
 def seed_sessions(root: Path, environment: dict) -> dict:
@@ -103,14 +109,25 @@ class RecoveryRun:
         raise SoakFailure(f"deadline waiting for {label}")
 
     def send(self, value: str) -> None:
+        """Type a command, confirm it rendered, then submit.
+
+        Writing the text and the Enter in one write races the TUI: if the
+        previous command is still draining its input, the keystrokes coalesce
+        and this command is silently lost — which reads as a product hang but
+        is only a dropped keystroke. Waiting for the rendered echo is the
+        client-side acknowledgement that the input actually landed.
+        """
         if self.retained_input:
-            previous = self.terminal.composer.ready_revision
-            self.terminal.send(b"\x05\x15")  # End, then erase; retained drafts restore at column zero.
-            self.wait(lambda: self.terminal.composer.ready_revision > previous
-                      and self.composer_shows("Ask pi-batch…"), "cleared retained input")
+            # End, then erase. The rejected draft must already be painted (see
+            # check_unknown) or the TUI is still composing and drops the keys.
+            self.terminal.send(b"\x05\x15")
+            self._wait_cleared("retained input")
             self.retained_input = False
         self.terminal.tail.clear()
-        self.terminal.send(value)
+        self.terminal.write(value)
+        self.wait(lambda: self.composer_shows(value) or self.controls("prompt"),
+                  f"typed {value[:24]}")
+        self.terminal.send(b"\r")
 
     def visible(self, text: str) -> bool:
         raw = self.terminal.tail.decode("utf-8", errors="replace")
@@ -119,6 +136,35 @@ class RecoveryRun:
 
     def composer_shows(self, text: str) -> bool:
         return text in self.terminal.composer.summary()["composer"]
+
+    def _composer_draft(self) -> str:
+        """The composer's pending text, with the UI's own furniture removed.
+
+        The row carries the idle/busy placeholder and an animated cursor drawn
+        from the Unicode block-element range. Those are decoration, not text
+        the operator typed: counting them as a draft leaves the composer
+        permanently "non-empty" and the erase is never acknowledged. The block
+        range is stripped wholesale because the cursor is not a fixed glyph.
+        """
+        row = self.terminal.composer.summary()["composer"]
+        for placeholder in (PLACEHOLDER, BUSY_PLACEHOLDER):
+            row = row.replace(placeholder, "")
+        return FURNITURE.sub("", row)
+
+    def _wait_cleared(self, label: str) -> None:
+        """Block until the composer acknowledges the erase by going empty.
+
+        Only the empty composer is required. A ready-placeholder repaint is
+        deliberately *not* part of the condition: after /resume the session is
+        read-only and the composer is disabled, so it has no ready placeholder
+        to repaint until /new restores a writable one. Waiting for a repaint
+        there would wait for a state this command is what produces.
+
+        Not waiting for the draft to be painted first is what would swallow
+        the keys, and that ordering is enforced where the draft is submitted
+        (see check_unknown), before these keys are ever sent.
+        """
+        self.wait(lambda: not self._composer_draft(), f"cleared {label}")
 
     def summary(self, state: str) -> dict:
         path = Path(self.sessions[state]["journal"]).with_name("summary.json")

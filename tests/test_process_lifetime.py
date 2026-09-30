@@ -66,9 +66,13 @@ def test_invalid_utf8_is_reported_and_split_unicode_survives(tmp_path):
 
 
 def _is_live(pid):
-    status = Path(f"/proc/{pid}/stat")
-    if status.exists():
-        return status.read_text().split()[2] != "Z"
+    # exists() then read_text() is a TOCTOU: the process can exit between the
+    # two, and a zombie child is exactly what this helper is called to notice.
+    # Fall through to the signal probe when the read loses the race.
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().split()[2] != "Z"
+    except (FileNotFoundError, ProcessLookupError, IndexError):
+        pass
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

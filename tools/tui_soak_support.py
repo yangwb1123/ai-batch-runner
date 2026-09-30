@@ -335,6 +335,14 @@ class Terminal:
     def send(self, text: str | bytes) -> None:
         os.write(self.master, text.encode() + b"\r" if isinstance(text, str) else text)
 
+    def write(self, text: str) -> None:
+        """Type without submitting, so the caller can confirm the echo first."""
+        os.write(self.master, text.encode())
+
+    def composer_text(self) -> str:
+        """The currently painted composer row (the observation's last row)."""
+        return "".join(self.composer.cells)
+
     def close(self) -> None:
         try:
             (self.root / "terminal-tail.log").write_bytes(self.tail)
