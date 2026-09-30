@@ -23,6 +23,7 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `pbatch/runner.py` | 任务执行：硬超时、失败签名拒绝、重试、验证门禁、摘要 |
 | `pbatch/pipeline.py` | 流水线：阶段构建、meta 角色编排（规划器/worker 可分配不同模型；`delegation_only` 通过 adapter 禁用规划器工具；`meta_resume` + `--reuse` 恢复命名角色计划）、gate 裁决（含自动修复循环）、决策日志、归档 |
 | `pbatch/gate_fix.py` | gate-FAIL 自动修复：结构化发现解析（```json）、修复任务构建与门禁（sverp 实战沉淀） |
+| `pbatch/pipeline_receipts.py` | **已验证产物收据**（知识回流线的写入端）：每个 stage 完成时把「产出了哪些产物、字节数、有界前缀摘要、哪一轮、gate 裁决」以带 `schema_version` 的 JSONL 追加到用户级 `data_dir/pipeline/receipts.jsonl`（不落项目树、不依赖可选的 decision_log）；有界环形账本（默认 4MiB/2000 条），读失败/写失败只丢观测、绝不判定 stage 失败。决策日志回答「人读的总结说了什么」，收据回答「哪个产物过了哪些校验、之后变没变」——后者才是下一次复用的前提 |
 | `pbatch/pipeline_schema.py` / `evidence.py` | Pipeline fail-closed schema 与有界证据注入 |
 | `pbatch/relevance.py` | meta 角色关键词评分、命中证据、去重与运行时数量上限 |
 | `pbatch/classifier.py` / `task_keywords.yaml` | 任务类型判断器：执行前双语关键词判定，前端→前端实现流水线、后端→后端实现流水线（`classifier.frontend_pipeline` / `backend_pipeline`，均为 plan→implement+门禁→对抗审查→gate 结构），`--classify` / `classify` 子命令，零 LLM 成本 |

@@ -24,6 +24,7 @@ from .pipeline_decisions import (append_decision_log as _append_decision_log,
 from .pipeline_schema import validate_pipeline
 from .pipeline_loader import parse_stage_def as _parse_stage_def
 from .pipeline_resources import normalize_bundled_resources as _normalize_bundled_resources
+from . import pipeline_receipts as _receipts
 from .evidence import combine_outputs, source_manifest
 from .gate_contract import evaluate_gate_artifacts, gate_verdict as _gate_verdict
 from .meta import run_meta_stage
@@ -778,6 +779,20 @@ def _record_pipeline_stage(stage: Stage, results: list, stage_ok: bool,
     if decision_log and results:
         _append_decision_log(
             decision_log, stage.name, results, stage_ok, verdict)
+    _record_receipt(stage, results, stage_ok, verdict)
+
+
+def _record_receipt(stage: Stage, results: list, stage_ok: bool,
+                    verdict: Optional[str]) -> None:
+    """Keep the machine-readable twin of the decision-log entry.
+
+    Recorded even when no decision log was configured: the human summary is
+    opt-in per pipeline, but the verified artifact record is what a later run
+    reuses, so it must not depend on a document the pipeline may not produce.
+    """
+    if not results:
+        return
+    _receipts.record_stage(stage.cwd or "", stage.name, results, stage_ok, verdict)
 
 
 def _read_only_stage_ok(stage: Stage, outputs: list,
