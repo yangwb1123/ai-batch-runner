@@ -267,3 +267,26 @@ def test_reuse_rerun_records_that_the_rebuild_was_given_verified_upstream(
     assert cited[-1]["stage"] == "implement"
     assert cited[-1]["knowledge_cited"] == 1
     assert receipts.knowledge_effect(str(tmp_path))["cited"]["stages"] == 1
+
+
+def test_metrics_report_exposes_the_citation_split_and_survives_no_receipts(tmp_path, monkeypatch):
+    """The split has to be reachable without a new command, and a workspace
+    with no receipts must still produce a report rather than an error."""
+    from pbatch import metrics
+    monkeypatch.setenv("PBATCH_DATA_DIR", str(tmp_path / "runtime"))
+    monkeypatch.chdir(tmp_path)
+
+    empty = metrics.metrics_report()["result_quality"]
+    assert empty["reuse_cited_stages"] == 0
+    assert empty["reuse_cited_pass_rate"] is None, "no data is not a 0.0 rate"
+    assert empty["reuse_uncited_pass_rate"] is None
+
+    (tmp_path / "a.md").write_text("a\n", encoding="utf-8")
+    receipts.record_stage(str(tmp_path), "implement", [_result("a.md", tmp_path)],
+                          True, None, knowledge_cited=1)
+    (tmp_path / "b.md").write_text("b\n", encoding="utf-8")
+    receipts.record_stage(str(tmp_path), "design", [_result("b.md", tmp_path)],
+                          False, None)
+    filled = metrics.metrics_report()["result_quality"]
+    assert (filled["reuse_cited_stages"], filled["reuse_cited_pass_rate"]) == (1, 1.0)
+    assert (filled["reuse_uncited_stages"], filled["reuse_uncited_pass_rate"]) == (1, 0.0)

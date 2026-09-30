@@ -21,6 +21,7 @@ from typing import Optional
 
 from . import config
 from .memory_policy import memory_scope, scope_matches
+from .pipeline_receipts import knowledge_effect
 
 _LEGACY_REJECTED_DIR = Path(".pi-batch") / "rejected"
 _LEGACY_MEMORY_INDEX = Path(".pi-batch") / "memory" / "sessions.index.jsonl"
@@ -147,6 +148,25 @@ def _count_truth_invalidations() -> int:
     return count
 
 
+def _reuse_citation_metrics() -> dict:
+    """Stage outcomes split by whether a --reuse rebuild was told what
+    upstream had already verified.
+
+    This lives beside first_try_rate because it answers the same question from
+    the other end: not "did the agent succeed" but "did it succeed having been
+    handed the prior run's verified work". An empty group reports None, which
+    renders as 未追踪 rather than a confident 0.0.
+    """
+    effect = knowledge_effect("")
+    return {
+        "reuse_cited_stages": effect["cited"]["stages"],
+        "reuse_cited_pass_rate": effect["cited"]["pass_rate"],
+        "reuse_uncited_stages": effect["not_cited"]["stages"],
+        "reuse_uncited_pass_rate": effect["not_cited"]["pass_rate"],
+        "reuse_note": "观测值非受控对照；stage 通过是确定性门禁结果，不等于产物质量",
+    }
+
+
 def metrics_report() -> dict:
     """五类指标聚合（只读；缺失数据源如实标注，不伪造）。"""
     memory = _scan_memory_index()
@@ -161,6 +181,7 @@ def metrics_report() -> dict:
             "first_try_rate": first_try,
             "observed_passes": memory["passed"],
             "observed_failures": memory["failed"],
+            **_reuse_citation_metrics(),
         },
         "decision_quality": {
             "rule_drafts": _count_docs("drafts/*.yaml"),
