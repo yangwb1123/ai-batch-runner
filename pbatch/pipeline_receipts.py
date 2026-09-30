@@ -42,6 +42,86 @@ READ_MAX_RECORDS = 1000
 PATH_MAX_CHARS = 512
 REASON_MAX_CHARS = 256
 DIGEST_PREFIX_BYTES = 64 * 1024
+KNOWLEDGE_MAX_LINES = 32
+KNOWLEDGE_MAX_BYTES = 4096
+READ_MAX_RECORDS = 1000
+
+
+KNOWLEDGE_HEADER = (
+    "Verified upstream artifacts (from an earlier run of this pipeline). "
+    "These passed their stage validators; cite them instead of re-deriving "
+    "them, and re-verify before relying on anything they do not cover:\n")
+
+
+def verified_knowledge(cwd: str, outputs: list) -> str:
+    """Bounded, re-verified list of upstream artifacts a prior run validated.
+
+    Soundness rests on two properties, both load-bearing:
+
+    * **Re-verified now.** An artifact is cited only if its size and digest
+      still match the receipt. A receipt whose artifact has since been edited
+      describes something that no longer exists, so it is dropped rather than
+      presented as verified.
+    * **Stable while nothing changed.** A receipt is keyed by absolute path
+      and digest, never by timestamp, and a stage re-verified under --reuse
+      writes a byte-identical receipt. So when upstream is unchanged this block
+      is identical across runs, which keeps the downstream reuse fingerprint
+      stable instead of self-invalidating.
+
+    Returns "" when there is nothing safe to say, so a stage's prompt stays
+    untouched rather than gaining an empty heading.
+    """
+    wanted = {_absolute(item) for item in outputs or ()}
+    wanted.discard("")
+    if not wanted:
+        return ""
+    latest = _latest_verified(cwd, wanted)
+    body = "\n".join(_knowledge_lines(cwd, latest))
+    if not body or len(body.encode("utf-8")) > KNOWLEDGE_MAX_BYTES:
+        return ""
+    return f"{KNOWLEDGE_HEADER}{body}"
+
+
+def _latest_verified(cwd: str, wanted: set[str]) -> dict[str, tuple[int, str]]:
+    """Newest passing receipt per path, ignoring failed stages and FAIL verdicts."""
+    latest: dict[str, tuple[int, str]] = {}
+    for record in read_receipts(cwd, limit=READ_MAX_RECORDS):
+        if not record.get("ok") or record.get("verdict") in {"FAIL", "REJECT"}:
+            continue
+        for task in record.get("tasks") or ():
+            path = str(task.get("path") or "")
+            if path in wanted and task.get("ok") and task.get("digest"):
+                latest[path] = (int(task.get("bytes") or 0), str(task["digest"]))
+    return latest
+
+
+def _knowledge_lines(cwd: str, latest: dict[str, tuple[int, str]]) -> list[str]:
+    """One line per artifact that still matches its receipt on disk."""
+    lines: list[str] = []
+    for path in sorted(latest):
+        if len(lines) >= KNOWLEDGE_MAX_LINES:
+            break
+        size, digest = latest[path]
+        current_size, current_digest = _identity(path)
+        if not digest or current_digest != digest or current_size != size:
+            continue
+        lines.append(f"- {_display(path, cwd)} ({size} bytes, sha256:{digest[:12]})")
+    return lines
+
+
+def _absolute(value: Any) -> str:
+    try:
+        return str(Path(str(value)).resolve())
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return ""
+
+
+def _display(path: str, cwd: str) -> str:
+    """Workspace-relative label when possible; the absolute path otherwise."""
+    try:
+        return str(Path(path).resolve().relative_to(Path(cwd).resolve()))
+    except (OSError, RuntimeError, ValueError):
+        return path
 
 
 def receipts_path(cwd: str = "") -> Path:
@@ -100,12 +180,16 @@ def read_receipts(cwd: str = "", limit: int = 50) -> list[dict]:
 def _task_receipt(result: Any) -> dict[str, Any]:
     task = getattr(result, "task", None)
     output = str(getattr(task, "output", "") or "")
-    path, size, digest = "", 0, ""
+    resolved, size, digest = "", 0, ""
     if output:
-        path = _brief(output, PATH_MAX_CHARS)
-        size, digest = _identity(_output_path(task, result))
+        resolved = _output_path(task, result)
+        size, digest = _identity(resolved)
     return {
-        "output": path,
+        "output": _brief(output, PATH_MAX_CHARS),
+        # Absolute, because stage_outputs carries absolute paths (see
+        # pipeline.py) and the knowledge block has to match the two exactly.
+        # It is derived from the stage cwd, so it is stable across re-runs.
+        "path": _brief(resolved, PATH_MAX_CHARS),
         "ok": bool(getattr(result, "success", False)),
         "bytes": size,
         "digest": digest,

@@ -108,10 +108,14 @@ def test_stop_reaps_sigterm_resistant_descendant_after_leader_exit(
             " time.sleep(30)\n")
     process = subprocess.Popen([sys.executable, "-c", code], start_new_session=True)
     try:
+        # Two independent files are written by two processes: `ready` by the
+        # child and `child.pid` by the parent. Waiting for one says nothing
+        # about the other, so wait for the PID to actually be written.
         deadline = time.monotonic() + 3
-        while not ready.exists() and time.monotonic() < deadline:
+        while (not ready.exists() or not child_path.read_bytes().strip()) \
+                and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert ready.exists()
+        assert ready.exists() and child_path.read_bytes().strip()
         if leader_already_exited:
             process.terminate()
             process.wait(timeout=1)

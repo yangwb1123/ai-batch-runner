@@ -112,3 +112,108 @@ def test_ledger_stays_inside_its_byte_budget(tmp_path, monkeypatch):
     assert ledger.stat().st_size <= receipts.RECEIPTS_MAX_BYTES
     assert receipts.read_receipts(str(tmp_path), limit=1)[0]["stage"] == "stage-399"
     assert len(receipts.read_receipts(str(tmp_path), limit=10_000)) <= receipts.READ_MAX_RECORDS
+
+
+def test_knowledge_cites_only_artifacts_that_still_match_their_receipt(tmp_path, monkeypatch):
+    monkeypatch.setenv("PBATCH_DATA_DIR", str(tmp_path / "runtime"))
+    kept = tmp_path / "kept.md"
+    kept.write_text("stable\n", encoding="utf-8")
+    stale = tmp_path / "stale.md"
+    stale.write_text("first\n", encoding="utf-8")
+    receipts.record_stage(str(tmp_path), "design",
+                          [_result("kept.md", tmp_path), _result("stale.md", tmp_path)],
+                          True, "PASS")
+    stale.write_text("edited since verification\n", encoding="utf-8")
+
+    block = receipts.verified_knowledge(str(tmp_path),
+                                    [str(kept), str(stale)])
+    assert "kept.md" in block and "stale.md" not in block
+
+
+def test_knowledge_refuses_failed_and_rejected_receipts(tmp_path, monkeypatch):
+    monkeypatch.setenv("PBATCH_DATA_DIR", str(tmp_path / "runtime"))
+    (tmp_path / "good.md").write_text("g\n", encoding="utf-8")
+    (tmp_path / "failed.md").write_text("f\n", encoding="utf-8")
+    (tmp_path / "rejected.md").write_text("r\n", encoding="utf-8")
+    receipts.record_stage(str(tmp_path), "design", [_result("good.md", tmp_path)], True, "PASS")
+    receipts.record_stage(str(tmp_path), "design", [_result("failed.md", tmp_path)], False, None)
+    receipts.record_stage(str(tmp_path), "gate", [_result("rejected.md", tmp_path)], True, "FAIL")
+
+    block = receipts.verified_knowledge(
+        str(tmp_path), [str(tmp_path / "good.md"), str(tmp_path / "failed.md"),
+                        str(tmp_path / "rejected.md")])
+    assert "good.md" in block
+    assert "failed.md" not in block and "rejected.md" not in block
+
+
+def test_knowledge_is_stable_while_nothing_changed_and_silent_when_empty(tmp_path, monkeypatch):
+    """Byte-stability is what keeps a downstream reuse fingerprint from
+    self-invalidating: a stage re-verified under --reuse writes a receipt with
+    the same content, so the block must not change."""
+    monkeypatch.setenv("PBATCH_DATA_DIR", str(tmp_path / "runtime"))
+    (tmp_path / "up.md").write_text("body\n", encoding="utf-8")
+    assert receipts.verified_knowledge(str(tmp_path), [str(tmp_path / "up.md")]) == ""
+
+    receipts.record_stage(str(tmp_path), "design", [_result("up.md", tmp_path)], True, None)
+    first = receipts.verified_knowledge(str(tmp_path), [str(tmp_path / "up.md")])
+    receipts.record_stage(str(tmp_path), "design", [_result("up.md", tmp_path)], True, None)
+    assert receipts.verified_knowledge(str(tmp_path), [str(tmp_path / "up.md")]) == first
+
+    assert receipts.verified_knowledge(str(tmp_path), []) == ""
+    assert receipts.verified_knowledge(str(tmp_path),
+                                    [str(tmp_path / "absent.md")]) == ""
+
+def _two_stage_agent(tmp_path: Path) -> Path:
+    """Agent that records each prompt it received, one file per call."""
+    seen = tmp_path / "prompts.log"
+    agent = tmp_path / "agent.sh"
+    agent.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$2" >> {seen}\n'
+        'case "$2" in *"design it"*) echo "# design" ;; *) echo "# implement" ;; esac\n',
+        encoding="utf-8")
+    agent.chmod(0o755)
+    return agent
+
+
+def _two_stage_pipeline(tmp_path: Path) -> Pipeline:
+    design = Stage(name="design", from_prompt="design it", output="docs/design.md",
+                   cwd=str(tmp_path))
+    implement = Stage(name="implement", from_outputs="design", aggregate=True,
+                      tasks=[{"prompt": "implement {input_stem}", "output": "docs/impl.md"}],
+                      cwd=str(tmp_path))
+    return Pipeline(stages=[design, implement])
+
+
+def test_rebuild_cites_verified_upstream_and_a_fully_reused_run_cites_nothing(
+        tmp_path, monkeypatch):
+    """The scenario the feature targets: upstream still verifies, downstream
+    has to be rebuilt, and the rebuild is told what upstream already proved.
+
+    Also pins the negative case. When everything is reusable there is nothing
+    to rebuild and nothing to say, so no prompt bytes are spent on a heading.
+    """
+    monkeypatch.setenv("PBATCH_DATA_DIR", str(tmp_path / "runtime"))
+    agent = _two_stage_agent(tmp_path)
+    previous = (config.AGENT_BIN, config.MEMORY_MODE, config.STREAM_OUTPUT)
+    config.AGENT_BIN, config.MEMORY_MODE, config.STREAM_OUTPUT = str(agent), "off", "none"
+    try:
+        pipeline.run_pipeline(_two_stage_pipeline(tmp_path), timeout_override=30)
+        first = (tmp_path / "prompts.log").read_text(encoding="utf-8")
+        assert "Verified upstream artifacts" not in first, "a first run has no receipts"
+
+        (tmp_path / "prompts.log").write_text("", encoding="utf-8")
+        pipeline.run_pipeline(_two_stage_pipeline(tmp_path), timeout_override=30, reuse=True)
+        reused = (tmp_path / "prompts.log").read_text(encoding="utf-8")
+        assert reused == "", "a fully reused run must not re-prompt anything"
+
+        (tmp_path / "docs" / "impl.md").unlink()
+        (tmp_path / "prompts.log").write_text("", encoding="utf-8")
+        pipeline.run_pipeline(_two_stage_pipeline(tmp_path), timeout_override=30, reuse=True)
+        rebuild = (tmp_path / "prompts.log").read_text(encoding="utf-8")
+    finally:
+        config.AGENT_BIN, config.MEMORY_MODE, config.STREAM_OUTPUT = previous
+
+    assert rebuild.count("Verified upstream artifacts") == 1
+    assert "docs/design.md" in rebuild, "the cited artifact is named"
+    assert "implement combined" in rebuild, "the real task prompt is still there"

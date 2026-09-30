@@ -182,45 +182,6 @@ def _task_from_def(task_def: dict, prompt: str, output_path: str, model_override
         task.timeout = timeout_override
     return task
 
-def _aggregate_tasks(stage: Stage, prev_outputs: list, model_override: str = "", timeout_override: int = 0, reuse: bool = False,
-                     validate_cmd: str = "", reuse_legacy: bool = False,
-                     fingerprint_mode: bool = False,
-                     original_prompt: str = "") -> tuple[list[Task], list[str]]:
-    """Combine every upstream artifact into one prompt per task template so
-    downstream roles see all evidence (input_stem becomes 'combined') instead
-    of fanning each artifact into an independent task.
-
-    Returns (new_tasks, reused_output_paths). With reuse=True, a template
-    whose combined output file already exists is skipped and its path is
-    returned as reused so downstream stages still see it.
-    """
-    combined = combine_outputs(prev_outputs)
-    if not combined:
-        log.warning("No upstream outputs available for aggregate stage '%s'", stage.name)
-        return [], []
-
-    tasks = []
-    reused = []
-    for task_def in stage.tasks:
-        prompt = _task_prompt(task_def, combined, "combined", source_manifest(prev_outputs),
-                              original_prompt)
-        if not prompt:
-            continue
-        output_path = task_def.get("output", "").replace("{input_stem}", "combined")
-        task = _task_from_def(task_def, prompt, output_path, model_override, timeout_override, stage)
-        prepare_task_context(task, prev_outputs, strict=False)
-        # T9: fingerprint effective inputs (resolved output + model).
-        out_resolved = str(task.output_path_unresolved()) if task.output else ""
-        effective_validate = task.validate if task.validate is not None else validate_cmd
-        fp = _expected_fp(task.prompt, out_resolved, effective_validate, task.model,
-                          task.provider, fingerprint_mode, task.workdir(),
-                          task.effective_agent(), task.thinking, task.tools,
-                          task.exclude_tools, task.no_tools)
-        if _maybe_reuse_task(stage, task, out_resolved, output_path,
-                              effective_validate, reuse_legacy, fp, reuse, reused):
-            continue
-        tasks.append(task)
-    return tasks, reused
 
 def _stage_from_prompt_tasks(stage: Stage, reuse: bool, model_override: str, timeout_override: int,
                              validate_cmd: str = "", reuse_legacy: bool = False,
@@ -313,56 +274,9 @@ def _stage_from_dir_tasks(stage: Stage, reuse: bool, model_override: str, timeou
     log.info("Loaded %d tasks from %s", len(tasks), stage.from_dir)
     return tasks, reused
 
-def _stage_from_outputs_tasks(stage: Stage, stage_outputs: dict, reuse: bool, model_override: str, timeout_override: int,
-                              validate_cmd: str = "", reuse_legacy: bool = False,
-                              fingerprint_mode: bool = False,
-                              original_prompt: str = "",
-                              extra_evidence: Optional[list[str]] = None) -> tuple[list[Task], list[str]]:
-    """Tasks fed by upstream artifacts (aggregate merges them; extra_evidence
-    appends gate-fix reports)."""
-    names, prev_outputs, missing = _collect_upstream(stage.from_outputs, stage_outputs)
-    if missing:
-        log.error("Previous stage(s) not found: %s", ", ".join(missing))
-        return [], []
-    if extra_evidence:
-        prev_outputs = list(prev_outputs) + [p for p in extra_evidence if Path(p).exists()]
-    tasks: list[Task] = []
-    reused: list[str] = []
-    if stage.aggregate:
-        return _aggregate_tasks(stage, prev_outputs, model_override, timeout_override, reuse,
-                                validate_cmd, reuse_legacy, fingerprint_mode, original_prompt)
-    for out_path_str in prev_outputs:
-        out_path = Path(out_path_str)
-        if not out_path.exists():
-            log.warning("Output file not found: %s", out_path)
-            continue
-        input_content = combine_outputs([str(out_path)])
-        input_stem = out_path.stem
-        # Create tasks from templates (prompt string or template file,
-        # both with {input_content}/{input_stem} placeholders)
-        for task_def in stage.tasks:
-            prompt = _task_prompt(task_def, input_content, input_stem, str(out_path),
-                                  original_prompt)
-            if not prompt:
-                continue
-            output_path = task_def.get("output", "").replace("{input_stem}", input_stem)
-            task = _task_from_def(task_def, prompt, output_path, model_override, timeout_override, stage)
-            prepare_task_context(task, [out_path.resolve()], strict=False)
-            # T9 (round-4 M6): fingerprint the task's effective inputs so
-            # the sidecar written after success matches this hash.
-            out_resolved = str(task.output_path_unresolved()) if task.output else ""
-            effective_validate = task.validate if task.validate is not None else validate_cmd
-            fp = _expected_fp(task.prompt, out_resolved, effective_validate, task.model,
-                              task.provider, fingerprint_mode, task.workdir(),
-                              task.effective_agent(), task.thinking, task.tools,
-                              task.exclude_tools, task.no_tools)
-            if _maybe_reuse_task(stage, task, out_resolved, output_path,
-                                  effective_validate, reuse_legacy, fp, reuse, reused):
-                continue
-            tasks.append(task)
-    log.info("Loaded %d tasks from %d outputs of stage(s) '%s'",
-             len(tasks), len(prev_outputs), ", ".join(names))
-    return tasks, reused
+
+
+
 
 def _collect_upstream(from_outputs, stage_outputs: dict) -> tuple[list[str], list[str], list[str]]:
     """Resolve one or many upstream stage names into one ordered evidence list."""
@@ -980,3 +894,13 @@ def _run_gate_fix_loop(stage: Stage, stage_outputs: dict, validate_cmd: str,
             log.error("GATE-FIX round %d: git commit failed", fix_round)
             return "FAIL", results
     return "FAIL", results
+
+
+# from_outputs assembly lives in pipeline_from_outputs for the size budget. It
+# needs names defined above, so it is imported here rather than at the top;
+# re-exported so existing callers and tests keep resolving them here.
+from .pipeline_from_outputs import (  # noqa: E402
+    _aggregate_tasks as _aggregate_tasks,
+    _stage_from_outputs_tasks as _stage_from_outputs_tasks,
+    _verified_note as _verified_note,
+)
