@@ -21,7 +21,14 @@ agent:
 validators:
   repo-gate:
     cmd: "pnpm check"
+  # 诚实完成报告（工具提供的脚本）：APS 重构轮每个任务都要求产物带完成报告，
+  # 由本项目声明引用（不是运行器的全局条目）
+  completion: "python {tool_root}/scripts/check-completion-report.py {output}"
   # UI 产物检查：工具提供的脚本，由本项目声明引用（不是运行器的全局条目）
   uicheck: "python {tool_root}/scripts/check-ui-spec.py --dir {cwd}/src --all --json"
   uigeometry: "python {tool_root}/scripts/check-ui-geometry.py --dir {cwd}/src --all --json"
+  # APS 页面范围的几何检查：与 uigeometry 同一条规则，只扫本轮允许改动的目录，
+  # 所以范围写进声明而不是写进流水线的内联命令（pipeline 的 validate 字段
+  # 只接受项目已声明的校验器名）
+  apsgeometry: "python {tool_root}/scripts/check-ui-geometry.py --dir {cwd}/apps/web/src/pages/aps --all --json"
   uieng: "python {tool_root}/scripts/check-frontend-quality.py --dir {cwd}/src --strict --json"

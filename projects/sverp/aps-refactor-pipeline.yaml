@@ -102,7 +102,7 @@ stages:
     model: space-bunny-free
     mode: serial
     validate: uicheck,uieng
-    validate_cmd: "python {tool_root}/scripts/check-ui-geometry.py --dir {cwd}/apps/web/src/pages/aps --all --json"
+    validate_cmd: apsgeometry
     commands:
       - pnpm --filter @sverp/web typecheck
       - pnpm --filter @sverp/web test
