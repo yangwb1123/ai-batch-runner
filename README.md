@@ -35,6 +35,12 @@ pi-batch ops serve --control --token-file ~/.config/pbatch/ops-token
 默认只读；`--control` 只允许操作服务端启动时绑定的 workspace/agent，历史会话不可
 隐式 resume，详细边界见 [`docs/RELEASING.md`](docs/RELEASING.md)。
 
+全局任务观测使用 `pi-batch ops tasks [--json|--follow]`，或
+`pi-batch ops serve --global --token-file ~/.config/pbatch/ops-token`。
+CLI/Web 共用有界事实投影；自定义运行目录用 `ops sources add` 登记一次。
+成本缺失、目标验收与下一步预测不会伪装成零或成功；本批默认不执行修复、清理或上报。
+使用与后续批次见 [全局任务中心](docs/TASK_CENTER.md)。
+
 跨设备、跨实例会话使用 `pi-batch fleet`：启动 Agent Hub 与各实例的出站 Gateway，
 通过 CLI、`fleet tui` 或 Flutter Console 查看授权会话、发送 prompt、接收事件和取消 turn。
 `fleet compute` 提供设备资源目录、计算任务与调度 TUI；`fleet agent --compute-tools`

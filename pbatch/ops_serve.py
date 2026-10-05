@@ -145,6 +145,7 @@ class OpsHandler(BaseHTTPRequestHandler):
     cwd = ""
     token = ""
     control: Optional[MobileSessionManager] = None
+    global_tasks = False
     server_version = "pi-batch-ops/2"
 
     def log_message(self, fmt, *args):  # silence request noise
@@ -172,6 +173,8 @@ class OpsHandler(BaseHTTPRequestHandler):
             self._get_sessions(route, query)
         elif route.startswith("/api/jobs/"):
             self._get_job(route)
+        elif route == "/api/tasks" or route.startswith("/api/tasks/"):
+            self._get_tasks(route, query)
         else:
             self._get_standard(route, query)
 
@@ -190,6 +193,27 @@ class OpsHandler(BaseHTTPRequestHandler):
                 self.data_dir, limit)})
         else:
             _error(self, f"not found: {route}", 404)
+
+    def _get_tasks(self, route: str, query: dict) -> None:
+        if not self.global_tasks:
+            _error(self, "global task view is disabled", 404)
+            return
+        if not self.token:
+            _error(self, "global task view requires an access token", 403)
+            return
+        from .task_center import detail, snapshot
+        source = _q(query, "source")
+        if route == "/api/tasks":
+            _json_response(self, snapshot(_qi(query, "limit", 100, 200), source))
+            return
+        task_id = unquote(route[len("/api/tasks/"):])
+        if len(task_id) != 35 or not task_id.startswith("tc-"):
+            raise ValueError("invalid task identity")
+        value = detail(task_id, source)
+        if value is None:
+            _error(self, "task not found in the bounded recent window", 404)
+        else:
+            _json_response(self, value)
 
     def _get_log(self, query: dict) -> None:
         tail = _qi(query, "tail", 80, 500)
@@ -270,12 +294,16 @@ class OpsHandler(BaseHTTPRequestHandler):
         return type(self).control
 
     def _serve_page(self) -> None:
-        page = ops_mod.report_html(
-            self.data_dir, self.cwd, control_enabled=self._sessions() is not None)
-        live = page.replace(
-            "</head>",
-            "<script>setInterval(()=>location.reload(),30000)</script></head>",
-            1)
+        if self.global_tasks:
+            from .task_center_report import page_html
+            live = page_html()
+        else:
+            page = ops_mod.report_html(
+                self.data_dir, self.cwd, control_enabled=self._sessions() is not None)
+            live = page.replace(
+                "</head>",
+                "<script>setInterval(()=>location.reload(),30000)</script></head>",
+                1)
         body = live.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -301,6 +329,8 @@ def _serve_parser() -> argparse.ArgumentParser:
     parser.add_argument("--token-file", default="", help="从非符号链接文件读取访问令牌")
     parser.add_argument("--control", action="store_true",
                         help="开启受保护的移动会话/发送指令 API")
+    parser.add_argument("--global", dest="global_tasks", action="store_true",
+                        help="全局任务中心（只读，要求 token）")
     parser.add_argument("--agent", default=config.AGENT_BIN,
                         help="control session 使用的 agent（仅服务端配置）")
     parser.add_argument("--model", default=config.AGENT_DEFAULT_MODEL)
@@ -320,8 +350,10 @@ def _serve_options(args, parser: argparse.ArgumentParser) -> str:
     except (OSError, ValueError) as exc:
         parser.error(str(exc))
     remote = not _is_loopback(args.host)
-    if (args.control or remote) and not token:
-        parser.error("--token (or PBATCH_OPS_TOKEN) is required for control/remote access")
+    if args.global_tasks and args.control:
+        parser.error("--global is read-only and cannot be combined with --control")
+    if (args.control or args.global_tasks or remote) and not token:
+        parser.error("--token (or PBATCH_OPS_TOKEN) is required for global/control/remote access")
     if bool(args.tls_cert) != bool(args.tls_key):
         parser.error("--tls-cert and --tls-key must be supplied together")
     if remote and not (args.tls_cert and args.tls_key):
@@ -344,6 +376,7 @@ def _control_manager(args, cwd: str, parser: argparse.ArgumentParser):
 def _run_server(args, cwd: str, token: str, manager) -> None:
     OpsHandler.data_dir = str(config.data_dir(cwd))
     OpsHandler.cwd, OpsHandler.token, OpsHandler.control = cwd, token, manager
+    OpsHandler.global_tasks = args.global_tasks
     server = None
     try:
         server = ThreadingHTTPServer((args.host, args.port), OpsHandler)
@@ -363,6 +396,7 @@ def _run_server(args, cwd: str, token: str, manager) -> None:
         if server is not None:
             server.server_close()
         OpsHandler.control = None
+        OpsHandler.global_tasks = False
 
 
 def serve_main(argv: Optional[list[str]] = None) -> int:
