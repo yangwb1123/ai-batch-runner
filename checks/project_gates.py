@@ -170,29 +170,38 @@ def _entrypoint_failures(project: Path) -> list[str]:
     ]
 
 
-def _documentation_failures(project: Path) -> list[str]:
+def _documentation_failures(project: Path) -> tuple[list[str], list[str]]:
+    """(failures, skipped) for the cross-check against the target repository.
+
+    An absent sibling checkout is not a contract violation of *this* repository:
+    it means the cross-check could not be evaluated here, so it is reported as a
+    skip rather than silently passed or turned into a red build. Every other
+    check below reads only files inside this repository and stays fail-closed.
+    """
     command, repo = _gate_command(project), _target_repo(project)
     if not command:
-        return []
+        return [], []
     if not repo:
-        return [f"{project.name}: pi-batch.yaml does not declare project.target_repo"]
+        return [f"{project.name}: pi-batch.yaml does not declare project.target_repo"], []
     if not repo.is_dir():
-        return [f"{project.name}: target repo {repo} not found"]
-    return [
+        return [], [f"{project.name}: target repo {repo} not present, cross-check not evaluated"]
+    undocumented = [
         f"{project.name}: repo-gate calls `{call}`, which the repository's documents "
         f"({'/'.join(DOCS)}) never state"
         for call in _documented(repo, command)
     ]
+    return undocumented, []
 
 
-def _inspect_project(project: Path) -> tuple[bool, list[str]]:
+def _inspect_project(project: Path) -> tuple[bool, list[str], list[str]]:
     referenced = _referenced(project)
     if not referenced:
-        return False, []
+        return False, [], []
     failures = _validator_failures(project, referenced)
     failures.extend(_entrypoint_failures(project))
-    failures.extend(_documentation_failures(project))
-    return True, failures
+    documentation, skipped = _documentation_failures(project)
+    failures.extend(documentation)
+    return True, failures, skipped
 
 
 def _projects() -> list[Path]:
@@ -201,12 +210,16 @@ def _projects() -> list[Path]:
     return sorted(path for path in PROJECTS.iterdir() if path.is_dir())
 
 
-def _report(failures: list[str], checked: int) -> int:
+def _report(failures: list[str], skipped: list[str], checked: int) -> int:
+    for skip in skipped:
+        print(f"SKIP: project gates — {skip}")
     for failure in failures:
         print(f"FAIL: project gates — {failure}")
     if failures:
         return 1
-    print(f"PASS: project gates ({checked} campaign project(s) validate on their own {GATE})")
+    summary = f"PASS: project gates ({checked} campaign project(s) validate on their own {GATE}"
+    summary += f", {len(skipped)} cross-check skipped)" if skipped else ")"
+    print(summary)
     return 0
 
 
@@ -214,12 +227,15 @@ def run() -> int:
     if yaml is None:
         print("FAIL: project gates (PyYAML unavailable)")
         return 1
-    failures, checked = [], 0
+    failures: list[str] = []
+    skipped: list[str] = []
+    checked = 0
     for project in _projects():
-        has_campaign, project_failures = _inspect_project(project)
+        has_campaign, project_failures, project_skips = _inspect_project(project)
         checked += int(has_campaign)
         failures.extend(project_failures)
-    return _report(failures, checked)
+        skipped.extend(project_skips)
+    return _report(failures, skipped, checked)
 
 
 if __name__ == "__main__":

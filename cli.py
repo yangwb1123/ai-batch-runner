@@ -62,11 +62,21 @@ def cmd_check(json_mode: bool = False) -> int:
         ("complexity", _check_complexity),
         ("root-policy", _check_root),
         ("style", _check_style),
-        ("project-gates", _check_project_gates),
     ], json_mode)
 
 
 def _check_project_gates() -> int:
+    """Opt-in: validate projects/<name>/ campaigns against each target's gate.
+
+    Deliberately NOT part of cmd_check. ``projects/`` is a machine-local
+    registry (git-ignored; every entry declares an absolute ``target_repo``),
+    so its verdict changes when a sibling checkout appears or disappears
+    without any change to this repository. A gate whose result depends on the
+    machine cannot belong to the versioned contract, so it stays reachable and
+    still fails closed — but only when a caller explicitly asks
+    (``cli.py check-project-gates``) or when a campaign actually drives that
+    target (``cli.py project-gate <name>``).
+    """
     from checks.project_gates import run as gates_run
     return gates_run()
 
@@ -133,7 +143,13 @@ def cmd_project_gate() -> int:
     decides whether batch output is accepted — in the target repository, with
     the target's own tooling.
     """
-    projects = sorted(p for p in (ROOT / "projects").iterdir()
+    registry = ROOT / "projects"
+    if not registry.is_dir():
+        print(f"no project registry at {registry} — it is machine-local and "
+              f"git-ignored; put each target's own config in its repository",
+              file=sys.stderr)
+        return 1
+    projects = sorted(p for p in registry.iterdir()
                       if p.is_dir() and (p / "pi-batch.yaml").exists())
     if len(sys.argv) < 3:
         print(f"{'project':22s} {'gate':52s} repository")
@@ -178,6 +194,7 @@ def main() -> int:
             lambda mode=False: _aggregate([("style", _check_style)], mode),
             json_mode),
         "check-test": cmd_check_test,
+        "check-project-gates": lambda: _call_mode(_check_project_gates, json_mode),
         "project-gate": cmd_project_gate,
         "harness": lambda: _call_mode(cmd_harness, json_mode),
     }

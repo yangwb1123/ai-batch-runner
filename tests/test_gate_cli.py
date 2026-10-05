@@ -34,15 +34,36 @@ def test_aggregate_fails_closed_when_gate_crashes(capsys):
 
 def test_cmd_check_runs_all_gates_and_harness_delegates(monkeypatch):
     called = []
-    for name in ("_check_filesize", "_check_complexity", "_check_root", "_check_style",
-                 "_check_project_gates"):
+    for name in ("_check_filesize", "_check_complexity", "_check_root", "_check_style"):
         monkeypatch.setattr(gate_cli, name,
                             lambda name=name: called.append(name) or 0)
     assert gate_cli.cmd_check() == 0
+    # projects/ is machine-local, so its gate is opt-in, never part of the
+    # versioned contract — see _check_project_gates' docstring.
     assert called == ["_check_filesize", "_check_complexity",
-                      "_check_root", "_check_style", "_check_project_gates"]
+                      "_check_root", "_check_style"]
     monkeypatch.setattr(gate_cli, "cmd_check", lambda: 7)
     assert gate_cli.cmd_harness() == 7
+
+
+def test_project_gates_is_opt_in_and_still_fails_closed(monkeypatch):
+    calls = []
+
+    class _Gates:
+        @staticmethod
+        def run() -> int:
+            calls.append(1)
+            return 1
+
+    monkeypatch.setitem(sys.modules, "checks.project_gates", _Gates)
+    monkeypatch.setattr(gate_cli, "_aggregate",
+                        lambda gates, mode=False: [name for name, _ in gates])
+    # Not reachable from cmd_check ...
+    assert "_check_project_gates" not in gate_cli._aggregate([])
+    # ... but explicitly invocable, and it propagates a failure verbatim.
+    monkeypatch.setattr(sys, "argv", ["cli.py", "check-project-gates"])
+    assert gate_cli.main() == 1
+    assert calls == [1]
 
 
 def test_cmd_check_test_uses_unittest_discovery(monkeypatch):
@@ -76,6 +97,8 @@ def test_main_dispatches_every_command(monkeypatch):
         "check-root": "_check_root",
         "check-style": "_check_style",
         "check-test": "cmd_check_test",
+        "check-project-gates": "_check_project_gates",
+        "project-gate": "cmd_project_gate",
         "harness": "cmd_harness",
     }
     for command, target in commands.items():
