@@ -8,6 +8,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .campaign_budget import parse_deadline
+
 
 DEFAULT_ANALYSIS_PROMPT = """Analyze module '{module}' at {module_path} and its related interfaces in the repository.
 Return ONLY a JSON array with at most {candidate_limit} high-value improvement directions, sorted by value.
@@ -119,6 +121,10 @@ class CampaignSettings:
     # Optional global cap; 0 preserves the historical per-module quota.
     max_total_directions: int = 0
     minimum_score: float = 0
+    # Inject the merged / gate-rejected direction ledger into every analysis
+    # prompt so a long run stops re-proposing solved work and carries a real
+    # defect's blocking findings forward instead of re-cutting it.
+    direction_ledger: bool = False
     # Empty values use the private per-workspace runtime root.  Explicit
     # paths remain supported for projects that intentionally version reports.
     output_dir: str = ""
@@ -131,6 +137,11 @@ class CampaignSettings:
     pipeline_timeout: int = 4 * 60 * 60
     # 0 disables the evidence-based stall watchdog; the hard timeout remains.
     pipeline_no_progress_timeout: int = 0
+    # Restart-proof budget: seconds measured from the FIRST recorded campaign
+    # start (a supervisor restarting the process must not extend the run), and
+    # an optional absolute cutoff.  0 / "" disables the stop.
+    budget_seconds: int = 0
+    deadline_at: str = ""
     worktree_root: str = ""  # 空 = data_dir/worktrees（PBATCH_DATA_DIR 感知）
     analysis_minutes: float = 3
     pipeline_minutes: float = 20
@@ -144,6 +155,9 @@ class CampaignSettings:
     recovery_stop_after_stalled_rounds: int = 2
     preflight_require_repo_validator: bool = False
     preflight_required_validators: tuple[str, ...] = ()
+    # Scope of an automatic merge: paths a candidate may never change.  Kept in
+    # the merge transaction so a green gate can never widen the declared scope.
+    merge_forbid_paths: tuple[str, ...] = ()
 
     def effective_worktree_root(self, root: Path) -> Path:
         """worktree 根：显式配置优先；空 = data_dir/worktrees（可移出项目）。"""
@@ -162,6 +176,7 @@ class CampaignSettings:
         estimates = _section(data, "estimates")
         recovery = _section(data, "recovery")
         preflight = _section(data, "preflight")
+        merge = _section(data, "merge")
         return cls(
             name=_string_value(data, "name", "repository-improvements"),
             roots=_string_list(discovery, "roots", cls.roots),
@@ -179,6 +194,7 @@ class CampaignSettings:
             max_total_directions=_int_value(
                 selection, "max_total_directions", 0),
             minimum_score=_float_value(selection, "minimum_score", 0),
+            direction_ledger=_bool_value(selection, "ledger", False),
             output_dir=_string_value(state, "output_dir", ""),
             state_file=_string_value(state, "state_file", ""),
             summary_file=_string_value(state, "summary_file", ""),
@@ -189,11 +205,14 @@ class CampaignSettings:
             pipeline_timeout=_int_value(implementation, "timeout", 4 * 60 * 60),
             pipeline_no_progress_timeout=_int_value(
                 implementation, "no_progress_timeout", 0),
+            budget_seconds=_int_value(implementation, "budget_seconds", 0),
+            deadline_at=_string_value(implementation, "deadline_at", ""),
             worktree_root=_string_value(implementation, "worktree_root", ""),
             preflight_require_repo_validator=_bool_value(
                 preflight, "require_repo_validator", False),
             preflight_required_validators=_string_list(
                 preflight, "required_repo_validators", ()),
+            merge_forbid_paths=_string_list(merge, "forbid_paths", ()),
             analysis_minutes=_float_value(estimates, "analysis_minutes", 3),
             pipeline_minutes=_float_value(estimates, "pipeline_minutes", 20),
             **_recovery_values(recovery),
@@ -229,6 +248,10 @@ class CampaignSettings:
             invalid.append("recovery.stop_after_stalled_rounds")
         if self.pipeline_no_progress_timeout < 0:
             invalid.append("implementation.no_progress_timeout")
+        if self.budget_seconds < 0:
+            invalid.append("implementation.budget_seconds")
+        if self.deadline_at and parse_deadline(self.deadline_at) is None:
+            invalid.append("implementation.deadline_at (expected ISO-8601 or epoch seconds)")
         finite = {"selection.minimum_score": self.minimum_score,
                   "estimates.analysis_minutes": self.analysis_minutes,
                   "estimates.pipeline_minutes": self.pipeline_minutes}

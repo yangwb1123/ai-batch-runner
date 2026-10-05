@@ -198,6 +198,15 @@ def _recent_rejected(state: Path, limit: int = _MAX_REJECTED_INJECT) -> list:
     return rejected
 
 
+def _direction_ledger(root: Path, settings: CampaignSettings) -> str:
+    """Merged + gate-rejected direction history (opt-in via selection.ledger)."""
+    if not settings.direction_ledger:
+        return ""
+    from .campaign_ledger import build_ledger
+    return build_ledger(root, settings.state_path(root),
+                        settings.effective_worktree_root(root))
+
+
 def build_analysis_task(root: Path, settings: CampaignSettings, module: str,
                         model: str = "", provider: str = "", timeout: int = 0,
                         focus: str = "") -> Task:
@@ -212,6 +221,10 @@ def build_analysis_task(root: Path, settings: CampaignSettings, module: str,
     if context:
         prompt += ("\n\n==== Project context (constitution + rejected history) ====\n"
                    + context)
+    ledger = _direction_ledger(root, settings)
+    if ledger:
+        prompt += ("\n\n==== Direction ledger (merged + gate-rejected history) ====\n"
+                   + ledger)
     task = Task(prompt=prompt, output=str(output), cwd=str(root))
     task.memory = {"stage": "campaign-analysis", "module": module,
                    "memory_mode": "execute"}
