@@ -1,0 +1,112 @@
+# aero-id backend-only campaign: full Go done-gate, no frontend, 5 days.
+#
+# Differences from the general projects/aero-id/campaign.yaml:
+#   - discovery covers every backend root and excludes web/;
+#   - the analysis prompt forbids any frontend work and forbids meta stages;
+#   - state lives under the gitignored .pi-batch/ tree so the campaign root
+#     stays clean for the merge controller's dirty-tree preflight;
+#   - repo-gate (see pi-batch.yaml) is the full done-gate plus a web/ refusal.
+name: aero-id-maintenance
+
+discovery:
+  roots:
+    - internal/app
+    - internal/config
+    - internal/connector
+    - internal/domain
+    - internal/event
+    - internal/handler
+    - internal/idempotency
+    - internal/middleware
+    - internal/outbox
+    - internal/pkg
+    - internal/region
+    - internal/repository
+    - internal/service
+    - internal/sso
+    - internal/storage
+    - cmd
+    - configs
+    - scripts
+    - api/proto
+    - migrations
+  exclude:
+    - web
+    - node_modules
+    - dist
+    - testdata
+    - gen
+    - generated
+    - mock
+    - mocks
+    - tests
+    - docs
+    - examples
+    - logs
+    - vendor
+    - .git
+    - .github
+    - .pi-batch
+    - __pycache__
+  max_depth: 1
+  fallback_top_level: false
+
+analysis:
+  jobs: 2
+  retries: 2
+  candidate_limit: 3
+  prompt: |
+    Analyze module '{module}' at {module_path} in aero-id, a Go distributed
+    account-aggregation, account-management, operation-orchestration and audit
+    control plane. Read AGENTS.md and
+    docs/plans/2026-08-04-distributed-account-aggregation.md first, then
+    verify every claim against the current source and tests.
+
+    HARD SCOPE BOUNDARY: this campaign is backend-only. Do not inspect, read,
+    modify, create, format, stage or test web/ or any frontend code, asset,
+    package manifest or build file. Do not run npm, pnpm, node or any frontend
+    check. If an issue is only fixable in the frontend, report it as deferred
+    and propose the backend-only slice (contract, handler, service, repository,
+    migration, or gate) instead.
+
+    Do not propose a meta/adversarial-review stage or role; independent
+    verification is the design_gate stage.
+
+    Prioritize, in order: authority and tenant/dataset scope enforcement, source
+    capability and audience binding, durable audit/event/outbox correctness,
+    operation and sync unknown-outcome recovery and reconciliation, home-region
+    routing, fencing and replication safety, callback SSRF/delivery invariants,
+    migration correctness and reversibility, startup/configuration fail-closed
+    validation, and production operability. Check the campaign state file
+    .pi-batch/aero-id-backend5d/state.jsonl and the committed designs under
+    docs/designs/ so already-completed work is not proposed again. Prefer
+    minimal, evidence-backed slices over broad refactors or test-only churn.
+
+    Return ONLY a JSON array of at most {candidate_limit} directions sorted by
+    value. Each object must contain title, problem, value (1-10),
+    risk_reduction (1-10), effort (1-10), confidence (1-10), evidence
+    (repository file/symbol paths), and acceptance (testable backend checks).
+    Mark unverified claims as proposed. Do not modify code.
+
+selection:
+  max_directions: 2
+  max_total_directions: 4
+  minimum_score: 0
+
+implementation:
+  pipeline: .pi-batch/aero-id-backend5d/campaign-pipeline.yaml
+  requirement_stage: requirements
+  concurrency: 2
+  timeout: 14400
+  no_progress_timeout: 5400
+  worktree_root: .pi-batch/worktrees
+
+state:
+  output_dir: .pi-batch/aero-id-backend5d/auto
+  state_file: .pi-batch/aero-id-backend5d/state.jsonl
+  summary_file: .pi-batch/aero-id-backend5d/SUMMARY.md
+  line_max_bytes: 262144
+
+estimates:
+  analysis_minutes: 5
+  pipeline_minutes: 90

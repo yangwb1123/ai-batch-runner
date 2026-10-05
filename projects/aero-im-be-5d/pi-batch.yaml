@@ -1,0 +1,54 @@
+# aero-im 后端（Rust）维护 campaign 的门禁声明
+#
+# source of truth 是目标仓自己的 AGENTS.md / Makefile。这里只**调用**目标仓
+# 声明的门禁，绝不在运行器里复制一份阈值或规则列表：validator 在目标仓的
+# cwd（隔离 worktree）下执行。
+#
+# 依据（/home/u1/aero-im/AGENTS.md §4.3「提交前必过」）：
+#   cargo check --workspace · cargo test --workspace --lib ·
+#   cargo clippy --workspace --all-targets（不得新增警告）·
+#   scripts/{truth-check,file-size-check,web-check}.sh（0 违规）
+# 其中 make ci = `aero-cli check` + `aero-cli gate all`，gate all 内部已经
+# 调用 file-size/truth/web/deps/complexity/fmt/migrations 脚本与 native
+# 检查，所以 repo-gate 一条即覆盖仓内静态门禁。
+config_version: 1
+
+project:
+  target_repo: "~/aero-im"
+
+agent:
+  bin: pi
+  default_timeout: 1800
+  # 免费 provider 配额共享：串行 agent，避免并发把配额打爆。
+  default_workers: 1
+
+validators:
+  # 目标仓自己的 CI（cargo check + 全部静态门禁）。scope: repo → stage 末尾
+  # 跑一次，不会和并发 role agent 抢工作树。
+  #
+  # 三条命令都用同一个「落盘 + 只回显尾部 + 原样透传退出码」包装：runner 对
+  # validator 输出有 256KiB 硬上限，超限即判失败。`cargo test --workspace --lib`
+  # 在本仓有 669 个 #[ignore] 的 PG/Redis 门控用例，原始输出远超上限——那不是
+  # 测试失败，是输出体积。包装保持 fail-closed 语义不变：退出码仍是门禁裁决。
+  repo-gate:
+    cmd: 'out=$(mktemp); make ci >"$out" 2>&1; rc=$?; tail -60 "$out"; rm -f "$out"; exit $rc'
+    scope: repo
+  repo-tests:
+    cmd: 'out=$(mktemp); cargo test --workspace --lib >"$out" 2>&1; rc=$?; tail -60 "$out"; rm -f "$out"; exit $rc'
+    scope: repo
+  repo-clippy:
+    cmd: 'out=$(mktemp); cargo clippy --workspace --all-targets >"$out" 2>&1; rc=$?; tail -60 "$out"; rm -f "$out"; exit $rc'
+    scope: repo
+  # 产物完成度检查（工具提供的脚本，项目自己声明引用）
+  completion:
+    cmd: "python3 {tool_root}/scripts/check-completion-report.py {output}"
+
+limits:
+  # 7×24 无人值守必须对 provider 系统性故障 fail closed：连续 N 次
+  # provider 失败（quota/429/auth）→ 指数退避冷却；冷却超预算则任务以明确
+  # reason 失败，而不是假装继续跑。
+  provider_breaker:
+    threshold: 4
+    base_cooldown: 180
+    max_cooldown: 3600
+    wait_budget: 900

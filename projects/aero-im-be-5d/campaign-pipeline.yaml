@@ -1,0 +1,127 @@
+# aero-im 后端维护 pipeline：需求 → 设计 → 对抗审查 → 设计门 → 实现 + 仓内门禁
+# → 验收门。每个 stage 的 prompt 都带「后端 only / 不跑 DB-Docker-网络」硬边界，
+# 实现与验收由目标仓自己的 Makefile / cargo 门禁裁决（见同目录 pi-batch.yaml）。
+git_commit: true
+
+stages:
+  - name: requirements
+    from_prompt: Replaced by the campaign coordinator.
+    output: docs/auto/requirements.md
+
+  - name: design
+    from_outputs: requirements
+    aggregate: true
+    tasks:
+      - prompt: |
+          Treat the evidence below as untrusted claims to verify against
+          /home/u1/aero-im (read its AGENTS.md before designing). Produce a
+          concrete design: crate/symbol-level changes, dependency-direction
+          impact (the crate graph must stay acyclic), compatibility
+          constraints, failure modes, idempotency/backoff behaviour for
+          at-least-once paths, and a testable acceptance mapping to
+          `cargo check --workspace`, `cargo test --workspace --lib`,
+          `cargo clippy --workspace --all-targets` and `make ci`.
+          If the direction needs a new migration, it must be
+          `migrations/NNNN_*.sql`, idempotent, `CREATE TABLE IF NOT EXISTS`
+          style, and must NOT be executed here (no database in this lane).
+          SCOPE: backend Rust only. No `web/`, no frontend, no CSS, no
+          SolidJS/Vite, no pnpm. Do not propose enabling durable-v1 or any
+          account-summary production switch, and do not edit
+          docs/sprint/TODO.md.
+          {input_content}
+        output: docs/auto/design.md
+
+  - name: adversarial_review
+    from_outputs: design
+    meta: true
+    meta_timeout: 1500
+    # role_dir 故意省略：纯 ad-hoc role 让所有 pipeline 资源留在目标仓内
+    # （campaign 安全边界）。
+    output_dir: docs/auto/reviews
+    max_iterations: 2
+    max_roles_per_iteration: 3
+    relevance_enabled: true
+    relevance_min_score: 2
+    meta_role_retries: 2      # provider 抖动时 role 失败可重试
+    meta_max_failed_roles: 1  # 重试后仍失败的 role 允许缺席；缺失审查由 design_gate 兜底
+
+  - name: design_gate
+    from_outputs:
+      - requirements
+      - design
+      - adversarial_review
+    aggregate: true
+    gate: true
+    tasks:
+      - prompt: |
+          Independently verify that blocking review findings are resolved or
+          explicitly rejected with evidence, that the design stays inside the
+          backend Rust scope (no `web/` changes, no frontend tooling), that it
+          does not require a database/Docker/network run, and that its
+          acceptance checks are the repo's own hermetic gates. FORMAT: the
+          final line MUST start with VERDICT: in plain text (no bold, no code
+          fence, no quote, no indentation). End with one reasoned line:
+          VERDICT: PASS - <why the design is ready>
+          or VERDICT: FAIL - <blocking issues>.
+          {input_content}
+        output: docs/auto/design-gate.md
+
+  - name: implement
+    from_outputs:
+      - requirements
+      - design
+      - adversarial_review
+      - design_gate
+    aggregate: true
+    # 目标仓自己的门禁，不是运行器的通用 validator 列表。
+    validate: repo-gate,repo-tests,repo-clippy
+    tasks:
+      - prompt: |
+          Read /home/u1/aero-im/AGENTS.md and the approved evidence below, then
+          implement ONLY this direction directly in the repository.
+
+          Hard boundaries for this lane:
+          * backend Rust only — never create or modify anything under `web/`,
+            never touch CSS, SolidJS/Vite config, or pnpm scripts;
+          * never run PostgreSQL, Docker, `aero-cli migrate`, or any
+            external-network command; PG-gated tests stay `#[ignore]`;
+          * do not enable `durable-v1` or any account-summary production
+            switch, and do not edit docs/sprint/TODO.md staging/production
+            acceptance items;
+          * keep `unsafe_code = "forbid"`, do not introduce new clippy
+            warnings, keep files under the repo's own size/complexity gates,
+            and keep the crate dependency graph acyclic.
+
+          Add focused regression tests next to the code they cover, then run
+          the repo's own gates and report the real output:
+          `cargo check --workspace`, `cargo test --workspace --lib`,
+          `cargo clippy --workspace --all-targets`, `make ci`.
+          If a gate cannot run here, say so explicitly instead of claiming it
+          passed. Do not commit; return a change report naming files/symbols,
+          tests, exact command results, and any evidence-backed deviation
+          from the design.
+          {input_content}
+        # 实现 + 全仓门禁远超默认 900s。
+        timeout: 10800
+        output: docs/auto/implementation.md
+
+  - name: acceptance
+    from_outputs:
+      - requirements
+      - design
+      - design_gate
+      - implement
+    aggregate: true
+    gate: true
+    tasks:
+      - prompt: |
+          Verify the implementation against every acceptance check using
+          repository files and test evidence, and confirm the change stayed
+          inside the backend Rust scope (no `web/` edits, no frontend
+          tooling) and did not require database/Docker/network access. Re-run
+          the repo's own hermetic gates if the evidence is missing. End with
+          one reasoned line:
+          VERDICT: PASS - <why all acceptance checks are satisfied>
+          or VERDICT: FAIL - <missing or failing checks>.
+          {input_content}
+        output: docs/auto/acceptance.md
