@@ -146,7 +146,7 @@ def init_main(argv: Optional[list] = None) -> int:
         print("分层（高优先）：CLI 参数 > 项目 pi-batch.yaml > "
               "~/.config/pbatch/settings.yaml > 内置默认")
         print("运行时状态（会话/记忆/被拒诊断/campaign 报告与日志）默认写入 "
-              "~/.codex/pbatch/projects/<workspace>，不污染项目仓库。")
+              "~/.abr/projects/<workspace>，不污染项目仓库。")
         print("迁移设备密钥：旧项目内 devices/keys 请用 `pi-batch devices "
               "keymigrate` 导入。")
     raise SystemExit(0)
@@ -180,7 +180,7 @@ def clean_main(argv: Optional[list] = None) -> int:
         prog="pi-batch.py clean",
         description="清空用户级缓存（保留配置与设备密钥）")
     parser.add_argument("--all", action="store_true",
-                        help="连同配置、设备密钥和 ~/.codex/pbatch runtime 一起清除")
+                        help="连同配置、设备密钥和 ~/.abr runtime 一起清除")
     parser.add_argument("--yes", action="store_true", help="跳过确认")
     args = parser.parse_args(argv)
     cache = user_dirs.pbatch_cache_home()

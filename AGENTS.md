@@ -30,7 +30,7 @@ claude/codex/gemini 等）驱动软件开发流程——分析任意项目/想�
 | `pbatch/classifier.py` / `task_keywords.yaml` | 任务类型判断器：执行前双语关键词判定，前端→前端实现流水线、后端→后端实现流水线（`classifier.frontend_pipeline` / `backend_pipeline`，均为 plan→implement+门禁→对抗审查→gate 结构），`--classify` / `classify` 子命令，零 LLM 成本 |
 | `pbatch/rule_matcher.py` / `ui-specs/rules.yaml` | 规则匹配器：按 scale（demo/standard/production）× page_type × risk 三轴算法式筛选适用规范；**双向校验**——算法 manifest 与 LLM 独立选择对比裁决（`rules --summary/--llm-json/--llm-prompt`），必选规则不可被 LLM 跳过（fail closed）；三域注册表（frontend/backend/product，`product-specs/rules.yaml` 按 productization_level L1+ 路由，L0 克制不加载） |
 | `pbatch/isolate.py` + `pbatch/session_merge.py` | **worktree 隔离执行 + session 自动合并**（`isolate` 子命令，多任务并行 / session 驱动的标准模式）：一个 SSH 会话 = 一个 worktree——自动 `git worktree add` 独立分支、子进程在隔离目录执行（锁按 cwd 天然隔离、运行数据各自独立）；默认提示人工合并回主分支，`--auto-merge` 时由本进程充当 Merge Controller：根仓库锁内 fetch → rebase 最新主分支 → 验证门禁（`--gate`，默认探测 Makefile ci target）→ 合并（`--no-ff` 保留 checkpoint 或 `--squash`）→ 清理；`--wait-minutes` 排队（合并队列 = 根锁，忙时 exit 5）；账本 data_dir/sessions.jsonl 状态机（CREATED→RUNNING→REBASING→VALIDATING→MERGING→MERGED / ABORTED/CONFLICT/TEST_FAILED/NO_GATE/QUEUE_REFUSED/DIRTY/READY），`isolate sessions` 查询；`--copy-memory` 延续主目录会话；fail closed（非 git/分支已存在/目录非空/目标在仓库内/无任务参数 → exit 2；合并被阻 → exit 6 保留现场） |
-| `pbatch/config.py` `data_dir` | **运行时数据目录**（`--data-dir` / env `PBATCH_DATA_DIR`）：记忆索引/被拒产物/worktrees/设备状态/错误预算/流程工件/反思账本默认在 `~/.codex/pbatch/projects/<workspace-id>/`，不污染项目代码结构；`PBATCH_RUNTIME_HOME` 可改变用户级根目录；多实例运行默认启用：锁按"产物/会话冲突"而非无脑互斥——同名 session 或产物路径重叠才拒绝（exit 5 并列出重叠路径），声明了不相交产物的实例并行运行；未声明产物的实例（stdin/动态）保持互斥；`--run-domain` 强制独立域、`--wait-lock`排队、`--no-lock` 绕过；活锁永不强破（防 split-brain） |
+| `pbatch/config.py` `data_dir` | **运行时数据目录**（`--data-dir` / env `PBATCH_DATA_DIR`）：记忆索引/被拒产物/worktrees/设备状态/错误预算/流程工件/反思账本默认在 `~/.abr/projects/<workspace-id>/`，不污染项目代码结构；`PBATCH_RUNTIME_HOME` 可改变用户级根目录；多实例运行默认启用：锁按"产物/会话冲突"而非无脑互斥——同名 session 或产物路径重叠才拒绝（exit 5 并列出重叠路径），声明了不相交产物的实例并行运行；未声明产物的实例（stdin/动态）保持互斥；`--run-domain` 强制独立域、`--wait-lock`排队、`--no-lock` 绕过；活锁永不强破（防 split-brain） |
 | `pbatch/evolution.py` / `evolution-specs/` | **第四域：实战规律引擎**（归纳自 snaplink-console / iris-ui 实战）：项目形态分类（契约驱动/平台/面向产品/探索）→ 规律分级路由（invariant 硬执行 / contract-policy 可豁免 / suggestion 只注入）；**探索豁免**（spike 任务自动降级，创新不被锁死）；项目宪法（`docs/evolution/constitution.yaml`：明确不做/变更预算/豁免留痕）——**assess 处方携带宪法块、advance 批次剔除 denylist 文件、campaign 分析注入宪法+已拒方向（L10 防重复）并沉淀批次轨迹事件**；**`evolution track` 演化路径分析**（轨迹事件 → 触发源分类/状态分布/模块热度/被拒收敛信号 → TRACK.md）；门禁五件套——`baseline`（L1 基线先行）、`authority`（L2 权威源分层，禁发明接口）、`evidence`（L7 证据纪律）、`nongoal`（L6 明确不做 fail closed）、`changebudget`（L9 变更预算）；`learn promote --registry evolution` 沉淀闭环（强制 samples/confidence）；eval 第四域回归（10 用例） |
 | `pbatch/advance.py` | 自推进迭代引擎（`advance` 子命令）：扫描项目全部规范维度（UI 间距/颜色/样式、前端工程错误/N+1/复杂度、后端工程/架构）→ 按细颗粒度分批（P0 可恢复性 > P1 视觉 token > P2 架构）→ 状态记录（docs/advance/state.jsonl）逐轮可续 |
 | `pbatch/assessor.py` | 需求评估器（`assess` 子命令）：资深经验式评审——8 维需求完整性检查、规模信号（S/M/L）克制处方（"企业登录页"不会全量上规则）、缺失维度建议、刻意未选用清单、**产品化分级评估**（L0-L3）、**工作流风险分级**（L0 直改 / L1 标准 / L2 高风险对抗 / L3 平台产品） |
@@ -393,7 +393,7 @@ bash scripts/full-auto.sh --skip-passed --max-directions 2
 - 分析输出必须是结构化 JSON：问题、价值/风险降低/成本/置信度、现有
   文件或符号证据、可测试验收标准；旧 Markdown 标题仅作为 Proposed 展示，
   不直接进入实现
-- campaign 默认将追加式事实源写入 `~/.codex/pbatch/projects/<workspace-id>/campaign/state.jsonl`；
+- campaign 默认将追加式事实源写入 `~/.abr/projects/<workspace-id>/campaign/state.jsonl`；
   `SUMMARY.md` 每次从状态重建，不参与恢复判断；显式 `state.*` 配置才写回项目。
   状态读取使用有限行缓冲，复用判断缓存每个方向的最新事件，
   单条记录受 Campaign `state.line_max_bytes`（默认 256KiB）约束
@@ -430,7 +430,7 @@ bash scripts/full-auto.sh --skip-passed --max-directions 2
 ## 3. 命令速查
 
 除非显式传入项目内的 `--output`/`--log-file`/配置路径，运行态文件默认写入
-`~/.codex/pbatch/projects/<workspace-id>/`。下方为兼容旧部署保留的
+`~/.abr/projects/<workspace-id>/`。下方为兼容旧部署保留的
 `logs/...` 显式示例；发行/无人值守部署应改用用户级 runtime 路径，或省略
 `--log-file` 使用无文件日志。
 
@@ -691,7 +691,7 @@ pi-batch clean [--all]                                   # 清用户级缓存（
 pi-batch completion bash|zsh >> ~/.bashrc                # shell 补全（注册表驱动）
 pi-batch devices keymigrate                              # 旧项目内密钥 → 用户级（跨项目复用）
 # 分层：CLI > 项目 pi-batch.yaml > ~/.config/pbatch/settings.yaml > 默认
-# 边界：项目运行状态默认在 ~/.codex/pbatch/projects/<workspace-id>/；
+# 边界：项目运行状态默认在 ~/.abr/projects/<workspace-id>/；
 #       --data-dir DIR / env PBATCH_DATA_DIR 可精确指定运行目录；
 #       只有显式指定的交付物/项目知识文档才写回项目；多实例默认并行
 #       （产物/会话冲突才拒绝，见组件表 data_dir 行）

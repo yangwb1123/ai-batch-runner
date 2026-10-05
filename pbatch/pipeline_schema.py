@@ -17,6 +17,9 @@ _STAGE_FIELDS = frozenset((
     "commands", "commands_parallel", "command_timeout",
     "command_output_max_bytes", "cwd", "git_commit", "commit_message",
     "read_only", "read_only_paths", "or_tasks", "verify_experiment",
+    # Stage-level tool restriction: the single place to say "this stage may read
+    # but must not modify", independent of the agent binary.
+    "tools", "exclude_tools", "no_tools",
 ))
 _TASK_FIELDS = frozenset((
     "prompt", "prompt_template", "output", "agent", "model", "provider", "thinking",
@@ -30,10 +33,10 @@ _STRING_FIELDS = ("agent", "model", "provider", "orchestrator_model",
                   "from_dir", "suffix", "output_suffix",
                   "meta_prompt", "role_dir", "role_keywords", "output_dir",
                   "from_prompt", "output", "cwd", "commit_message",
-                  "gate_fix_prompt")
+                  "gate_fix_prompt", "tools", "exclude_tools")
 _BOOL_FIELDS = ("aggregate", "meta", "delegation_only", "meta_resume", "relevance_enabled",
                 "gate", "approval", "commands_parallel", "git_commit",
-                "read_only", "or_tasks", "meta_task_dag")
+                "read_only", "or_tasks", "meta_task_dag", "no_tools")
 _TASK_STRING_FIELDS = ("prompt", "prompt_template", "output", "agent", "model", "provider",
                        "thinking", "tools", "exclude_tools", "cwd", "role")
 _NULLABLE_TASK_STRINGS = ("model", "provider", "thinking", "tools", "exclude_tools")

@@ -65,7 +65,7 @@ NVIDIA 物理 GPU 支持按卡数和每卡空闲显存选机、分配展示与�
 | `~/.cache/pbatch/` | 可丢弃缓存 |
 | `~/.local/share/pbatch/keys/` | 设备身份密钥（跨项目复用） |
 | `~/.local/share/pbatch/logs/` | 兼容的全局运行日志 |
-| `~/.codex/pbatch/projects/<workspace-id>/` | 默认项目运行态：会话、记忆、被拒诊断、campaign 报告/状态、worktree、日志、实例锁 |
+| `~/.abr/projects/<workspace-id>/` | 默认项目运行态：会话、记忆、被拒诊断、campaign 报告/状态、worktree、日志、实例锁 |
 
 运行态默认放在用户目录，不会因为执行目录是项目根目录而生成 `.md`、日志或
 `.pi-batch/` 数据。`PBATCH_RUNTIME_HOME` 可改变默认运行根；`PBATCH_DATA_DIR`
@@ -219,7 +219,7 @@ exponential-backoff retries, and optional auto git-commit after each stage.
 > - `pi-batch.py campaign` discovers project modules, runs parallel structured
 >   analyses, scores/deduplicates evidence-backed directions, and executes the
 >   selected directions through a full SDLC pipeline.
-> - campaign state/artifacts default to `~/.codex/pbatch/projects/<workspace-id>/campaign/`;
+> - campaign state/artifacts default to `~/.abr/projects/<workspace-id>/campaign/`;
 >   `state.jsonl` is the append-only source of truth and `SUMMARY.md` is
 >   regenerated from it. Input fingerprints make `--reuse`/`--skip-passed`
 >   freshness-aware instead of trusting a non-empty Markdown file.

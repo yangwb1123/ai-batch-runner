@@ -1,4 +1,4 @@
-"""Runtime artifacts default to the user's private Codex namespace."""
+"""Runtime artifacts default to the user's own ~/.abr namespace."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ def test_default_runtime_dir_is_private_and_workspace_scoped(tmp_path, monkeypat
 
     runtime = config.data_dir(str(tmp_path / "project"))
     assert runtime == project_runtime_dir(str(tmp_path / "project"))
-    assert runtime == (tmp_path / "home" / ".codex" / "pbatch" /
+    assert runtime == (tmp_path / "home" / ".abr" /
                        "projects" / runtime.name)
     assert not runtime.is_relative_to(tmp_path / "project")
 

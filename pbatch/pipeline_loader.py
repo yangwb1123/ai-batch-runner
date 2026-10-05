@@ -18,6 +18,9 @@ def _identity_fields(value: dict) -> dict:
     return {
         "name": value.get("name", ""),
         "agent": value.get("agent", ""),
+        "tools": value.get("tools", "") or "",
+        "exclude_tools": value.get("exclude_tools", "") or "",
+        "no_tools": bool(value.get("no_tools", False)),
         "model": value.get("model", ""),
         "provider": value.get("provider", ""),
         "orchestrator_model": value.get("orchestrator_model", ""),

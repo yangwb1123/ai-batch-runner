@@ -59,6 +59,33 @@ def _wire_runtime(args: argparse.Namespace) -> None:
     ratelimit.configure(per_second, burst, config.RATE_LIMIT_PROVIDERS,
                         os.environ["PBATCH_RATE_LIMIT_FILE"])
 
+def _agent_preflight(args) -> list[str]:
+    """Agent readiness, optionally waiting out a short outage.
+
+    An agent binary being reinstalled disappears for a few minutes.  A
+    supervisor that restarts the campaign immediately then burns hundreds of
+    no-op rounds.  With ``--agent-preflight-wait-seconds`` the campaign waits
+    the outage out itself; the default stays fail-fast.
+    """
+    wait = max(0, int(getattr(args, "agent_preflight_wait_seconds", 0) or 0))
+    interval = max(1, int(getattr(args, "agent_preflight_interval", 30) or 30))
+    deadline = time.monotonic() + wait
+    attempt = 0
+    while True:
+        attempt += 1
+        errors = config.agent_preflight_errors(args.agent_bin)
+        if not errors:
+            if attempt > 1:
+                log.info("agent preflight recovered after %d attempt(s)", attempt)
+            return []
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return errors
+        log.warning("agent preflight failed (attempt %d, %.0fs left): %s",
+                    attempt, remaining, "; ".join(errors))
+        time.sleep(min(interval, remaining))
+
+
 def _parse_campaign(argv: list[str] | None):
     # 惰性导入 CLI 层（campaign.py 在底部 re-export main——避免模块级循环）
     from .campaign import CampaignContext, build_campaign_parser, load_settings
@@ -70,7 +97,7 @@ def _parse_campaign(argv: list[str] | None):
         if args.log_file is None:
             args.log_file = str(config.data_dir(str(root)) / "logs" / "campaign.log")
         if not args.dry_run:
-            preflight_errors = config.agent_preflight_errors(args.agent_bin)
+            preflight_errors = _agent_preflight(args)
             if preflight_errors:
                 raise ValueError(
                     "agent preflight failed: " + "; ".join(preflight_errors))

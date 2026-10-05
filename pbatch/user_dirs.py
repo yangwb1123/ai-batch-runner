@@ -4,7 +4,7 @@
 - config: ~/.config/pbatch/   （用户配置 settings.yaml）
 - cache:  ~/.cache/pbatch/    （可丢弃缓存：SSH 探测、规则缓存）
 - data:   ~/.local/share/pbatch/ （设备密钥、设备状态、兼容全局日志）
-- runtime: ~/.codex/pbatch/   （按 workspace 隔离的会话、报告、日志、状态）
+- runtime: ~/.abr/            （按 workspace 隔离的会话、报告、日志、状态）
 
 兼容回退：XDG 变量未设置时按规范默认；显式环境变量
 PBATCH_CONFIG_HOME / PBATCH_CACHE_HOME / PBATCH_DATA_HOME 优先。
@@ -97,10 +97,10 @@ def global_logs_dir() -> Path:
 def pbatch_runtime_home() -> Path:
     """Return the private runtime root used by installed/binary releases.
 
-    Runtime artifacts belong beside Codex's user state, not in the target
+    Runtime artifacts belong in the user's own directory, not in the target
     repository.  ``PBATCH_RUNTIME_HOME`` is the explicit override; when
     ``CODEX_HOME`` is configured we create a separate ``pbatch`` namespace
-    below it.  The default is ``~/.codex/pbatch``.
+    below it.  The default is ``~/.abr``.
     """
     configured = os.environ.get(PBATCH_RUNTIME_HOME_ENV, "").strip()
     if configured:
@@ -111,7 +111,7 @@ def pbatch_runtime_home() -> Path:
     unified = os.environ.get(PBATCH_HOME_ENV, "").strip()
     if unified:
         return (Path(unified).expanduser() / "runtime").resolve()
-    return (_home() / ".codex" / "pbatch").resolve()
+    return (_home() / ".abr").resolve()
 
 
 def project_runtime_dir(cwd: str = "") -> Path:

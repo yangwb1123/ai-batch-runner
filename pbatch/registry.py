@@ -2,7 +2,7 @@
 
 Shared-machine lesson (LESSONS.md D3): locks only tell you a repo is
 held, not WHO runs WHAT. Every pi-batch process registers itself under the
-private user runtime `~/.codex/pbatch/runs/<pid>.json` (one file per process — no cross-process
+private user runtime `~/.abr/runs/<pid>.json` (one file per process — no cross-process
 write contention), heartbeats its last activity every 60s via a daemon
 thread, and unregisters on exit. When the home directory is read-only,
 the registry deterministically falls back to a per-user runtime/temp

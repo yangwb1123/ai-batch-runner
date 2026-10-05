@@ -65,7 +65,7 @@ llm_pool:
 优先级为 `pool --config FILE` > 当前解析配置的 `llm_pool.config_file` >
 用户级 `llm-pool.yaml`。配置中的相对凭据路径相对于该账号池文件。
 `pool_id` 确定共享运行状态：
-`~/.codex/pbatch/llm-pools/<pool_id>/state.sqlite3`，受 `PBATCH_RUNTIME_HOME` 等
+`~/.abr/llm-pools/<pool_id>/state.sqlite3`，受 `PBATCH_RUNTIME_HOME` 等
 现有用户目录选项控制，独立于项目 worktree 和项目数据目录。
 
 ### 本地接入诊断

@@ -676,7 +676,7 @@ elif not isinstance(_MEMORY_AGENT_VALUE, (list, tuple)):
 MEMORY_AGENT_NAMES = tuple(str(value) for value in _MEMORY_AGENT_VALUE)
 # ── 运行时数据目录（data_dir）───────────────────────────────────────
 # 运行状态（记忆索引/被拒产物/worktrees/设备状态/预算/流程工件/反思）
-# 默认位于 ~/.codex/pbatch/projects/<workspace-id>/，不污染项目源码；
+# 默认位于 ~/.abr/projects/<workspace-id>/，不污染项目源码；
 # --data-dir / PBATCH_DATA_DIR 可显式指定兼容目录或共享运行根。
 # 锁仍按 cwd 保护工作区，与数据位置解耦（单实例语义不变）。
 _DATA_DIR_OVERRIDE = ""  # CLI --data-dir（进程级，优先于 env）
@@ -686,7 +686,7 @@ def data_dir(cwd: str = "") -> Path:
     """Return the private per-workspace runtime root.
 
     Explicit CLI/environment overrides retain full control.  The default is a
-    stable directory under ``~/.codex/pbatch`` so sessions, rejected
+    stable directory under ``~/.abr`` so sessions, rejected
     diagnostics, journals, campaign state, logs and generated reports never
     appear in the repository merely because the command was run there.
     """

@@ -110,7 +110,8 @@ def _auto_merge_outcome(context, outcome) -> None:
             outcome.baseline_commit, outcome.direction.direction_id,
             getattr(args, "merge_gate", ""), outcome.evidence,
             gate_timeout=max(1, int(getattr(args, "timeout", 0) or 3600)),
-            squash=getattr(args, "merge_squash", False))
+            squash=getattr(args, "merge_squash", False),
+            forbid_paths=tuple(getattr(args, "merge_forbid_path", ()) or ()))
     except Exception as exc:  # merge controller must fail closed
         return _block_outcome(outcome, f"merge controller error: {exc}")
     finally:
@@ -147,6 +148,7 @@ def review_and_merge(
     squash: bool = False,
     cleanup: bool = True,
     evidence_dir: Path | None = None,
+    forbid_paths: tuple[str, ...] = (),
 ) -> MergeResult:
     """Review and merge one already-passed campaign worktree."""
     result = _preflight(root, worktree, branch, baseline, gate_command)
@@ -166,11 +168,47 @@ def review_and_merge(
     result = _review_diff_and_evidence(target, worktree, changed, gate_evidence)
     if result:
         return _save_result(result, evidence_dir, direction_id, root, branch)
+    result = _scope_guard(target, worktree, changed, forbid_paths)
+    if result:
+        return _save_result(result, evidence_dir, direction_id, root, branch)
     result = _run_merge_gate(root, worktree, branch, direction_id, changed,
                              gate_command, gate_timeout, squash)
     if result.status == PipelineStatus.MERGED and cleanup:
         result.cleanup_errors = _cleanup(root, branch, worktree)
     return _save_result(result, evidence_dir, direction_id, root, branch)
+
+
+def _scope_guard(target: str, worktree: Path, changed: list[str],
+                 forbid_paths: tuple[str, ...]) -> MergeResult | None:
+    """Fail closed before the gate runs when a candidate touches a path the
+    campaign declared out of scope (e.g. a backend-only run touching web/).
+
+    A merge gate cannot be trusted to police scope on its own: the gate only
+    sees what the user wired into it, and a green gate must never widen the
+    run's declared scope.  Returns a MERGE_BLOCKED result or None.
+    """
+    if not forbid_paths:
+        return None
+    offenders = [path for path in changed
+                 if any(_path_forbidden(path, rule) for rule in forbid_paths)]
+    if not offenders:
+        return None
+    listing = "\n".join(f"  {path}" for path in offenders[:20])
+    return MergeResult(
+        PipelineStatus.MERGE_BLOCKED,
+        f"scope guard: candidate changes {len(offenders)} path(s) outside the "
+        f"declared scope {list(forbid_paths)}; refusing to merge:\n{listing}",
+        source_commit=_git_text(worktree, ["rev-parse", "HEAD"]),
+        changed_paths=changed)
+
+
+def _path_forbidden(path: str, rule: str) -> bool:
+    """A rule is a literal path, a directory prefix, or a trailing-slash glob."""
+    if not rule:
+        return False
+    if rule.endswith("/"):
+        return path == rule[:-1] or path.startswith(rule)
+    return path == rule or path.startswith(rule + "/")
 
 
 def _run_merge_gate(root: Path, worktree: Path, branch: str, direction_id: str,

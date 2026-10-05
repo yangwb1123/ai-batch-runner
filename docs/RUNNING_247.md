@@ -9,7 +9,7 @@ validation (quota/rate-limit/offline replies and timeouts are rejected),
 `--reuse` skips only non-empty, non-symlink outputs that still pass current
 validators, and every round reruns what is missing or stale. Runtime state,
 logs, rejected diagnostics, memory, campaign reports, and generated review
-Markdown default to `~/.codex/pbatch/projects/<workspace-id>/`; explicit
+Markdown default to `~/.abr/projects/<workspace-id>/`; explicit
 `--output`, `--log-file`, and configured project knowledge paths remain
 intentional overrides.
 
@@ -285,7 +285,7 @@ It discovers bounded module directories, runs structured analyses in parallel,
 scores and deduplicates directions, rejects candidates without existing-file
 evidence or testable acceptance checks, then materializes one direction-scoped
 SDLC pipeline per selection. By default, campaign state/artifacts are under
-`~/.codex/pbatch/projects/<workspace-id>/campaign/`; `state.jsonl` is the
+`~/.abr/projects/<workspace-id>/campaign/`; `state.jsonl` is the
 append-only authority and `SUMMARY.md` is an atomic derived view. Explicit
 `state.output_dir/state_file/summary_file` paths remain opt-in project outputs. Freshness fingerprints cover repository
 and module state, prompts, direction data, pipeline/role/config content, and

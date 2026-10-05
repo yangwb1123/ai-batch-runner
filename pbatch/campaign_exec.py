@@ -66,6 +66,32 @@ def _record_evolution_trajectory(context: "CampaignContext", outcomes: list) -> 
             log.warning("evolution trajectory: cannot append state event")
 
 
+def _budget_exhausted(context: CampaignContext) -> bool:
+    """Stop before spending anything when the campaign budget is spent.
+
+    The budget is anchored to the campaign ledger, not to this process, so a
+    supervisor that restarts the campaign cannot hand itself a fresh window.
+    """
+    from .campaign_budget import expired, state_path_for
+    settings = context.settings
+    is_expired, reason = expired(settings.budget_seconds, settings.deadline_at,
+                                 state_path_for(context.root, settings))
+    if not is_expired:
+        if reason:
+            log.info("CAMPAIGN budget: %s", reason)
+        return False
+    log.error("CAMPAIGN stopped: %s", reason)
+    _event(context, "__campaign__", "__budget__", "", "CAMPAIGN_BUDGET_EXHAUSTED",
+           "", reason=reason)
+    try:
+        write_summary(context.store,
+                      context.settings.summary_path(context.root),
+                      context.settings.name)
+    except OSError:
+        pass
+    return True
+
+
 def run_campaign(context: CampaignContext) -> int:
     from .campaign import CampaignContext  # noqa: F401（类型仅注解，运行时无害）
     _start_heartbeat()
@@ -79,6 +105,8 @@ def run_campaign(context: CampaignContext) -> int:
         return 0
     if plan.blocked:
         return _blocked_campaign(context, plan)
+    if _budget_exhausted(context):
+        return 3
     analysis_scope = set(plan.selected)
     pause_reason, pause_evidence = _provider_breaker_admission(
         getattr(context.args, "provider", ""),

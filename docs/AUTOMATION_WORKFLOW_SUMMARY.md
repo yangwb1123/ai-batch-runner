@@ -95,7 +95,7 @@ repository's executable tests and does not replace them.
   and the runner enforces dedupe, `relevance_min_score`, and
   `max_roles_per_iteration` after parsing the untrusted plan.
 - Repository campaigns persist transitions, `SUMMARY.md`, and reports under
-  the user-level runtime directory (`~/.codex/pbatch/projects/<workspace-id>/`
+  the user-level runtime directory (`~/.abr/projects/<workspace-id>/`
   by default), and use content/routing fingerprints for `--reuse` and
   `--skip-passed`. Explicit `output_dir`/artifact paths remain authoritative.
   Analyses share the parent lock and run in an internal pool; parallel

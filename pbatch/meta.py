@@ -642,7 +642,8 @@ def _build_meta_prompt_task(stage: Stage, role_names: list, combined: str, model
             "perform the requested work yourself. Select bounded child roles "
             "and return only the required JSON role plan.\n\n" + meta_prompt)
     task = Task(prompt=meta_prompt, agent=stage.agent, cwd=stage.cwd,
-                no_tools=stage.delegation_only)
+                tools=stage.tools, exclude_tools=stage.exclude_tools,
+                no_tools=stage.delegation_only or stage.no_tools)
     task.memory = {"stage": stage.name, "role": "orchestrator"}
     task.memory["model_route_source"] = (
         "cli_override" if model_override else
@@ -702,7 +703,8 @@ def _build_one_role_task(stage: Stage, item: dict, combined: str,
     version = f"-iter{iteration}" if stage.meta_resume and iteration > 1 else ""
     out_path = Path(stage.output_dir) / f"{safe_name}{version}.md"
     task = Task(prompt=prompt, output=str(out_path), agent=stage.agent,
-                cwd=stage.cwd)
+                tools=stage.tools, exclude_tools=stage.exclude_tools,
+                no_tools=stage.no_tools, cwd=stage.cwd)
     task.memory = {"stage": stage.name, "role": role,
                    "dag_id": item.get("id", "")}
     add_task_context_paths(task, evidence_outputs, strict=False)

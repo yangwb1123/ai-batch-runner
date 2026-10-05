@@ -60,7 +60,7 @@ def _add_campaign_paths_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--pipeline", default="",
                         help="implementation pipeline template override")
     parser.add_argument("--data-dir", default="",
-                        help="private runtime root (default: ~/.codex/pbatch/projects/<workspace>)")
+                        help="private runtime root (default: ~/.abr/projects/<workspace>)")
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--state-file", default="")
     parser.add_argument("--summary-file", default="")
@@ -132,6 +132,27 @@ def _add_round_args(parser: argparse.ArgumentParser) -> None:
                              "them into this repository")
     parser.add_argument("--merge-gate", default="",
                         help="required bounded test/gate command for --auto-merge")
+    parser.add_argument("--merge-forbid-path", action="append", default=[],
+                        metavar="PATH",
+                        help="fail closed when a merged candidate changes PATH "
+                             "(repeatable; a trailing slash matches a directory "
+                             "prefix). Scope belongs to the merge transaction, "
+                             "not to whatever the gate happens to run.")
+    parser.add_argument("--budget-seconds", type=int, default=0, metavar="SECONDS",
+                        help="total campaign budget measured from the FIRST "
+                             "recorded run in the campaign ledger, so restarting "
+                             "the process cannot extend it (0 disables)")
+    parser.add_argument("--deadline", default="", metavar="WHEN",
+                        help="absolute campaign cutoff (ISO-8601 or epoch seconds)")
+    parser.add_argument("--agent-preflight-wait-seconds", type=float, default=0,
+                        metavar="SECONDS",
+                        help="wait this long for the agent binary to become "
+                             "available before failing (0 = fail fast). Absorbs a "
+                             "short agent reinstall instead of letting a "
+                             "supervisor loop burn no-op rounds.")
+    parser.add_argument("--agent-preflight-interval", type=float, default=30,
+                        metavar="SECONDS",
+                        help="poll interval used by --agent-preflight-wait-seconds")
     parser.add_argument("--merge-squash", action="store_true",
                         help="squash each reviewed isolated branch when auto-merging")
     parser.add_argument("--merge-wait-lock", type=int, default=0, metavar="MINUTES",
@@ -170,6 +191,9 @@ def load_settings(root: Path, args: argparse.Namespace) -> CampaignSettings:
         raise ValueError(f"campaign config not found: {config_path}")
     settings = CampaignSettings.from_mapping(data)
     _apply_overrides(settings, args)
+    # The merge transaction reads the resolved scope from args so configured
+    # and CLI-supplied rules behave identically from here on.
+    args.merge_forbid_path = list(settings.merge_forbid_paths)
     settings.validate()
     _validate_runtime_args(args)
     if args.auto_merge:
@@ -192,7 +216,12 @@ def _validate_runtime_args(args: argparse.Namespace) -> None:
               "rate-limit": args.rate_limit,
               "rate-burst": args.rate_burst,
               "max-total-directions": getattr(args, "max_total_directions", 0) or 0,
-              "merge-wait-lock": getattr(args, "merge_wait_lock", 0)}
+              "merge-wait-lock": getattr(args, "merge_wait_lock", 0),
+              "budget-seconds": getattr(args, "budget_seconds", 0) or 0,
+              "agent-preflight-wait-seconds": getattr(
+                  args, "agent_preflight_wait_seconds", 0) or 0,
+              "agent-preflight-interval": getattr(
+                  args, "agent_preflight_interval", 30) or 30}
     invalid = [name for name, value in values.items()
                if not math.isfinite(float(value)) or value < 0]
     if args.rounds < 0:
@@ -227,6 +256,15 @@ def _apply_overrides(settings: CampaignSettings, args: argparse.Namespace) -> No
     for attr, value in values:
         if value:
             setattr(settings, attr, value)
+    # CLI scope rules replace (never silently extend) the configured ones: a
+    # narrower run must not inherit broader permissions by accident.
+    forbid = [item for item in (getattr(args, "merge_forbid_path", None) or []) if item]
+    if forbid:
+        settings.merge_forbid_paths = tuple(forbid)
+    if getattr(args, "budget_seconds", 0):
+        settings.budget_seconds = args.budget_seconds
+    if getattr(args, "deadline", ""):
+        settings.deadline_at = args.deadline
 
 
 # Execution remains in the split module. These aliases keep the historical

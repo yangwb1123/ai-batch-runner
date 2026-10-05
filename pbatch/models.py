@@ -20,6 +20,13 @@ class Stage:
     """One stage in a pipeline."""
     name: str
     agent: str = ""      # T13: executor for this stage's tasks ("" = global)
+    # Stage-level tool restriction.  Review/design/gate stages must be able to
+    # read the repository without being able to change it; previously the only
+    # lever was the agent binary, which forced every project to ship a wrapper
+    # script.  A task-level value still wins over the stage default.
+    tools: str = ""
+    exclude_tools: str = ""
+    no_tools: bool = False
     model: str = ""      # shared model fallback for stage tasks
     provider: str = ""   # shared provider fallback for stage tasks
     from_dir: str = ""

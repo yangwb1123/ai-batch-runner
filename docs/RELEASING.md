@@ -86,7 +86,7 @@ Trusted Publishing 使用 GitHub OIDC 短期凭证，不在仓库或 GitHub Secr
    二进制只包含 `pi-batch` 编排器和规范资产；`pi`、Codex、Claude 等 provider CLI 仍
    由用户单独安装并配置。
 5. 运行态隔离：默认发行包/CLI 将 session、memory、被拒诊断、campaign 报告、日志和
-   实例锁写入 `~/.codex/pbatch/projects/<workspace-id>/`，不会在被操作仓库创建
+   实例锁写入 `~/.abr/projects/<workspace-id>/`，不会在被操作仓库创建
    `.md`/日志。需要迁移位置时设置 `PBATCH_RUNTIME_HOME`，或用
    `PBATCH_DATA_DIR`/`--data-dir` 指定单项目 runtime 根目录；显式 `--output`、pipeline
    `output` 和项目知识文档仍按用户指定路径写入。
@@ -155,7 +155,7 @@ chmod +x pi-batch-linux-x86_64
 ```
 
 二进制不是 provider 的替代品；执行真实任务前仍需安装 `pi`/Codex 等 agent。升级时
-只替换二进制，不会删除 `~/.codex/pbatch/projects/` 中的会话和日志。
+只替换二进制，不会删除 `~/.abr/projects/` 中的会话和日志。
 流水线按阶段和任务实际使用的 agent 预检；已全部指定可用执行程序时，无需安装
 未使用的默认 agent。默认回退及 gate-fix 会使用的程序仍须可用。
 使用 `--validate gofmt` 时需要目标环境安装 `gofmt`；缺少工具、工具执行失败或
