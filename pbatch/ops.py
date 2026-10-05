@@ -26,6 +26,7 @@ from typing import Optional
 
 from . import config
 from .agent_ledger import query as ledger_query
+from .task_center_cli import add_parsers as add_task_parsers, sources_command, tasks_command
 
 OPS_REPORT_NAME = "ops-report.html"
 
@@ -298,6 +299,8 @@ def _add_serve_args(parser) -> None:
     parser.add_argument("--token", default="")
     parser.add_argument("--token-file", default="")
     parser.add_argument("--control", action="store_true")
+    parser.add_argument("--global", dest="global_tasks", action="store_true",
+                        help="全局任务中心（只读，要求 token）")
     parser.add_argument("--agent", default=config.AGENT_BIN)
     parser.add_argument("--model", default=config.AGENT_DEFAULT_MODEL)
     parser.add_argument("--provider", default="")
@@ -317,7 +320,8 @@ def _serve_argv(args) -> list[str]:
               f"--control-timeout={args.control_timeout}",
               f"--max-sessions={args.max_sessions}",
               f"--tls-cert={args.tls_cert}", f"--tls-key={args.tls_key}"]
-    return values + (["--control"] if args.control else [])
+    return (values + (["--control"] if args.control else [])
+            + (["--global"] if args.global_tasks else []))
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -358,6 +362,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("serve", help="手机/浏览器监控；--control 开启受保护指令")
     _add_serve_args(p)
+    add_task_parsers(sub)
     return parser
 
 
@@ -378,5 +383,7 @@ def ops_main(argv: Optional[list[str]] = None) -> int:
         "messages": _cmd_messages,
         "report": _cmd_report,
         "breaker": _cmd_breaker,
+        "sources": sources_command,
+        "tasks": tasks_command,
     }
     return handlers[args.command](args, cwd)
