@@ -149,6 +149,22 @@ def _task_model_route_source(task_def: dict, stage: Optional[Stage],
     return "agent_default"
 
 
+def _task_limits(task_def: dict, stage: Optional[Stage]) -> dict:
+    """Resolve a task's tool limits: task declaration first, stage default next.
+
+    Kept out of `_task_from_def` so the precedence rule reads in one place:
+    a stage-wide read-only default must not be silently overridden by a task
+    that simply forgot to declare anything, and a task that did declare wins.
+    """
+    if stage is None:
+        return {"tools": task_def.get("tools") or "",
+                "exclude_tools": task_def.get("exclude_tools") or "",
+                "no_tools": task_def.get("no_tools", False)}
+    return {"tools": task_def.get("tools") or stage.tools,
+            "exclude_tools": task_def.get("exclude_tools") or stage.exclude_tools,
+            "no_tools": task_def.get("no_tools", stage.no_tools)}
+
+
 def _task_from_def(task_def: dict, prompt: str, output_path: str, model_override: str = "",
                    timeout_override: int = 0, stage: Optional[Stage] = None) -> Task:
     """Build a task from a pipeline template definition, applying CLI-level
@@ -161,10 +177,7 @@ def _task_from_def(task_def: dict, prompt: str, output_path: str, model_override
                or config.AGENT_DEFAULT_MODEL),
         provider=task_def.get("provider") or (stage.provider if stage else ""),
         thinking=task_def.get("thinking") or "",
-        tools=task_def.get("tools") or (stage.tools if stage else ""),
-        exclude_tools=task_def.get("exclude_tools") or (
-            stage.exclude_tools if stage else ""),
-        no_tools=task_def.get("no_tools", stage.no_tools if stage else False),
+        **_task_limits(task_def, stage),
         cwd=task_def.get("cwd", stage.cwd if stage else ""),
         timeout=task_def.get("timeout", AGENT_DEFAULT_TIMEOUT),
         env=dict(task_def.get("env", {})),
@@ -227,6 +240,13 @@ def _stage_from_prompt_tasks(stage: Stage, reuse: bool, model_override: str, tim
     log.info("Loaded 1 task from from_prompt for stage '%s'", stage.name)
     return [task], []
 
+def _inherit_stage_task_limits(stage: Stage, task) -> None:
+    """Let a stage-wide tool restriction reach its per-file tasks."""
+    task.tools = task.tools or stage.tools
+    task.exclude_tools = task.exclude_tools or stage.exclude_tools
+    task.no_tools = task.no_tools or stage.no_tools
+
+
 def _stage_from_dir_tasks(stage: Stage, reuse: bool, model_override: str, timeout_override: int,
                           validate_cmd: str = "", reuse_legacy: bool = False,
                           fingerprint_mode: bool = False) -> tuple[list[Task], list[str]]:
@@ -258,9 +278,7 @@ def _stage_from_dir_tasks(stage: Stage, reuse: bool, model_override: str, timeou
                                    "stage input")
         task = Task(prompt=prompt, output=str(out_path), cwd=str(fpath.parent))
         task.agent = stage.agent or task.agent
-        task.tools = task.tools or stage.tools
-        task.exclude_tools = task.exclude_tools or stage.exclude_tools
-        task.no_tools = task.no_tools or stage.no_tools
+        _inherit_stage_task_limits(stage, task)
         task.model = stage.model or task.model
         task.provider = stage.provider or task.provider
         if model_override:

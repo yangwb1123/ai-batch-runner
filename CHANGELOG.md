@@ -7,6 +7,27 @@
 
 ### 新增
 
+- Campaign 长时间无人值守的五个原生控制（每条都来自一次真实跑批的浪费，
+  实现于 `pbatch/`，测试于 `tests/test_campaign_scope_ledger.py`）：
+  - **合并范围守卫**：`--merge-forbid-path PATH`（可重复）/ `merge.forbid_paths`。
+    范围从“靠合并门禁顺便检查”变成合并事务自身的属性：候选变更命中禁止路径即
+    `MERGE_BLOCKED`，**先于门禁执行**。后端专用 campaign 合并进前端方向的事故
+    因此不会再发生，且绿灯门禁无法拓宽声明的范围。
+  - **阶段级工具限制**：stage 新增 `tools` / `exclude_tools` / `no_tools`，
+    覆盖 `from_prompt`、`from_dir`、`tasks` 与 meta 角色 worker 全路径（task 声明
+    优先于 stage 默认）。只读评审阶段不再需要项目自备 wrapper agent 二进制来阻止
+    角色改源码——改了就触发 READ-ONLY 违规中止，每轮白烧。
+  - **方向台账**：`selection.ledger: true`。从真实产物（合并记录 + design-gate
+    判决与阻塞项）构建 FIXED / STILL-OPEN 清单，近重复标题聚类，注入每次分析
+    prompt，并给出“不得重提已修复项、重提开放项必须逐条回应阻塞项”的规则。
+    只解决**已被证据记录**的问题，不替代新发现。
+  - **重启安全预算**：`--budget-seconds` / `--deadline` /
+    `implementation.budget_seconds` / `deadline_at`。预算锚定在 state 账本首次
+    `CAMPAIGN_RUN_STARTED`，supervisor 重启不再悄悄延长窗口；超预算在花钱前
+    退出（exit 3）并记 `CAMPAIGN_BUDGET_EXHAUSTED`。
+  - **agent 预检等待**：`--agent-preflight-wait-seconds` /
+    `--agent-preflight-interval`。agent 二进制重装期间的短暂消失不再被 supervisor
+    放大成几百个空转轮次；默认仍是 fail-fast。
 - `campaign-eval`：多维 campaign 评估。完成不是结论——一次窗口必须按正确性、
   产出、效率、可靠性、卫生、集成风险、可观测性、可持续性八个维度打分，每个指标
   都有显式阈值，越界即 breach，可 `--fail-on-breach` 作为窗口收尾闸门。

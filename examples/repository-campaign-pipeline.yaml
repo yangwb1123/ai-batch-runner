@@ -3,13 +3,19 @@
 # the requirements prompt and scopes every artifact to one direction.
 git_commit: true
 
+# `read_only` makes the runner halt when a stage changes source paths, but it
+# cannot prevent the edit.  `exclude_tools` is the prevention: a review stage
+# can read the repository and still never touch it.  Meta role agents inherit
+# the stage's restriction, so reviewers cannot route around it.
 stages:
   - name: requirements
     from_prompt: Replaced by the campaign coordinator.
     output: docs/auto/requirements.md
     read_only: true
+    exclude_tools: bash,edit,write
 
   - name: design
+    exclude_tools: bash,edit,write
     from_outputs: requirements
     aggregate: true
     read_only: true
@@ -22,6 +28,7 @@ stages:
         output: docs/auto/design.md
 
   - name: adversarial_review
+    exclude_tools: bash,edit,write
     from_outputs: design
     meta: true
     read_only: true
@@ -39,6 +46,7 @@ stages:
                               # design_gate 兜底（fail-closed 不变）
 
   - name: design_gate
+    exclude_tools: bash,edit,write
     from_outputs:
       - requirements
       - design
@@ -90,6 +98,7 @@ stages:
         output: docs/auto/implementation.md
 
   - name: acceptance
+    exclude_tools: bash,edit,write
     from_outputs:
       - requirements
       - design

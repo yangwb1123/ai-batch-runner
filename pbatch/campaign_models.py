@@ -218,6 +218,16 @@ class CampaignSettings:
             **_recovery_values(recovery),
         )
 
+    def _budget_errors(self) -> list[str]:
+        """Restart-proof budget/deadline must be a sane, parseable cutoff."""
+        errors = []
+        if self.budget_seconds < 0:
+            errors.append("implementation.budget_seconds")
+        if self.deadline_at and parse_deadline(self.deadline_at) is None:
+            errors.append("implementation.deadline_at "
+                          "(expected ISO-8601 or epoch seconds)")
+        return errors
+
     def validate(self) -> None:
         positive = {
             "discovery.max_depth": self.max_depth,
@@ -248,10 +258,7 @@ class CampaignSettings:
             invalid.append("recovery.stop_after_stalled_rounds")
         if self.pipeline_no_progress_timeout < 0:
             invalid.append("implementation.no_progress_timeout")
-        if self.budget_seconds < 0:
-            invalid.append("implementation.budget_seconds")
-        if self.deadline_at and parse_deadline(self.deadline_at) is None:
-            invalid.append("implementation.deadline_at (expected ISO-8601 or epoch seconds)")
+        invalid.extend(self._budget_errors())
         finite = {"selection.minimum_score": self.minimum_score,
                   "estimates.analysis_minutes": self.analysis_minutes,
                   "estimates.pipeline_minutes": self.pipeline_minutes}

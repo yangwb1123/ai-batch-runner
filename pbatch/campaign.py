@@ -256,8 +256,16 @@ def _apply_overrides(settings: CampaignSettings, args: argparse.Namespace) -> No
     for attr, value in values:
         if value:
             setattr(settings, attr, value)
-    # CLI scope rules replace (never silently extend) the configured ones: a
-    # narrower run must not inherit broader permissions by accident.
+    _apply_scope_and_budget_overrides(settings, args)
+
+
+def _apply_scope_and_budget_overrides(settings: CampaignSettings,
+                                      args: argparse.Namespace) -> None:
+    """Merge scope and budget overrides, resolved in one place.
+
+    CLI scope rules replace (never silently extend) the configured ones: a
+    narrower run must not inherit broader permissions by accident.
+    """
     forbid = [item for item in (getattr(args, "merge_forbid_path", None) or []) if item]
     if forbid:
         settings.merge_forbid_paths = tuple(forbid)

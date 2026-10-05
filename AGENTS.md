@@ -409,8 +409,26 @@ bash scripts/full-auto.sh --skip-passed --max-directions 2
 - `--dry-run` 使用历史 JSONL 耗时的中位数估算；无历史数据时回退到 Campaign
   YAML 的 `estimates` 默认值
 
+#### 长时间无人值守：防重复、防越界、防空转
+
+7×24 campaign 的真实损耗不在模型，而在重复与失控。以下机制都属于
+campaign 自身，而非外部包装脚本：
+
+| 机制 | 参数 / 配置 | 解决的问题（实战） |
+| --- | --- | --- |
+| **合并范围守卫** | `--merge-forbid-path web/`（可重复）<br>`merge.forbid_paths: [web/]` | 后端专用 campaign 合并了一个前端方向。范围属于合并事务：路径命中即 `MERGE_BLOCKED`，**先于门禁执行**，绿灯门禁无法拓宽声明的范围。尾斜杠表示目录前缀 |
+| **阶段级工具限制** | stage 的 `tools` / `exclude_tools` / `no_tools` | 评审角色在只读阶段改源码，runner 判定 READ-ONLY 违规并中止，每轮白烧。以前只能靠项目自备 wrapper agent 二进制；现在是声明式字段，`from_prompt` / `from_dir` / `tasks` / meta 角色 worker 全路径继承，task 声明优先于 stage 默认 |
+| **方向台账** | `selection.ledger: true` | 长跑 campaign 换个措辞重复提同一个缺陷，每个变体烧掉一整条流水线才拿到同一个判决。台账从**真实产物**构建：合并记录（已修复）与 design-gate 判决 + 阻塞项（仍开放），近重复标题聚为一类；注入每次分析 prompt，并附带“不得重提已修复项 / 重提开放项必须逐条回应阻塞项”的规则 |
+| **重启安全预算** | `--budget-seconds N`<br>`--deadline WHEN`<br>`implementation.budget_seconds` / `deadline_at` | supervisor 重启进程等于重置倒计时，5 天窗口被悄悄延长。预算锚定在 state 账本里**首次** `CAMPAIGN_RUN_STARTED`，进程重启不再延长；`--deadline` 为绝对截止（ISO-8601 或 epoch）。超预算在花钱前退出（exit 3）并记 `CAMPAIGN_BUDGET_EXHAUSTED` |
+| **agent 预检等待** | `--agent-preflight-wait-seconds N`<br>`--agent-preflight-interval S` | agent 二进制被重装时短暂消失，supervisor 立即重启会把故障放大成几百个空转轮次。开启后 campaign 自己等过这段窗口；默认仍是 fail-fast |
+
+台账与预算都是**有界**的：台账进入每次分析 prompt，因此有条目数与字节上限；
+预算只读 state 账本首行，不做全量扫描。两者都 fail-soft：缺产物只是上下文更少，
+绝不影响分析正确性。
+
 配置见 `examples/repository-campaign.yaml`，完整实现模板见
-`examples/repository-campaign-pipeline.yaml`。
+`examples/repository-campaign-pipeline.yaml`；评审阶段的只读写法见
+`examples/repository-campaign-pipeline.yaml` 中的 `read_only` 组合。
 
 ### 2.12 特性与流程环节映射（整套流程 = 全部特性）
 

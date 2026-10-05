@@ -58,6 +58,10 @@ selection:
   max_directions: 1
   max_total_directions: 1  # one bounded implementation at a time
   minimum_score: 0
+  # Long runs: inject the merged/gate-rejected direction ledger into every
+  # analysis prompt so solved work is not re-proposed and a real defect carries
+  # its recorded blocking findings forward.  See AGENTS.md 2.11.
+  ledger: false
 
 # Failed changes are preserved in place; dirty worktrees block automatic retries.
 recovery:
@@ -82,11 +86,23 @@ implementation:
   # Set this below timeout only when the pipeline log/artifacts are expected to
   # advance at that cadence; model thinking can legitimately be quiet.
   no_progress_timeout: 0
+  # Restart-proof budget (7x24 supervision).  `budget_seconds` is measured from
+  # the FIRST CAMPAIGN_RUN_STARTED in the state ledger, so restarting the
+  # campaign process cannot silently extend the run; `deadline_at` is an
+  # absolute ISO-8601/epoch cutoff.  Both 0/"" by default.
+  budget_seconds: 0
+  deadline_at: ""
   # Empty by default: worktrees and campaign reports/state are kept under
   # ~/.codex/pbatch/projects/<workspace>/ and never pollute the repository.
 
 state:
   line_max_bytes: 262144
+
+# Scope of an automatic merge.  A candidate touching any of these paths is
+# refused before the merge gate runs, so a green gate can never widen the
+# declared scope.  Equivalent CLI: --merge-forbid-path (repeatable).
+merge:
+  forbid_paths: []
 
 estimates:
   analysis_minutes: 3

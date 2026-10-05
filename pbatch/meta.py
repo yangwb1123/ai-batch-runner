@@ -611,6 +611,11 @@ def _select_task_dag(stage: Stage, stdout: str, scores: list,
     return kept
 
 
+def _meta_task_no_tools(stage: Stage) -> bool:
+    """The orchestrator never edits; a read-only stage adds its own reason."""
+    return stage.delegation_only or stage.no_tools
+
+
 def _build_meta_prompt_task(stage: Stage, role_names: list, combined: str, model_override: str, timeout_override: int,
                             original_prompt: str = "") -> Task:
     """Assemble the orchestrator prompt (custom meta_prompt or the default,
@@ -643,7 +648,7 @@ def _build_meta_prompt_task(stage: Stage, role_names: list, combined: str, model
             "and return only the required JSON role plan.\n\n" + meta_prompt)
     task = Task(prompt=meta_prompt, agent=stage.agent, cwd=stage.cwd,
                 tools=stage.tools, exclude_tools=stage.exclude_tools,
-                no_tools=stage.delegation_only or stage.no_tools)
+                no_tools=_meta_task_no_tools(stage))
     task.memory = {"stage": stage.name, "role": "orchestrator"}
     task.memory["model_route_source"] = (
         "cli_override" if model_override else
