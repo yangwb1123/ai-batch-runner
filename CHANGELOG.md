@@ -7,6 +7,23 @@
 
 ### 新增
 
+- `campaign-eval`：多维 campaign 评估。完成不是结论——一次窗口必须按正确性、
+  产出、效率、可靠性、卫生、集成风险、可观测性、可持续性八个维度打分，每个指标
+  都有显式阈值，越界即 breach，可 `--fail-on-breach` 作为窗口收尾闸门。
+  入口是独立模块 CLI `python3 -m pbatch.campaign_evaluation_report`（尚未挂成
+  `pi-batch` 子命令）。实现为 `pbatch/campaign_evaluation.py`（原语、计数、
+  派生比率与阈值）、`campaign_evaluation_dimensions.py`（八个维度与 flag）、
+  `campaign_evaluation_facts.py`（state/日志/git/工作树事实采集）、
+  `campaign_evaluation_report.py`（Markdown 渲染与 CLI）。
+  两处语义修正：名额配额丢弃（`selection quota`）不算质量否决，
+  `agent binary not found` 这类基础设施失败不算模型失败。
+  无遥测的指标记为 `unavailable` 而非 0。
+- `ops tasks` / `ops sources`：全局任务中心的只读切片。跨所有已登记工作空间
+  投影目标、状态、墙钟、token、产物与进程活动——只读既有事实，不含 LLM 推测、
+  不含 ETA 与归属推断、不授予执行或清理权限。未追踪的量记「未追踪(unavailable)」
+  而非 0；进程存在只记为 activity，不等同于任务有进展。`docs/TASK_CENTER.md`
+  记录了分批实现计划与登记边界。
+
 - 隔离实现的交付物现在会被合并门禁看到。方向流水线在子进程里运行，父进程拿不到
   阶段结果，原先证据只有 worktree、pipeline.yaml 和运行日志；而子进程成功后会把
   交付物移入带时间戳的 `archive/`，于是自动合并要求的 `VERDICT: PASS` 工件永远

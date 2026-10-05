@@ -179,9 +179,11 @@ def _verdict_and_blocking(path: Path | None) -> tuple[str, str]:
     blocking = []
     for line in text.splitlines():
         if _PENDING_MARKERS.search(line):
-            cells = line.split("|")
-            label = cells[1].strip() if len(cells) > 2 else line.strip()
-            blocking.append(re.sub(r"[*`]", "", label))
+            # Review tables are usually `| finding | state | why |`; the
+            # longest cell carries the actionable "why", so carry that over
+            # rather than the finding's label alone.
+            cells = [cell.strip() for cell in line.split("|")[1:-1] if cell.strip()]
+            blocking.append(re.sub(r"[*`]", "", max(cells, key=len) if cells else line.strip()))
     if not blocking and verdict == "FAIL":
         blocking = [summary]
     return verdict, "; ".join(blocking[:3])
