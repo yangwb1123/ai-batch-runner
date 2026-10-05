@@ -1,16 +1,31 @@
 __pycache__/
 *.pyc
+*.egg-info/
+dist/
+build/
+.coverage
+
+# 运行态：默认落在用户级 runtime（PBATCH_RUNTIME_HOME / ~/.codex/pbatch），
+# 这里的条目只兜住「显式把产物写进项目」的情况。
 logs/
 *.log
+.pi-batch/
+.pi-batch.lock
+.pi-batch.lock.*
+
+# 编译产物 / 临时工作区
+.tmp-im/
+.tmp/
+*.tmp
+
+# campaign / pipeline 运行态产物（可随时由 --reuse 重建）
 docs/auto/
 docs/advance/
 docs/reviews/
-.coverage
-.pi-batch/
-.pi-batch.lock
-*.egg-info/
 docs/ui/
 docs/backend/
-dist/
-build/
-__pycache__/
+projects/*/results/
+projects/*/state.jsonl
+
+# 他项目编排配置：写死绝对路径、本机专用，不进版本库
+projects/
