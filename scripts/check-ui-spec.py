@@ -408,10 +408,42 @@ def _finish_report(mode, paths, violations, remaining, baseline_path, want_json)
     return code
 
 
+def _fail_if_no_scan_target(mode: str, targets: list, directory) -> None:
+    """No --dir and no positional file: the gate was never told what to scan.
+
+    This is a **misconfiguration**, not a vacuous pass, and the two must not be
+    conflated:
+
+      check-ui-spec.py --all
+        -> paths == [] -> violations == [] -> "OK (0 file(s) scanned)", exit 0
+
+    That exit 0 was previously emitted **silently** on stdout/stderr alike (the
+    existing _warn_zero_scan only fires when --dir was given), so a hand-run or
+    a template that lost its --dir placeholder reads as a clean gate while
+    nothing was inspected at all. Agents hit this repeatedly and reported it as
+    evidence ("ui-spec 0 violations") — see D211 notes.
+
+    Distinguish the two cases:
+      * `--dir X` where X legitimately holds no frontend files -> keep exit 0
+        (a gofmt -l style project gate must not fail on a backend repo); the
+        existing stderr warning already covers it.
+      * no target at all -> fail closed with exit 2, the script's config-error
+        code (same class as an unknown --mode or an unparseable token file).
+    """
+    if directory is not None or targets:
+        return
+    print("UI-SPEC: error: no scan target. Pass --dir <path> or one or more "
+          "files. With neither, nothing is inspected and the run still exits 0 "
+          "with a vacuous 'OK' summary — that is an unchecked run, not a result.",
+          file=sys.stderr)
+    sys.exit(2)
+
+
 def main(argv: list) -> int:
     parsed = parse_argv(argv)
     mode, targets, directory, exts, excludes = parsed[:5]
     want_json, report_path, baseline_path, update_path = parsed[5:]
+    _fail_if_no_scan_target(mode, targets, directory)
     paths = collect_targets(targets, directory, exts, excludes)
     iris_spacing_paths = set()
     if directory is not None and mode in ("spacing", "all") and ".css" not in exts:

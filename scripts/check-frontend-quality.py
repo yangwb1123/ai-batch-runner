@@ -72,6 +72,49 @@ _HANDLER_RE = re.compile(
 _API_RE = re.compile(
     r"\b(api|axios|http|dio|client|service|repository)\.[a-zA-Z]+\(|\bfetch\s*\(|"
     r"\b(\.get|\.post|\.put|\.delete)\s*\(")
+# The bare `.get(`/`.post(`/`.put(`/`.delete` branch exists to catch axios-style
+# clients, but it also matches every in-memory lookup, so `production.get(row.id)`
+# on a Map was counted as a transport call. Several files then sat at exactly
+# MAX_API_CALLS with zero network I/O (5/5 in ApsStatisticsPage.rows.ts,
+# ApsDetailedBoard.attribution.ts and useApsArrangedPlanAuto.ts) — a false red
+# with no headroom left, which is worse than no gate at all.
+#
+# The mask below is deliberately **provable-only**: it fires only for receivers
+# that are collections by construction, by initialiser, or by explicit type
+# annotation. Test-helper receivers such as a VueWrapper's `.get`, and any real
+# client, are NOT masked, so this cannot turn a genuine transport violation
+# green — it only removes count noise.
+_COLLECTION_CTORS = (
+    "Map", "Set", "WeakMap", "WeakSet", "URLSearchParams",
+    "Headers", "FormData", "localStorage", "sessionStorage",
+)
+_COLLECTION_DECL_RE = re.compile(
+    r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]*?)?=\s*new\s+"
+    r"(?:Map|Set|WeakMap|WeakSet|URLSearchParams|Headers|FormData)\b")
+_COLLECTION_TYPED_RE = re.compile(
+    r"\b([A-Za-z_$][\w$]*)\s*:\s*(?:readonly\s+)?"
+    r"(?:Readonly)?(?:Map|Set|WeakMap|WeakSet|URLSearchParams)\s*[<(\[]")
+
+
+def _mask_collection_calls(text: str) -> str:
+    """Blank out collection lookups so _API_RE only counts transport calls.
+
+    Masking (rather than rewriting _API_RE) keeps the regex's public shape and
+    its findall() contract intact — several verify_*.py helpers import _API_RE
+    directly to recompute the same budget.
+    """
+    names = {m.group(1) for m in _COLLECTION_DECL_RE.finditer(text)}
+    names |= {m.group(1) for m in _COLLECTION_TYPED_RE.finditer(text)}
+    masked = text
+    for name in _COLLECTION_CTORS:
+        masked = re.sub(
+            rf"(?<![\w$]){name}\s*(?:\.\s*prototype\s*)?\.\s*"
+            rf"(?:get|post|put|delete)\s*\(", " ", masked)
+    for name in sorted(names - set(_COLLECTION_CTORS)):
+        masked = re.sub(
+            rf"(?<![\w$]){re.escape(name)}\s*\.\s*"
+            rf"(?:get|post|put|delete)\s*\(", " ", masked)
+    return masked
 _DECISION_RE = re.compile(r"\b(if|for|while|switch)\s*\(|\b&&\b|\b\|\|\b")
 _TODO_RE = re.compile(r"TODO|FIXME|HACK")
 
@@ -202,7 +245,7 @@ def check_text(text: str, path: Path, strict: bool) -> list:
     handlers = len(_HANDLER_RE.findall(text))
     if handlers > MAX_HANDLERS:
         add("warning", f"{handlers} event handlers > {MAX_HANDLERS}")
-    calls = len(_API_RE.findall(text))
+    calls = len(_API_RE.findall(_mask_collection_calls(text)))
     if calls > MAX_API_CALLS:
         add("warning", f"{calls} api calls > {MAX_API_CALLS}")
     decisions = len(_DECISION_RE.findall(text))

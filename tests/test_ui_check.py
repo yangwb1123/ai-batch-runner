@@ -325,3 +325,43 @@ def test_dir_scan_lib_layout_finds_files(tmp_path, monkeypatch):
     assert result.returncode == 0
     payload = json.loads(result.stdout)
     assert payload["files_scanned"] > 0
+
+
+def test_no_scan_target_fails_closed_instead_of_vacuous_ok():
+    """Bare `--all` (no --dir, no files) used to print 'OK (0 file(s) scanned)'
+    and exit 0 **silently** — nothing was inspected, yet the run read as a clean
+    gate. It is a misconfiguration, not a vacuous-but-legitimate pass, so it must
+    fail closed with exit 2."""
+    result = _run("--all")
+    assert result.returncode == 2
+    assert "no scan target" in result.stderr
+    # the vacuous summary must not be emitted at all
+    assert "OK (0 file(s) scanned)" not in result.stdout
+    assert "OK (0 file(s) scanned)" not in result.stderr
+
+
+def test_no_scan_target_fails_closed_in_every_mode(tmp_path):
+    """The guard is mode-independent: any mode with no target is a config error."""
+    for mode in ("spacing", "color", "style", "font", "all"):
+        result = _run("--mode", mode)
+        assert result.returncode == 2, mode
+        assert "no scan target" in result.stderr, mode
+
+
+def test_no_scan_target_fails_closed_with_json_flag(tmp_path):
+    """--json must not paper over the misconfiguration by printing an empty
+    report with exit 0."""
+    result = _run("--all", "--json")
+    assert result.returncode == 2
+    assert "no scan target" in result.stderr
+
+
+def test_empty_dir_still_exits_zero_and_warns(tmp_path):
+    """Counterpart to the guard: a project that legitimately has no frontend
+    files must keep passing (gofmt -l style gate). Regression guard against
+    over-tightening the new check into a false red."""
+    _make_project(tmp_path, {"README.md": "backend only\n"})
+    result = _run("--dir", str(tmp_path), "--all")
+    assert result.returncode == 0
+    assert "0 file(s) scanned" in result.stdout
+    assert "warning" in result.stderr
