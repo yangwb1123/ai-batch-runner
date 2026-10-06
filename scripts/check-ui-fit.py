@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""UI fit & accessible-name gate (pure stdlib).
+"""UI fit & accessible-name gate for TSX/TS sources (pure stdlib).
+
+The stylesheet half (CSS cancelling a control's own minimum width) lives in
+``ui_fit_css.py``; this module handles the component-source half.
 
 Two defect classes that the spacing/color/geometry rules structurally cannot
 see, because the evidence lives in *two* places that no single-file scan can
@@ -19,15 +22,11 @@ join:
     so an inline editor per row is unreachable by name for assistive tech.
 
 Known boundary: the width rule only pairs a cell renderer with a column declared
-in the *same file*. When a dialog keeps its columns in a sibling module the pair
-is invisible to this rule and the renderer is skipped rather than guessed. That
-is a coverage gap, not a pass -- the accessible-name rule still applies there.
+in the same file; a dialog keeping its columns in a sibling module is skipped.
 
-Both rules are deliberately conservative. A false positive here costs more
-than a missed defect: a gate that cries wolf gets ignored, which is worse
-than not having it. So the control-width registry is read from the package
-and falls back to "unknown -> skip", and the accessible-name rule accepts a
-``<label>`` ancestor anywhere in the file.
+Both rules are deliberately conservative. A false positive costs more than a
+missed defect -- a gate that cries wolf gets ignored. So an unmeasured control
+is skipped rather than guessed, and a ``<label>`` ancestor counts as a name.
 
 Usage:
     python scripts/check-ui-fit.py --dir apps/web/src --json
@@ -44,7 +43,14 @@ import sys
 from pathlib import Path
 from typing import Iterable, Optional
 
-SOURCE_EXTENSIONS = {".tsx", ".ts", ".jsx", ".vue"}
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from ui_fit_css import min_width_overrides  # noqa: E402
+from ui_fit_registry import (  # noqa: E402
+    control_min_widths,
+    names_control_map,
+)
+
+SOURCE_EXTENSIONS = {".tsx", ".ts", ".jsx", ".vue", ".css"}
 _TEST_FILE_RE = re.compile(r"\.(test|spec)\.")
 
 FORM_CONTROLS = (
@@ -58,104 +64,6 @@ FORM_CONTROLS = (
     "IrisMonthPicker",
     "IrisSearchInput",
 )
-
-REGISTRY = Path(__file__).resolve().parent.parent / "ui-specs" / "control-fit.json"
-
-IRIS_PACKAGE_GLOBS = (
-    "node_modules/@iris-ui-kit/vue/dist/index.js",
-    "node_modules/.pnpm/@iris-ui-kit+vue@*/node_modules/@iris-ui-kit/vue/dist/index.js",
-)
-
-# 一行式组件定义的边界：dist 里的顶层定义都在行首。
-_TOP_LEVEL_DEF = re.compile(r"^var (\w+) = (?:/\*@__PURE__\*/\s*)?defineComponent\(", re.M)
-
-
-def component_segment(source: str, name: str) -> Optional[str]:
-    """该组件自己的定义体：起点是它的顶层定义，终点是下一个顶层定义。"""
-    bounds = [(m.group(1), m.start()) for m in _TOP_LEVEL_DEF.finditer(source)]
-    for index, (defined, start) in enumerate(bounds):
-        if defined != name:
-            continue
-        end = bounds[index + 1][1] if index + 1 < len(bounds) else len(source)
-        return source[start:end]
-    return None
-
-
-def _registry_entries() -> dict:
-    try:
-        registry = json.loads(REGISTRY.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    entries = registry.get("controls")
-    return entries if isinstance(entries, dict) else {}
-
-
-def names_control_map() -> dict[str, bool]:
-    """Which Iris controls actually let `aria-label` name the control.
-
-    False means the attribute lands on a wrapper element instead: `IrisInput`,
-    `IrisNumberInput` and `IrisSwitch` are all `inheritAttrs: false` and spread
-    attrs onto their wrapper, so an `aria-label` written there names nothing.
-    Measured by mounting the real package -- see
-    sverpweb-stable/apps/web/src/pages/aps/settings/irisAriaLanding.real.test.tsx.
-    """
-    entries = _registry_entries()
-    declared = _registry_raw().get("names_control") or {}
-    return {name: bool(declared[name]) for name in FORM_CONTROLS
-            if name in entries and name in declared}
-
-
-def _registry_raw() -> dict:
-    try:
-        return json.loads(REGISTRY.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-
-
-def _verified(source: str, entries: dict) -> dict[str, int]:
-    """Keep only the entries whose evidence still matches the installed build."""
-    widths: dict[str, int] = {}
-    for control, spec in entries.items():
-        if not isinstance(spec, dict):
-            continue
-        evidence = spec.get("evidence")
-        value = spec.get("min_width")
-        if not isinstance(evidence, str) or not isinstance(value, int):
-            continue
-        segment = component_segment(source, control)
-        if segment is None or re.search(evidence, segment) is None:
-            continue
-        widths[control] = value
-    return widths
-
-
-def _installed_bundle(repo_root: Path) -> str:
-    for pattern in IRIS_PACKAGE_GLOBS:
-        for candidate in sorted(repo_root.glob(pattern)):
-            try:
-                return candidate.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-    return ""
-
-
-def control_min_widths(repo_root: Path) -> dict[str, int]:
-    """Registry entries verified against the installed package, or dropped.
-
-    Scraping a minified bundle for "the component's min-width" is unsound: a
-    fixed character window bleeds neighbouring components in (measured:
-    IrisSwitch read back as 140px when its own track is 28/36/44). So the
-    numbers live in ``ui-specs/control-fit.json`` with an evidence pattern,
-    and each entry is re-checked inside that component's own definition body
-    before it is believed. A mismatch drops the entry -- the rule then skips
-    instead of reporting a number nobody can defend.
-    """
-    entries = _registry_entries()
-    if not entries:
-        return {}
-    source = _installed_bundle(repo_root)
-    return _verified(source, entries) if source else {}
-
 
 def blank_comments(source: str) -> str:
     """Replace comment bodies with spaces, preserving every offset.
@@ -367,7 +275,9 @@ def check_file(
          "detail": detail}
         for line, detail in accessible_name_missing(source, swallows or {})
     ]
-    return _overflow_violations(source, widths, relative) + names
+    css = (min_width_overrides(source, widths, relative)
+           if path.suffix == ".css" else [])
+    return _overflow_violations(source, widths, relative) + css + names
 
 
 def _relative(target: Path, repo_root: Path) -> str:
@@ -375,6 +285,73 @@ def _relative(target: Path, repo_root: Path) -> str:
         return str(target.resolve().relative_to(repo_root))
     except ValueError:
         return str(target)
+
+
+def _relative(target: Path, repo_root: Path) -> str:
+    try:
+        return str(target.resolve().relative_to(repo_root))
+    except ValueError:
+        return str(target)
+
+
+def css_rules(source: str) -> list[tuple[str, str]]:
+    """(selector, declaration block) for every flat CSS rule."""
+    cleaned = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
+    return [
+        (match.group(1).strip(), match.group(2))
+        for match in re.finditer(r"([^{}]+)\{([^{}]*)\}", cleaned)
+    ]
+
+
+# data-iris-* 属性 → 组件名。Iris 把这些属性打在**真正承载交互**的元素上，
+# 所以"选择器命中它"就等于"这条规则作用在该控件上"。
+_TRIGGER_ATTRS = {
+    "data-iris-select-trigger": "IrisSelect",
+    "data-iris-month-picker-trigger": "IrisMonthPicker",
+    "data-iris-number-input": "IrisNumberInput",
+    "data-iris-input": "IrisInput",
+    "data-iris-switch": "IrisSwitch",
+    "data-iris-checkbox": "IrisCheckbox",
+    "data-iris-date-picker-trigger": "IrisDatePicker",
+}
+
+
+def _css_control(selector: str) -> Optional[str]:
+    for attr, control in _TRIGGER_ATTRS.items():
+        if attr in selector:
+            return control
+    return None
+
+
+def _css_min_width_overrides(
+    source: str, widths: dict[str, int], relative: str
+) -> list[dict]:
+    """CSS 把控件的最小宽度压到 0 —— 组件自己的下限就此失效。
+
+    这是"label 文字超出组件宽度""控件挤成一团"的直接成因：IrisSelect 声明
+    min-width:140px，页面 CSS 再写 `min-width: 0 !important`，窄容器里触发器
+    就被压到比内容还窄。
+    """
+    violations: list[dict] = []
+    for selector, block in css_rules(source):
+        control = _css_control(selector)
+        if control is None:
+            continue
+        minimum = widths.get(control)
+        if minimum is None:
+            continue
+        if not re.search(r"min-width:\s*0\s*(?:!important)?\s*;", block):
+            continue
+        violations.append({
+            "file": relative,
+            "line": source.count("\n", 0, source.find(selector)) + 1,
+            "rule": "control-min-width-override",
+            "detail": (
+                f"{selector} 把 {control} 的 min-width 压到 0，"
+                f"但该控件声明的下限是 {minimum}px"
+            ),
+        })
+    return violations
 
 
 def iter_sources(root: Path) -> Iterable[Path]:

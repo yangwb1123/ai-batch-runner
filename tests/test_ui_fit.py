@@ -19,6 +19,12 @@ SCRIPT = str(Path(__file__).resolve().parent.parent / "scripts" / "check-ui-fit.
 # A stand-in for @iris-ui-kit/vue's dist: the same top-level definition shape,
 # carrying the trigger styles the registry cites as evidence.
 FAKE_DIST = """
+var IrisSelect = defineComponent({
+  name: "IrisSelect",
+  setup() {
+    return () => h("button", { style: { position: "relative", width: "auto", minWidth: "140px" } })
+  },
+})
 var IrisDatePicker = defineComponent({
   name: "IrisDatePicker",
   setup() {
@@ -258,3 +264,45 @@ export const toggle = () => (
     result, payload = _json(tmp_path)
     assert result.returncode == 1
     assert any("落在包裹元素上" in v["detail"] for v in payload["violations"])
+
+
+def test_css_driving_a_control_min_width_to_zero_is_reported(tmp_path):
+    """IrisSelect 声明 min-width:140px；页面再写 min-width:0 就等于取消它。"""
+    _project(tmp_path, {
+        "src/app.css": """
+.company-select[data-iris-select-trigger] {
+  width: 8.5rem !important;
+  min-width: 0 !important;
+}
+""",
+    })
+    result, payload = _json(tmp_path)
+    assert result.returncode == 1, payload
+    rules = [v for v in payload["violations"] if v["rule"] == "control-min-width-override"]
+    assert len(rules) == 1
+    assert "140px" in rules[0]["detail"]
+
+
+def test_css_keeping_a_real_min_width_is_clean(tmp_path):
+    _project(tmp_path, {
+        "src/app.css": """
+.company-select[data-iris-select-trigger] {
+  width: 100% !important;
+  min-width: 9rem !important;
+}
+""",
+    })
+    result, payload = _json(tmp_path)
+    assert result.returncode == 0, payload["violations"]
+
+
+def test_css_rule_for_an_unrelated_class_is_ignored(tmp_path):
+    _project(tmp_path, {
+        "src/app.css": """
+.some-grid > div {
+  min-width: 0 !important;
+}
+""",
+    })
+    result, payload = _json(tmp_path)
+    assert result.returncode == 0, payload["violations"]
