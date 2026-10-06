@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "goal_id": "bounded-reliability-fix",
+  "statement": "修复一个已复现的可靠性缺陷，保留回归证据和可审查的交付物。",
+  "criteria": [
+    {"id": "regression", "description": "复现测试覆盖原始缺陷及拒绝边界，完成工程门禁验证。"},
+    {"id": "delivery", "description": "交付真实修复与评审证据；未执行的检查必须明确列出。"}
+  ]
+}

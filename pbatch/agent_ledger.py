@@ -96,6 +96,8 @@ def _usage(value: object) -> Optional[dict]:
         except (OverflowError, ValueError):
             continue
         result[_brief(key, 32)] = item
+    from .task_billing import preserved_usage
+    result.update(preserved_usage(value))
     return result or None
 
 
@@ -124,7 +126,7 @@ def _entry(*, agent: str, provider: str, run_id: str, session_id: str,
            route_tier: str = "", route_requested_tier: str = "",
            route_downgraded=None,
            route_profile_mode=None, usage: Optional[dict] = None,
-           ts=None) -> dict:
+           ts=None, parent_run_id="", parent_source_id="") -> dict:
     return {
         "ts": _timestamp(ts),
         "agent": str(agent or ""),
@@ -148,6 +150,8 @@ def _entry(*, agent: str, provider: str, run_id: str, session_id: str,
                         route_downgraded, route_profile_mode),
         "phase": _phase_value(phase),
         "usage": _usage(usage),
+        **({"parent_run_id": _brief(parent_run_id, 80),
+            "parent_source_id": _brief(parent_source_id, 80)} if parent_run_id and parent_source_id else {}),
     }
 
 
@@ -212,7 +216,7 @@ def record(data_dir, *, agent, provider="", run_id="", session_id="",
            phase="execution", task_fingerprint="", route_source="",
            route_tier="", route_requested_tier="", route_downgraded=None,
            route_profile_mode=None,
-           usage=None, ts=None) -> bool:
+           usage=None, ts=None, parent_run_id="", parent_source_id="") -> bool:
     """Append one atomic JSON line; operational failures only warn."""
     try:
         entry = _entry(
@@ -224,7 +228,8 @@ def record(data_dir, *, agent, provider="", run_id="", session_id="",
             task_fingerprint=task_fingerprint, route_source=route_source,
             route_tier=route_tier, route_requested_tier=route_requested_tier,
             route_downgraded=route_downgraded,
-            route_profile_mode=route_profile_mode, usage=usage, ts=ts)
+            route_profile_mode=route_profile_mode, usage=usage, ts=ts,
+            parent_run_id=parent_run_id, parent_source_id=parent_source_id)
         encoded = (json.dumps(entry, ensure_ascii=False, separators=(",", ":")) +
                    "\n").encode("utf-8")
         capacity = min(LEDGER_MAX_LINE_BYTES, LEDGER_MAX_BYTES)
@@ -393,6 +398,7 @@ def record_result(result, task, workdir: str, *, phase: str = "execution") -> bo
     output = task.output_path()
     stage = str(task.memory.get("stage", ""))
     role = str(task.memory.get("role", ""))
+    from .task_lifecycle import parent_fields
     return record(
         config.data_dir(workdir), agent=task.effective_agent(),
         provider=task.provider, run_id=result.run_id,
@@ -410,7 +416,7 @@ def record_result(result, task, workdir: str, *, phase: str = "execution") -> bo
             task.memory.get("model_route_requested_tier", "")),
         route_downgraded=task.memory.get("model_route_downgraded"),
         route_profile_mode=task.memory.get("model_route_profile_mode"),
-        usage=getattr(result, "usage", None))
+        usage=getattr(result, "usage", None), **parent_fields(task))
 
 
 def _positive_limit(value: str) -> int:

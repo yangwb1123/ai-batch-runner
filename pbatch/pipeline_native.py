@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from .execution_trace import flush_attempt_facts
+from .task_lifecycle import close_scope, notify, open_scope
 from .tui_native import (
     NativePipelineApprovalChannel, NativePipelineObserver,
     close_native_observation, open_native_observation,
@@ -161,13 +163,14 @@ def run_pipeline_observed(pipeline: Any, model_override: str = "",
         event_sink, cwd, dry_run, approval_channel)
     finished = False
     cancelled = False
+    facts, fact_token = open_scope(pipeline, cwd, dry_run)
     try:
         _log_and_run_stages(
             implementation, pipeline, dry_run, reuse, observer, observed,
             stage_outputs, failed_stages, all_results, session_state,
             model_override, timeout_override, session_mode, session_name,
             validate_cmd, reuse_legacy, fingerprint_mode, approval_file,
-            original_prompt, decision_log, retries, retry_delay, backoff)
+            original_prompt, decision_log, retries, retry_delay, backoff, facts)
         cancelled = _control_cancelled(observer)
         if not failed_stages and not cancelled and (pipeline.archive_dir or archive_dir):
             implementation._archive_pipeline_results(
@@ -176,6 +179,9 @@ def run_pipeline_observed(pipeline: Any, model_override: str = "",
         return all_results, failed_stages
     finally:
         cancelled = cancelled or _control_cancelled(observer)
+        if facts:
+            flush_attempt_facts()
+        close_scope(facts, fact_token, finished, failed_stages, cancelled)
         close_native_observation(
             observer, token, observed, finished, failed_stages, cancelled)
 
@@ -190,7 +196,7 @@ def _log_and_run_stages(implementation: Any, pipeline: Any, dry_run: bool,
                         reuse_legacy: bool, fingerprint_mode: bool,
                         approval_file: str, original_prompt: str,
                         decision_log: str, retries: int, retry_delay: float,
-                        backoff: float) -> None:
+                        backoff: float, facts=None) -> None:
     implementation._log_pipeline_start(pipeline, reuse)
     if observed:
         observer.start(pipeline.name, len(pipeline.stages))
@@ -204,8 +210,7 @@ def _log_and_run_stages(implementation: Any, pipeline: Any, dry_run: bool,
             from .from_dir import _describe_stage
             _describe_stage(stage, reuse)
             continue
-        if observer:
-            observer.stage_started(stage.name, index, len(pipeline.stages))
+        _stage_started(facts, observer, stage.name, index, len(pipeline.stages))
         stop, results = implementation._run_pipeline_stage(
             stage, stage_outputs, failed_stages, model_override, reuse,
             timeout_override, session_mode, session_name, validate_cmd,
@@ -214,18 +219,27 @@ def _log_and_run_stages(implementation: Any, pipeline: Any, dry_run: bool,
             backoff, session_state)
         all_results.extend(results)
         cancelled = _control_cancelled(observer)
-        if observer:
-            stage_success = not stop and not cancelled
-            successful_tasks = sum(result.success for result in results)
-            observer.stage_completed(
-                stage.name, index, len(pipeline.stages), stage_success,
-                successful_tasks, cancelled=cancelled)
-            observer.pipeline_checkpoint(
-                stage.name, index, len(pipeline.stages), stage_success,
-                task_count=len(results), successful_tasks=successful_tasks,
-                cancelled=cancelled)
+        _stage_completed(facts, observer, stage.name, index, len(pipeline.stages),
+                         not stop and not cancelled, results, cancelled)
         if stop or cancelled:
             break
+
+
+def _stage_started(facts, observer, name: str, index: int, total: int) -> None:
+    notify(facts, "stage_started", name)
+    if observer:
+        observer.stage_started(name, index, total)
+
+
+def _stage_completed(facts, observer, name: str, index: int, total: int,
+                     success: bool, results: list, cancelled: bool) -> None:
+    notify(facts, "stage_completed", name, success, cancelled)
+    if observer:
+        successful_tasks = sum(result.success for result in results)
+        observer.stage_completed(name, index, total, success, successful_tasks,
+                                 cancelled=cancelled)
+        observer.pipeline_checkpoint(name, index, total, success,
+            task_count=len(results), successful_tasks=successful_tasks, cancelled=cancelled)
 
 
 def _cancel_event(observer: Optional[NativePipelineObserver]):

@@ -27,6 +27,8 @@ from typing import Optional
 from . import config
 from .agent_ledger import query as ledger_query
 from .task_center_cli import add_parsers as add_task_parsers, sources_command, tasks_command
+from .task_goal_cli import command as goals_command
+from .task_intent_cli import command as intents_command
 
 OPS_REPORT_NAME = "ops-report.html"
 
@@ -385,5 +387,7 @@ def ops_main(argv: Optional[list[str]] = None) -> int:
         "breaker": _cmd_breaker,
         "sources": sources_command,
         "tasks": tasks_command,
+        "goals": goals_command,
+        "intents": intents_command,
     }
     return handlers[args.command](args, cwd)

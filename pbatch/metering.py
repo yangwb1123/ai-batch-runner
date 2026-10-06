@@ -76,6 +76,8 @@ def _session_usage(cwd: str, session_name: str) -> Optional[dict]:
                     total[key] = total.get(key, 0) + value
     except OSError:
         return None
+    if total is not None and not total.get("assistant_usage_messages"):
+        total.pop("_usage_message_records", None)
     return total
 
 
@@ -131,6 +133,8 @@ def _fold_usage_line(raw: bytes, total: dict) -> None:
     usage = message.get("usage")
     if not isinstance(usage, dict):
         return
+    from .session_usage_units import fold_units
+    fold_units(message, total)
     for key, value in usage.items():
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             total[key] = total.get(key, 0) + value
@@ -144,7 +148,8 @@ def _fold_usage_line(raw: bytes, total: dict) -> None:
 def record_event(event: str, task: str = "", detail: str = "", cwd: str = "",
                  session_name: str = "", usage_before: Optional[dict] = None,
                  *, run_id: str = "", task_id: str = "", stage_id: str = "",
-                 attempt: int = 0, phase: str = "", module: str = "") -> Optional[dict]:
+                 attempt: int = 0, phase: str = "", module: str = "",
+                 parent_run_id: str = "", parent_source_id: str = "") -> Optional[dict]:
     """Append one versioned JSONL event (best-effort, never raises).
 
     The original positional arguments remain compatible.  Trace fields are
@@ -169,8 +174,10 @@ def record_event(event: str, task: str = "", detail: str = "", cwd: str = "",
         "phase": (phase or _event_phase(event))[:40],
         "task": task[:120],
         "detail": detail[:500],
-        "usage": _usage_delta(current, usage_before),
+        "usage": _event_usage(current, usage_before),
     }
+    if parent_run_id and parent_source_id:
+        payload.update(parent_run_id=parent_run_id[:80], parent_source_id=parent_source_id[:80])
     line = json.dumps(payload, ensure_ascii=False)
     if EVENTS_FILE:
         try:
@@ -185,6 +192,11 @@ def record_event(event: str, task: str = "", detail: str = "", cwd: str = "",
         if WEBHOOK_URL:
             _post_webhook(line)
     return payload["usage"]
+
+
+def _event_usage(current: Optional[dict], before: Optional[dict]) -> Optional[dict]:
+    from .session_usage_units import annotate_units
+    return annotate_units(_usage_delta(current, before))
 
 
 def _event_phase(event: str) -> str:

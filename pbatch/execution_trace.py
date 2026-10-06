@@ -44,10 +44,11 @@ def finish_task_result(result: TaskResult, task: Task, session_id: str,
         result.reason, workdir, session_id or session_name, usage_before,
         run_id=result.run_id, task_id=result.task_id,
         stage_id=result.stage_id, attempt=result.attempt, phase="execution",
-        module=str(task.memory.get("module", "")))
+        module=str(task.memory.get("module", "")), **_parent_fields(task))
     if config.AGENT_LEDGER_ENABLED:
         from .agent_ledger import record_result
         record_result(result, task, workdir, phase="execution")
+    _attempt_fact("completed", result, task, workdir, "execution")
     return result
 
 
@@ -60,7 +61,41 @@ def record_validation_event(result: TaskResult, task: Task) -> None:
         task.prompt, result.reason, task.workdir(), result.session_name,
         task_id=result.task_id, stage_id=result.stage_id,
         attempt=result.attempt, phase="validation",
-        module=str(task.memory.get("module", "")))
+        module=str(task.memory.get("module", "")), **_parent_fields(task))
     if config.AGENT_LEDGER_ENABLED:
         from .agent_ledger import record_result
         record_result(result, task, task.workdir(), phase="validation")
+    _attempt_fact("completed", result, task, task.workdir(), "validation")
+
+
+def _parent_fields(task):
+    from .task_lifecycle import parent_fields
+    return parent_fields(task)
+
+
+def record_task_started(task, task_id, attempt, workdir, session_id, session_name, pid):
+    _attempt_fact("started", task, task_id, attempt, workdir, session_id, session_name, pid)
+
+
+def bind_parallel_tasks(tasks):
+    from .task_lifecycle import bind_tasks
+    try:
+        bind_tasks(tasks)
+    except Exception as exc:
+        config.log.warning("Task lineage unavailable: %s", type(exc).__name__)
+
+
+def flush_attempt_facts():
+    from .task_attempt_facts import flush
+    try:
+        flush()
+    except Exception as exc:
+        config.log.warning("Task observation drain lost: %s", type(exc).__name__)
+
+
+def _attempt_fact(method, *args):
+    from . import task_attempt_facts
+    try:
+        getattr(task_attempt_facts, method)(*args)
+    except Exception as exc:
+        config.log.warning("Task attempt observation lost: %s", type(exc).__name__)

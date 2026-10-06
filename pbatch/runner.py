@@ -21,7 +21,7 @@ from .cmd_expand import embedded_checker_argv, expand_cmd
 from .context_inject import inject_task_context
 from .execution_trace import (annotate_result, attach_session,
                               finish_task_result as _finish_result,
-                              record_validation_event)
+                              record_validation_event, record_task_started, bind_parallel_tasks)
 from .models import Task, TaskResult
 from .execution_ids import task_id as make_task_id
 from .runner_results import (agent_result_reason as _agent_result_reason,
@@ -253,6 +253,7 @@ def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = F
             return _cancelled_result(task)
         proc = _spawn_agent(cmd, workdir, env)
         _register_proc(proc)
+        record_task_started(task, trace_task_id, attempt, workdir, session_id, effective_name, proc.pid)
         write_marker(key, workdir, agent_pid=proc.pid)
         stream_requested, structured_stdout = _stream_output_enabled(), _expects_codex_transcript(task)
         stdout_streamed = stream_requested and not structured_stdout
@@ -958,6 +959,7 @@ def run_parallel(tasks: list[Task], workers: int = 0, validate_cmd: str = "",
                  waves: Optional[list] = None, cancel_event=None,
                  result_callback=None) -> list[TaskResult]:
     """Run parallel tasks through the bounded scheduling helper."""
+    bind_parallel_tasks(tasks)
     return _run_parallel_impl(
         tasks, workers, validate_cmd, retries, retry_delay, backoff,
         min_interval, waves, cancel_event, _run_retried,
