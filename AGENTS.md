@@ -756,6 +756,7 @@ python quality.py --strict .   # 组织质量门禁（当前全绿）
 |---|---|
 | 本文件 | 能力总览与使用指南 |
 | `docs/RUNNING_247.md` | 7×24 运营、验证门禁、会话、meta 编排细节 |
+| `docs/RUNTIME_RETENTION.md` | 运行态目录会堆积什么、什么可删什么必须先保全（实测盘点，非推测） |
 | `docs/CAMPAIGN_LESSONS.md` | Campaign 实战经验内化（2026-08：失败分布/占位符修复/模块发现/运营） |
 | `docs/AUTOMATION_WORKFLOW_SUMMARY.md` | runner 状态与机制速览 |
 | `docs/ROLES_SUMMARY.md` | 角色 prompt 边界说明 |
