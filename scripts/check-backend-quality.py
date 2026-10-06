@@ -13,6 +13,7 @@ directory exclusions, and JSON mode keeps stdout machine-readable.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -81,16 +82,14 @@ _TODO_RE = re.compile(r"TODO|FIXME|HACK")
 
 def scan_directory(directory: Path, exts: tuple, excludes: set) -> list:
     """Recursively collect backend sources, skipping vendor/generated dirs."""
+    if any(part in excludes for part in directory.parts):
+        return []
     files = []
-    for path in sorted(directory.rglob("*")):
-        if path.is_dir():
-            continue
-        parts = path.parts[:-1]
-        if any(part in excludes for part in parts):
-            continue
-        if path.suffix.lower() in exts:
-            files.append(path)
-    return files
+    for parent, children, names in os.walk(directory, followlinks=False):
+        children[:] = [name for name in children if name not in excludes]
+        files.extend(Path(parent) / name for name in names
+                     if Path(name).suffix.lower() in exts)
+    return sorted(files)
 
 
 def _git_boundary(directory: Path) -> Path | None:

@@ -27,6 +27,30 @@
 | E0 eval | `make eval` | 53 项 | classify/rules/assess/product/workflow/evolution 行为回归 |
 | T1 coverage | `make coverage` | — | checks/ + cli.py 覆盖率报告（需 pytest-cov） |
 
+### 扫描回归的可复现范围
+
+`tests/test_advance.py` 用固定的 Go/Dart/TSX 项目运行全部六个真实检查器子进程，
+逐维断言违规确实被发现；默认回归不再读取机器上的外部 demo 仓库，也不因其
+不存在而空通过。CLI 测试同样扫描该 fixture，仍验证只读模式不写项目状态。
+外部项目体检仍通过显式 `pi-batch advance --dir <project>` 执行，不是默认测试输入。
+
+UI/前后端质量、设计智能、业务闭环检查器只提前剪枝**已有排除集合**中的目录，
+不增加排除项、不改变规则或 manifest 选择；文件结果排序稳定。知识维护检查器
+仍仅按原有 `.dart_tool` / `node_modules` 来源排除剪枝，未把其他门禁的 build/vendor
+排除策略套给关键字段审计。模块存在性探测可在首个来源文件停止，实际审计仍
+遍历所有已准入来源；业务闭环报告计数来自同一次扫描，而非再次枚举变化中的树。
+`tests/test_checker_traversal.py` 对照旧准入谓词检查文件集合，并验证被排除目录
+不被打开、目录符号链接不递归、显式 skip/大小写/文件链接语义保持。
+
+Fabric 调度回归的等待条件要求真实审批账本命中和首个 Runner 心跳，而非把
+已出现但无 `approved` 字段的注册记录当成授权；审批写入暂停点验证这一区别。
+MCP 深度压力测试保留 2000/200000 层输入，但按当前解释器实际能否解码区分
+Invalid Request / Parse error，另固定覆盖可解码的非请求与解码器递归拒绝后恢复；
+不改变生产协议、递归限制或审批规则。
+
+这些是遍历与默认测试输入的修复，不是旧 CI 超时的完整根因证明；全量 CI
+是否通过必须以完整 `make ci` 结果为准，不能以局部提速或栈转储后的活动代替。
+
 ### Agent 结构化产物门禁
 
 `jsonschema=<path>` 是任务/阶段级 validator，不默认加入本仓库 CI。它调用

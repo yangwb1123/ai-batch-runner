@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -181,18 +182,20 @@ def _check_file(path: Path, source: str) -> list[dict]:
 # --------------------------------------------------------------------------
 
 def _collect_files(root: Path, skip: str) -> list[Path]:
-    skipped = [s for s in skip.split(",") if s]
-    return [
-        p
-        for p in root.rglob("*")
-        if p.is_file()
-        and p.suffix in {".go", ".dart", ".ts", ".tsx", ".py", ".js"}
-        and not any(part in skipped for part in p.parts)
-        and ".dart_tool" not in p.parts
-        and "node_modules" not in p.parts
-        and "build" not in p.parts
-        and "vendor" not in p.parts
-    ]
+    """Prune declared exclusions without reducing the admitted source set."""
+    excluded = {s for s in skip.split(",") if s} | {
+        ".dart_tool", "node_modules", "build", "vendor"}
+    if any(part in excluded for part in root.parts):
+        return []
+    files = []
+    for parent, children, names in os.walk(root, followlinks=False):
+        children[:] = [name for name in children if name not in excluded]
+        for name in names:
+            path = Path(parent) / name
+            if (name not in excluded and path.is_file()
+                    and path.suffix in {".go", ".dart", ".ts", ".tsx", ".py", ".js"}):
+                files.append(path)
+    return sorted(files)
 
 
 _SELFCHECK_CASES = [
@@ -259,8 +262,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {args.dir} is not a directory", file=sys.stderr)
         return 2
 
+    files = _collect_files(root, args.skip)
     violations: list[dict] = []
-    for path in _collect_files(root, args.skip):
+    for path in files:
         try:
             source = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -269,7 +273,7 @@ def main(argv: list[str] | None = None) -> int:
 
     report = {
         "directory": args.dir,
-        "files_scanned": len(_collect_files(root, args.skip)),
+        "files_scanned": len(files),
         "violations": violations,
         "total": len(violations),
     }

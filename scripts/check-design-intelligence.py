@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -216,18 +217,19 @@ def _check_file(path: Path, source: str) -> list[dict]:
 
 
 def _collect_files(root: Path, skip: str) -> list[Path]:
-    """Source files under root, honoring skip fragments."""
-    skipped = [s for s in skip.split(",") if s]
-    return [
-        p
-        for p in root.rglob("*")
-        if p.is_file()
-        and p.suffix in {".dart", ".ts", ".tsx", ".vue", ".js", ".jsx"}
-        and not any(part in skipped for part in p.parts)
-        and ".dart_tool" not in p.parts
-        and "node_modules" not in p.parts
-        and "build" not in p.parts
-    ]
+    """Prune only the directory segments already excluded by this gate."""
+    excluded = {s for s in skip.split(",") if s} | {".dart_tool", "node_modules", "build"}
+    if any(part in excluded for part in root.parts):
+        return []
+    files = []
+    for parent, children, names in os.walk(root, followlinks=False):
+        children[:] = [name for name in children if name not in excluded]
+        for name in names:
+            path = Path(parent) / name
+            if (name not in excluded and path.is_file()
+                    and path.suffix in {".dart", ".ts", ".tsx", ".vue", ".js", ".jsx"}):
+                files.append(path)
+    return sorted(files)
 
 
 # --------------------------------------------------------------------------

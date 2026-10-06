@@ -356,15 +356,46 @@ class MCPTests(unittest.TestCase):
         enough to exhaust the decoder's own recursion guard is a parse failure.
         Both must be bounded, and the next request must still be served.
         """
-        for depth, expected in ((2000, -32600), (200000, -32700)):
+        # The interpreter's JSON recursion guard is not a wire constant:
+        # depth 2000 already exhausts CPython 3.10's default guard. Keep both
+        # original stress depths, and a shallow case that must decode.
+        for depth in (32, 2000, 200000):
             with self.subTest(depth=depth):
                 line = b"[" * depth + b"]" * depth
+                try:
+                    json.loads(line)
+                except RecursionError:
+                    expected = -32700
+                else:
+                    expected = -32600
+                if depth == 32:
+                    self.assertEqual(expected, -32600)
                 code, replies, _, _ = self.exchange(
                     raw=line + b"\n" + wire(request("ping")))
                 self.assertEqual(code, 0)
                 self.assert_error(replies[0], expected)
                 self.assertNotIn("id", replies[0])
                 self.assertEqual(replies[1]["result"], {})
+        self.assertEqual(self.store.mock_calls, [])
+
+    def test_decoder_recursion_failure_is_parse_error_and_next_frame_recovers(self):
+        """Exercise resource refusal even on interpreters accepting stress JSON."""
+        decode = json.loads
+        rejected = "[[]]\n"
+
+        def bounded_decode(document, **kwargs):
+            if document == rejected:
+                raise RecursionError("synthetic decoder resource boundary")
+            return decode(document, **kwargs)
+
+        raw = rejected.encode() + wire(request("ping"))
+        with patch.object(mcp.json, "loads", side_effect=bounded_decode):
+            code, replies, _, _ = self.exchange(raw=raw)
+        self.assertEqual(code, 0)
+        self.assert_error(replies[0], -32700)
+        self.assertNotIn("id", replies[0])
+        self.assertEqual(replies[1]["result"], {})
+        self.assertEqual(self.store.mock_calls, [])
 
     def test_invalid_envelopes_and_batches_never_execute(self):
         invalid = [None, [], [call()], True, "text", {}, {"jsonrpc": "2.0", "id": 2},

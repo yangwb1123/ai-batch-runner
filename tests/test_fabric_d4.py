@@ -55,19 +55,22 @@ def _start_runner(control_plane, name, state_dir):
 
 
 def _wait_device(control_plane, name, timeout=10.0):
-    """Wait until the named device is registered and approved.
+    """Wait for persisted approval and the Runner's first heartbeat.
 
-    A fixed sleep after starting the runner thread is a guess: on a loaded
-    machine the first registration cycle can land after it, and the schedule
-    then refuses with "unknown device" instead of exercising the path.
+    Registration publishes its device record before writing approval; that
+    record has no ``approved`` field. Neither presence nor a missing flag is
+    permission. A heartbeat also proves the Runner consumed its handshake.
     """
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        for device in control_plane["httpd"].control.devices.values():
-            if device.get("name") == name and device.get("approved") is not False:
+    control = control_plane["httpd"].control
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        approved = control._approval_ids()
+        for device_id, device in tuple(control.devices.items()):
+            if (device.get("name") == name and device_id in approved
+                    and device.get("heartbeats", 0) > 0):
                 return device
         time.sleep(0.02)
-    raise AssertionError(f"device {name} never registered: "
+    raise AssertionError(f"device {name} did not become approved and heartbeating: "
                          f"{control_plane['httpd'].control.devices}")
 
 
@@ -304,6 +307,37 @@ def test_cancel_prevents_execution(control_plane):
     finally:
         stop.set()
         thread.join(timeout=5)
+
+
+def test_wait_device_does_not_confuse_registration_with_approval(
+        control_plane, monkeypatch):
+    """Pause before approval persistence: a published device is not ready."""
+    control = control_plane["httpd"].control
+    entered, release = threading.Event(), threading.Event()
+    approve = control._approve
+
+    def paused_approval(*args):
+        entered.set()
+        assert release.wait(10), "test must release its owned registration"
+        return approve(*args)
+
+    monkeypatch.setattr(control, "_approve", paused_approval)
+    thread, stop = _start_runner(control_plane, "node-approval", control_plane["state_dir"])
+    try:
+        assert entered.wait(5), "registration did not reach the approval boundary"
+        assert any(device.get("name") == "node-approval" for device in control.devices.values())
+        assert control._approval_ids() == set()
+        with pytest.raises(AssertionError, match="approved and heartbeating"):
+            _wait_device(control_plane, "node-approval", timeout=0.05)
+        release.set()
+        device = _wait_device(control_plane, "node-approval")
+        assert device["heartbeats"] > 0
+        assert control._approval_ids()
+    finally:
+        release.set()
+        stop.set()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
 
 
 def test_cli_schedule_end_to_end(control_plane, tmp_path):
