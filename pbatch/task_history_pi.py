@@ -6,14 +6,19 @@ from .task_intent_schema import fingerprint
 from .task_native_history import metadata, user_text, workspace
 
 
+def entry_identity(row: dict, known: dict) -> tuple:
+    key, parent = row.get("id"), row.get("parentId")
+    if row.get("type") == "session" or not text(key, 128) or "parentId" not in row:
+        raise ValueError("unsupported Pi entry identity/parent shape")
+    if key in known or (parent is not None and (not text(parent, 128) or parent not in known)):
+        raise ValueError("duplicate, dangling or reordered Pi history ancestry")
+    return key, parent
+
+
 def _tree(rows: list) -> dict:
     nodes = {}
     for row in rows:
-        key, parent = row.get("id"), row.get("parentId")
-        if row.get("type") == "session" or not text(key, 128) or "parentId" not in row:
-            raise ValueError("unsupported Pi entry identity/parent shape")
-        if key in nodes or (parent is not None and (not text(parent, 128) or parent not in nodes)):
-            raise ValueError("duplicate, dangling or reordered Pi history ancestry")
+        key, _ = entry_identity(row, nodes)
         nodes[key] = row
     return nodes
 
@@ -29,14 +34,28 @@ def _branch(nodes: dict, leaf: str) -> list:
     return list(reversed(selected))
 
 
-def project(rows: list, source: dict, leaf: str) -> tuple[list, dict]:
-    header = rows[0]
+def ancestor_digests(rows: list, leaf: str) -> set:
+    return {fingerprint(row["id"]) for row in _branch(_tree(rows[1:]), leaf)}
+
+
+def header_identity(header: dict, source: dict) -> tuple[str, str]:
     if header.get("type") != "session" or type(header.get("version")) is not int or header["version"] != 3:
         raise ValueError("only an explicit Pi v3 session header is supported")
     identity = header.get("id")
     if not text(identity, 128):
         raise ValueError("Pi native session identity is missing")
-    root = workspace(source, header.get("cwd"))
+    return identity, workspace(source, header.get("cwd"))
+
+
+def user_record(row: dict, identity: str) -> dict:
+    if set(row["message"]) - {"role", "content", "timestamp"}:
+        raise ValueError("unsupported Pi user-message fields; no input was silently dropped")
+    return {"id": "pi-" + fingerprint([identity, row["id"]]), "ts": row.get("timestamp"),
+            "role": "user", "text": user_text(row["message"].get("content"))}
+
+
+def project(rows: list, source: dict, leaf: str) -> tuple[list, dict]:
+    identity, root = header_identity(rows[0], source)
     nodes = _tree(rows[1:])
     selected, messages = _branch(nodes, leaf), []
     all_users = 0
@@ -49,9 +68,5 @@ def project(rows: list, source: dict, leaf: str) -> tuple[list, dict]:
     for row in selected:
         if row["type"] != "message" or row["message"]["role"] != "user":
             continue
-        if set(row["message"]) - {"role", "content", "timestamp"}:
-            raise ValueError("unsupported Pi user-message fields; no input was silently dropped")
-        messages.append({"id": "pi-" + fingerprint([identity, row["id"]]),
-                         "ts": row.get("timestamp"), "role": "user",
-                         "text": user_text(row["message"].get("content"))})
+        messages.append(user_record(row, identity))
     return messages, metadata("pi-session", identity, root, leaf, rows, messages, all_users)

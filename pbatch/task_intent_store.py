@@ -68,10 +68,12 @@ def _read_input(source: dict, file: str, goal: str, format: str, channel: str, l
 
 def import_history(source_id: str, goal_id: str, file: str, by: str, reason: str,
                    expected: int | None = None, *, format: str = "normalized",
-                   channel: str = "", leaf: str = "") -> dict:
+                   channel: str = "", leaf: str = "", origin_file: str = "") -> dict:
     began = time.perf_counter()
     _actor(by, reason)
     native.options(format, channel, leaf)
+    if origin_file and format != "normalized":
+        raise ValueError("--origin-file is only valid for a normalized v2 range export")
     source = resolve_source(source_id)
     goal = load_goal(goal_id)
     if goal["source_id"] != source["source_id"]:
@@ -91,7 +93,9 @@ def import_history(source_id: str, goal_id: str, file: str, by: str, reason: str
             _capacity(path.parent)
             value = _new_history(goal, key, manifest)
         else:
-            native.check_continuation(value, adapter, raw, manifest["messages"])
+            native.check_continuation(value, adapter, raw, manifest["messages"], leaf)
+        from .task_history_export import verify_import
+        verify_import(value, manifest, source, goal, origin_file)
         new = _merge(value, manifest)
         value.update(authorized=True, contract_digest=goal["contract_digest"],
                      messages_digest=fingerprint(value["messages"]))
@@ -119,6 +123,8 @@ def _append_import(value: dict, manifest: dict, proof: dict, adapter: dict | Non
               "new_message_ids": new, "at": stamp(), "analysis_seconds": time.perf_counter() - began}
     if adapter is not None:
         record["adapter"] = adapter
+    if "origin" in manifest:
+        record.update(export_origin=manifest["origin"], origin_replayed_at=stamp())
     value["imports"].append(record)
 
 
