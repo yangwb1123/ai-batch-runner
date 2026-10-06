@@ -26,6 +26,12 @@ CATALOG = Path("apps/web/src/i18n.ts")
 SOURCE_ROOT = Path("apps/web/src")
 SOURCE_EXTENSIONS = {".js", ".jsx", ".ts", ".tsx", ".vue"}
 TEST_PARTS = {"__testkit__", "__tests__", "test", "tests", "spec", "e2e"}
+# Shared test scaffolding lives beside the tests it serves under a sibling stem
+# (``Page.testkit.ts``, ``Page.helpers.ts``, ``Page.fixtures.ts``). Those files
+# hold selectors and locale switches, not UI copy, so the copy rules must skip
+# them exactly like ``*.test.ts``.
+TEST_STEM_SUFFIXES = (".test", ".spec", ".testkit", ".helpers", ".fixtures",
+                      ".harness", ".mocks", ".stubs")
 CATALOG_FILES = {CATALOG.as_posix(), "apps/web/src/i18n.test.ts"}
 
 MONTH_MESSAGES = {
@@ -68,7 +74,13 @@ _FIXED_INTL_LOCALE_RE = re.compile(
     r"([\"'`])(?P<value>[A-Za-z]{2,3}(?:-[A-Za-z0-9]+)*)\1"
 )
 _JSX_TEXT_RE = re.compile(
-    r">\s*(?P<value>[A-Za-z\u00c0-\u024f\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]"
+    # `(?<![=>])` keeps TypeScript type syntax out of the JSX-text rule: an
+    # arrow type such as `() => Promise<boolean>` contains the exact `>` … `<`
+    # shape this rule looks for, and `Promise`/`void` are type arguments, not
+    # copy. The character class (not `(?<!=>)`) matters: in `=>` the `>` has only
+    # one preceding character, so a two-character lookbehind never fires.
+    # Real JSX text always follows a tag-closing `>`, never `=` or `>`.
+    r"(?<![=>])>\s*(?P<value>[A-Za-z\u00c0-\u024f\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]"
     r"[^<>{}\n]*)<"
 )
 _TEMPLATE_COPY_RE = re.compile(
@@ -268,7 +280,7 @@ def _is_source_file(rel: str) -> bool:
         rel.startswith(SOURCE_ROOT.as_posix() + "/")
         and path.suffix in SOURCE_EXTENSIONS
         and not any(part in TEST_PARTS for part in path.parts)
-        and not path.stem.endswith((".test", ".spec"))
+        and not path.stem.endswith(TEST_STEM_SUFFIXES)
         and rel not in CATALOG_FILES
     )
 

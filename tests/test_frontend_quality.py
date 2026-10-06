@@ -304,3 +304,83 @@ def test_frontend_o_flag_summary_on_stdout(tmp_path):
     assert result.returncode == 0
     assert "UI-QUALITY: OK" in result.stdout
     assert json.loads(report.read_text(encoding="utf-8"))["total"] == 0
+
+
+# --- api-call accounting: Map/Set lookups are not transport (D211 false red) ---
+#
+# `_API_RE`'s bare `.get|.post|.put|.delete` branch used to count in-memory
+# `Map.prototype.get()` as a network call. Files holding six Map lookups were
+# pinned at exactly MAX_API_CALLS with zero transport, so the gate was red for
+# a non-violation and had no headroom. These tests pin both directions.
+
+
+def test_map_lookups_do_not_count_as_api_calls(tmp_path):
+    """Six in-memory lookups must NOT trip the api-call budget."""
+    body = "".join(f"const v{i} = production.get(row{i}.id)\n" for i in range(6))
+    _write(tmp_path, "src/rows.ts",
+           "export const build = (production: ReadonlyMap<string, X>) => {\n"
+           + body + "  return 0\n}\n")
+    result = _run("--dir", str(tmp_path), "--strict")
+    assert result.returncode == 0, result.stderr
+    assert "api calls" not in result.stderr
+
+
+def test_new_map_instance_lookups_do_not_count(tmp_path):
+    """A locally constructed Map is provably a collection — masked too."""
+    _write(tmp_path, "src/local.ts",
+           "export const f = () => {\n"
+           "  const byKey = new Map<string, number>()\n"
+           "  byKey.get('a')\n  byKey.get('b')\n  byKey.delete('c')\n"
+           "  return byKey.size\n}\n")
+    result = _run("--dir", str(tmp_path), "--strict")
+    assert result.returncode == 0, result.stderr
+    assert "api calls" not in result.stderr
+
+
+def test_map_prototype_and_ctor_receivers_do_not_count(tmp_path):
+    _write(tmp_path, "src/proto.ts",
+           "const a = Map.prototype.get(m, k)\n"
+           "const b = new Map().get(k)\n"
+           "const c = new URLSearchParams(u).get('x')\n")
+    result = _run("--dir", str(tmp_path), "--strict")
+    assert result.returncode == 0, result.stderr
+    assert "api calls" not in result.stderr
+
+
+def test_real_api_calls_still_trip_the_budget(tmp_path):
+    """Negative control — the mask must NOT hide genuine transport calls.
+    Without this the fix would be a one-way ratchet into false greens."""
+    _write(tmp_path, "src/api.ts",
+           "".join(f"const r{i} = api.get('/x/{i}')\n" for i in range(6)))
+    result = _run("--dir", str(tmp_path), "--strict")
+    assert result.returncode == 1
+    assert "6 api calls > 5" in result.stderr
+
+
+def test_real_fetch_and_axios_still_count(tmp_path):
+    _write(tmp_path, "src/api2.ts",
+           "".join(f"await axios.post('/x/{i}')\n" for i in range(4))
+           + "await fetch('/y')\nawait fetch('/z')\n")
+    result = _run("--dir", str(tmp_path), "--strict")
+    assert result.returncode == 1
+    assert "6 api calls > 5" in result.stderr
+
+
+def test_unknown_receiver_still_counted_conservatively(tmp_path):
+    """A receiver we cannot prove is a collection (here: a test helper) keeps
+    being counted. The fix removes provable noise only."""
+    _write(tmp_path, "src/wrapper.ts",
+           "".join(f"wrapper.get({i})\n" for i in range(6)))
+    result = _run("--dir", str(tmp_path), "--strict")
+    assert result.returncode == 1
+    assert "6 api calls > 5" in result.stderr
+
+
+def test_mixed_map_and_real_calls_count_only_real_ones(tmp_path):
+    _write(tmp_path, "src/mixed.ts",
+           "const m = new Map<string, number>()\n"
+           + "".join(f"m.get({i})\n" for i in range(9))
+           + "const r = api.get('/only-one')\n")
+    result = _run("--dir", str(tmp_path), "--strict")
+    assert result.returncode == 0, result.stderr
+    assert "api calls" not in result.stderr

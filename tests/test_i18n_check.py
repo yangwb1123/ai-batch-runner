@@ -107,3 +107,46 @@ def test_test_sources_are_not_copy_targets(tmp_path):
     )
     result = _run(root)
     assert result.returncode == 0, result.stderr
+
+
+def test_type_annotations_are_not_jsx_copy(tmp_path):
+    """`() => Promise<boolean>` contains `>`…`<` but is a type, not copy."""
+    root = _project(tmp_path, _catalog())
+    (root / "apps/web/src/Widget.tsx").write_text(
+        "export type Handlers = {\n"
+        "  persistLine: (line: Row) => Promise<boolean>,\n"
+        "  refresh: () => Promise<void>,\n"
+        "  type: Function as PropType<(row: Row) => Promise<boolean>>,\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    result = _run(root)
+    assert result.returncode == 0, result.stderr
+
+
+def test_jsx_text_still_fails_after_the_lookbehind(tmp_path):
+    """The arrow-type exemption must not open a hole in real JSX copy."""
+    root = _project(tmp_path, _catalog())
+    (root / "apps/web/src/Widget.tsx").write_text(
+        'export const Widget = () => <span>确定</span>\n', encoding="utf-8"
+    )
+    result = _run(root)
+    assert result.returncode == 1, result.stdout
+
+
+def test_shared_test_scaffolding_is_not_copy_target(tmp_path):
+    """`*.testkit/*.helpers/*.fixtures` hold selectors, not UI copy."""
+    root = _project(tmp_path, _catalog())
+    (root / "apps/web/src/Page.helpers.ts").write_text(
+        'export const btn = () => host.get(\'[aria-label="查看本地结构预检"]\')\n',
+        encoding="utf-8",
+    )
+    (root / "apps/web/src/Page.testkit.ts").write_text(
+        'export const setLocale = (locale: "zh-CN" | "en-US") => locale\n',
+        encoding="utf-8",
+    )
+    (root / "apps/web/src/Page.fixtures.ts").write_text(
+        'export const n = new Intl.NumberFormat("zh-CN")\n', encoding="utf-8"
+    )
+    result = _run(root)
+    assert result.returncode == 0, result.stderr
