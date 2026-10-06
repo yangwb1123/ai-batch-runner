@@ -135,7 +135,7 @@ def unregister_source(source_id: str) -> dict:
 def _change_catalog(item: dict | None, remove: str) -> dict:
     path = checked_path(catalog_path())
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    flags = os.O_CREAT | os.O_RDWR | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(path.with_suffix(".lock"), flags, 0o600)
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):

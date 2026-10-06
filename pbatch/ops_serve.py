@@ -173,7 +173,8 @@ class OpsHandler(BaseHTTPRequestHandler):
             self._get_sessions(route, query)
         elif route.startswith("/api/jobs/"):
             self._get_job(route)
-        elif route == "/api/tasks" or route.startswith("/api/tasks/"):
+        elif any(route == prefix or route.startswith(prefix + "/")
+                 for prefix in ("/api/tasks", "/api/goals", "/api/intents")):
             self._get_tasks(route, query)
         else:
             self._get_standard(route, query)
@@ -203,6 +204,10 @@ class OpsHandler(BaseHTTPRequestHandler):
             return
         from .task_center import detail, snapshot
         source = _q(query, "source")
+        for kind in ("goals", "intents"):
+            if route == "/api/" + kind or route.startswith("/api/" + kind + "/"):
+                self._get_records(route, source, kind)
+                return
         if route == "/api/tasks":
             _json_response(self, snapshot(_qi(query, "limit", 100, 200), source))
             return
@@ -212,6 +217,26 @@ class OpsHandler(BaseHTTPRequestHandler):
         value = detail(task_id, source)
         if value is None:
             _error(self, "task not found in the bounded recent window", 404)
+        else:
+            _json_response(self, value)
+
+    def _get_records(self, route: str, source: str, kind: str) -> None:
+        from .task_center import snapshot
+        from .task_goal_schema import GOAL_PATTERN
+        from .task_intent_schema import INTENT_PATTERN
+        prefix = "/api/" + kind
+        key = unquote(route[len(prefix) + 1:]) if route != prefix else ""
+        pattern = GOAL_PATTERN if kind == "goals" else INTENT_PATTERN
+        if key and not pattern.fullmatch(key):
+            raise ValueError("invalid " + kind[:-1] + " identity")
+        view = snapshot(source_id=source)
+        if route == prefix:
+            _json_response(self, {"schema_version": 1, kind: view[kind],
+                                  "diagnostics": view["diagnostics"]})
+            return
+        value = next((row for row in view[kind] if row[kind[:-1] + "_id"] == key), None)
+        if value is None:
+            _error(self, kind[:-1] + " not found in the registered bounded view", 404)
         else:
             _json_response(self, value)
 

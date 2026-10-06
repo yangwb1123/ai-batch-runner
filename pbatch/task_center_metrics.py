@@ -6,6 +6,7 @@ usage and must not be billed twice. All totals describe the bounded read window.
 from __future__ import annotations
 
 import math
+import re
 from datetime import datetime, timezone
 
 _TOKEN_KEYS = {
@@ -43,27 +44,30 @@ def timestamp(value: object) -> float | None:
 
 
 def _pick(usage: dict, keys: tuple, integer: bool = False) -> float | None:
-    for key in keys:
-        if key in usage:
-            return number(usage[key], integer)
-    return None
+    values = [number(usage[key], integer) for key in keys if key in usage]
+    return values[0] if values and None not in values and len(set(values)) == 1 else None
 
 
 def _tokens(usage: dict, field: str) -> float | None:
-    observed = _pick(usage, _TOKEN_KEYS[field], True)
-    if observed is None and field == "total_tokens":
-        incoming = _pick(usage, _TOKEN_KEYS["input_tokens"], True)
-        outgoing = _pick(usage, _TOKEN_KEYS["output_tokens"], True)
-        if incoming is not None and outgoing is not None:
-            return incoming + outgoing  # cache is not an additional token category
-    return observed
+    # Cache may be included in input or separate, depending on the provider.
+    # A missing total cannot honestly be reconstructed without that contract.
+    return _pick(usage, _TOKEN_KEYS[field], True)
 
 
 def _cost(usage: dict) -> float | None:
-    reported = _pick(usage, ("cost_total", "total_cost", "cost_usd", "cost"))
-    if reported is None and isinstance(usage.get("cost"), dict):
-        reported = number(usage["cost"].get("total"))
-    return reported
+    values = {key: value for key, value in usage.items() if key in {"cost_total", "total_cost", "cost_usd", "cost"}}
+    if isinstance(values.get("cost"), dict):
+        values["cost"] = values["cost"].get("total")
+    return _pick(values, ("cost_total", "total_cost", "cost_usd", "cost"))
+
+
+def cost_currency(usage: dict) -> str | None:
+    labels = [usage[key] for key in ("cost_currency", "currency") if key in usage]
+    if isinstance(usage.get("cost"), dict) and "currency" in usage["cost"]:
+        labels.append(usage["cost"]["currency"])
+    if not labels or any(not isinstance(label, str) or not re.fullmatch(r"[A-Z]{3}", label) for label in labels):
+        return None
+    return labels[0] if len(set(labels)) == 1 else None
 
 
 def _coverage(count: int, calls: int, partial_window: bool) -> str:
@@ -76,7 +80,8 @@ def usage_metrics(rows: list[dict], partial_window: bool) -> dict:
     calls = [row for row in rows if row["phase"] == "execution" and row["status"] in
              {"succeeded", "failed", "rejected", "cancelled"}]
     usages = [row.get("usage") if isinstance(row.get("usage"), dict) else {} for row in calls]
-    result = {"calls": len(calls), "window_only": True, "cost_currency": "untracked"}
+    result = {"calls": len(calls), "calls_basis": "completed_execution_observations",
+              "llm_requests": None, "window_only": True, "cost_currency": "untracked"}
     for field in _TOKEN_KEYS:
         values = [_tokens(usage, field) for usage in usages]
         observed = [value for value in values if value is not None]
@@ -84,10 +89,19 @@ def usage_metrics(rows: list[dict], partial_window: bool) -> dict:
         if field == "total_tokens":
             result["calls_with_tokens"] = len(observed)
             result["token_coverage"] = _coverage(len(observed), len(calls), partial_window)
-    costs = [value for usage in usages if (value := _cost(usage)) is not None]
-    result.update(cost_total=sum(costs) if costs else None, calls_with_cost=len(costs),
-                  cost_coverage=_coverage(len(costs), len(calls), partial_window))
+    result.update(_cost_metrics(usages, partial_window))
     return result
+
+
+def _cost_metrics(usages: list, partial: bool) -> dict:
+    priced = [(value, cost_currency(usage)) for usage in usages if (value := _cost(usage)) is not None]
+    currencies = {currency for _, currency in priced}
+    incompatible = len(currencies) > 1
+    currency = next(iter(currencies)) if len(currencies) == 1 else None
+    return {"cost_total": sum(value for value, _ in priced) if priced and not incompatible else None,
+            "calls_with_cost": len(priced), "cost_currency": currency or ("mixed_or_partial" if incompatible else "untracked"),
+            "cost_basis": "reported_amount_not_reconciled_invoice",
+            "cost_coverage": _coverage(len(priced), len(usages), partial)}
 
 
 def time_metrics(rows: list[dict], now: float) -> dict:
@@ -114,5 +128,6 @@ def efficiency(usage: dict, accepted: int | None = None) -> dict:
             "tokens_per_accepted_goal": (usage["total_tokens"] / accepted
                 if accepted and usage["token_coverage"] == "complete" else None),
             "cost_per_accepted_goal": (usage["cost_total"] / accepted
-                if accepted and usage["cost_coverage"] == "complete" else None),
+                if accepted and usage["cost_coverage"] == "complete"
+                and usage["cost_currency"] not in {"untracked", "mixed_or_partial"} else None),
             "note": "execution/validation success is not proof of goal acceptance"}

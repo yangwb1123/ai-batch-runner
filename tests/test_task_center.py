@@ -47,7 +47,8 @@ def only_task(source):
 
 
 def test_retries_count_usage_once_and_validation_does_not_duplicate_cost(source):
-    usage = {"inputTokens": 10, "outputTokens": 5, "cacheRead": 8, "cost_total": 0.2}
+    usage = {"inputTokens": 10, "outputTokens": 5, "cacheRead": 8,
+             "totalTokens": 15, "cost_total": 0.2}
     rows = [agent_row(status="failed", usage=usage),
             agent_row(phase="validation", status="failed", usage=usage),
             agent_row(attempt=2, ts="2026-10-10T00:00:30Z", usage=usage),
@@ -102,6 +103,16 @@ def test_invalid_token_values_do_not_become_observed_usage(source, invalid):
     assert task["usage"]["total_tokens"] is None
     assert task["usage"]["token_coverage"] == "unavailable"
     json.dumps(task, allow_nan=False)
+
+
+def test_missing_total_is_not_inferred_from_ambiguous_cache_contract(source):
+    ledger(source, [agent_row(usage={"input": 10, "output": 5, "cacheRead": 8})])
+    usage = only_task(source)["usage"]
+    assert usage["input_tokens"] == 10 and usage["output_tokens"] == 5
+    assert usage["cache_tokens"] == 8 and usage["total_tokens"] is None
+    assert usage["token_coverage"] == "unavailable"
+    assert usage["calls_basis"] == "completed_execution_observations"
+    assert usage["llm_requests"] is None
 
 
 def test_reported_zero_is_distinct_from_missing(source):

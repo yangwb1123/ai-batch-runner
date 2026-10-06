@@ -12,10 +12,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .task_center_activity import activity_snapshot
-from .task_center_adapters import deduplicate, read_source
+from .task_center_adapters import deduplicate, identity, read_source
 from .task_center_io import checked_path, display
 from .task_center_metrics import efficiency, time_metrics, usage_metrics
 from .task_sources import discover_sources
+from .task_goal_view import attach_goals, goal_views
+from .task_plan_view import plan_flow, public_plan
+from .task_intent_view import attach_intents, intent_views
+from .task_duration import build_priors, forecast_for
+from .task_billing import billing_metrics
+from .task_consumption import attach_consumption
 
 SCHEMA_VERSION = 1
 MAX_TASKS = 200
@@ -27,7 +33,7 @@ def snapshot(limit: int = 100, source_id: str = "", now: float | None = None) ->
     now = time.time() if now is None else now
     payload = {"schema_version": SCHEMA_VERSION,
                "generated_at": datetime.fromtimestamp(now, timezone.utc).isoformat(),
-               "window_only": True, "sources": [], "tasks": [], "diagnostics": [],
+               "window_only": True, "sources": [], "tasks": [], "goals": [], "intents": [], "diagnostics": [],
                "observed_task_count": 0, "omitted_tasks": 0, "status_counts": {},
                "activity": activity_snapshot() if not source_id else {"processes": [], "diagnostics": []}}
     try:
@@ -44,12 +50,33 @@ def snapshot(limit: int = 100, source_id: str = "", now: float | None = None) ->
     candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
     payload["observed_task_count"] = len(candidates)
     payload["omitted_tasks"] = max(0, len(candidates) - limit)
-    payload["tasks"] = [_task(source, rows, partial, now)
+    priors = build_priors(candidates)
+    payload["tasks"] = [_task(source, rows, partial, now, priors)
                         for _, _, source, rows, partial in candidates[:limit]]
+    _enrich(payload, candidates)
     payload["status_counts"] = dict(Counter(task["status"] for task in payload["tasks"]))
     if source_id and not payload["sources"]:
         payload["diagnostics"].append("task source not found")
     return payload
+
+
+def _enrich(payload: dict, candidates: list) -> None:
+    tasks = payload["tasks"]
+    parents = {(task["source_id"], task["run_id"]): task for task in tasks
+               if task["kind"] == "pipeline"}
+    for task in tasks:
+        lineage = task["lineage"]
+        key = (lineage["parent_source_id"], lineage["parent_run_id"])
+        if key in parents:
+            lineage["resolution"] = "observed_in_window"
+            parents[key]["lineage"]["children"].append(task["task_id"])
+    payload["goals"], notes = goal_views(payload["sources"])
+    payload["diagnostics"].extend(notes)
+    attach_goals(tasks, payload["goals"])
+    payload["intents"], notes = intent_views(payload["sources"], payload["goals"])
+    payload["diagnostics"].extend(notes)
+    attach_consumption(tasks, payload["goals"], payload["intents"], candidates, payload["sources"])
+    attach_intents(tasks, payload["goals"], payload["intents"])
 
 
 def _source_candidates(source: dict, payload: dict) -> list[tuple]:
@@ -63,7 +90,10 @@ def _source_candidates(source: dict, payload: dict) -> list[tuple]:
     candidates = []
     for key, rows in grouped.items():
         rows = deduplicate(rows)
-        candidates.append((rows[-1].get("ts") or 0, key, source, rows, partial))
+        conflict = any(isinstance(row.get("usage"), dict) and row["usage"].get("_conflicts") for row in rows)
+        if conflict:
+            payload["diagnostics"].append("conflicting duplicate usage observations: tc-" + key)
+        candidates.append((rows[-1].get("ts") or 0, key, source, rows, partial or conflict))
     return candidates
 
 
@@ -73,10 +103,10 @@ def detail(task_id: str, source_id: str = "") -> dict | None:
     return next((task for task in view["tasks"] if task["task_id"] == task_id), None)
 
 
-def _task(source: dict, rows: list[dict], partial: bool, now: float) -> dict:
+def _task(source: dict, rows: list[dict], partial: bool, now: float, priors: dict) -> dict:
     last = rows[-1]
     usage = usage_metrics(rows, partial)
-    if last["kind"] == "direction":
+    if last["kind"] in {"direction", "pipeline"}:
         usage["calls"] = None  # direction records do not account for child LLM calls
     outputs = list(dict.fromkeys(path for row in rows for path in row["outputs"]))[:16]
     artifacts = [_artifact(path, source) for path in outputs]
@@ -90,8 +120,13 @@ def _task(source: dict, rows: list[dict], partial: bool, now: float) -> dict:
         "status": last["status"], "phase": last["phase"],
         "goal": {"statement": last["title"], "origin": "recorded_task_brief",
                  "acceptance": "untracked", "inferred_goal": None},
-        "time": time_metrics(rows, now), "flow": _flow(rows),
-        "llm": _models(rows), "usage": usage, "efficiency": efficiency(usage),
+        "time": time_metrics(rows, now), "flow": (plan_flow(last["checkpoint"])
+                if last["kind"] == "pipeline" else _flow(rows)),
+        "lineage": _lineage(last), "goal_links": [],
+        "plan": public_plan(last["checkpoint"]) if last["kind"] == "pipeline" else None,
+        "llm": _models(rows), "usage": usage, "billing": billing_metrics(rows, partial),
+        "efficiency": efficiency(usage),
+        "forecast": forecast_for(source["source_id"], last, priors),
         "artifacts": artifacts,
         "delivery": {"declared_files": len(artifacts) if any(row["output_tracking"] for row in rows)
                      else None,
@@ -107,6 +142,16 @@ def _task(source: dict, rows: list[dict], partial: bool, now: float) -> dict:
                           "phase": row["phase"], "attempt": row["attempt"]} for row in rows[-32:]],
         "capabilities": {"control": False, "cleanup": False, "feedback_upload": False},
     }
+
+
+def _lineage(row: dict) -> dict:
+    parent_run, parent_source = row.get("parent_run_id", ""), row.get("parent_source_id", "")
+    parent_key = identity([parent_source, "pipeline", parent_run]) if parent_run and parent_source else None
+    return {"parent_run_id": parent_run or None, "parent_source_id": parent_source or None,
+            "parent_task_id": "tc-" + parent_key if parent_key else None, "children": [],
+            "children_window_only": True,
+            "resolution": "unavailable_in_window" if parent_key else "untracked",
+            "origin": "recorded_runtime_link" if parent_key else "untracked"}
 
 
 def _flow(rows: list[dict]) -> dict:

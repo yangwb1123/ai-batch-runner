@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "goal_id": "g-00000000000000000000000000000000",
+  "channel": "user",
+  "history_complete": false,
+  "messages": [
+    {
+      "id": "user-1",
+      "ts": "2026-10-05T01:00:00Z",
+      "role": "user",
+      "text": "实现有界可靠性修复。必须保留失败现场。当前优先确认复现。"
+    },
+    {
+      "id": "user-2",
+      "ts": "2026-10-05T01:01:00Z",
+      "role": "user",
+      "text": "下一步加入回归测试，不允许放宽工程门禁。"
+    }
+  ]
+}

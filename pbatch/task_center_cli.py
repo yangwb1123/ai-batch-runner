@@ -27,6 +27,10 @@ def add_parsers(sub) -> None:
     add.add_argument("--events-file", default="")
     remove = actions.add_parser("remove", help="仅移除登记，不清理任何目录")
     remove.add_argument("source_id")
+    from .task_goal_cli import add_parser
+    add_parser(sub)
+    from .task_intent_cli import add_parser as add_intents
+    add_intents(sub)
 
 
 def sources_command(args, _cwd: str) -> int:
@@ -88,13 +92,23 @@ def _shown(value: object) -> str:
 def format_tasks(view: dict) -> str:
     lines = ["PROJECT | TASK | OBSERVED STATUS | WALL(s) | TOKENS | COST | OUTPUT FILES"]
     for task in view["tasks"]:
-        usage, delivery = task["usage"], task["delivery"]
+        accounting, delivery = task.get("consumption") or task, task["delivery"]
+        usage = accounting["usage"]
         lines.append(f"{task['project']} | {task['title'][:64]} | {task['status']} "
                      f"({task['phase']}) | {_shown(task['time']['elapsed_wall_seconds'])} | "
                      f"{_shown(usage['total_tokens'])} ({usage['token_coverage']}) | "
-                     f"{_shown(usage['cost_total'])} ({usage['cost_coverage']}) | "
+                     f"{_money(accounting['billing'])} | "
                      f"{_shown(delivery['present_files'])}/{_shown(delivery['declared_files'])}")
         lines.append(f"  {task['task_id']}  source={task['source_id']}")
+        lines.append(f"  CLI 完成观测={_shown(usage['calls'])}；provider 请求观测="
+                     f"{_shown(accounting['billing']['provider_requests']['observed_total'])}；非全程账单")
+        if task["goal_links"]:
+            lines.append("  goals=" + ", ".join(link["goal_id"] + ":" + link["acceptance"]
+                         for link in task["goal_links"]))
+        if task["flow"]["next_stage"]:
+            lines.append(f"  next={task['flow']['next_stage']} ({task['flow']['next_status']}; 非执行授权)")
+        if task["forecast"]["duration_range_seconds"]:
+            lines.append("  历史耗时先验=" + str(task["forecast"]["duration_range_seconds"]) + " 秒（非实时 ETA）")
         if task["analysis"]["latest_reason"]:
             lines.append("  " + task["analysis"]["latest_reason"])
     for process in view["activity"]["processes"]:
@@ -102,5 +116,10 @@ def format_tasks(view: dict) -> str:
                      f"{process['workspace']} (进程活动不等于任务进展)")
     lines.extend("NOTE: " + note for note in
                  [*view["diagnostics"], *view["activity"]["diagnostics"]])
-    lines.append("有界窗口观测；产物存在/执行成功不代表目标已验收；预测与控制尚未启用。")
+    lines.append("有界窗口观测；产物存在/执行成功不代表目标已验收；历史耗时先验不是实时 ETA 或执行授权。")
     return "\n".join(lines)
+
+
+def _money(billing: dict) -> str:
+    values = [f"{_shown(row['reported_amount'])} {row['currency']}" for row in billing["currency_totals"]]
+    return ("; ".join(values) or "币种/费用未追踪") + " (" + billing["financial_coverage"] + ")"
