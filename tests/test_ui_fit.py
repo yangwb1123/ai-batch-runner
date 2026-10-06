@@ -110,13 +110,18 @@ def test_switch_uses_its_own_track_width_not_a_neighbouring_component(tmp_path):
     140px column for every toggle cell. The registry is scoped to the
     component's own definition so this cannot happen.
     """
+    # 同时给出 id + <label for>，让这个用例只考察宽度（a11y 由其它用例覆盖）。
     _project(tmp_path, {
         "src/Flag.tsx": """
+const FLAG_ID = "flag-1"
 export const flag = {
   columns: [{ key: "flag", title: "Flag", width: 60 }],
   slots: {
     "cell.flag": ({ row }) => (
-      <IrisSwitch modelValue={false} aria-label="Flag" />
+      <div>
+        <label for={FLAG_ID}>Flag</label>
+        <IrisSwitch id={FLAG_ID} modelValue={false} aria-label="Flag" />
+      </div>
     ),
   },
 }
@@ -201,3 +206,55 @@ def test_test_files_and_testkits_are_not_scanned(tmp_path):
     result, payload = _json(tmp_path)
     assert result.returncode == 0, payload["violations"]
     assert payload["files"] == 1
+
+
+def test_label_mentioned_only_in_a_comment_does_not_open_a_phantom_scope(tmp_path):
+    """回归：注释里写 `<label for>` 曾让整文件的 label 计数失衡。"""
+    _project(tmp_path, {
+        "src/Form.tsx": """/**
+ * 与 <label for> 配对的稳定 id。
+ */
+export const form = () => (
+  <div>
+    <label class="field">
+      <span>Name</span>
+      <IrisInput modelValue="" onUpdate:modelValue={() => undefined} />
+    </label>
+  </div>
+)
+""",
+    })
+    result, payload = _json(tmp_path)
+    assert result.returncode == 0, payload["violations"]
+
+
+def test_wrapping_label_with_text_names_the_switch_even_with_an_inert_aria_label(tmp_path):
+    """IrisSwitch 的 aria-label 落在包裹 <label> 上，但该 label 的文本已经命名了它。"""
+    _project(tmp_path, {
+        "src/Toggle.tsx": """
+export const toggle = () => (
+  <label class="field">
+    <span>Append mode</span>
+    <IrisSwitch modelValue={false} aria-label="Append mode" />
+  </label>
+)
+""",
+    })
+    result, payload = _json(tmp_path)
+    assert result.returncode == 0, payload["violations"]
+
+
+def test_aria_label_on_a_wrapper_only_control_is_still_reported(tmp_path):
+    """没有任何命名通路时必须报出来。"""
+    _project(tmp_path, {
+        "src/Toggle.tsx": """
+export const toggle = () => (
+  <div>
+    <IrisSwitch modelValue={false} aria-label="Append mode" />
+  </div>
+)
+""",
+    })
+    result, payload = _json(tmp_path)
+    assert result.returncode == 1
+    assert any("落在包裹元素上" in v["detail"] for v in payload["violations"])

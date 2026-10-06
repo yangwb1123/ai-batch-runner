@@ -90,6 +90,28 @@ def _registry_entries() -> dict:
     return entries if isinstance(entries, dict) else {}
 
 
+def names_control_map() -> dict[str, bool]:
+    """Which Iris controls actually let `aria-label` name the control.
+
+    False means the attribute lands on a wrapper element instead: `IrisInput`,
+    `IrisNumberInput` and `IrisSwitch` are all `inheritAttrs: false` and spread
+    attrs onto their wrapper, so an `aria-label` written there names nothing.
+    Measured by mounting the real package -- see
+    sverpweb-stable/apps/web/src/pages/aps/settings/irisAriaLanding.real.test.tsx.
+    """
+    entries = _registry_entries()
+    declared = _registry_raw().get("names_control") or {}
+    return {name: bool(declared[name]) for name in FORM_CONTROLS
+            if name in entries and name in declared}
+
+
+def _registry_raw() -> dict:
+    try:
+        return json.loads(REGISTRY.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
 def _verified(source: str, entries: dict) -> dict[str, int]:
     """Keep only the entries whose evidence still matches the installed build."""
     widths: dict[str, int] = {}
@@ -135,12 +157,26 @@ def control_min_widths(repo_root: Path) -> dict[str, int]:
     return _verified(source, entries) if source else {}
 
 
+def blank_comments(source: str) -> str:
+    """Replace comment bodies with spaces, preserving every offset.
+
+    A JSDoc line that merely *mentions* `<label for>` used to open a phantom
+    label scope: the depth counter never returned to zero, so every control in
+    the file was reported as unlabelled. Offsets must not shift because the
+    callers report line numbers from the original text.
+    """
+    def blank(match: re.Match) -> str:
+        return "".join("\n" if ch == "\n" else " " for ch in match.group(0))
+
+    return re.sub(r"/\*.*?\*/|//[^\n]*", blank, source, flags=re.S)
+
+
 def label_spans(source: str) -> list[tuple[int, int]]:
     """Byte ranges covered by a <label>…</label> pair (best effort, non-nested safe)."""
     spans: list[tuple[int, int]] = []
     depth = 0
     start: Optional[int] = None
-    for match in re.finditer(r"<label\b|</label>", source):
+    for match in re.finditer(r"<label\b|</label>", blank_comments(source)):
         if match.group(0) == "<label":
             if depth == 0:
                 start = match.start()
@@ -218,18 +254,44 @@ def native_inputs_in(body: str) -> int:
     return len(re.findall(r"<input\b", body))
 
 
-def accessible_name_missing(source: str) -> list[tuple[int, str]]:
-    """Controls with neither an aria name nor an enclosing <label>."""
+def accessible_name_missing(source: str, swallows: dict[str, bool]) -> list[tuple[int, str]]:
+    """Controls with no accessible name in the rendered DOM.
+
+    An `aria-label` counts only when it can actually name the control. For the
+    controls that spread attrs onto a wrapper the attribute names nothing, so
+    those need `id` plus a `<label for>` instead.
+
+    Known limitation: a wrapping <label> is accepted as a name whether or not
+    it actually contains text. A text-less <label> around a control would slip
+    through; that needs DOM to judge, and this rule is a static pre-filter.
+    """
+    code = blank_comments(source)
     spans = label_spans(source)
+    # 本文件里是否存在 <label for=…>：有 id 的控件即视为已建立关联。
+    # 跨文件/跨组件的关联静态分析看不穿，所以只做文件内判断，不猜。
+    labelled_ids = bool(re.search(r"<label[^>]*\bfor=", code))
     missing: list[tuple[int, str]] = []
-    for match in re.finditer(r"<(" + "|".join(FORM_CONTROLS) + r")\b", source):
+    for match in re.finditer(r"<(" + "|".join(FORM_CONTROLS) + r")\b", code):
         end = tag_end(source, match.end() - 1)
         fragment = source[match.end():end]
-        if re.search(r"aria-label|ariaLabel|aria-labelledby|ariaDescribedby", fragment):
-            continue
+        line = source.count("\n", 0, match.start()) + 1
+        name = match.group(1)
+        has_aria = re.search(r"aria-label(?:ledby)?|ariaLabel", fragment) is not None
+        # A wrapping <label> names its labelable descendant from its own text
+        # content -- that holds whether or not an aria-label is also present
+        # (an inert one on a wrapper does not undo it).
         if any(start <= match.start() < stop for start, stop in spans):
             continue
-        missing.append((source.count("\n", 0, match.start()) + 1, match.group(1)))
+        if not has_aria:
+            missing.append((line, name))
+            continue
+        if not swallows.get(name, True):
+            has_id = re.search(r"\bid[:=]", fragment) is not None
+            if not (has_id and labelled_ids):
+                missing.append((
+                    line,
+                    f"{name} 的 aria-label 落在包裹元素上，需改用 id + <label for>",
+                ))
     return missing
 
 
@@ -291,7 +353,10 @@ def _composed_overflow(
     return violations
 
 
-def check_file(path: Path, widths: dict[str, int], relative: str) -> list[dict]:
+def check_file(
+    path: Path, widths: dict[str, int], relative: str,
+    swallows: Optional[dict[str, bool]] = None,
+) -> list[dict]:
     try:
         source = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
@@ -299,8 +364,8 @@ def check_file(path: Path, widths: dict[str, int], relative: str) -> list[dict]:
 
     names = [
         {"file": relative, "line": line, "rule": "control-accessible-name",
-         "detail": f"{control} 既无 aria-label 也无 <label> 包裹"}
-        for line, control in accessible_name_missing(source)
+         "detail": detail}
+        for line, detail in accessible_name_missing(source, swallows or {})
     ]
     return _overflow_violations(source, widths, relative) + names
 
@@ -340,6 +405,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     repo_root = Path(args.repo_root).resolve()
     widths = control_min_widths(repo_root)
+    swallows = names_control_map()
     if args.offline and not widths:
         widths = {}
 
@@ -353,7 +419,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not target.is_file():
             print(f"not a file: {target}", file=sys.stderr)
             return 2
-        violations.extend(check_file(target, widths, _relative(target, repo_root)))
+        violations.extend(
+            check_file(target, widths, _relative(target, repo_root), swallows)
+        )
 
     if args.json:
         print(json.dumps({

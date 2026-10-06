@@ -5,7 +5,8 @@
     "跳过——门禁宁可'没意见'也不撒谎。evidence 必须落在该组件自己的定义段内",
     "（^var X = defineComponent( 到下一个同级定义为止）。",
     "数值来源：iris-ui 0.2.52 逐个读触发器 style 得到，非全文件 grep。",
-    "改 Iris 版本后若复核失败，先重新核对触发器样式再更新本文件。"
+    "改 Iris 版本后若复核失败，先重新核对触发器样式再更新本文件。",
+    "names_control: aria-label 是否真的落在可访问控件上。false = 落在包裹用的 <label>/<div> 上，属性白写。事实来源是 sverpweb-stable 的 apps/web/src/pages/aps/settings/irisAriaLanding.real.test.tsx（挂载真实组件，不打桩）。三者 false：IrisInput / IrisNumberInput / IrisSwitch —— 它们都是 inheritAttrs:false 且把 attrs 铺在包裹元素上，内层控件只收 id/name/aria-checked/aria-describedby/aria-invalid。不改布局的唯一命名通路是 id + <label for>。"
   ],
   "measured_at": "@iris-ui-kit/vue 0.2.52",
   "controls": {
@@ -29,5 +30,13 @@
       "min_width": 44,
       "evidence": "width: \"44px\",\\s*height: \"24px\",\\s*thumb: \"20px\""
     }
+  },
+  "names_control": {
+    "IrisDatePicker": true,
+    "IrisSelect": true,
+    "IrisCheckbox": true,
+    "IrisInput": false,
+    "IrisNumberInput": false,
+    "IrisSwitch": false
   }
 }
