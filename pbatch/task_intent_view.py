@@ -50,16 +50,20 @@ def _public(value: dict, goal: dict | None) -> dict:
              else "stale_contract" if goal["contract_digest"] != value["contract_digest"] else "authorized")
     analyzed = project(value) if state == "authorized" else None
     counts = dict(Counter(message["role"] for message in value["messages"]))
+    native = value["imports"][0].get("adapter") is not None
     return {"intent_id": value["intent_id"], "source_id": value["source_id"],
         "goal_id": value["goal_id"], "channel": display(value["channel"], 80), "version": value["version"],
-        "status": state, "origin": "explicit_local_export_import", "identity": "caller_supplied_roles_not_authenticated",
+        "status": state, "origin": "explicit_local_native_user_import" if native else "explicit_local_export_import",
+        "identity": "caller_supplied_roles_not_authenticated",
         "coverage": {"messages": len(value["messages"]), "by_role": counts,
-            "history_complete": value["history_complete"], "completeness_basis": "operator_export_claim_not_independent_audit",
+            "history_complete": value["history_complete"],
+            "completeness_basis": "selected_native_user_text_only_not_full_history" if native else "operator_export_claim_not_independent_audit",
             "message_limit": MAX_MESSAGES, "first_at": value["messages"][0]["ts"],
             "last_at": value["messages"][-1]["ts"]},
         "analysis": analyzed,
         "imports": [{"at": row["at"], "export_sha256": row["evidence"]["sha256"],
-            "export_bytes": row["evidence"]["bytes"], "new_messages": len(row["new_message_ids"])}
+            "export_bytes": row["evidence"]["bytes"], "new_messages": len(row["new_message_ids"]),
+            "adapter": row.get("adapter"), "workspace_identity": "declared_cwd_not_authenticated" if native else "untracked"}
             for row in value["imports"]],
         "accounting": {"import_operations": len(value["imports"]), "llm_requests": 0, "total_tokens": 0,
             "recorded_import_seconds": sum(row["analysis_seconds"] for row in value["imports"]),

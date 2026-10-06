@@ -78,7 +78,7 @@ def user_text(content) -> str:
         raise ValueError("native user message has unsupported content")
     parts = []
     for part in content:
-        if not isinstance(part, dict) or part.get("type") != "text" or not isinstance(part.get("text"), str):
+        if not isinstance(part, dict) or set(part) != {"type", "text"} or part["type"] != "text" or not isinstance(part["text"], str):
             raise ValueError("native user multimodal/non-text content is unsupported; no text was silently dropped")
         parts.append(part["text"])
     return "\n".join(parts)

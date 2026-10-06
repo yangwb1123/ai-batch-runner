@@ -24,6 +24,11 @@ def validate_adapter(value: dict, message_count: int) -> None:
     for field in ("session_digest", "workspace_digest"):
         if not isinstance(value[field], str) or not DIGEST_PATTERN.fullmatch(value[field]):
             raise ValueError("invalid native history adapter identity digest")
+    _selection(value, format)
+    _coverage(value, message_count)
+
+
+def _selection(value: dict, format: str) -> None:
     expected = "pi_branch_users" if format == "pi-session" else "codex_user_events"
     if value["selection"] != expected:
         raise ValueError("invalid native history selection basis")
@@ -32,6 +37,9 @@ def validate_adapter(value: dict, message_count: int) -> None:
         raise ValueError("invalid native history leaf digest")
     if format == "codex-session" and leaf:
         raise ValueError("Codex history has no declared leaf")
+
+
+def _coverage(value: dict, message_count: int) -> None:
     for field in ("records", "user_messages", "excluded_user_messages", "excluded_records"):
         if type(value[field]) is not int or not 0 <= value[field] <= MAX_NATIVE_RECORDS:
             raise ValueError("invalid native history adapter coverage count")

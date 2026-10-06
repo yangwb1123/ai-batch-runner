@@ -7,6 +7,8 @@ from .task_native_history import metadata, workspace
 
 
 def _message(payload: dict) -> str:
+    if set(payload) - {"type", "message", "role", "images", "local_images", "text_elements", "attachments"}:
+        raise ValueError("unsupported Codex user-event fields; no input was silently dropped")
     if any(payload.get(key) for key in ("images", "local_images", "text_elements", "attachments")):
         raise ValueError("Codex user attachments/annotated content are unsupported; no input was silently dropped")
     if "role" in payload and payload["role"] != "user":

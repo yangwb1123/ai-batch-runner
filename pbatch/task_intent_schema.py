@@ -7,6 +7,7 @@ import re
 
 from .task_center_metrics import timestamp
 from .task_goal_schema import GOAL_PATTERN, text
+from .task_history_schema import MAX_NATIVE_BYTES, validate_adapter
 
 INTENT_PATTERN = re.compile(r"ih-[a-f0-9]{32}\Z")
 MAX_MESSAGES = 128
@@ -35,12 +36,16 @@ def validate_export(value: dict) -> dict:
         raise ValueError("unsupported prompt history schema")
     if not isinstance(value["goal_id"], str) or not GOAL_PATTERN.fullmatch(value["goal_id"]):
         raise ValueError("invalid history goal identity")
-    if not text(value["channel"], 80) or not re.fullmatch(r"[a-zA-Z0-9_-]+", value["channel"]):
-        raise ValueError("invalid history channel")
+    validate_channel(value["channel"])
     if type(value["history_complete"]) is not bool:
         raise ValueError("history coverage must be an explicit boolean")
     validate_messages(value["messages"])
     return value
+
+
+def validate_channel(channel: str) -> None:
+    if not text(channel, 80) or not re.fullmatch(r"[a-zA-Z0-9_-]+", channel):
+        raise ValueError("invalid history channel")
 
 
 def validate_messages(messages: list) -> None:
@@ -102,6 +107,24 @@ def _validate_records(value: dict) -> None:
         raise ValueError("history import/audit coverage mismatch")
     if value["authorized"] != (audit[-1]["action"] == "imported"):
         raise ValueError("history consent/audit mismatch")
+    _validate_native_chain(value)
+
+
+def _validate_native_chain(value: dict) -> None:
+    first = value["imports"][0].get("adapter")
+    retained = [message["id"] for message in value["messages"]]
+    for record in value["imports"]:
+        adapter = record.get("adapter")
+        if bool(first) != bool(adapter):
+            raise ValueError("history format changed inside a channel")
+        if adapter is None:
+            continue
+        if any(adapter[key] != first[key] for key in ("format", "session_digest", "workspace_digest")):
+            raise ValueError("native history identity changed inside a channel")
+        if record["message_ids"] != retained[:len(record["message_ids"])]:
+            raise ValueError("native history is not a chronological branch continuation")
+    if first and (value["history_complete"] or any(message["role"] != "user" for message in value["messages"])):
+        raise ValueError("native user projection cannot claim complete history or other roles")
 
 
 def _validate_audit(audit: list) -> None:
@@ -116,13 +139,9 @@ def _validate_audit(audit: list) -> None:
 
 
 def _validate_import(record: dict, messages: list) -> None:
-    fields(record, {"evidence", "message_ids", "new_message_ids", "at", "analysis_seconds"})
-    evidence = record["evidence"]
-    fields(evidence, {"path", "bytes", "sha256"})
-    if not text(evidence["path"], 4096) or type(evidence["bytes"]) is not int or not 0 < evidence["bytes"] <= 128 * 1024:
-        raise ValueError("invalid history evidence size/path")
-    if not isinstance(evidence["sha256"], str) or not re.fullmatch(r"[a-f0-9]{64}", evidence["sha256"]):
-        raise ValueError("invalid history evidence digest")
+    expected = {"evidence", "message_ids", "new_message_ids", "at", "analysis_seconds"}
+    fields(record, expected | ({"adapter"} if isinstance(record, dict) and "adapter" in record else set()))
+    _validate_evidence(record)
     known = {message["id"] for message in messages}
     for key in ("message_ids", "new_message_ids"):
         ids = record[key]
@@ -132,6 +151,18 @@ def _validate_import(record: dict, messages: list) -> None:
             raise ValueError("history citation points outside its own channel")
     if not set(record["new_message_ids"]) <= set(record["message_ids"]):
         raise ValueError("invalid incremental history coverage")
+    if "adapter" in record:
+        validate_adapter(record["adapter"], len(record["message_ids"]))
     from .task_center_metrics import number
     if number(record["analysis_seconds"]) is None or timestamp(record["at"]) is None:
         raise ValueError("invalid history analysis accounting")
+
+
+def _validate_evidence(record: dict) -> None:
+    evidence = record["evidence"]
+    fields(evidence, {"path", "bytes", "sha256"})
+    maximum = MAX_NATIVE_BYTES if "adapter" in record else 128 * 1024
+    if not text(evidence["path"], 4096) or type(evidence["bytes"]) is not int or not 0 < evidence["bytes"] <= maximum:
+        raise ValueError("invalid history evidence size/path")
+    if not isinstance(evidence["sha256"], str) or not re.fullmatch(r"[a-f0-9]{64}", evidence["sha256"]):
+        raise ValueError("invalid history evidence digest")
