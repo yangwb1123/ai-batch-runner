@@ -1,0 +1,33 @@
+{
+  "$comment": [
+    "Iris 控件的触发器最小宽度。check-ui-fit.py 在使用每条记录前，先到已安装的",
+    "@iris-ui-kit/vue dist 里按 evidence 正则复核一次：对不上就整条丢弃、该规则",
+    "跳过——门禁宁可'没意见'也不撒谎。evidence 必须落在该组件自己的定义段内",
+    "（^var X = defineComponent( 到下一个同级定义为止）。",
+    "数值来源：iris-ui 0.2.52 逐个读触发器 style 得到，非全文件 grep。",
+    "改 Iris 版本后若复核失败，先重新核对触发器样式再更新本文件。"
+  ],
+  "measured_at": "@iris-ui-kit/vue 0.2.52",
+  "controls": {
+    "IrisDatePicker": {
+      "min_width": 180,
+      "evidence": "minHeight: \"34px\",\\s*minWidth: \"180px\""
+    },
+    "IrisTimePicker": {
+      "min_width": 260,
+      "evidence": "minHeight: \"34px\",\\s*minWidth: \"260px\""
+    },
+    "IrisSelect": {
+      "min_width": 140,
+      "evidence": "position: \"relative\",\\s*width: \"auto\",\\s*minWidth: \"140px\""
+    },
+    "IrisNumberInput": {
+      "min_width": 40,
+      "evidence": "flex: \"1\",\\s*minWidth: \"40px\""
+    },
+    "IrisSwitch": {
+      "min_width": 44,
+      "evidence": "width: \"44px\",\\s*height: \"24px\",\\s*thumb: \"20px\""
+    }
+  }
+}
