@@ -20,16 +20,42 @@ def add_parser(sub) -> None:
     importing.add_argument("--source", required=True)
     importing.add_argument("--goal", required=True)
     importing.add_argument("--file", required=True)
+    importing.add_argument("--origin-file", default="", help="v2 范围导入必须另行显式授权原生文件重放")
     importing.add_argument("--format", choices=("normalized", "pi-session", "codex-session"), default="normalized")
     importing.add_argument("--channel", default="", help="原生导入必须显式命名授权通道")
     importing.add_argument("--leaf-id", default="", help="Pi v3 必须显式选择分支叶节点")
     importing.add_argument("--confirm", action="store_true")
     importing.add_argument("--if-version", type=int, default=None)
     _actor(importing)
+    _export_parser(actions)
     revoke = actions.add_parser("revoke", help="立即停止投影，不删除审计或私有历史")
     revoke.add_argument("intent_id")
     revoke.add_argument("--if-version", type=int, required=True)
     _actor(revoke)
+
+
+def _export_parser(actions) -> None:
+    exporting = actions.add_parser("export", help="显式选定原生用户范围，只导出本地私有文件，不自动授权导入")
+    exporting.add_argument("--source", required=True)
+    exporting.add_argument("--goal", required=True)
+    exporting.add_argument("--goal-version", type=int, required=True)
+    exporting.add_argument("--file", required=True)
+    exporting.add_argument("--format", choices=("pi-session", "codex-session"), required=True)
+    exporting.add_argument("--channel", required=True)
+    exporting.add_argument("--leaf-id", default="")
+    exporting.add_argument("--first-user", type=int, required=True)
+    exporting.add_argument("--last-user", type=int, required=True)
+    exporting.add_argument("--output", required=True, help="仅 .json 文件名；写到已登记 data-dir/exports/intents")
+    exporting.add_argument("--confirm", action="store_true")
+    _actor(exporting)
+
+
+def _export(args) -> int:
+    from .task_history_export import export_history
+    result = export_history(args.source, args.goal, args.file, args.format, args.channel, args.leaf_id,
+                            args.first_user, args.last_user, args.output, args.by, args.reason, args.goal_version)
+    print(json.dumps(result, ensure_ascii=False, allow_nan=False))
+    return 0
 
 
 def _actor(parser) -> None:
@@ -41,12 +67,15 @@ def command(args, _cwd: str) -> int:
     try:
         if args.intent_action in {"list", "show"}:
             return _read(args)
+        if args.intent_action in {"import", "export"} and not args.confirm:
+            raise ValueError("history " + args.intent_action + " requires explicit --confirm")
+        if args.intent_action == "export":
+            return _export(args)
         if args.intent_action == "import":
-            if not args.confirm:
-                raise ValueError("history import requires explicit --confirm")
             value = store.import_history(args.source, args.goal, args.file,
                                          args.by, args.reason, args.if_version,
-                                         format=args.format, channel=args.channel, leaf=args.leaf_id)
+                                         format=args.format, channel=args.channel, leaf=args.leaf_id,
+                                         origin_file=args.origin_file)
         else:
             value = store.revoke(args.intent_id, args.by, args.reason, args.if_version)
         print(json.dumps({"intent_id": value["intent_id"], "version": value["version"],

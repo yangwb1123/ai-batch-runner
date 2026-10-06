@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -64,6 +65,19 @@ _CRITICAL_ASSIGN = re.compile(
 )
 
 
+def _source_files(root: Path):
+    """Yield the existing source scope without entering its excluded trees."""
+    excluded = {".dart_tool", "node_modules"}
+    if any(part in excluded for part in root.parts):
+        return
+    for parent, children, names in os.walk(root, followlinks=False):
+        children[:] = [name for name in children if name not in excluded]
+        for name in names:
+            path = Path(parent) / name
+            if path.is_file() and path.suffix in _SOURCE_SUFFIXES:
+                yield path
+
+
 def _module_dirs(root: Path) -> list[Path]:
     """Top-level business module directories (depth 1 under root)."""
     out = []
@@ -72,12 +86,7 @@ def _module_dirs(root: Path) -> list[Path]:
             continue
         if child.name.startswith("."):
             continue
-        sources = [
-            p for p in child.rglob("*")
-            if p.is_file() and p.suffix in _SOURCE_SUFFIXES
-            and ".dart_tool" not in p.parts and "node_modules" not in p.parts
-        ]
-        if sources:
+        if next(_source_files(child), None) is not None:
             out.append(child)
     return out
 
@@ -133,11 +142,7 @@ def _check_adr_presence(root: Path) -> list[dict]:
 def _check_critical_number_audit(root: Path) -> list[dict]:
     """Trust: critical-number mutations need audit signals in the file."""
     findings = []
-    for path in root.rglob("*"):
-        if not path.is_file() or path.suffix not in _SOURCE_SUFFIXES:
-            continue
-        if ".dart_tool" in path.parts or "node_modules" in path.parts:
-            continue
+    for path in _source_files(root):
         try:
             source = path.read_text(encoding="utf-8", errors="replace")
         except OSError:

@@ -12,6 +12,7 @@ import pytest
 from pbatch.advance import (CheckerError, _run_checker, advance_main,
                             classify_violation, format_plan, record_round,
                             scan_project)
+from pbatch.advance_support import DIMENSIONS
 
 
 def _scan(target: str, findings: dict[str, int]) -> dict:
@@ -60,22 +61,48 @@ def test_scan_project_on_self(tmp_path, monkeypatch):
         assert "priority" in dims[dim_id]
 
 
-def test_scan_real_project_ui_clean(tmp_path, monkeypatch):
-    """The scanner must work on a real external tree and report every
-    dimension with countable numbers. Exact violation counts are EXTERNAL
-    state (the console repo evolves independently — retro lesson D4:
-    never assert external drift), so this test asserts structure, not
-    cleanliness."""
-    target = "/home/u1/workspace/demo/snaplink-console"
-    if not __import__("pathlib").Path(target).exists():
-        return  # environment without the demo project: skip
-    scan = scan_project(target)
-    dims = scan["dimensions"]
-    for dim_id in ("ui_spacing", "ui_color", "ui_style", "fe_errors",
-                   "fe_complexity", "fe_n1", "be_errors", "be_architecture"):
-        assert dim_id in dims, dim_id
-        assert isinstance(dims[dim_id]["count"], int), dim_id
-        assert "files" in dims[dim_id], dim_id
+@pytest.fixture
+def business_project(tmp_path):
+    """Offline multi-language tree: each of the six real gates has findings."""
+    files = {
+        "go.mod": "module example.test/orders\ngo 1.20\n",
+        "orders/manager.go": (
+            'package orders\nfunc Update(order Order) {\n'
+            ' order.status = "active"\n balance = balance + 100\n'
+            ' db.Update(order)\n}\n'),
+        "orders/README.md": "# Orders\n",
+        "docs/adr-001.md": "# Decision records\n",
+        "ui/README.md": "# UI\n",
+        "ui/Panel.tsx": (
+            "const data: any = undefined;\n"
+            "const panel = <section style={{padding:10}} "
+            "dangerouslySetInnerHTML={{__html: data}} />;\n"
+            "async function load(ids) { for (const id of ids) { "
+            "await fetch('/api/' + id); } }\n"
+            + "\n".join(f"const [s{i}, setS{i}] = useState(0);" for i in range(13))),
+        "ui/screens/overview_screen.dart": (
+            "class Overview extends StatelessWidget { "
+            "Widget build(BuildContext context) { return Column(children: ["
+            "SizedBox(height: 10), Text('98%'), EmptyState(title: 'No data'), "
+            "Text('Active'), ColoredBox(color: Color(0x4caf50))]); } }\n"),
+    }
+    for name, text in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    return tmp_path
+
+
+def test_scan_real_project_all_dimensions(business_project, monkeypatch):
+    """Exercise every checker subprocess, not machine-local demo state."""
+    monkeypatch.chdir(business_project)
+    scan = scan_project(str(business_project))
+    assert len(scan["checker_files_scanned"]) == 6
+    for dim_id, dimension in scan["dimensions"].items():
+        assert dimension["count"] > 0, dim_id
+        assert dimension["files"], dim_id
+        assert all(Path(file).is_relative_to(business_project)
+                   for file in dimension["files"]), dim_id
 
 
 def test_record_round_append(tmp_path, monkeypatch):
@@ -97,12 +124,14 @@ def test_format_plan_empty_and_batches():
     assert "[P0]" in plan and "x（2 项）" in plan
 
 
-def test_advance_cli_json(capsys):
-    sys.argv = ["pi-batch.py", "advance", "--dir", ".", "--json"]
-    assert advance_main(sys.argv[2:]) == 0
+def test_advance_cli_json(business_project, monkeypatch, capsys):
+    monkeypatch.chdir(business_project)
+    assert advance_main(["--dir", ".", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert "target" in payload and "batches" in payload
-    assert "total" in payload
+    assert payload["target"] == "."
+    assert payload["total"] > 0
+    assert {batch["id"] for batch in payload["batches"]} == {dim["id"] for dim in DIMENSIONS}
+    assert not (business_project / "docs" / "advance").exists()
 
 
 def test_scan_runs_every_registered_checker_and_preserves_source(monkeypatch):

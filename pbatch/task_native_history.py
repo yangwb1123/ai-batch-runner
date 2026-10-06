@@ -48,15 +48,19 @@ def records(raw: bytes) -> list:
     for line in lines:
         if not line or len(line) > MAX_NATIVE_LINE_BYTES:
             raise ValueError("native history has an empty or over-budget line")
-        try:
-            row = json.loads(line.decode("utf-8"), object_pairs_hook=_object,
-                             parse_constant=lambda _: _invalid_constant())
-        except (ValueError, UnicodeError, RecursionError) as exc:
-            raise ValueError("invalid native history JSONL") from exc
-        if not isinstance(row, dict) or not text(row.get("type"), 80):
-            raise ValueError("native history records must be typed objects")
-        result.append(row)
+        result.append(decode_record(line))
     return result
+
+
+def decode_record(line: bytes) -> dict:
+    try:
+        row = json.loads(line.decode("utf-8"), object_pairs_hook=_object,
+                         parse_constant=lambda _: _invalid_constant())
+    except (ValueError, UnicodeError, RecursionError) as exc:
+        raise ValueError("invalid native history JSONL") from exc
+    if not isinstance(row, dict) or not text(row.get("type"), 80):
+        raise ValueError("native history records must be typed objects")
+    return row
 
 
 def _invalid_constant():
@@ -106,7 +110,7 @@ def metadata(format: str, session_id: str, workspace_digest: str, leaf: str,
             "excluded_records": len(rows) - len(messages)}
 
 
-def check_continuation(value: dict, adapter: dict | None, raw: bytes | None, messages: list) -> None:
+def check_continuation(value: dict, adapter: dict | None, raw: bytes | None, messages: list, leaf: str) -> None:
     previous = value["imports"][-1].get("adapter") if value["imports"] else None
     if bool(previous) != bool(adapter):
         raise ValueError("history format cannot change within a channel; use a separate channel")
@@ -119,6 +123,11 @@ def check_continuation(value: dict, adapter: dict | None, raw: bytes | None, mes
         proof = record["evidence"]
         if raw is None or hashlib.sha256(raw[:proof["bytes"]]).hexdigest() != proof["sha256"]:
             raise ValueError("native history must preserve its entire previously imported byte prefix")
+    if adapter["format"] == "pi-session":
+        from .task_history_pi import ancestor_digests
+        ancestors = ancestor_digests(records(raw), leaf)
+        if any(record["adapter"]["leaf_digest"] not in ancestors for record in value["imports"]):
+            raise ValueError("native Pi branch is not a continuation; use a separate channel")
     retained = [message["id"] for message in value["messages"]]
     # Branch changes may drop old goals: require an explicit separate channel.
     if retained and [message["id"] for message in messages][:len(retained)] != retained:

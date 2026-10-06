@@ -40,6 +40,7 @@ Exit code 0 = compliant; 1 = violations found.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -195,15 +196,14 @@ _MODES = {"spacing": check_spacing, "color": check_color, "style": check_style,
 
 def scan_directory(directory: Path, exts: tuple, excludes: set) -> list:
     """Recursively collect frontend source files, skipping vendor/build dirs."""
+    if any(part in excludes for part in directory.parts):
+        return []
     files = []
-    for path in sorted(directory.rglob("*")):
-        if path.is_dir():
-            continue
-        if any(part in excludes for part in path.parts[:-1]):
-            continue
-        if path.suffix.lower() in exts:
-            files.append(path)
-    return files
+    for parent, children, names in os.walk(directory, followlinks=False):
+        children[:] = [name for name in children if name not in excludes]
+        files.extend(Path(parent) / name for name in names
+                     if Path(name).suffix.lower() in exts)
+    return sorted(files)
 
 
 def check_file(path: Path, checkers: list, iris_spacing_only: bool = False) -> list:

@@ -138,6 +138,19 @@ def test_pi_switching_or_shortening_branch_requires_separate_channel(source):
     assert alternate["intent_id"] != value["intent_id"]
 
 
+def test_pi_assistant_only_branch_switch_cannot_hide_behind_identical_user_messages(source):
+    goal = define(source)
+    rows = pi_rows(source)
+    rows.append(pi_node("other_reply", "one", "assistant", "当前另外一个分支的上下文。", 5))
+    path = write_native(source, rows)
+    value = importing(source, goal, path, leaf="reply")
+    before = store.intent_path(value["intent_id"]).read_bytes()
+    with pytest.raises(ValueError, match="branch is not a continuation"):
+        importing(source, goal, path, leaf="other_reply", expected=1)
+    assert store.intent_path(value["intent_id"]).read_bytes() == before
+    assert importing(source, goal, path, leaf="two", expected=1)["version"] == 2
+
+
 @pytest.mark.parametrize("format", ["pi-session", "codex-session"])
 def test_native_workspace_mismatch_refuses_no_private_copy(source, tmp_path, format):
     goal = define(source)

@@ -31,15 +31,22 @@ def fields(value: dict, expected: set) -> None:
 
 
 def validate_export(value: dict) -> dict:
-    fields(value, {"schema_version", "goal_id", "channel", "history_complete", "messages"})
-    if type(value["schema_version"]) is not int or value["schema_version"] != 1:
+    version = value.get("schema_version") if isinstance(value, dict) else None
+    if type(version) is not int or version not in (1, 2):
         raise ValueError("unsupported prompt history schema")
+    fields(value, {"schema_version", "goal_id", "channel", "history_complete", "messages"}
+           | ({"origin"} if version == 2 else set()))
     if not isinstance(value["goal_id"], str) or not GOAL_PATTERN.fullmatch(value["goal_id"]):
         raise ValueError("invalid history goal identity")
     validate_channel(value["channel"])
     if type(value["history_complete"]) is not bool:
         raise ValueError("history coverage must be an explicit boolean")
     validate_messages(value["messages"])
+    if version == 2:
+        from .task_history_export_schema import validate_origin
+        if value["history_complete"]:
+            raise ValueError("selected user ranges cannot claim complete history")
+        validate_origin(value["origin"], value["messages"])
     return value
 
 
@@ -108,6 +115,8 @@ def _validate_records(value: dict) -> None:
     if value["authorized"] != (audit[-1]["action"] == "imported"):
         raise ValueError("history consent/audit mismatch")
     _validate_native_chain(value)
+    from .task_history_export_schema import validate_chain
+    validate_chain(value)
 
 
 def _validate_native_chain(value: dict) -> None:
@@ -140,7 +149,8 @@ def _validate_audit(audit: list) -> None:
 
 def _validate_import(record: dict, messages: list) -> None:
     expected = {"evidence", "message_ids", "new_message_ids", "at", "analysis_seconds"}
-    fields(record, expected | ({"adapter"} if isinstance(record, dict) and "adapter" in record else set()))
+    optional = _import_fields(record)
+    fields(record, expected | optional)
     _validate_evidence(record)
     known = {message["id"] for message in messages}
     for key in ("message_ids", "new_message_ids"):
@@ -153,9 +163,22 @@ def _validate_import(record: dict, messages: list) -> None:
         raise ValueError("invalid incremental history coverage")
     if "adapter" in record:
         validate_adapter(record["adapter"], len(record["message_ids"]))
+    if "export_origin" in record:
+        from .task_history_export_schema import validate_record
+        validate_record(record, messages)
     from .task_center_metrics import number
     if number(record["analysis_seconds"]) is None or timestamp(record["at"]) is None:
         raise ValueError("invalid history analysis accounting")
+
+
+def _import_fields(record: dict) -> set:
+    if not isinstance(record, dict):
+        raise ValueError("invalid history import record")
+    if "export_origin" in record:
+        if "adapter" in record:
+            raise ValueError("ambiguous history import provenance")
+        return {"export_origin", "origin_replayed_at"}
+    return {"adapter"} if "adapter" in record else set()
 
 
 def _validate_evidence(record: dict) -> None:

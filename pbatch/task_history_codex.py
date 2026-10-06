@@ -19,13 +19,20 @@ def _message(payload: dict) -> str:
     return value
 
 
-def project(rows: list, source: dict, leaf: str) -> tuple[list, dict]:
-    header = rows[0]
+def header_identity(header: dict, source: dict) -> tuple[str, str]:
     data = header.get("payload")
     if header.get("type") != "session_meta" or not isinstance(data, dict) or not text(data.get("id"), 128):
         raise ValueError("Codex history needs a session_meta identity header")
-    identity = data["id"]
-    root = workspace(source, data.get("cwd"))
+    return data["id"], workspace(source, data.get("cwd"))
+
+
+def user_record(row: dict, identity: str, ordinal: int) -> dict:
+    return {"id": "codex-" + fingerprint([identity, ordinal]), "ts": row.get("timestamp"),
+            "role": "user", "text": _message(row["payload"])}
+
+
+def project(rows: list, source: dict, leaf: str) -> tuple[list, dict]:
+    identity, root = header_identity(rows[0], source)
     messages = []
     for ordinal, row in enumerate(rows[1:], 1):
         if row["type"] == "session_meta":
@@ -37,6 +44,5 @@ def project(rows: list, source: dict, leaf: str) -> tuple[list, dict]:
             raise ValueError("Codex event message type is missing")
         if payload["type"] != "user_message":
             continue
-        messages.append({"id": "codex-" + fingerprint([identity, ordinal]),
-                         "ts": row.get("timestamp"), "role": "user", "text": _message(payload)})
+        messages.append(user_record(row, identity, ordinal))
     return messages, metadata("codex-session", identity, root, "", rows, messages, len(messages))

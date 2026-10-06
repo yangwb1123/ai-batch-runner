@@ -1,6 +1,8 @@
 """Responsive global task view. Data is fetched as JSON, never embedded as HTML."""
 from __future__ import annotations
 
+from .task_center_intent_report import INTENT_SCRIPT
+
 
 _PAGE = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -12,6 +14,8 @@ h1{font-size:1.4rem} .note{color:#555} #error{color:#a21}
 td,th{padding:.6rem;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}
 button,select{font:inherit;padding:.5rem;margin:.25rem} .bad{background:#fff3f3}
 pre{background:#f5f5f5;padding:1rem;white-space:pre-wrap;overflow-wrap:anywhere}
+.intent-hint{border-bottom:1px solid #ddd;padding:.5rem} #intent-detail p{white-space:pre-wrap;overflow-wrap:anywhere}
+summary{cursor:pointer;padding:.5rem} #intents td{overflow-wrap:anywhere}
 @media(max-width:600px){body{margin:.5rem}td,th{min-width:6rem}}
 </style></head><body>
 <h1>全局任务中心 · 只读</h1>
@@ -27,23 +31,24 @@ pre{background:#f5f5f5;padding:1rem;white-space:pre-wrap;overflow-wrap:anywhere}
 <div class="table-wrap"><table><thead><tr><th>项目 / 目标</th><th>标准 / 记录</th>
 <th>最近步骤 / 声明下一步</th><th>关联消耗（窗口）</th><th>详情</th></tr></thead><tbody id="goals"></tbody></table></div>
 <h2>授权历史的意图线索（候选推断，不是执行授权）</h2>
-<p class="note">只展示本机显式导入的有界历史；角色与完整性为导出声明。原始正文不回传。</p>
+<p class="note">只展示显式授权的有界、脱敏线索；原生分支/用户范围不是全历史。角色与署名未认证，原始正文不回传。</p>
 <div class="table-wrap"><table><thead><tr><th>目标 / 角色通道</th><th>授权 / 覆盖</th>
 <th>当前线索</th><th>详情</th></tr></thead><tbody id="intents"></tbody></table></div>
 <h2>进程活动（不等于任务进展）</h2>
 <div class="table-wrap"><table><thead><tr><th>项目目录</th><th>PID / 存在性</th>
 <th>登记状态 / 心跳</th></tr></thead><tbody id="activity"></tbody></table></div>
-<h2>任务详情</h2><pre id="detail">选择任务查看时间、调用、产物和证据引用。</pre>
+<h2>记录详情</h2><section id="intent-detail" hidden aria-live="polite"></section>
+<pre id="detail">选择任务、目标或历史查看公开的只读投影。</pre>
 <p class="note">每 5 秒读取有界窗口，无模型调用；历史耗时先验不是实时 ETA。修复、清场与上传未启用。</p>
 <script>
 const token=new URLSearchParams(location.search).get('token')||'';
 const source=document.getElementById('source');
 const tbody=document.getElementById('tasks');
 const detail=document.getElementById('detail');
-let selected='',selectedGoal='',selectedIntent='',busy=false;
+let selected='',selectedGoal='',selectedIntent='',busy=false,requestVersion=0,pending=null;
 const shown=(v)=>v===null||v===undefined?'未追踪':String(v);
-async function getJson(path){
-  const response=await fetch(path,{headers:token?{'Authorization':'Bearer '+token}:{},cache:'no-store'});
+async function getJson(path,signal){
+  const response=await fetch(path,{headers:token?{'Authorization':'Bearer '+token}:{},cache:'no-store',signal});
   const value=await response.json();
   if(!response.ok)throw new Error(value.error||('HTTP '+response.status));
   return value;
@@ -73,7 +78,7 @@ function renderTask(task){
     ' 文件存在；目标记录 '+(task.goal_links.map(g=>g.acceptance).join(', ')||'未追踪'));
   const button=document.createElement('button');button.textContent='详情';
   button.addEventListener('click',()=>{selectedGoal='';selectedIntent='';selected=task.task_id;
-    detail.textContent=JSON.stringify(task,null,2);});
+    clearIntentPanel();detail.textContent=JSON.stringify(task,null,2);});
   cell(tr,'').appendChild(button);tbody.appendChild(tr);
 }
 function renderGoal(goal){
@@ -86,32 +91,36 @@ function renderGoal(goal){
     '；存在共享调用，不可跨目标相加':'')+'；独立验收未验证');
   const button=document.createElement('button');button.textContent='详情';
   button.addEventListener('click',()=>{selected='';selectedIntent='';selectedGoal=goal.goal_id;
-    detail.textContent=JSON.stringify(goal,null,2);});
+    clearIntentPanel();detail.textContent=JSON.stringify(goal,null,2);});
   cell(tr,'').appendChild(button);document.getElementById('goals').appendChild(tr);
 }
-function renderIntent(item){
-  const tr=document.createElement('tr');
-  cell(tr,item.goal_id+' / '+item.channel);
-  cell(tr,item.status+' / '+item.coverage.messages+' 条；完整性为操作人声明');
-  const hints=item.analysis?Object.values(item.analysis.hints).flat().map(h=>h.excerpt):[];
-  cell(tr,hints.slice(-3).join('；')||'线索未评估或已撤销授权');
-  const button=document.createElement('button');button.textContent='详情';
-  button.addEventListener('click',()=>{selected='';selectedGoal='';selectedIntent=item.intent_id;
-    detail.textContent=JSON.stringify(item,null,2);});
-  cell(tr,'').appendChild(button);document.getElementById('intents').appendChild(tr);
+__INTENT_VIEW_SCRIPT__
+function clearIntentPanel(){
+  const pane=document.getElementById('intent-detail');pane.replaceChildren();pane.hidden=true;
 }
-async function refresh(){
-  if(busy)return;busy=true;
+function clearView(note){
+  ['tasks','goals','intents','activity'].forEach(id=>document.getElementById(id).replaceChildren());
+  clearIntentPanel();detail.textContent=note;
+}
+async function refresh(force=false){
+  if(busy&&!force)return;
+  const version=++requestVersion,chosen=source.value;
+  if(pending)pending.abort();
+  const controller=new AbortController();pending=controller;busy=true;
+  document.getElementById('intents').replaceChildren();clearIntentPanel();
+  if(selectedIntent)detail.textContent='正在重新核对历史授权；不展示旧的缓存线索。';
   try{
-    const view=await getJson('/api/tasks?limit=200'+(source.value?'&source='+encodeURIComponent(source.value):''));
-    if(!source.value){
+    const view=await getJson('/api/tasks?limit=200'+(chosen?'&source='+encodeURIComponent(chosen):''),controller.signal);
+    if(version!==requestVersion||chosen!==source.value)return;
+    if(!chosen){
       const options=[new Option('所有已接入项目','')];
       view.sources.forEach(s=>options.push(new Option(s.name,s.source_id)));
       source.replaceChildren(...options);
     }
     tbody.replaceChildren();view.tasks.forEach(renderTask);
     document.getElementById('goals').replaceChildren();view.goals.forEach(renderGoal);
-    document.getElementById('intents').replaceChildren();view.intents.forEach(renderIntent);
+    document.getElementById('intents').replaceChildren();
+    view.intents.forEach(item=>renderIntent(item,view.goals,view.sources));
     const activity=document.getElementById('activity');activity.replaceChildren();
     view.activity.processes.forEach(p=>{const tr=document.createElement('tr');
       cell(tr,p.workspace);cell(tr,p.pid+' / '+p.presence);
@@ -122,7 +131,8 @@ async function refresh(){
     if(selectedGoal){const goal=view.goals.find(g=>g.goal_id===selectedGoal);
       detail.textContent=goal?JSON.stringify(goal,null,2):'目标不在当前已接入视图中；不代表已完成。';}
     if(selectedIntent){const item=view.intents.find(i=>i.intent_id===selectedIntent);
-      detail.textContent=item?JSON.stringify(item,null,2):'历史不在当前视图中；不代表已删除。';}
+      if(item)showIntent(item,view.goals,view.sources);
+      else{clearIntentPanel();detail.textContent='历史不在当前视图中；不代表已删除或仍有授权。';}}
     document.getElementById('summary').textContent='接入 '+view.sources.length+' 个来源；窗口观察到 '+
       view.observed_task_count+' 个任务；更新于 '+view.generated_at;
     const problems=view.sources.flatMap(s=>s.coverage.filter(c=>c.error||c.malformed||c.truncated||c.incomplete)
@@ -130,18 +140,20 @@ async function refresh(){
     document.getElementById('error').textContent=[...view.diagnostics,
       ...view.activity.diagnostics,...problems].join('；');
   }catch(error){
-    tbody.replaceChildren();document.getElementById('activity').replaceChildren();
-    document.getElementById('goals').replaceChildren();document.getElementById('intents').replaceChildren();
-    detail.textContent='数据当前不可用，不能确认任务状态。';
+    if(version!==requestVersion)return;
+    clearView('数据当前不可用，不能确认任务状态或历史授权。');
     document.getElementById('summary').textContent='数据不可用';
     document.getElementById('error').textContent='刷新失败: '+error.message;
-  }finally{busy=false;}
+  }finally{if(version===requestVersion){busy=false;pending=null;}}
 }
-document.getElementById('refresh').addEventListener('click',refresh);
-source.addEventListener('change',()=>{selected='';selectedGoal='';selectedIntent='';refresh();});
+document.getElementById('refresh').addEventListener('click',()=>refresh(true));
+source.addEventListener('change',()=>{selected='';selectedGoal='';selectedIntent='';
+  clearView('正在读取所选来源，旧项目的记录和线索已移除。');
+  document.getElementById('summary').textContent='等待所选来源的新快照';
+  document.getElementById('error').textContent='';refresh(true);});
 refresh();setInterval(refresh,5000);
 </script></body></html>"""
 
 
 def page_html() -> str:
-    return _PAGE
+    return _PAGE.replace("__INTENT_VIEW_SCRIPT__", INTENT_SCRIPT)
