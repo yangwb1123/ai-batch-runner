@@ -16,10 +16,13 @@ def add_parser(sub) -> None:
     listing.add_argument("--json", action="store_true")
     showing = actions.add_parser("show")
     showing.add_argument("intent_id")
-    importing = actions.add_parser("import", help="导入登记根内的完整有界 JSON 导出；不扫描会话")
+    importing = actions.add_parser("import", help="显式导入登记根内的有界 JSON/原生 JSONL；不扫描会话")
     importing.add_argument("--source", required=True)
     importing.add_argument("--goal", required=True)
     importing.add_argument("--file", required=True)
+    importing.add_argument("--format", choices=("normalized", "pi-session", "codex-session"), default="normalized")
+    importing.add_argument("--channel", default="", help="原生导入必须显式命名授权通道")
+    importing.add_argument("--leaf-id", default="", help="Pi v3 必须显式选择分支叶节点")
     importing.add_argument("--confirm", action="store_true")
     importing.add_argument("--if-version", type=int, default=None)
     _actor(importing)
@@ -42,7 +45,8 @@ def command(args, _cwd: str) -> int:
             if not args.confirm:
                 raise ValueError("history import requires explicit --confirm")
             value = store.import_history(args.source, args.goal, args.file,
-                                         args.by, args.reason, args.if_version)
+                                         args.by, args.reason, args.if_version,
+                                         format=args.format, channel=args.channel, leaf=args.leaf_id)
         else:
             value = store.revoke(args.intent_id, args.by, args.reason, args.if_version)
         print(json.dumps({"intent_id": value["intent_id"], "version": value["version"],

@@ -49,6 +49,8 @@ def project(rows: list, source: dict, leaf: str) -> tuple[list, dict]:
     for row in selected:
         if row["type"] != "message" or row["message"]["role"] != "user":
             continue
+        if set(row["message"]) - {"role", "content", "timestamp"}:
+            raise ValueError("unsupported Pi user-message fields; no input was silently dropped")
         messages.append({"id": "pi-" + fingerprint([identity, row["id"]]),
                          "ts": row.get("timestamp"), "role": "user",
                          "text": user_text(row["message"].get("content"))})

@@ -15,6 +15,7 @@ from .task_intent_schema import (INTENT_PATTERN, MAX_IMPORTS, fingerprint, inten
 from .task_lifecycle import stamp
 from .task_state_io import MAX_STATE_BYTES, atomic_write, encode, load, locked
 from .user_dirs import pbatch_runtime_home
+from . import task_native_history as native
 
 MAX_INTENTS = 32
 
@@ -35,15 +36,20 @@ def read_history(key: str) -> dict:
     return value
 
 
-def _read_export(source: dict, file: str) -> tuple[dict, dict]:
-    proof = evidence_reference(source, file, 128 * 1024)
+def _read_bytes(source: dict, file: str, maximum: int) -> tuple[bytes, dict]:
+    proof = evidence_reference(source, file, maximum)
     with _open_regular(Path(proof["path"])) as handle:
         before = os.fstat(handle.fileno())
-        raw = handle.read(128 * 1024 + 1)
+        raw = handle.read(maximum + 1)
         after = os.fstat(handle.fileno())
     if (_stat_key(before) != _stat_key(after) or _stat_key(Path(proof["path"]).stat()) != _stat_key(after)
             or len(raw) != proof["bytes"] or hashlib.sha256(raw).hexdigest() != proof["sha256"]):
         raise ValueError("prompt export changed during authorized import")
+    return raw, proof
+
+
+def _read_export(source: dict, file: str) -> tuple[dict, dict]:
+    raw, proof = _read_bytes(source, file, 128 * 1024)
     try:
         value = json.loads(raw)
     except (ValueError, UnicodeError, RecursionError) as exc:
@@ -51,15 +57,26 @@ def _read_export(source: dict, file: str) -> tuple[dict, dict]:
     return validate_export(value), proof
 
 
+def _read_input(source: dict, file: str, goal: str, format: str, channel: str, leaf: str) -> tuple:
+    if format == "normalized":
+        manifest, proof = _read_export(source, file)
+        return manifest, proof, None, None
+    raw, proof = _read_bytes(source, file, native.MAX_NATIVE_BYTES)
+    manifest, adapter = native.convert(raw, source, goal, format, channel, leaf)
+    return manifest, proof, adapter, raw
+
+
 def import_history(source_id: str, goal_id: str, file: str, by: str, reason: str,
-                   expected: int | None = None) -> dict:
+                   expected: int | None = None, *, format: str = "normalized",
+                   channel: str = "", leaf: str = "") -> dict:
     began = time.perf_counter()
     _actor(by, reason)
+    native.options(format, channel, leaf)
     source = resolve_source(source_id)
     goal = load_goal(goal_id)
     if goal["source_id"] != source["source_id"]:
         raise ValueError("prompt history belongs to a different goal source")
-    manifest, proof = _read_export(source, file)
+    manifest, proof, adapter, raw = _read_input(source, file, goal_id, format, channel, leaf)
     if manifest["goal_id"] != goal_id:
         raise ValueError("export goal does not match authorized goal")
     key = intent_key(source["source_id"], goal_id, manifest["channel"])
@@ -72,16 +89,13 @@ def import_history(source_id: str, goal_id: str, file: str, by: str, reason: str
         _version(value, expected)
         if value is None:
             _capacity(path.parent)
-            value = {"schema_version": 1, "intent_id": key, "source_id": source["source_id"],
-                "goal_id": goal_id, "channel": manifest["channel"], "version": 0,
-                "contract_digest": goal["contract_digest"], "authorized": True,
-                "history_complete": manifest["history_complete"], "messages": [],
-                "messages_digest": fingerprint([]), "imports": [], "audit": []}
+            value = _new_history(goal, key, manifest)
+        else:
+            native.check_continuation(value, adapter, raw, manifest["messages"])
         new = _merge(value, manifest)
         value.update(authorized=True, contract_digest=goal["contract_digest"],
                      messages_digest=fingerprint(value["messages"]))
-        value["imports"].append({"evidence": proof, "message_ids": [m["id"] for m in manifest["messages"]],
-            "new_message_ids": new, "at": stamp(), "analysis_seconds": time.perf_counter() - began})
+        _append_import(value, manifest, proof, adapter, new, began)
         _audit(value, "imported", by, reason)
         validate_state(value)
         if len(encode(value)) > MAX_STATE_BYTES - 4096:
@@ -89,6 +103,23 @@ def import_history(source_id: str, goal_id: str, file: str, by: str, reason: str
         _check_goal(goal_id, goal["contract_digest"])
         atomic_write(path, value)
     return value
+
+
+def _new_history(goal: dict, key: str, manifest: dict) -> dict:
+    return {"schema_version": 1, "intent_id": key, "source_id": goal["source_id"],
+            "goal_id": goal["goal_key"], "channel": manifest["channel"], "version": 0,
+            "contract_digest": goal["contract_digest"], "authorized": True,
+            "history_complete": manifest["history_complete"], "messages": [],
+            "messages_digest": fingerprint([]), "imports": [], "audit": []}
+
+
+def _append_import(value: dict, manifest: dict, proof: dict, adapter: dict | None,
+                   new: list, began: float) -> None:
+    record = {"evidence": proof, "message_ids": [m["id"] for m in manifest["messages"]],
+              "new_message_ids": new, "at": stamp(), "analysis_seconds": time.perf_counter() - began}
+    if adapter is not None:
+        record["adapter"] = adapter
+    value["imports"].append(record)
 
 
 def _merge(value: dict, manifest: dict) -> list[str]:

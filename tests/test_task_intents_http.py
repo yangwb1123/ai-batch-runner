@@ -10,7 +10,7 @@ import pytest
 from test_task_center_http import request, server
 from test_task_goals import contract
 from test_task_intents import manifest, message
-from pbatch import task_goal_store, task_intent_store
+from pbatch import task_goal_store, task_intent_store, task_sources
 
 
 def import_for_server(server):
@@ -61,6 +61,34 @@ def test_revocation_removes_inferences_from_the_next_http_read(server):
     with request(server, "/api/intents/" + value["intent_id"]) as response:
         result = json.loads(response.read())
     assert result["status"] == "revoked" and result["analysis"] is None
+
+
+def test_native_import_has_shared_http_metadata_without_raw_history_or_http_writes(server, capsys):
+    from pbatch.ops import ops_main
+    from test_task_native_history import codex_rows, write_native
+    data = Path(server[1].data_dir)
+    original = task_sources.registered_sources()[0]
+    task_sources.unregister_source(original["source_id"])
+    source = task_sources.source("custom", str(data), str(data))
+    task_sources.register_source(source)
+    goal = task_goal_store.define("custom", contract(), "operator", "confirmed goal")
+    path = write_native(source, codex_rows(source))
+    value = task_intent_store.import_history("custom", goal["goal_key"], str(path), "op", "consent",
+                                           format="codex-session", channel="selected_codex")
+    before = task_intent_store.intent_path(value["intent_id"]).read_bytes()
+    assert ops_main(["intents", "show", value["intent_id"]]) == 0
+    cli = json.loads(capsys.readouterr().out)
+    with request(server, "/api/intents/" + value["intent_id"]) as response:
+        payload = response.read().decode()
+        http = json.loads(payload)
+    for key in ("origin", "identity", "coverage", "imports", "audit", "accounting", "capabilities"):
+        assert http[key] == cli[key]
+    assert "messages" not in http and "private-codex-id" not in payload and str(path) not in payload
+    assert "DO NOT COPY" not in payload
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        request(server, "/api/intents/import?format=codex-session&file=" + str(path), method="POST")
+    assert exc.value.code == 403
+    assert task_intent_store.intent_path(value["intent_id"]).read_bytes() == before
 
 
 def test_quoted_prompt_markup_is_not_embedded_in_the_browser_page(server):

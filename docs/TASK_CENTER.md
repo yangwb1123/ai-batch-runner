@@ -165,8 +165,9 @@ pi-batch ops intents revoke ih-... --if-version 1 \
 
 授权绑定 source + goal + channel + 当前契约摘要。契约改变即暂停推断，需要显式重新导入授权；
 撤销后下一次 CLI/HTTP 查询即不返回线索。HTTP 无 import/revoke 接口，也不能选文件路径。
-原始 export、Pi/Codex 会话目录没有被自动扫描或上传；本批仅支持明确的规范化 JSON 导出，
-不声称导入了完整原生 session。原始历史私有复制保存在用户级 `ops/intents/ih-....json`，
+原始 export、Pi/Codex 会话目录没有被自动扫描或上传。默认支持规范化 JSON 导出；
+第三个切片另支持显式选文件/分支的原生**用户文本投影**，不声称导入了完整 session。
+被授权的消息私有复制保存在用户级 `ops/intents/ih-....json`，
 0600、原子替换；正文不进入源码 Git，不通过 API 整段回传。
 
 - 消息必须有稳定 id、时间、role、完整 text；只追加，不偷偷修订旧文本或重排时序。
@@ -224,7 +225,43 @@ CLI/Web 显示 `forecast.duration_range_seconds` 的**历史先验**。仓库内
 - 执行成功、gate PASS、操作人判定和证据字节匹配仍不是独立质量验证；
   `independently_accepted_goals` 和已验收成果成本比保持未知，不用于排名或自动修复授权。
 
-第三批仍待：原生历史的边界授权适配、语义意图/漂移检验、全生命周期 phase/provider 请求与币种覆盖、
+### 第三个切片：显式选择原生 Pi/Codex 用户历史
+
+```bash
+# 先自行选择并复制需要授权的 JSONL 到已登记 workspace/runtime；程序不扫描 ~/.pi 或 ~/.codex。
+# 来源必须登记 workspace；文件头声明的 cwd 必须与该 workspace 完全匹配。
+pi-batch ops intents import --source my-project --goal g-... \
+  --format pi-session --channel pi_primary --leaf-id <entry-id> \
+  --file /registered/runtime/selected-pi.jsonl --confirm \
+  --by maintainer --reason "仅授权指定 Pi 分支的用户文本"
+pi-batch ops intents import --source my-project --goal g-... \
+  --format codex-session --channel codex_primary \
+  --file /registered/runtime/selected-codex.jsonl --confirm \
+  --by maintainer --reason "仅授权所选 Codex 文件的用户事件"
+# 后续同通道导入需要 --if-version；Pi 的新 leaf 必须延续原来已授权的用户消息链。
+```
+
+- Pi 仅支持 v3 JSONL 树，必须显式指定终点 entry ID，沿父链选择用户消息。
+  不默认选最后一行，不合并其他分支；缺父节点、重复 ID、循环或不支持的版本拒绝。
+  分支缩短/切换须另建通道，不能悄悄删除原来确认的目标线索。
+- Codex 仅采用 `event_msg/user_message` 用户事件；`response_item` 用户镜像不重复导入，
+  assistant/tool/系统事件不变成用户意图。没有受支持用户事件的文件直接拒绝。
+- 仅复制完整的受支持用户文本，不复制工具结果、assistant 正文、图片或原始 JSONL。
+  用户多模态/附件/未知字段、未知文本块形状直接拒绝，不删掉关键内容后假称读完。
+  角色和 cwd 仍是原生文件的声明，不是身份认证或项目归属证明。
+- 每文件最多 **2 MiB / 2048 行**，每行 **128 KiB**；UTF-8、重复 JSON 字段、损坏行、
+  未写完尾行、超限输入均拒绝，不裁剪、不修复 JSON、不抓取省略历史。
+  转换后的消息仍遵守 128 条 / 64 KiB text / 128 KiB 私有状态预算，预留撤销空间。
+- 审计保留完整原始字节的 SHA-256/大小、版本化 adapter 元数据、会话/分支摘要及选取/排除计数。
+  同通道重导入必须保留**整个先前导入文件的字节前缀**，包括未复制的工具/assistant/元数据；
+  重写、重排、轮转或换会话必须另建通道，不能只校验最后一条用户消息而掩盖改动。
+- `history_complete=false` 固定表示“选定原生用户文本投影”，并不宣称全历史完整。
+  CLI/HTTP 返回相同覆盖/审计与有界脱敏线索，不返回原始正文、路径或原生会话 ID。
+  原生文件删除后保留已授权消息与历史审计；撤销立即停止线索投影，既不删除原始文件，
+  也不删除私有恢复证据。契约修订仍需重新授权。
+
+此适配仍不调用模型、不执行历史指令、不续跑、不上传、不扩大 HTTP 文件读取边界。
+第三批仍待：更多原生形状/长会话的授权导出、语义意图/漂移检验、全生命周期 phase/provider 请求与币种覆盖、
 独立验收成果效率、跨任务难度校准与真实剩余时间预测。以上不得由线索或窗口消耗代替。
 
 ## 后续批次与验收条件
@@ -232,7 +269,7 @@ CLI/Web 显示 `forecast.duration_range_seconds` 的**历史先验**。仓库内
 | 批次 | 内容 | 完成判定 |
 |---|---|---|
 | 2（本批） | 显式目标契约/证据判定、持久检查点、父子 run 与声明下一步 | 新旧事件分开；历史/完整字节可复核；Agent 自述不判完成；不替代执行与独立验收 |
-| 3（已实现两个切片） | 授权有界导出/角色线索、历史耗时检验、显式关联的阶段消耗 | 保留来源/覆盖；调用去重、失败与共享消耗可见；全量请求计量、语义预测与独立验收效率仍待实现 |
+| 3（已实现三个切片） | 授权有界导出/原生用户投影、角色线索、历史耗时检验、显式关联的阶段消耗 | 保留来源/覆盖；调用去重、失败与共享消耗可见；全量请求计量、语义预测与独立验收效率仍待实现 |
 | 4 | 有预算的项目修复、工具改进任务与独立验证 | 在预授权范围内产生真实代码/测试；正常门禁；不无限重试或自我授权 |
 | 5 | 72 小时保留窗口、归档验证与安全清场 | 只回收登记资源；无活跃引用；未保存成果不删；历史/恢复信息仍可查询 |
 | 6 | 本地最小反馈案例、去重、复现任务与发布闭环 | 默认不外发；原始 runtime 不进 Git；只晋升可复现的回归测试/修复 |
