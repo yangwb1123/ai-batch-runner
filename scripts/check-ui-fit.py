@@ -81,6 +81,42 @@ def component_segment(source: str, name: str) -> Optional[str]:
     return None
 
 
+def _registry_entries() -> dict:
+    try:
+        registry = json.loads(REGISTRY.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    entries = registry.get("controls")
+    return entries if isinstance(entries, dict) else {}
+
+
+def _verified(source: str, entries: dict) -> dict[str, int]:
+    """Keep only the entries whose evidence still matches the installed build."""
+    widths: dict[str, int] = {}
+    for control, spec in entries.items():
+        if not isinstance(spec, dict):
+            continue
+        evidence = spec.get("evidence")
+        value = spec.get("min_width")
+        if not isinstance(evidence, str) or not isinstance(value, int):
+            continue
+        segment = component_segment(source, control)
+        if segment is None or re.search(evidence, segment) is None:
+            continue
+        widths[control] = value
+    return widths
+
+
+def _installed_bundle(repo_root: Path) -> str:
+    for pattern in IRIS_PACKAGE_GLOBS:
+        for candidate in sorted(repo_root.glob(pattern)):
+            try:
+                return candidate.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+    return ""
+
+
 def control_min_widths(repo_root: Path) -> dict[str, int]:
     """Registry entries verified against the installed package, or dropped.
 
@@ -92,33 +128,11 @@ def control_min_widths(repo_root: Path) -> dict[str, int]:
     before it is believed. A mismatch drops the entry -- the rule then skips
     instead of reporting a number nobody can defend.
     """
-    try:
-        registry = json.loads(REGISTRY.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    entries = _registry_entries()
+    if not entries:
         return {}
-    entries = registry.get("controls") or {}
-
-    for pattern in IRIS_PACKAGE_GLOBS:
-        for candidate in sorted(repo_root.glob(pattern)):
-            try:
-                source = candidate.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            widths: dict[str, int] = {}
-            for control, spec in entries.items():
-                evidence = spec.get("evidence")
-                value = spec.get("min_width")
-                if not evidence or not isinstance(value, int):
-                    continue
-                segment = component_segment(source, control)
-                if segment is None:
-                    continue
-                if re.search(evidence, segment) is None:
-                    continue
-                widths[control] = value
-            if widths:
-                return widths
-    return {}
+    source = _installed_bundle(repo_root)
+    return _verified(source, entries) if source else {}
 
 
 def label_spans(source: str) -> list[tuple[int, int]]:
@@ -219,25 +233,19 @@ def accessible_name_missing(source: str) -> list[tuple[int, str]]:
     return missing
 
 
-def check_file(path: Path, widths: dict[str, int], relative: str) -> list[dict]:
+def _overflow_violations(
+    source: str, widths: dict[str, int], relative: str
+) -> list[dict]:
     violations: list[dict] = []
-    try:
-        source = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        return [{"file": relative, "line": 0, "rule": "read-error", "detail": str(exc)}]
-
     columns = declared_columns(source)
-    bodies = cell_slot_bodies(source)
 
-    for key, (line, body) in bodies.items():
+    for key, (line, body) in cell_slot_bodies(source).items():
         width = columns.get(key)
         if width is None:
             continue  # column declared elsewhere: another file owns that pair
         for control in sorted(controls_in(body)):
             minimum = widths.get(control)
-            if minimum is None:
-                continue  # unknown control -> never guess
-            if minimum > width:
+            if minimum is not None and minimum > width:
                 violations.append({
                     "file": relative,
                     "line": line,
@@ -247,7 +255,14 @@ def check_file(path: Path, widths: dict[str, int], relative: str) -> list[dict]:
                         f"（该控件 inline min-width {minimum}px）"
                     ),
                 })
+    return violations + _composed_overflow(source, columns, widths, relative)
 
+
+def _composed_overflow(
+    source: str, columns: dict, widths: dict[str, int], relative: str
+) -> list[dict]:
+    """Cell slots built from a key array (e.g. one switch per connection flag)."""
+    violations: list[dict] = []
     for array_name, keys, _raw in dynamic_slot_keys(source):
         composer = re.search(
             r"cell\.\$\{" + re.escape(array_name) + r"\}(?P<body>[\s\S]{0,1200})",
@@ -256,6 +271,7 @@ def check_file(path: Path, widths: dict[str, int], relative: str) -> list[dict]:
         if not composer:
             continue
         used = controls_in(composer.group("body"))
+        line = source.count("\n", 0, composer.start()) + 1
         for key in keys:
             width = columns.get(key)
             if width is None:
@@ -265,22 +281,35 @@ def check_file(path: Path, widths: dict[str, int], relative: str) -> list[dict]:
                 if minimum is not None and minimum > width:
                     violations.append({
                         "file": relative,
-                        "line": source.count("\n", 0, composer.start()) + 1,
+                        "line": line,
                         "rule": "control-overflow",
                         "detail": (
                             f"列 {key} 宽 {width}px，装不下 {control}"
                             f"（{array_name} 批量插槽，该控件 min-width {minimum}px）"
                         ),
                     })
-
-    for line, control in accessible_name_missing(source):
-        violations.append({
-            "file": relative,
-            "line": line,
-            "rule": "control-accessible-name",
-            "detail": f"{control} 既无 aria-label 也无 <label> 包裹",
-        })
     return violations
+
+
+def check_file(path: Path, widths: dict[str, int], relative: str) -> list[dict]:
+    try:
+        source = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return [{"file": relative, "line": 0, "rule": "read-error", "detail": str(exc)}]
+
+    names = [
+        {"file": relative, "line": line, "rule": "control-accessible-name",
+         "detail": f"{control} 既无 aria-label 也无 <label> 包裹"}
+        for line, control in accessible_name_missing(source)
+    ]
+    return _overflow_violations(source, widths, relative) + names
+
+
+def _relative(target: Path, repo_root: Path) -> str:
+    try:
+        return str(target.resolve().relative_to(repo_root))
+    except ValueError:
+        return str(target)
 
 
 def iter_sources(root: Path) -> Iterable[Path]:
@@ -324,11 +353,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not target.is_file():
             print(f"not a file: {target}", file=sys.stderr)
             return 2
-        try:
-            relative = str(target.resolve().relative_to(repo_root))
-        except ValueError:
-            relative = str(target)
-        violations.extend(check_file(target, widths, relative))
+        violations.extend(check_file(target, widths, _relative(target, repo_root)))
 
     if args.json:
         print(json.dumps({
