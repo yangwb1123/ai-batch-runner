@@ -63,7 +63,7 @@ class _DrainTimeout(subprocess.TimeoutExpired):
 
 
 def run_bounded(cmd, cwd: str, timeout: float, output_cap: int,
-                shell: bool, label: str, cancel_event=None) -> ValidationResult:
+                shell: bool, label: str, cancel_event=None, *, env=None) -> ValidationResult:
     """Spawn one command, drain both pipes and fail closed on every boundary."""
     validate_timeout(timeout, label)
     if isinstance(output_cap, bool) or not isinstance(output_cap, int) or output_cap < 1:
@@ -74,7 +74,7 @@ def run_bounded(cmd, cwd: str, timeout: float, output_cap: int,
         proc = spawn_registered(lambda: subprocess.Popen(
             cmd, shell=shell, cwd=cwd, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, errors="replace",
-            start_new_session=True), _kill_group)
+            start_new_session=True, **({"env": env} if env is not None else {})), _kill_group)
     except Exception as exc:
         interrupt_after_spawn()
         return ValidationResult(False, -1, "", str(exc), False)

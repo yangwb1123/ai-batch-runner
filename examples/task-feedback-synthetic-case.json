@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "case_id": "example-unknown-validator",
+  "case_type": "operator_declared_synthetic",
+  "summary": "示例：未知验证器名称的 fail-closed 边界；不是实际缺陷报告",
+  "inputs": [
+    {"name": "validator-label", "content": "synthetic_unknown_validator"}
+  ],
+  "expected": "示例期望：未知验证器应在启动 Agent 前拒绝。此文件不执行该检查。",
+  "observed": "仅为格式示例，未运行真实任务、未观察到任何实际通过或失败结果。",
+  "hypothesis": "仅为待求证假设：未知标签可能在某个实现中被忽略。此处不认定根因或当前工具存在这个缺陷。"
+}

@@ -164,3 +164,83 @@ def test_selecting_goal_clears_structured_history_panel(source):
     result = run_browser([view], "select_other", other="goals")
     assert result["panel_hidden"] is True and result["panel"] == ""
     assert "statement" in result["detail"]
+
+
+def test_failure_repair_preview_is_text_only_detail_without_action_requests(source):
+    from test_task_repair_preview import _checkpoint, _goal, _publish
+    value = _checkpoint(source)
+    _publish(source, value)
+    _goal(source, value["run_id"])
+    result = run_browser([task_center.snapshot()], "repair")
+    task = json.loads(result["detail"])
+    assert task["repair_preview"]["candidate_stage"]["label"] == "implement"
+    assert task["repair_preview"]["remaining_declared_gates"] == 2
+    assert "恢复预览（只读）" in result["all"]
+    assert result["tags"] == 0 and len(result["requests"]) == 1
+
+
+def request_view(source):
+    from test_task_repair_preview import _checkpoint, _goal, _publish, _pipeline
+    from test_task_repair_requests import manifest_for
+    from pbatch import task_repair_store
+    checkpoint = _checkpoint(source)
+    _publish(source, checkpoint)
+    goal = _goal(source, checkpoint["run_id"])
+    manifest = manifest_for(source, goal, _pipeline(source))
+    value = task_repair_store.register(source["source_id"], manifest, "operator", "inspect failure")
+    return value, task_center.snapshot()
+
+
+def test_declared_request_and_untrusted_audit_are_readonly_text_not_controls(source):
+    _, view = request_view(source)
+    markup = '<img src=x onerror="alert(1)"><script>alert(1)</script>'
+    view["repairs"][0]["audit"][0]["reason"] = markup
+    result = run_browser([view], "request")
+    assert "非执行授权" in result["repairs"] and "未核验原限制" in result["repairs"]
+    assert "耗时上限 300 秒" in result["repairs"]
+    assert "Token 上限 10000" in result["repairs"] and "2 USD" in result["repairs"]
+    assert "不可执行 / blocked" in result["repairs"]
+    assert "persisted_original_deadline_and_remaining_budgets" in result["repairs"]
+    assert json.loads(result["detail"])["audit"][0]["reason"] == markup and result["tags"] == 0
+    assert len(result["requests"]) == 1
+
+
+@pytest.mark.parametrize("mode", ["request_refresh", "request_failure", "request_missing"])
+def test_request_refresh_clears_old_state_and_never_dispatches(source, mode):
+    from pbatch import task_repair_store
+    value, original = request_view(source)
+    task_repair_store.withdraw(value["repair_id"], "operator", "stop request", 1)
+    changed = task_center.snapshot()
+    if mode == "request_missing":
+        changed["repairs"] = []
+    result = run_browser([original, changed], mode)
+    if mode == "request_refresh":
+        assert json.loads(result["detail"])["status"] == "withdrawn"
+    else:
+        assert value["repair_id"] not in result["detail"]
+        assert result["repairs"] == ""
+    assert len(result["requests"]) == 2
+    assert all(request["method"] == "GET" for request in result["requests"])
+
+
+def test_request_poll_replaces_old_inspection_with_new_child_blocker(source):
+    from test_task_repair_preview import _write
+    value, original = request_view(source)
+    row = {"run_id": "child", "task_id": "task", "status": "running", "phase": "execution", "attempt": 1,
+        "ts": "2026-10-10T00:00:00Z", "parent_run_id": value["manifest"]["run_id"],
+        "parent_source_id": source["source_id"]}
+    _write(Path(source["data_dir"]) / "agents/ledger.jsonl", [row])
+    result = run_browser([original, task_center.snapshot()], "request_refresh")
+    assert "active_child_execution_observations" in result["repairs"]
+    assessment = json.loads(result["detail"])["assessment"]
+    assert assessment["candidate_stage"] is None and assessment["ready_to_execute"] is False
+    assert len(result["requests"]) == 2
+
+
+def test_request_inspection_markup_is_text_only_and_does_not_render_an_execution_button(source):
+    _, view = request_view(source)
+    markup = '<img src=x onerror="alert(1)"><script>alert(1)</script>'
+    view["repairs"][0]["assessment"]["blockers"].append(markup)
+    result = run_browser([view], "request")
+    assert markup in result["repairs"] and result["tags"] == 0
+    assert len(result["requests"]) == 1

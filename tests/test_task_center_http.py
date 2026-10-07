@@ -119,3 +119,46 @@ def test_ops_cli_forwards_global_scope_without_changing_existing_defaults(monkey
     assert "--global" in calls[-1]
     assert ops.ops_main(["serve"]) == 0
     assert "--global" not in calls[-1]
+
+
+def test_repair_preview_is_identical_in_cli_snapshot_and_authenticated_detail(server, capsys):
+    from pathlib import Path
+    from pbatch import task_center
+    from pbatch.task_state_io import atomic_write
+
+    _, handler = server
+    root = Path(handler.data_dir)
+    source = task_sources.source("custom", str(root))
+    checkpoint = {"schema_version": 1, "kind": "pipeline", "run_id": "pl-" + "b" * 32,
+        "source_id": source["source_id"], "name": "failure", "status": "failed",
+        "started_at": 100, "ts": "2026-10-10T00:00:10Z", "seq": 3,
+        "plan_complete": True, "stage": "gate", "parent_run_id": "", "parent_source_id": "",
+        "process_run_id": "process", "steps": [
+            {"id": "gate", "state": "failed", "gate": True, "dependencies": []},
+            {"id": "release", "state": "pending", "gate": True, "dependencies": ["gate"]}]}
+    (root / "tasks").mkdir()
+    (root / "tasks/lifecycle.jsonl").write_text(json.dumps(checkpoint) + "\n")
+    (root / "tasks/runs").mkdir()
+    atomic_write(root / "tasks/runs" / (checkpoint["run_id"] + ".json"), checkpoint)
+    direct = next(task for task in task_center.snapshot()["tasks"] if task["kind"] == "pipeline")
+    with request(server, "/api/tasks") as response:
+        view = json.loads(response.read())
+    http_task = next(task for task in view["tasks"] if task["task_id"] == direct["task_id"])
+    with request(server, "/api/tasks/" + direct["task_id"]) as response:
+        detail = json.loads(response.read())
+    assert ops.ops_main(["tasks", "--id", direct["task_id"]]) == 0
+    cli = json.loads(capsys.readouterr().out)
+    assert cli["repair_preview"] == detail["repair_preview"] == http_task["repair_preview"] == direct["repair_preview"]
+    assert detail["repair_preview"]["candidate_stage"]["declared_gate"] is True
+    assert detail["repair_preview"]["authority"]["grants_execution"] is False
+    assert detail["repair_preview"]["remaining_declared_gates"] == 2
+
+
+@pytest.mark.parametrize("action", ["repair", "resume", "retry", "clear-budget", "provider-breaker-reset"])
+def test_repair_preview_never_enables_http_actions(server, action):
+    with request(server, "/api/tasks") as response:
+        task = json.loads(response.read())["tasks"][0]
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        request(server, "/api/tasks/" + task["task_id"] + "/" + action, method="POST")
+    assert exc.value.code == 403
+    assert task["repair_preview"]["authority"]["grants_execution"] is False

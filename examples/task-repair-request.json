@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "source_id": "src-000000000000000000000000",
+  "task_id": "tc-096732278d7e6a56710b658263f4fa28",
+  "run_id": "pl-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "goal_id": "g-00000000000000000000000000000000",
+  "goal_version": 2,
+  "contract_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+  "checkpoint": {
+    "sequence": 5,
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "stage_key": "st-00000000000000000000000000000000",
+  "limits": {
+    "requested_deadline_at": "2030-01-01T00:00:00Z",
+    "max_attempts": 1,
+    "max_elapsed_seconds": 300,
+    "max_total_tokens": 10000,
+    "max_cost": {"amount": 2.0, "currency": "USD"}
+  }
+}

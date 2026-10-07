@@ -22,6 +22,11 @@ from .task_intent_view import attach_intents, intent_views
 from .task_duration import build_priors, forecast_for
 from .task_billing import billing_metrics
 from .task_consumption import attach_consumption
+from .task_repair_preview import attach_repair_previews
+from .task_repair_view import attach_repairs, repair_views
+from .task_retention_view import attach_resources, resource_views
+from .task_preservation import preservation_views
+from .task_feedback_view import feedback_views
 
 SCHEMA_VERSION = 1
 MAX_TASKS = 200
@@ -33,7 +38,8 @@ def snapshot(limit: int = 100, source_id: str = "", now: float | None = None) ->
     now = time.time() if now is None else now
     payload = {"schema_version": SCHEMA_VERSION,
                "generated_at": datetime.fromtimestamp(now, timezone.utc).isoformat(),
-               "window_only": True, "sources": [], "tasks": [], "goals": [], "intents": [], "diagnostics": [],
+               "window_only": True, "sources": [], "tasks": [], "goals": [], "intents": [], "repairs": [],
+               "resources": [], "feedback": [], "diagnostics": [],
                "observed_task_count": 0, "omitted_tasks": 0, "status_counts": {},
                "activity": activity_snapshot() if not source_id else {"processes": [], "diagnostics": []}}
     try:
@@ -53,14 +59,14 @@ def snapshot(limit: int = 100, source_id: str = "", now: float | None = None) ->
     priors = build_priors(candidates)
     payload["tasks"] = [_task(source, rows, partial, now, priors)
                         for _, _, source, rows, partial in candidates[:limit]]
-    _enrich(payload, candidates)
+    _enrich(payload, candidates, now)
     payload["status_counts"] = dict(Counter(task["status"] for task in payload["tasks"]))
     if source_id and not payload["sources"]:
         payload["diagnostics"].append("task source not found")
     return payload
 
 
-def _enrich(payload: dict, candidates: list) -> None:
+def _enrich(payload: dict, candidates: list, now: float) -> None:
     tasks = payload["tasks"]
     parents = {(task["source_id"], task["run_id"]): task for task in tasks
                if task["kind"] == "pipeline"}
@@ -75,8 +81,18 @@ def _enrich(payload: dict, candidates: list) -> None:
     attach_goals(tasks, payload["goals"])
     payload["intents"], notes = intent_views(payload["sources"], payload["goals"])
     payload["diagnostics"].extend(notes)
-    attach_consumption(tasks, payload["goals"], payload["intents"], candidates, payload["sources"])
+    consumption = attach_consumption(tasks, payload["goals"], payload["intents"], candidates, payload["sources"])
     attach_intents(tasks, payload["goals"], payload["intents"])
+    attach_repair_previews(tasks, payload["goals"], candidates)
+    payload["repairs"], notes = repair_views(payload["sources"], payload["goals"], candidates, now, consumption)
+    payload["diagnostics"].extend(notes)
+    attach_repairs(tasks, payload["goals"], payload["repairs"])
+    payload["resources"], notes = resource_views(payload["sources"], payload["goals"], payload["repairs"], candidates, consumption, now)
+    payload["diagnostics"].extend(notes)
+    payload["diagnostics"].extend(preservation_views(payload["resources"]))
+    attach_resources(tasks, payload["goals"], payload["resources"])
+    payload["feedback"], notes = feedback_views(payload["sources"])
+    payload["diagnostics"].extend(notes)
 
 
 def _source_candidates(source: dict, payload: dict) -> list[tuple]:

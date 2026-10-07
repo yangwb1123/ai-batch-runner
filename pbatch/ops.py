@@ -29,6 +29,9 @@ from .agent_ledger import query as ledger_query
 from .task_center_cli import add_parsers as add_task_parsers, sources_command, tasks_command
 from .task_goal_cli import command as goals_command
 from .task_intent_cli import command as intents_command
+from .task_repair_cli import command as repairs_command
+from .task_retention_cli import command as retention_command
+from .task_feedback_cli import command as feedback_command
 
 OPS_REPORT_NAME = "ops-report.html"
 
@@ -389,5 +392,8 @@ def ops_main(argv: Optional[list[str]] = None) -> int:
         "tasks": tasks_command,
         "goals": goals_command,
         "intents": intents_command,
+        "repairs": repairs_command,
+        "retention": retention_command,
+        "feedback": feedback_command,
     }
     return handlers[args.command](args, cwd)

@@ -31,6 +31,12 @@ def add_parsers(sub) -> None:
     add_parser(sub)
     from .task_intent_cli import add_parser as add_intents
     add_intents(sub)
+    from .task_repair_cli import add_parser as add_repairs
+    add_repairs(sub)
+    from .task_retention_cli import add_parser as add_retention
+    add_retention(sub)
+    from .task_feedback_cli import add_parser as add_feedback
+    add_feedback(sub)
 
 
 def sources_command(args, _cwd: str) -> int:
@@ -111,6 +117,9 @@ def format_tasks(view: dict) -> str:
             lines.append("  历史耗时先验=" + str(task["forecast"]["duration_range_seconds"]) + " 秒（非实时 ETA）")
         if task["analysis"]["latest_reason"]:
             lines.append("  " + task["analysis"]["latest_reason"])
+        lines.extend(_repair_lines(task))
+        if task.get("repair_links"):
+            lines.append("  登记恢复请求（未授执行权）=" + ", ".join(task["repair_links"]))
     for process in view["activity"]["processes"]:
         lines.append(f"ACTIVITY: pid={process['pid']} {process['presence']} "
                      f"{process['workspace']} (进程活动不等于任务进展)")
@@ -118,6 +127,16 @@ def format_tasks(view: dict) -> str:
                  [*view["diagnostics"], *view["activity"]["diagnostics"]])
     lines.append("有界窗口观测；产物存在/执行成功不代表目标已验收；历史耗时先验不是实时 ETA 或执行授权。")
     return "\n".join(lines)
+
+
+def _repair_lines(task: dict) -> list[str]:
+    preview = task.get("repair_preview")
+    if not preview or preview["applicability"] != "failure_observation":
+        return []
+    stage = preview["candidate_stage"]
+    target = "；定位阶段=" + stage["label"] + " [" + stage["stage_key"] + "]" if stage else "；阶段未选定"
+    return ["  恢复预览（只读、非重启指令）=" + preview["inspection_hint"] + target,
+            "  尚待检查=" + ", ".join(preview["blockers"])]
 
 
 def _money(billing: dict) -> str:

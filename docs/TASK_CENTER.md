@@ -332,15 +332,338 @@ Node VM + 最小 DOM 回归覆盖脚本执行、竞态、过期缓存与文本�
 第三批仍待：更多原生形状/更大历史的授权适配、语义意图/漂移检验、全生命周期 phase/provider 请求与币种覆盖、
 独立验收成果效率、跨任务难度校准与真实剩余时间预测。以上不得由线索或窗口消耗代替。
 
+## 第四批的第一个切片：只读失败检查与恢复预览
+
+`ops tasks`、认证后的 `/api/tasks` 列表/详情和 Web 的“失败 / 恢复预览（只读）”
+共用任务上的 `repair_preview`。这是确定性的**检查提案**，不是恢复授权或可执行计划：
+
+- 仅使用本次已准入的任务、生命周期检查点、目标投影及窗口消耗；不新增文件读取，
+  不调用模型/provider、Git、进程探测、预算账本或执行器，也不写提案状态。
+  诊断文本是已记录、不可信的引用，不按其中的指令操作，也不据此猜根因。
+- 完整且无窗口缺口的顺序计划，只有明确记录失败的原阶段才能作为检查候选。
+  失败前必须全部记录成功，失败后必须全部待执行；身份不匹配、计划不完整、阶段含糊、
+  损坏/截断/未完成尾行或已读取的目标检查点头部与 feed 冲突时，不补造候选。
+  取消和中断不自动转成重启候选；执行/验证/Campaign 记录没有阶段计划时只提供检查提示。
+- 候选保留原阶段 gate、已记录前置状态及后续声明步骤；旧成功不批准复用，旧 PASS
+  不证明当前仓库可接受。每类前置、目标和引用最多显示 8 条、后续步骤最多 8 条，
+  附省略计数；后续 gate 总数包含被省略的步骤，不能借显示预算跳过门禁。
+  阶段 key 由原 source/run/stage 身份派生，不用可能脱敏重合的显示名称路由。
+- 附来源/run、检查点序号/时间和规范化字段摘要，明确这不是原文件字节摘要或新鲜复验。
+  目标投影里的已读取检查点只做头部比较，不认证文件内容、存活或 lease。
+  返回条数变少不丢原窗口里的活跃子执行告警；来源过滤不跨到其他来源找“同名任务”。
+- 目标绑定跨修订保留，用于记忆和消耗归属，**不证明 run 按当前版本契约启动**。
+  多个目标不静默选一个；无绑定保持未追踪。目标修订或 `operator_attested` 也不授予恢复权。
+  每个失败提案仍需核对：认证执行授权、原目标/执行绑定、持久原截止时间与剩余预算、
+  当前进程/lease、工作树归属/Git 基线/脏状态、新鲜检查点/产物证据，以及当前工程、
+  合并和独立验收门禁。它们全部标为未检查，不拿窗口消耗推算剩余额度或重置预算。
+- budget/provider pause/recovery/merge block 只提示检查已记录阻断，不清除 breaker，
+  不自动等待后重试，不合并、不清场、不恢复文件或热改 supervisor。
+  所有 `authority` 位固定为 false；HTTP 仍只有原只读接口，没有 repair/resume/retry 控制入口。
+
+回归覆盖取消/中断、门禁/预算阻断、目标修订/歧义、陈旧/损坏/不完整记录、跨来源同名
+与阶段脱敏碰撞、显示省略、CLI/HTTP 一致性、文本 Web 详情，以及查询零写入/零子进程。
+Node VM 检查不是实际浏览器验收。此切片不等于有预算的真实修复完成；后续执行仍须单独授权，
+并保留原任务目标、截止时间、预算和独立门禁。完整 CI、原任务验收和打包发布仍应分别验证。
+
+### 第二个切片：显式、有界的本地恢复请求登记
+
+`ops repairs` 现在可以把检查意向和**声明限制**保存为私有记录，仍没有执行器。
+它不是认证授权、原预算证据、可执行计划或恢复/合并回执。
+
+```bash
+# 先从只读详情取得原 source/task/run、候选 stage_key、checkpoint 序号/摘要，
+# 从目标详情取得 goal ID、当前 version 和 contract_digest。
+pi-batch ops tasks --source my-project --id tc-...
+pi-batch ops goals show g-...
+# 自行填写 examples/task-repair-request.json 的结构，并明确选择一个目标。
+# 示例全部 ID/摘要和限制是合成数据，不是可直接登记的真实恢复参数。
+# 填好的 JSON 必须位于此 source 已登记的 workspace 或 runtime 根内。
+pi-batch ops repairs register --source my-project --file /registered/runtime/request.json \
+  --confirm --by maintainer --reason "只登记对此原失败阶段的检查意向"
+pi-batch ops repairs list --source my-project --json
+pi-batch ops repairs show rq-...
+pi-batch ops repairs withdraw rq-... --if-version 1 --by maintainer --reason "撤回登记意向"
+```
+
+- manifest 为闭合 schema 1，输入/状态最多 **16 KiB**。重复字段、坏 UTF-8/JSON、
+  非有限数、坏身份/版本、未知字段、symlink/FIFO/不稳定文件拒绝；不存在 command、
+  自动续跑、放宽门禁、reset 或 force 字段。缺 `--confirm` 先拒绝，不打开 manifest。
+- 登记要求已有目标/run 绑定，并精确固定当前目标 version/契约摘要、原 task/run/source、
+  checkpoint 序号/规范化字段摘要和原失败阶段 key。登记前及合作式非阻塞锁内再次核对
+  当前目标、实际持久检查点和同一只读候选；陈旧/不完整/歧义记录不被登记为新失败。
+  这只核对元数据，不证明目标在原执行时已落实，也不验证工作树、进程/lease 或产物语义。
+- 必须显式声明带时区的 `requested_deadline_at`、正尝试/耗时/Token/费用上限及三字母币种。
+  尝试最多 3、耗时最多 86400 秒、Token 最多 10⁹、费用数值最多 10⁶；过期声明拒绝登记。
+  币种是操作者的声明，不做换算。这些**不是原截止时间/剩余预算，也未参与限额执行**，
+  `original_limits_verified=false`、`execution_authority=not_granted` 固定。
+  真正执行仍需单独核对原有持久限额，取不超过剩余额度的范围，不能用新声明重置原预算。
+- 私有 `runtime-home/ops/repair-requests/rq-....json` 为 0600，最多 64 个请求；容量满拒绝，
+  不删历史腾位置。相同 source/run/goal/契约/checkpoint/stage 是同一请求 anchor；完全相同
+  的重登是 no-op，不刷新时间。不能换署名、重写/提高限制或借重登擦掉审计。
+  状态只允许登记 v1 → 撤回 v2；撤回永久保留审计，不能重新激活。不要求旧来源、目标或
+  checkpoint 仍可用才能撤回；过期/陈旧请求仍可撤回。坏存储只报错，不自修复。
+- `snapshot.repairs`、任务/目标的 `repair_links`、CLI 和认证后的 `/api/repairs[/rq-...]`
+  共用投影。query 只读有界请求和已准入事实；不另开原 checkpoint 文件、不跟随 manifest
+  路径、不重新登记。失效目标、窗口缺口、检查点变化/头部冲突、过期和撤回分开标记；
+  列表截成 1 个任务也不把原已准入的目标失败当作不存在。
+- Web 仅显示声明、状态和文本详情，不提供登记/撤回/执行按钮。刷新先清旧请求详情，
+  失败/缺失/切换来源不保留旧状态；外部字段只用 `textContent`。全局 HTTP 仍只读且需
+  原 token 认证，默认 workspace server 不新增访问；所有变更 POST 仍拒绝。
+
+这不是第四批真实修复完成：没有发起 Agent、修改源码/工作树、复位 breaker、续跑、合并、
+清场、上传或改变正在运行的 supervisor。审计 label 未认证，登记收据仅说明登记时核对过
+这些字节字段；后续“匹配”只是当前有界观察，不是新鲜文件复验、授权或可执行状态。
+
+### 第三个切片：登记请求的只读就绪检查（不是实时预检）
+
+```bash
+pi-batch ops repairs check rq-... --source my-project --json
+# 存在但被阻断/已撤回/声明过期：exit 3；不在已接入有界视图：exit 1。
+# exit 3 不是启动失败或预算重置指令；此命令不提供允许执行的 exit 0。
+```
+
+`repairs[].assessment` 是 `repair-request-inspection-v1` 确定性报告，CLI `check`、
+认证后的请求详情 API、任务快照和 Web 的“只读检查 / 阻塞”显示同一份投影。
+没有新的 HTTP 检查/执行 action，POST 仍拒绝。报告只使用原本已准入的请求、
+目标投影、生命周期窗口和同一个消费索引；不再次读 feed/检查点/产物、不探测 Git、
+PID/lease 或预算账本，不写请求、不调用模型/provider/执行器。
+
+- 元数据逐项标为 `observed_match`、`observed_conflict` 或 `unavailable`，不用 PASS 表达。
+  分别比较请求登记/声明截止、目标当前版本与保留的 run 绑定、原 source/run/task 身份、
+  检查点序号/规范化字段摘要、窗口完整性、唯一原失败阶段、已读取的目标检查点头部，
+  以及登记时的计划摘要/gate 字段。显示名称不参与路由；头部匹配仍不证明内容或存活。
+  声明截止匹配不证明原截止时间或剩余预算，也不是限额执行。
+- 子执行沿已经准入的显式跨来源父链展开，不按同名 task/run/标题匹配。
+  所有已选执行记录里的 running/queued/retrying 行都作为**活动观测**显示，旧行也可能已过时；
+  非零值阻断候选，零值不证明空闲、进程已退出或 lease 已释放。源过滤不去读被过滤来源。
+  来源内无法归属/循环/深度受限/缺祖先的记录单独计数并保守阻断，但不分配给此请求。
+  引用最多 8 条，附省略数，计数不受返回任务条数或引用显示上限影响。
+- 撤回/声明过期为 `inactive`，其余为 `blocked`。陈旧、缺失、歧义、窗口不完整、已知头部
+  冲突、登记收据冲突或子执行/谱系风险都不给阶段候选；仍保留各项冲突及缺证原因。
+  只有全部元数据项匹配时才显示**检查用**原失败阶段，旧成功不获准复用，剩余 gate 总数
+  包括展示上限之外的步骤。
+- 即使元数据全部匹配，`ready_to_execute`、`grants_execution`、`live_preflight_performed`
+  仍固定 false。七项认证授权/原契约启动绑定/持久原限额/进程与 lease/工作树归属与 Git/
+  新鲜产物/当前工程合并独立验收，全部为 `required_not_evaluated`；原截止与剩余预算为
+  `null`。目标修订、操作人 attestation 或旧 PASS 不清除这些条件。
+
+Web 只显示阻塞与文本详情，下一次刷新先清旧报告，失联/缺记录不能保留旧结果。
+Node VM 回归不是实际浏览器验收。真正执行仍未启用；此报告不能被作为恢复授权、
+自动重试/清场/上传/合并或预算复位的凭证。
+
+### 第四个切片：显式一次性的工作区 Git 诊断
+
+```bash
+# 期望 SHA 必须由操作者明确提供完整的小写 40/64 位 OID；它不是原运行基线的证明。
+pi-batch ops repairs inspect-workspace rq-... --confirm --expected-head FULL_OID --json
+# linked worktree 还必须明确允许读取对应的绝对 Git common-dir：
+pi-batch ops repairs inspect-workspace rq-... --confirm --expected-head FULL_OID \
+  --common-dir /explicit/repository/.git --source my-project --json
+```
+
+这是 `repair-workspace-inspection-v1` **一次性、本地诊断**，不是完整实时恢复预检。
+必须先有未撤回/未过期、元数据匹配且无已知子执行/谱系缺口的登记请求；缺 `--confirm`、
+坏 OID 或非绝对 common-dir 在读取请求前拒绝。只检查来源登记的 workspace，不接收任意
+workspace 路径，也不猜 isolated Campaign 真正用了哪个工作树。不存在保存回执、授权、
+执行、retry、force、merge、清场或 reset 选项；有报告仍返回 **exit 3**，输入错误 exit 2。
+
+- 普通 `tasks`、`repairs list/show/check`、HTTP/Web 的查询/轮询**不运行 Git**，不自动变成
+  工作区探测。HTTP 没有此 action；此命令的 JSON 不自动落账本或回流 Web，也不是导入授权。
+- symlink 路径、非普通元数据、错误 linked-worktree common-dir/backlink、非当前有效用户的
+  OS uid、不可读子树、锁/操作 marker、外部对象 stores、危险/不支持的 Git config 均拒绝。
+  uid 匹配只证明目录/元数据的 OS 归属，**不认证操作者或确认独占执行权**。元数据最多
+  2048 个枚举项、config 每文件 64 KiB、HEAD/pointer 4 KiB；超限不是空/干净目录。
+- 只运行固定的 Git argv（无 shell），用剥离继承环境的配置、关闭可选锁/懒 fetch、外部
+  fsmonitor、hooks、attributes/excludes 文件及网络协议。为避免仓库 config 在诊断中变更
+  后触发 executable filter，Git 使用临时私有的最小控制目录：config/HEAD/index 为有界
+  副本（index 最多 1 MiB），只引用已明确准入的 objects/refs。临时目录 0700、文件 0600，
+  位于被检查 workspace/Git scope 之外，结束只清除此命令自己创建的副本。它**不是 OS
+  sandbox 或原仓库配置语义的完整复制**；filter、info-exclude 等未继承，观察结果不能
+  当作原配置下的内容验收。
+- 固定 **15 秒共享的 Git 诊断截止**，各命令 stdout/stderr 各最多 64 KiB；硬超时/进程组
+  回收沿用公共执行器。Git/解析失败、截断、非 UTF-8 输出、目录/元数据/请求/来源/目标
+  改变时不给有效观察。原代码、原 index、原 config 与失败改动不被修复、提交或恢复。
+- 报告两次采样的 HEAD/branch 与状态、tracked/untracked/ignored/conflict 计数、gitlink
+  数、最多 8 条脱敏显示路径及省略数。路径文本不用作路由/文件证据；ignored matching
+  entry 不代表递归文件数量。改名含第二个 NUL path，不能误当另一条状态记录。submodule
+  不递归检查，存在 gitlink 单独阻断；ignored 证据也不获准删除。
+- HEAD 与期望不一致、detached、Git 变更/未跟踪/ignored 数据和操作 marker 明确阻断并
+  保留现场。两次样本相同与 metadata stat 摘要相同，仍**不是原子时间点、全文件字节、
+  活进程/lease、原 run-workspace 绑定或恢复授权**。
+
+即使两次样本无报告变更，`original_git_baseline=null`、`ready_to_execute=false`、
+`grants_execution=false`、`live_preflight_performed=false`，七项真正执行前提仍未满足。
+工作区、原请求和原预算不写入；没有重启 supervisor、模型/provider、上传、合并或清场。
+回归只对临时自有仓库/worktree 执行，不探测受保护的实际 campaign 工作区。
+
+## 第五批的第一个切片：显式资源登记与保全计划（没有删除器）
+
+```bash
+# 只接受已接入 source 的 runtime 内、已存在的绝对后代路径，不登记源码 workspace 或整棵 runtime。
+pi-batch ops retention register --source my-project --path /registered/runtime/rejected/report.md \
+  --kind file --confirm --by maintainer --reason "保留失败证据"
+# kind 可选 file / directory / worktree；后两项只声明目录性质，不自动跑 Git 或扫描目录内容。
+# 可加 --run-id pl-...，但必须有该来源的实际匹配 checkpoint，不能按名字制造关联。
+pi-batch ops retention list --source my-project --json
+pi-batch ops retention show rr-...
+pi-batch ops retention extend rr-... --if-version 1 --until 2030-01-01T00:00:00Z \
+  --by maintainer --reason "延长人工复核窗口"
+pi-batch ops retention pin rr-... --if-version 2 --by maintainer --reason "永久保护，暂不处置"
+```
+
+`registered-resource-preservation-v1` 是**显式登记资源的保全投影**，不是磁盘全量盘点或
+垃圾判定。没有隐式导入 `worktrees/`、目录爬取、迁移、归档、`unpin`、删除、force 或
+72 小时自动清场，也不复现 `docs/RUNTIME_RETENTION.md` 所记的历史人工处置。
+
+- 登记前需要 `--confirm`、明确 kind、署名与原因；没有确认时不读取来源或资源。
+  只允许已登记 runtime 的严格后代，拒绝根目录、registered workspace 重叠、自己的
+  retention 元数据、符号链接/FIFO/非普通对象、uid 冲突。目录 uid 只是一项 OS stat
+  字段，不认证操作者或独占归属。登记前及合作式非阻塞目录锁内复核来源与目标 stat；
+  optional run 只绑定实际 checkpoint 元数据，不授执行或清场权。
+- 首次登记把**复核日期**固定为登记时间 +72 小时，不拿旧文件 mtime/体积当安全删除
+  判据。相同登记是 no-op，不刷新时间；性质/run/stat/来源/最初署名原因不能重写。
+  资源换 inode、同尺寸改写或来源被换定义时，不把新对象收养为旧对象。
+- `extend` 必须带准确 version，日期带时区且严格晚于当前时间及原复核日期，只能延长。
+  它不修改 execution deadline、预算、breaker、checkpoint 或 lease。`pin` 是永久保护，
+  不提供撤除入口；资源/旧来源已丢失仍可保护私有登记。重复 pin 不增加审计或刷新日期。
+- `runtime-home/ops/retention/rr-....json` 为 0600，闭合 schema 1，每条最多 32 KiB、
+  最多 64 资源/16 条 audit。为最终 pin 预留最后一个 audit 槽和 4096 字节，不删历史
+  腾空间。重复字段、未知 delete/command/force 字段、非有限数、损坏/不稳定/超限状态
+  fail closed，不自修复。登记路径包含关系或硬链接/相同已记载物理身份拒绝扩大范围。
+- `snapshot.resources`、pipeline/goal 的 `resource_links`、CLI 与认证后的
+  `/api/resources[/rr-...]` 使用同一投影。只有选中的已接入来源才 stat 目标，不爬被
+  过滤来源。queries 不开资源正文、不枚举目录内容、不创建锁/元数据、不执行 Git、
+  模型/provider、归档或子进程；署名/路径/诊断按文本脱敏显示，路径显示不能作路由 key。
+- availability 明确为 **stat-only**；相同 stat 不证明内容字节、恢复包或独占归属。
+  普通文件的当前 stat 字节数可以显示，目录总量未知，不求和伪装可回收容量。
+  `content_sha256=null`、`archive_verified=false`、`estimated_reclaimable_bytes=null` 固定。
+- explicit run 的引用只来自已准入 pipeline/子执行、跨修订保留的 goal binding 与登记
+  repair 请求。子执行与引用最多显示 8 条、保留完整计数/省略量，不受返回任务条数
+  影响；partial、缺 run、无法归属/循环谱系、活动观测均保守标记。零活动行不是 idle
+  或 lease 已释放；其他未知引用仍为 unknown，不按时间/标题归属，也不去扫描外部来源。
+- 无论未到期、复核到期、永久 pin、资源变更/丢失或已记载旧 PASS，plan 固定
+  `preserve`。到期只表示需要复核，不意味着应删除；工作树/目录内容与 Git 状态未核验
+  时单独阻断。认证处置授权、独占归属/活 lease、完整引用/可续跑性、未保存成果与
+  Git 集成、独立验证的可恢复归档、原子新鲜复核及正式处置事务，七项均未求证。
+- Web 只有“保留计划（只读）”详情，不提供保护变更、归档、删除按钮。刷新先清旧资源
+  表/已选详情，失联、缺记录、切换来源或旧请求晚到不会复用旧计划。HTTP 的默认
+  workspace 边界、token 与只读 POST 拒绝不变，query 参数也不能登记任意路径。
+
+这些是**保全元数据与复核计划**，不是安全清场完成。测试只使用临时自有资源，未登记、
+探测或清理实际 campaign/worktree；Node VM 测试不是实际浏览器/移动端视觉验收。
+只有以后独立完成归属、引用与保全验证并获得处置授权，才可能增加资源回收事务。
+
+### 第五批第二个切片：单文件私有保全与显式字节复核（不是完整归档）
+
+```bash
+pi-batch ops retention preserve rr-... --if-version 1 --confirm \
+  --by maintainer --reason "保全这个普通文件的当前失败证据"
+pi-batch ops retention verify-copy pp-... --confirm
+```
+
+`preserve` 显式读取一个已登记普通文件的**当前**完整字节，登记的原 inode/device/uid/mode、
+runtime 根身份及来源定义必须仍一致；版本必须准确。只允许 file，不遍历 directory/worktree，
+不访问 Git、provider 或命令。缺确认即不读资源；不把换 inode 的新对象收养为旧对象。
+同一物理文件后续内容改变时可以再次明确保存当前快照，但不会重写原登记、复核日期、
+永久保护、原 deadline/budget、checkpoint、lease 或以前的副本。
+
+- 单文件最多 16 MiB，流式读取、前后 fd/path stat 复核，空文件/二进制可保全，不解码
+  或执行正文。超限/增长/竞态拒绝，绝不截断保存成“完整证据”。这些 stat 窗口不是 OS
+  原子快照或恶意同 uid 写入者的隔离；普通文件系统读取也不冒称严格硬实时 I/O。
+- 副本位于 `runtime-home/preserved/resources/pp-....blob`，收据 `pp-....json`；存储必须
+  在该 registered runtime 和 workspace **之外**，自己的保全目录也不能作为输入。
+  根目录 0700、文件 0600。合作式非阻塞 catalog/publication 锁只保护本次 metadata
+  发布，不认证操作者、证明独占资源或释放 lease。
+- 保存前后再核对资源 version/来源/当前源 stat；payload fsync 后通过**独占 hardlink**
+  发布，receipt 最后 fsync/独占发布，再完整读回 payload 并比较字节数与 SHA-256。
+  不使用 rename 覆盖已有证据。收据固定 source/resource/version、当前 stat、完整摘要
+  与 unauthenticated actor/reason；闭合 schema 1，最多 8 KiB/64 收据。不删除旧证据腾空间。
+- 相同 snapshot 是无时间续期的 no-op，署名原因不可重写；若旧副本损坏、不可读或缺失，
+  重复保存也不会修复/覆盖它。receipt 发布或读回失败会保留已发布 blob/receipt 供诊断；
+  未完成 blob 也不按 orphan 自动回收。临时对象只在仍匹配本命令创建的 inode 时清理，
+  同名已存在对象和其他进程替换的对象保留。
+- `verify-copy --confirm` 只显式读取按 typed `pp-...` ID 定位的私有 receipt/payload，
+  全量摘要匹配返回 `recorded_copy_bytes_matching`。即使原资源或 source 已丢失，也可复核
+  保存的字节；它不重开原资源，不替代原 workspace 的完整可恢复性验证。
+  `current_source_checked=false`、`recoverable_archive_verified=false`、execution/cleanup
+  权限仍为 false/not_granted。返回 0 只代表复制/字节复核成功，不是处置准入。
+- CLI/HTTP/Web resource 详情共享**仅收据元数据**的投影，最多显示 8 条并保留全部
+  observed/omitted 计数，不在 list/show/刷新中重读 source/payload 或隐式验证。
+  `current_payload_reverified=false`；baseline `archive_verified=false`、plan `preserve`、
+  所有七项处置检查仍未求证。HTTP 不提供 preserve/verify-copy/正文下载入口，query
+  参数不能触发这些动作；Web 只有文本详情，不增加按钮。
+
+字节保全并不包含目录树、Git refs/index/未合并提交、lease、执行上下文、认证归属或
+恢复演练，因此不是工作树完整归档，更不是删除许可。复制/复核不调用模型，但存储、
+I/O、CPU 的价格及 lifetime 成本仍未知；不把副本收据计作独立验收或交付效率。
+
+## 第六批第一个切片：本地最小合成反馈草案（不执行、不上传）
+
+```bash
+# 文件必须显式选择，且处于通过 ops sources add 登记的 workspace/runtime 内。
+# examples/task-feedback-synthetic-case.json 只是格式示例，不是真实缺陷或复现结果。
+pi-batch ops feedback draft --source my-project --file cases/synthetic-case.json \
+  --confirm --by maintainer --reason "私下记录这个合成边界，等待独立复现"
+pi-batch ops feedback list --source my-project --json
+pi-batch ops feedback show fd-...
+pi-batch ops feedback withdraw fd-... --if-version 1 \
+  --by maintainer --reason "永久撤回这个本地草案，不删除证据"
+```
+
+`local-synthetic-feedback-v1` 只登记一个**操作人声明为 synthetic 的纯 JSON 案例**。
+没有自动发现/复制 Pi、Codex、session、native history 或 runtime 目录；默认发现的 source
+也不足以授予案例读取权限，须先明确登记。`--confirm` 缺失时不读取来源或文件。
+synthetic 与署名都是未认证声明，不是独立证明、无隐私保证，更不是允许外发。
+
+- 输入闭合 schema 1：`case_id`、固定 `case_type: operator_declared_synthetic`、`summary`、
+  1–8 个 `inputs: [{name, content}]`、`expected`、`observed`、`hypothesis`。名字是有界
+  简单标识符，不是文件路径；文本均为**不可信引用**，即使写有命令/URL/用户角色也不执行、
+  请求网络或获得指令权。未知 command/upload/force 等字段、重复 JSON 字段、NaN/Inf、
+  非 UTF-8、坏 JSON/多条 JSONL 和 unsupported shape 一律拒绝，不进行 JSON salvage。
+- 整个原输入最多 64 KiB，合计文本最多 16 KiB，每个文本/片段最多 4096 字符；不截断或
+  丢弃片段来使案例通过。只允许登记根内普通文件，拒绝符号链接/FIFO/目录、非当前有效
+  用户 uid 和 hard-link alias。uid 匹配不认证操作者或建立独占归属。
+- 私有目录 `runtime-home/ops/feedback/` 为 0700；完整原 JSON 字节位于 `fd-....case`，
+  仅摘要、来源/内容摘要、原输入 proof 与审计位于 `fd-....json`（均 0600）。存储不能与
+  任意明确登记的 runtime/workspace 重叠，也不能导入自己的元数据/副本。32 个草案、
+  metadata 每条最多 16 KiB，预留 4096 字节用于 withdrawal；目录枚举独立有界。
+- ID 按完整 `source_id + case_id` 键控，不按标题或脱敏摘要归并。来源定义、原输入路径与
+  字节/hash、case 摘要、初始署名/原因不可重写；相同登记 no-op，不刷新审计/时间。同一
+  case ID 的不同内容或原文件不会被收养为旧草案，要明确选用新的 ID。
+- 在合作式**非阻塞** source-catalog/publication 锁内重新检查来源与输入 stat；完整副本
+  fsync/独占 hardlink 发布后读回验证，metadata 最后独占发布，不覆盖历史。原输入变动、
+  损坏旧副本、容量/枚举预算耗尽都拒绝；已经发布但没有 metadata 的 orphan 仍保留，
+  不自动删来腾空间。只清理仍匹配本命令创建 inode 的临时文件。这不是 OS sandbox、
+  恶意同 uid 写入者隔离或原子文件系统快照，也不宣称硬实时 I/O。
+- `withdraw --if-version` 只把 v1 draft 变为永久 withdrawn v2，保留完整副本与审计，
+  不提供 reactivation。原 source/输入/copy 已丢失或容量已满仍可撤回有效 metadata；
+  腐坏 metadata 则拒绝，不自修复。重复撤回是 no-op，不新增 audit 或更新时间。
+- `snapshot.feedback`、CLI 和认证后的只读 `/api/feedback[/fd-...]` 共享同一元数据投影。
+  查询不重开原输入或 `.case` 正文，不隐式重新验证复制内容，不创建目录/锁/草案，不运行
+  命令、Git、provider 或网络上报。原路径、输入、期望/观察正文、根因假设正文不回传。
+  只显示脱敏有界摘要；withdrawn 或当前 source 定义不匹配时摘要为 null，审计仍保留。
+  复制 hash/时间记录只证明登记时的字节绑定，不证明当前副本、根因或独立复现。
+- 独立复现、根因核验、修复、回归、经审查发布与原任务验证**逐项分开**，本切片分别标为
+  `not_performed` / `unverified_hypothesis`。登记成功不代表案例已复现、任务通过、工具
+  已修好或交付效率提升；不把私有原 runtime、任意历史或案例正文直接提升为正式测试。
+- Web 只有草案元数据详情，没有复制正文、执行、撤回、上传、rule promotion、release、
+  upgrade 或清理按钮。刷新先移除旧草案及已选详情；失联/缺记录/切换来源/旧响应或错误
+  晚到不能恢复旧摘要。HTTP 的 token、workspace 默认边界和 POST 拒绝保持不变，query
+  参数不授予导入、复核、上传或正文下载能力。
+
+后续须另外明确授权最小化案例的独立复现、隔离修复/回归、审查/发布/可回滚升级及原任务
+复验；本切片没有自动 learn promotion、二进制更新或 live repair。测试只用自有合成文件；
+Node VM 结果不是实际浏览器、移动端、跨租户授权或真实 provider 的验收。
+
 ## 后续批次与验收条件
 
 | 批次 | 内容 | 完成判定 |
 |---|---|---|
 | 2（本批） | 显式目标契约/证据判定、持久检查点、父子 run 与声明下一步 | 新旧事件分开；历史/完整字节可复核；Agent 自述不判完成；不替代执行与独立验收 |
 | 3（已实现五个切片） | 授权导出/原生范围重放、角色线索与 Web 引用、历史耗时检验、显式关联的阶段消耗 | 保留来源/覆盖；调用去重、失败与共享消耗可见；全量请求计量、语义预测与独立验收效率仍待实现 |
-| 4 | 有预算的项目修复、工具改进任务与独立验证 | 在预授权范围内产生真实代码/测试；正常门禁；不无限重试或自我授权 |
-| 5 | 72 小时保留窗口、归档验证与安全清场 | 只回收登记资源；无活跃引用；未保存成果不删；历史/恢复信息仍可查询 |
-| 6 | 本地最小反馈案例、去重、复现任务与发布闭环 | 默认不外发；原始 runtime 不进 Git；只晋升可复现的回归测试/修复 |
+| 4（已实现预览/请求登记/只读检查/显式 Git 诊断） | 失败检查提案、声明限制、永久撤回、缺证阻塞与一次性工作区诊断；后续有预算的项目修复、工具改进任务与独立验证 | 预览/登记不授执行权；真实修复需在预授权范围内产生代码/测试；正常门禁；不无限重试或自我授权 |
+| 5（已实现显式保全登记/72h 复核/永久保护/只读计划） | 后续归档验证与安全清场 | 只回收登记资源；无活跃引用；未保存成果不删；历史/恢复信息仍可查询 |
+| 6（已实现显式本地合成草案/不可重写审计/永久撤回/只读投影） | 后续独立复现任务与审查发布闭环 | 默认不外发；原始 runtime 不进 Git；只晋升可复现的回归测试/修复 |
 | 7 | Hub 多设备授权与 TUI/Console 共享入口 | 不绕过 tenant/instance 授权；所有端看到相同身份、事实和操作回执 |
 
 每批先提供测试保护，再增加自动化。任务绑定工具版本，更新从新任务或明确检查点启用。

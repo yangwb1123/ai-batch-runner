@@ -34,6 +34,18 @@ summary{cursor:pointer;padding:.5rem} #intents td{overflow-wrap:anywhere}
 <p class="note">只展示显式授权的有界、脱敏线索；原生分支/用户范围不是全历史。角色与署名未认证，原始正文不回传。</p>
 <div class="table-wrap"><table><thead><tr><th>目标 / 角色通道</th><th>授权 / 覆盖</th>
 <th>当前线索</th><th>详情</th></tr></thead><tbody id="intents"></tbody></table></div>
+<h2>恢复请求登记（不是执行授权）</h2>
+<p class="note">限制由本地操作人声明，未核验原截止时间/预算，未连接执行器；署名未认证。</p>
+<div class="table-wrap"><table><thead><tr><th>项目 / 请求</th><th>绑定阶段 / 状态</th>
+<th>声明限制（不等于剩余预算）</th><th>只读检查 / 阻塞</th><th>详情</th></tr></thead><tbody id="repairs"></tbody></table></div>
+<h2>显式登记的资源与保留计划</h2>
+<p class="note">只统计登记资源，不是磁盘全量体检。72 小时到期只触发复核，所有计划仍为保留；无归档/删除按钮。</p>
+<div class="table-wrap"><table><thead><tr><th>项目 / 登记路径</th><th>类型 / 当前元数据</th>
+<th>保留策略 / 复核日期</th><th>计划 / 详情</th></tr></thead><tbody id="resources"></tbody></table></div>
+<h2>本地最小反馈草案（未复现、未上传）</h2>
+<p class="note">仅登记显式选择的合成案例；synthetic 是操作人声明，不是独立证明。正文不回传，无执行、上传或发布按钮。</p>
+<div class="table-wrap"><table><thead><tr><th>项目 / 草案</th><th>状态 / 摘要</th>
+<th>求证阶段</th><th>详情</th></tr></thead><tbody id="feedback"></tbody></table></div>
 <h2>进程活动（不等于任务进展）</h2>
 <div class="table-wrap"><table><thead><tr><th>项目目录</th><th>PID / 存在性</th>
 <th>登记状态 / 心跳</th></tr></thead><tbody id="activity"></tbody></table></div>
@@ -45,7 +57,7 @@ const token=new URLSearchParams(location.search).get('token')||'';
 const source=document.getElementById('source');
 const tbody=document.getElementById('tasks');
 const detail=document.getElementById('detail');
-let selected='',selectedGoal='',selectedIntent='',busy=false,requestVersion=0,pending=null;
+let selected='',selectedGoal='',selectedIntent='',selectedRepair='',selectedResource='',selectedFeedback='',busy=false,requestVersion=0,pending=null;
 const shown=(v)=>v===null||v===undefined?'未追踪':String(v);
 async function getJson(path,signal){
   const response=await fetch(path,{headers:token?{'Authorization':'Bearer '+token}:{},cache:'no-store',signal});
@@ -76,8 +88,10 @@ function renderTask(task){
   cell(tr,resources(task.consumption||task));
   cell(tr,shown(task.delivery.present_files)+'/'+shown(task.delivery.declared_files)+
     ' 文件存在；目标记录 '+(task.goal_links.map(g=>g.acceptance).join(', ')||'未追踪'));
-  const button=document.createElement('button');button.textContent='详情';
-  button.addEventListener('click',()=>{selectedGoal='';selectedIntent='';selected=task.task_id;
+  const button=document.createElement('button');
+  button.textContent=task.repair_preview&&task.repair_preview.applicability==='failure_observation'?
+    '失败 / 恢复预览（只读）':'详情';
+  button.addEventListener('click',()=>{selectedGoal='';selectedIntent='';selectedRepair='';selectedResource='';selectedFeedback='';selected=task.task_id;
     clearIntentPanel();detail.textContent=JSON.stringify(task,null,2);});
   cell(tr,'').appendChild(button);tbody.appendChild(tr);
 }
@@ -90,16 +104,54 @@ function renderGoal(goal){
   cell(tr,resources(goal.consumption)+(goal.consumption.shared_execution_observations?
     '；存在共享调用，不可跨目标相加':'')+'；独立验收未验证');
   const button=document.createElement('button');button.textContent='详情';
-  button.addEventListener('click',()=>{selected='';selectedIntent='';selectedGoal=goal.goal_id;
+  button.addEventListener('click',()=>{selected='';selectedIntent='';selectedRepair='';selectedResource='';selectedFeedback='';selectedGoal=goal.goal_id;
     clearIntentPanel();detail.textContent=JSON.stringify(goal,null,2);});
   cell(tr,'').appendChild(button);document.getElementById('goals').appendChild(tr);
+}
+function renderRepair(item){
+  const tr=document.createElement('tr');
+  cell(tr,item.project+' / '+item.repair_id);
+  cell(tr,item.receipt.stage_label+' / '+item.status+'；非执行授权');
+  const limits=item.limits;
+  cell(tr,'声明截止 '+limits.requested_deadline_at+'；尝试上限 '+limits.max_attempts+
+    '；耗时上限 '+limits.max_elapsed_seconds+' 秒；Token 上限 '+limits.max_total_tokens+
+    '；费用上限 '+limits.max_cost.amount+' '+limits.max_cost.currency+'（未核验原限制）');
+  const assessment=item.assessment;
+  cell(tr,assessment?('不可执行 / '+assessment.decision+'；阻塞 '+assessment.blockers.join('；')):
+    '检查不可用；不可执行');
+  const button=document.createElement('button');button.textContent='请求详情（只读）';
+  button.addEventListener('click',()=>{selected='';selectedGoal='';selectedIntent='';selectedResource='';selectedFeedback='';selectedRepair=item.repair_id;
+    clearIntentPanel();detail.textContent=JSON.stringify(item,null,2);});
+  cell(tr,'').appendChild(button);document.getElementById('repairs').appendChild(tr);
+}
+function renderResource(item){
+  const tr=document.createElement('tr');
+  cell(tr,item.project+' / '+item.relative_path_display);
+  cell(tr,item.declared_kind+' / '+item.availability.state+'；文件字节 '+shown(item.availability.observed_file_bytes)+
+    '（目录总量/内容未复验）');
+  cell(tr,item.policy+'；复核日期 '+item.review_at+'；过期不是删除批准');
+  const button=document.createElement('button');button.textContent='保留计划（只读）';
+  button.addEventListener('click',()=>{selected='';selectedGoal='';selectedIntent='';selectedRepair='';
+    selectedFeedback='';selectedResource=item.resource_id;clearIntentPanel();detail.textContent=JSON.stringify(item,null,2);});
+  cell(tr,'保留；未授清场权 ').appendChild(button);document.getElementById('resources').appendChild(tr);
+}
+function safeFeedback(item){return item.status==='local_draft_only'?item:{...item,summary:null};}
+function renderFeedback(item){
+  item=safeFeedback(item);
+  const tr=document.createElement('tr');cell(tr,item.project+' / '+item.feedback_id);
+  cell(tr,item.status+' / '+(item.summary||'摘要已撤回或当前来源定义不匹配'));
+  cell(tr,'独立复现未完成；根因仅未验证假设；修复/回归/发布/原任务验收未求证');
+  const button=document.createElement('button');button.textContent='草案元数据（只读）';
+  button.addEventListener('click',()=>{selected='';selectedGoal='';selectedIntent='';selectedRepair='';selectedResource='';
+    selectedFeedback=item.feedback_id;clearIntentPanel();detail.textContent=JSON.stringify(item,null,2);});
+  cell(tr,'未授执行/上传权 ').appendChild(button);document.getElementById('feedback').appendChild(tr);
 }
 __INTENT_VIEW_SCRIPT__
 function clearIntentPanel(){
   const pane=document.getElementById('intent-detail');pane.replaceChildren();pane.hidden=true;
 }
 function clearView(note){
-  ['tasks','goals','intents','activity'].forEach(id=>document.getElementById(id).replaceChildren());
+  ['tasks','goals','intents','repairs','resources','feedback','activity'].forEach(id=>document.getElementById(id).replaceChildren());
   clearIntentPanel();detail.textContent=note;
 }
 async function refresh(force=false){
@@ -108,7 +160,13 @@ async function refresh(force=false){
   if(pending)pending.abort();
   const controller=new AbortController();pending=controller;busy=true;
   document.getElementById('intents').replaceChildren();clearIntentPanel();
+  document.getElementById('repairs').replaceChildren();
+  document.getElementById('resources').replaceChildren();
+  document.getElementById('feedback').replaceChildren();
+  if(selectedFeedback)detail.textContent='正在核对反馈草案；不展示旧的缓存记录。';
+  if(selectedResource)detail.textContent='正在核对保留计划；不展示旧的缓存记录。';
   if(selectedIntent)detail.textContent='正在重新核对历史授权；不展示旧的缓存线索。';
+  if(selectedRepair)detail.textContent='正在重新核对请求状态；不展示旧的缓存记录。';
   try{
     const view=await getJson('/api/tasks?limit=200'+(chosen?'&source='+encodeURIComponent(chosen):''),controller.signal);
     if(version!==requestVersion||chosen!==source.value)return;
@@ -121,6 +179,9 @@ async function refresh(force=false){
     document.getElementById('goals').replaceChildren();view.goals.forEach(renderGoal);
     document.getElementById('intents').replaceChildren();
     view.intents.forEach(item=>renderIntent(item,view.goals,view.sources));
+    (view.repairs||[]).forEach(renderRepair);
+    (view.resources||[]).forEach(renderResource);
+    (view.feedback||[]).forEach(renderFeedback);
     const activity=document.getElementById('activity');activity.replaceChildren();
     view.activity.processes.forEach(p=>{const tr=document.createElement('tr');
       cell(tr,p.workspace);cell(tr,p.pid+' / '+p.presence);
@@ -133,6 +194,12 @@ async function refresh(force=false){
     if(selectedIntent){const item=view.intents.find(i=>i.intent_id===selectedIntent);
       if(item)showIntent(item,view.goals,view.sources);
       else{clearIntentPanel();detail.textContent='历史不在当前视图中；不代表已删除或仍有授权。';}}
+    if(selectedRepair){const item=(view.repairs||[]).find(r=>r.repair_id===selectedRepair);
+      detail.textContent=item?JSON.stringify(item,null,2):'请求不在当前视图中；不代表已执行、撤回或仍有效。';}
+    if(selectedResource){const item=(view.resources||[]).find(r=>r.resource_id===selectedResource);
+      detail.textContent=item?JSON.stringify(item,null,2):'资源登记不在当前视图中；不代表已删除或可清场。';}
+    if(selectedFeedback){const item=(view.feedback||[]).find(r=>r.feedback_id===selectedFeedback);
+      detail.textContent=item?JSON.stringify(safeFeedback(item),null,2):'草案不在当前视图中；不代表已上传、复现或仍有效。';}
     document.getElementById('summary').textContent='接入 '+view.sources.length+' 个来源；窗口观察到 '+
       view.observed_task_count+' 个任务；更新于 '+view.generated_at;
     const problems=view.sources.flatMap(s=>s.coverage.filter(c=>c.error||c.malformed||c.truncated||c.incomplete)
@@ -147,7 +214,7 @@ async function refresh(force=false){
   }finally{if(version===requestVersion){busy=false;pending=null;}}
 }
 document.getElementById('refresh').addEventListener('click',()=>refresh(true));
-source.addEventListener('change',()=>{selected='';selectedGoal='';selectedIntent='';
+source.addEventListener('change',()=>{selected='';selectedGoal='';selectedIntent='';selectedRepair='';selectedResource='';selectedFeedback='';
   clearView('正在读取所选来源，旧项目的记录和线索已移除。');
   document.getElementById('summary').textContent='等待所选来源的新快照';
   document.getElementById('error').textContent='';refresh(true);});

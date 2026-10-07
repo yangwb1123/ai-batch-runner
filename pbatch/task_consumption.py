@@ -60,6 +60,23 @@ class ConsumptionIndex:
                     issues.add(status)
         return selected, sorted(issues)
 
+    def inspection(self, roots: set) -> dict:
+        """Bounded child facts, not liveness, ownership or complete resource accounting."""
+        selected, issues = self.select(roots)
+        sources = {source for source, _ in roots} | {source for source, _, _ in selected}
+        active = sum(row["phase"] == "execution" and row["status"] in {"running", "queued", "retrying"}
+                     for _, _, rows in selected for row in rows)
+        refs = ["tc-" + key for _, key, _ in selected]
+        return {"basis": "explicit_lineage_in_bounded_admitted_feeds_not_live_processes",
+                "active_execution_observations": active, "observed_child_tasks": len(selected),
+                "lineage_diagnostics": issues,
+                "unattributed_lineage_observations_in_scoped_sources": self.unattributed(sources),
+                "unresolved_lineage_observations_in_scoped_sources": sum(status != "observed_lineage"
+                    for (source, _), (_, status) in self.ancestors.items() if source in sources),
+                "child_task_refs": refs[:8], "omitted_child_refs": max(0, len(refs) - 8),
+                "coverage": "partial_window" if any(self.partial.get(source, False) for source in sources)
+                            else "observed_rows_only", "liveness": "not_verified"}
+
     def summary(self, roots: set, shared: set | None = None) -> dict:
         selected, issues = self.select(roots)
         rows = [row for _, _, records in selected for row in records]
@@ -119,7 +136,7 @@ def _work(rows: list):
     return sum(values) if values else None
 
 
-def attach_consumption(tasks: list, goals: list, intents: list, candidates: list, sources: list) -> None:
+def attach_consumption(tasks: list, goals: list, intents: list, candidates: list, sources: list) -> ConsumptionIndex:
     index = ConsumptionIndex(candidates, sources)
     goal_roots = {goal["goal_id"]: {(goal["source_id"], run["run_id"]) for run in goal["runs"]}
                   for goal in goals}
@@ -140,6 +157,7 @@ def attach_consumption(tasks: list, goals: list, intents: list, candidates: list
             task["consumption"] = index.summary({(task["source_id"], task["run_id"])})
         elif task["kind"] == "direction":
             task["consumption"] = None  # campaign->pipeline attribution is not manufactured
+    return index  # reuse this admitted index; inspections add no reads or feed discovery
 
 
 def _link_descendants(tasks: list, goal: dict, index, roots: set) -> None:

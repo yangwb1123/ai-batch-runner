@@ -174,7 +174,7 @@ class OpsHandler(BaseHTTPRequestHandler):
         elif route.startswith("/api/jobs/"):
             self._get_job(route)
         elif any(route == prefix or route.startswith(prefix + "/")
-                 for prefix in ("/api/tasks", "/api/goals", "/api/intents")):
+                 for prefix in ("/api/tasks", "/api/goals", "/api/intents", "/api/repairs", "/api/resources", "/api/feedback")):
             self._get_tasks(route, query)
         else:
             self._get_standard(route, query)
@@ -204,7 +204,7 @@ class OpsHandler(BaseHTTPRequestHandler):
             return
         from .task_center import detail, snapshot
         source = _q(query, "source")
-        for kind in ("goals", "intents"):
+        for kind in ("goals", "intents", "repairs", "resources", "feedback"):
             if route == "/api/" + kind or route.startswith("/api/" + kind + "/"):
                 self._get_records(route, source, kind)
                 return
@@ -224,9 +224,13 @@ class OpsHandler(BaseHTTPRequestHandler):
         from .task_center import snapshot
         from .task_goal_schema import GOAL_PATTERN
         from .task_intent_schema import INTENT_PATTERN
+        from .task_repair_schema import REQUEST_PATTERN
+        from .task_retention_schema import RESOURCE_PATTERN
+        from .task_feedback_schema import FEEDBACK_PATTERN
         prefix = "/api/" + kind
         key = unquote(route[len(prefix) + 1:]) if route != prefix else ""
-        pattern = GOAL_PATTERN if kind == "goals" else INTENT_PATTERN
+        pattern = {"goals": GOAL_PATTERN, "intents": INTENT_PATTERN, "repairs": REQUEST_PATTERN,
+                   "resources": RESOURCE_PATTERN, "feedback": FEEDBACK_PATTERN}[kind]
         if key and not pattern.fullmatch(key):
             raise ValueError("invalid " + kind[:-1] + " identity")
         view = snapshot(source_id=source)
@@ -234,7 +238,8 @@ class OpsHandler(BaseHTTPRequestHandler):
             _json_response(self, {"schema_version": 1, kind: view[kind],
                                   "diagnostics": view["diagnostics"]})
             return
-        value = next((row for row in view[kind] if row[kind[:-1] + "_id"] == key), None)
+        id_key = "feedback_id" if kind == "feedback" else kind[:-1] + "_id"
+        value = next((row for row in view[kind] if row[id_key] == key), None)
         if value is None:
             _error(self, kind[:-1] + " not found in the registered bounded view", 404)
         else:
