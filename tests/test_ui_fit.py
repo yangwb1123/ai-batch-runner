@@ -180,7 +180,7 @@ def test_accessible_name_accepts_aria_label(tmp_path):
     _project(tmp_path, {
         "src/Form.tsx": """
 export const form = () => (
-  <IrisInput modelValue="" aria-label="Name" onUpdate:modelValue={() => undefined} />
+  <IrisSelect items={[]} modelValue="" aria-label="Name" onUpdate:modelValue={() => undefined} />
 )
 """,
     })
@@ -263,7 +263,7 @@ export const toggle = () => (
     })
     result, payload = _json(tmp_path)
     assert result.returncode == 1
-    assert any("落在包裹元素上" in v["detail"] for v in payload["violations"])
+    assert any("ARIA 未证明落在原生控件上" in v["detail"] for v in payload["violations"])
 
 
 def test_css_driving_a_control_min_width_to_zero_is_reported(tmp_path):

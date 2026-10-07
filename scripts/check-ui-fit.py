@@ -48,6 +48,12 @@ from ui_fit_css import min_width_overrides  # noqa: E402
 from ui_fit_registry import (  # noqa: E402
     control_min_widths,
     names_control_map,
+    installed_vue_package,
+)
+from ui_fit_names import installed_name_routing  # noqa: E402
+from ui_fit_jsx import (  # noqa: E402
+    accessible_name_missing as _native_name_missing,
+    blank_comments, tag_end, tags_in, attribute,
 )
 
 SOURCE_EXTENSIONS = {".tsx", ".ts", ".jsx", ".vue", ".css"}
@@ -64,20 +70,6 @@ FORM_CONTROLS = (
     "IrisMonthPicker",
     "IrisSearchInput",
 )
-
-def blank_comments(source: str) -> str:
-    """Replace comment bodies with spaces, preserving every offset.
-
-    A JSDoc line that merely *mentions* `<label for>` used to open a phantom
-    label scope: the depth counter never returned to zero, so every control in
-    the file was reported as unlabelled. Offsets must not shift because the
-    callers report line numbers from the original text.
-    """
-    def blank(match: re.Match) -> str:
-        return "".join("\n" if ch == "\n" else " " for ch in match.group(0))
-
-    return re.sub(r"/\*.*?\*/|//[^\n]*", blank, source, flags=re.S)
-
 
 def label_spans(source: str) -> list[tuple[int, int]]:
     """Byte ranges covered by a <label>…</label> pair (best effort, non-nested safe)."""
@@ -97,28 +89,11 @@ def label_spans(source: str) -> list[tuple[int, int]]:
     return spans
 
 
-def tag_end(source: str, open_index: int) -> int:
-    """Index just past the '>' closing the tag that starts at ``open_index``."""
-    cursor = open_index
-    quote: Optional[str] = None
-    while cursor < len(source):
-        char = source[cursor]
-        if quote:
-            if char == quote:
-                quote = None
-        elif char in "\"'`":
-            quote = char
-        elif char == ">":
-            return cursor + 1
-        cursor += 1
-    return len(source)
-
-
 def declared_columns(source: str) -> dict[str, int]:
     """column key -> declared pixel width, from an IrisTableColumn literal."""
     columns: dict[str, int] = {}
     for match in re.finditer(
-        r'key:\s*"([A-Za-z_][\w]*)"(?P<body>[^}\]]{0,320}?)width:\s*(\d+)',
+        r'''key:\s*["']([A-Za-z_][\w]*)["'](?P<body>[^}\]]{0,320}?)width:\s*(\d+)''',
         source,
     ):
         columns[match.group(1)] = int(match.group(3))
@@ -162,59 +137,51 @@ def native_inputs_in(body: str) -> int:
     return len(re.findall(r"<input\b", body))
 
 
-def accessible_name_missing(source: str, swallows: dict[str, bool]) -> list[tuple[int, str]]:
-    """Controls with no accessible name in the rendered DOM.
+def accessible_name_missing(
+    source: str, swallows: dict[str, bool], form_fields: Optional[set[str]] = None,
+    camel: Optional[dict[str, bool]] = None,
+) -> list[tuple[int, str]]:
+    return _native_name_missing(source, FORM_CONTROLS, swallows, form_fields, camel)
 
-    An `aria-label` counts only when it can actually name the control. For the
-    controls that spread attrs onto a wrapper the attribute names nothing, so
-    those need `id` plus a `<label for>` instead.
 
-    Known limitation: a wrapping <label> is accepted as a name whether or not
-    it actually contains text. A text-less <label> around a control would slip
-    through; that needs DOM to judge, and this rule is a static pre-filter.
-    """
-    code = blank_comments(source)
-    spans = label_spans(source)
-    # 本文件里是否存在 <label for=…>：有 id 的控件即视为已建立关联。
-    # 跨文件/跨组件的关联静态分析看不穿，所以只做文件内判断，不猜。
-    labelled_ids = bool(re.search(r"<label[^>]*\bfor=", code))
-    missing: list[tuple[int, str]] = []
-    for match in re.finditer(r"<(" + "|".join(FORM_CONTROLS) + r")\b", code):
-        end = tag_end(source, match.end() - 1)
-        fragment = source[match.end():end]
-        line = source.count("\n", 0, match.start()) + 1
-        name = match.group(1)
-        has_aria = re.search(r"aria-label(?:ledby)?|ariaLabel", fragment) is not None
-        # A wrapping <label> names its labelable descendant from its own text
-        # content -- that holds whether or not an aria-label is also present
-        # (an inert one on a wrapper does not undo it).
-        if any(start <= match.start() < stop for start, stop in spans):
+def _slot_minimum(control: str, body: str, widths: dict, probe: dict) -> Optional[int]:
+    tiers = probe.get("widths_by_size", {}).get(control, {})
+    if not tiers:
+        return widths.get(control)
+    minima = []
+    for tag in tags_in(body):
+        if tag.name == control:
+            size = attribute(tag.attrs, "size")
+            explicit = size.removeprefix("literal:") if size and size.startswith("literal:") else None
+            minima.append(tiers[explicit] if explicit in tiers else max(tiers.values()))
+    return max(minima) + probe.get("cell_padding", 0) if minima else None
+
+
+def _column_evidence(path: Path, source: str) -> dict:
+    columns = declared_columns(source)
+    for match in re.finditer(r'''from\s+["'](\./[^"']+\.columns)["']''', blank_comments(source)):
+        sibling = path.parent / (match.group(1) + ".ts")
+        try:
+            if sibling.resolve().parent == path.parent.resolve() and sibling.stat().st_size <= 512 * 1024:
+                columns = {**declared_columns(sibling.read_text(encoding="utf-8")), **columns}
+        except (OSError, UnicodeError):
             continue
-        if not has_aria:
-            missing.append((line, name))
-            continue
-        if not swallows.get(name, True):
-            has_id = re.search(r"\bid[:=]", fragment) is not None
-            if not (has_id and labelled_ids):
-                missing.append((
-                    line,
-                    f"{name} 的 aria-label 落在包裹元素上，需改用 id + <label for>",
-                ))
-    return missing
+    return columns
 
 
 def _overflow_violations(
-    source: str, widths: dict[str, int], relative: str
+    source: str, widths: dict[str, int], relative: str,
+    columns: Optional[dict] = None, probe: Optional[dict] = None,
 ) -> list[dict]:
     violations: list[dict] = []
-    columns = declared_columns(source)
+    columns = declared_columns(source) if columns is None else columns
 
     for key, (line, body) in cell_slot_bodies(source).items():
         width = columns.get(key)
         if width is None:
             continue  # column declared elsewhere: another file owns that pair
         for control in sorted(controls_in(body)):
-            minimum = widths.get(control)
+            minimum = _slot_minimum(control, body, widths, probe or {})
             if minimum is not None and minimum > width:
                 violations.append({
                     "file": relative,
@@ -222,7 +189,7 @@ def _overflow_violations(
                     "rule": "control-overflow",
                     "detail": (
                         f"列 {key} 宽 {width}px，装不下 {control}"
-                        f"（该控件 inline min-width {minimum}px）"
+                        f"（完整控件最小占位含已知单元格 padding {minimum}px）"
                     ),
                 })
     return violations + _composed_overflow(source, columns, widths, relative)
@@ -264,6 +231,9 @@ def _composed_overflow(
 def check_file(
     path: Path, widths: dict[str, int], relative: str,
     swallows: Optional[dict[str, bool]] = None,
+    form_fields: Optional[set[str]] = None,
+    camel: Optional[dict[str, bool]] = None,
+    probe: Optional[dict] = None,
 ) -> list[dict]:
     try:
         source = path.read_text(encoding="utf-8", errors="replace")
@@ -273,18 +243,11 @@ def check_file(
     names = [
         {"file": relative, "line": line, "rule": "control-accessible-name",
          "detail": detail}
-        for line, detail in accessible_name_missing(source, swallows or {})
+        for line, detail in accessible_name_missing(source, swallows or {}, form_fields, camel)
     ]
     css = (min_width_overrides(source, widths, relative)
            if path.suffix == ".css" else [])
-    return _overflow_violations(source, widths, relative) + css + names
-
-
-def _relative(target: Path, repo_root: Path) -> str:
-    try:
-        return str(target.resolve().relative_to(repo_root))
-    except ValueError:
-        return str(target)
+    return _overflow_violations(source, widths, relative, _column_evidence(path, source), probe) + css + names
 
 
 def _relative(target: Path, repo_root: Path) -> str:
@@ -366,6 +329,17 @@ def iter_sources(root: Path) -> Iterable[Path]:
             yield path
 
 
+def _name_evidence(repo_root: Path, offline: bool) -> tuple[dict, dict, set, dict]:
+    probe = installed_name_routing(None if offline else installed_vue_package(repo_root), FORM_CONTROLS)
+    routing = probe["controls"]
+    swallows = names_control_map()
+    swallows.update({name: data["aria"] for name, data in routing.items()})
+    camel = {"IrisCheckbox": True}
+    camel.update({name: data["camel"] for name, data in routing.items()})
+    form_fields = {name for name, data in routing.items() if data["form_field"]}
+    return swallows, camel, form_fields, probe
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("artifact", nargs="?", help="single file to check")
@@ -381,10 +355,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 2
 
     repo_root = Path(args.repo_root).resolve()
-    widths = control_min_widths(repo_root)
-    swallows = names_control_map()
-    if args.offline and not widths:
-        widths = {}
+    swallows, camel, form_fields, probe = _name_evidence(repo_root, args.offline)
+    widths = {} if args.offline else control_min_widths(repo_root)
+    widths.update({name: tiers["md"] for name, tiers in probe.get("widths_by_size", {}).items() if "md" in tiers})
 
     if args.artifact:
         targets = [Path(args.artifact)]
@@ -397,7 +370,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"not a file: {target}", file=sys.stderr)
             return 2
         violations.extend(
-            check_file(target, widths, _relative(target, repo_root), swallows)
+            check_file(target, widths, _relative(target, repo_root), swallows, form_fields, camel, probe)
         )
 
     if args.json:
@@ -406,7 +379,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             "violations": violations,
             "total": len(violations),
             "control_min_widths": widths,
-            "width_source": "verified-registry" if widths else "unverified",
+            "width_source": "installed-ssr" if probe.get("widths_by_size") else ("verified-registry" if widths else "unverified"),
+            "name_routing": probe,
         }, ensure_ascii=False, indent=2))
     else:
         for item in violations:

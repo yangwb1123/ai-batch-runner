@@ -59,13 +59,8 @@ def names_control_map() -> dict[str, bool]:
     Measured by mounting the real package -- see
     sverpweb-stable/apps/web/src/pages/aps/settings/irisAriaLanding.real.test.tsx.
     """
-    entries = _registry_entries()
     declared = _registry_raw().get("names_control") or {}
-    return {
-        name: bool(value)
-        for name, value in declared.items()
-        if name in entries and isinstance(value, bool)
-    }
+    return {name: value for name, value in declared.items() if isinstance(value, bool)}
 
 
 def _registry_raw() -> dict:
@@ -92,14 +87,21 @@ def _verified(source: str, entries: dict) -> dict[str, int]:
     return widths
 
 
+def installed_vue_package(repo_root: Path) -> Optional[Path]:
+    """Prefer active dependency links; never choose a stale virtual-store version."""
+    for relative in ("apps/web/node_modules/@iris-ui-kit/vue", "node_modules/@iris-ui-kit/vue"):
+        candidate = repo_root / relative
+        if (candidate / "dist/index.js").is_file():
+            return candidate.resolve()
+    return None
+
+
 def _installed_bundle(repo_root: Path) -> str:
-    for pattern in IRIS_PACKAGE_GLOBS:
-        for candidate in sorted(repo_root.glob(pattern)):
-            try:
-                return candidate.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-    return ""
+    package = installed_vue_package(repo_root)
+    try:
+        return (package / "dist/index.js").read_text(encoding="utf-8") if package else ""
+    except (OSError, UnicodeError):
+        return ""
 
 
 def control_min_widths(repo_root: Path) -> dict[str, int]:
