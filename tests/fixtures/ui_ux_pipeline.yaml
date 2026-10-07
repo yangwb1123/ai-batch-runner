@@ -1,0 +1,77 @@
+# Schema-only regression fixture migrated from projects/sverp/ui-ux-pipeline.yaml.
+# projects/ is intentionally ignored: tests must not depend on local operator
+# files. Preserve the plan -> serial tasks -> meta review -> aggregate gate
+# shape and validators from the former definition, without machine-local paths.
+# This fixture is validated, not executed against a target application.
+
+git_commit: false
+decision_log: docs/auto/DECISIONS.md
+
+stages:
+  - name: plan
+    from_prompt: |
+      Gather deterministic UI and frontend engineering violations:
+        python {tool_root}/scripts/check-ui-spec.py --dir apps/web/src --all --json
+        python {tool_root}/scripts/check-ui-geometry.py --dir apps/web/src --all --json
+        python {tool_root}/scripts/check-frontend-quality.py --dir apps/web/src --strict --json
+      Classify spacing, color, geometry, engineering, and UX findings into a
+      remediation plan. Read {tool_root}/ui-specs/ and its engineering assets.
+      Include undefined numeric Iris CSS variables in the spacing inventory.
+      Record UX suggestions separately; do not implement a redesign.
+    output: .pi-batch/uiux/plan.md
+
+  - name: refactor
+    from_outputs: plan
+    mode: serial
+    validate: uicheck,uigeometry,uieng
+    tasks:
+      - prompt: |
+          Read {input_content} and fix spacing, color, and geometry findings.
+          Replace undefined numeric Iris CSS variables with approved named
+          tokens. Preserve layout intent, behavior, public APIs, and business
+          logic. Do not commit. Report changed files and remaining violations.
+        timeout: 1800
+        output: .pi-batch/uiux/refactor-style.md
+        validate: uicheck,uigeometry
+      - prompt: |
+          Read {input_content} and fix scoped engineering violations without
+          god-file splits. Preserve behavior. Do not commit. Report scanner
+          counts and evidence for any deferred structural work.
+        timeout: 1800
+        output: .pi-batch/uiux/refactor-quality.md
+        validate: uicheck,uigeometry,uieng
+
+  - name: review
+    from_outputs: refactor
+    meta: true
+    meta_timeout: 2400
+    meta_role_retries: 1
+    meta_max_failed_roles: 1
+    role_dir: prompts
+    role_keywords: pbatch/role_keywords.yaml
+    output_dir: .pi-batch/uiux/reviews
+    max_iterations: 2
+    max_roles_per_iteration: 3
+    relevance_enabled: true
+    relevance_min_score: 2
+    mode: serial
+
+  - name: gate
+    from_outputs:
+      - plan
+      - refactor
+      - review
+    aggregate: true
+    gate: true
+    gate_fix_rounds: 2
+    gate_fix_validate: uicheck,uigeometry,uieng
+    mode: serial
+    tasks:
+      - prompt: |
+          Read {input_content}. Verify the configured gates report no scoped
+          violations, behavior is preserved, and structural deferrals have
+          evidence. Adjudicate UX findings without implementing a redesign.
+          End with VERDICT: PASS - <reasons> or VERDICT: FAIL - <blockers>.
+          On FAIL, append JSON findings with severity, file, line, problem,
+          and fix_hint fields.
+        output: .pi-batch/uiux/gate.md

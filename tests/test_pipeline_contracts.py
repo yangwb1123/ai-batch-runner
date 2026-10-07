@@ -1091,8 +1091,8 @@ def test_from_prompt_file_reference_resolves_against_stage_cwd(
     assert ok and observed == ["cwd requirement"]
 
 
-def test_sverp_ui_ux_pipeline_remains_schema_valid():
-    root = Path(__file__).resolve().parents[1]
-    path = root / "projects" / "sverp" / "ui-ux-pipeline.yaml"
+def test_ui_ux_pipeline_fixture_remains_schema_valid():
+    # Operator configs under projects/ are ignored and absent in clean clones.
+    path = Path(__file__).resolve().parent / "fixtures" / "ui_ux_pipeline.yaml"
     spec = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert validate_pipeline(spec) == []
