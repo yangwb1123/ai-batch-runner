@@ -1,4 +1,4 @@
-"""Immutable single-file preservation receipts; not complete-archive or disposal grants."""
+"""Immutable file/directory-byte receipts; not complete recovery or disposal grants."""
 from __future__ import annotations
 
 import re
@@ -18,14 +18,17 @@ _STAT = {"device", "inode", "uid", "mode", "bytes", "mtime_ns", "ctime_ns"}
 
 
 def receipt_key(value: dict) -> str:
-    return "pp-" + digest({key: value[key] for key in
-        ("resource_id", "resource_version", "source_id", "source_digest", "source_stat", "payload")})[:32]
+    fields = ("resource_id", "resource_version", "source_id", "source_digest", "source_stat", "payload")
+    if value.get("schema_version") == 2:
+        fields += ("directory_copy",)
+    return "pp-" + digest({key: value[key] for key in fields})[:32]
 
 
 def validate_receipt(value: dict) -> None:
-    _fields(value, _FIELDS)
-    if type(value["schema_version"]) is not int or value["schema_version"] != 1:
+    version = value.get("schema_version") if isinstance(value, dict) else None
+    if type(version) is not int or version not in {1, 2}:
         raise ValueError("unsupported preservation receipt schema")
+    _fields(value, _FIELDS | ({"directory_copy"} if version == 2 else set()))
     for key, pattern in (("resource_id", RESOURCE_PATTERN), ("source_id", SOURCE_PATTERN)):
         if not isinstance(value[key], str) or not pattern.fullmatch(value[key]):
             raise ValueError("invalid preservation resource/source identity")
@@ -47,9 +50,14 @@ def _payload(value: dict) -> None:
     _fields(value["source_stat"], _STAT)
     for number in value["source_stat"].values():
         _integer(number)
-    if not stat.S_ISREG(value["source_stat"]["mode"]):
-        raise ValueError("preservation receipts support regular file snapshots only")
+    file = value["schema_version"] == 1
+    matches = stat.S_ISREG(value["source_stat"]["mode"]) if file else stat.S_ISDIR(value["source_stat"]["mode"])
+    if not matches:
+        raise ValueError("preservation receipt source type conflicts with its schema")
     _fields(value["payload"], {"bytes", "sha256"})
     _integer(value["payload"]["bytes"])
-    if value["payload"]["bytes"] > MAX_PAYLOAD_BYTES or value["payload"]["bytes"] != value["source_stat"]["bytes"]:
+    if value["payload"]["bytes"] > MAX_PAYLOAD_BYTES or (file and value["payload"]["bytes"] != value["source_stat"]["bytes"]):
         raise ValueError("preservation payload byte bound/source count mismatch")
+    if not file:
+        from .task_directory_schema import validate_summary
+        validate_summary(value["directory_copy"], value["payload"]["bytes"])

@@ -1,4 +1,4 @@
-"""Local protection and explicit file-copy commands; never a disposal executor."""
+"""Local protection and explicit bounded byte copies; never a restore/disposal executor."""
 from __future__ import annotations
 
 import json
@@ -9,7 +9,7 @@ from . import task_retention_store as store
 
 
 def add_parser(sub) -> None:
-    parser = sub.add_parser("retention", help="显式保全登记/普通文件副本；没有完整归档器或删除器")
+    parser = sub.add_parser("retention", help="显式登记/有界文件与目录字节副本；没有完整恢复或删除器")
     actions = parser.add_subparsers(dest="retention_action", required=True)
     listing = actions.add_parser("list")
     listing.add_argument("--source", default="")
@@ -30,13 +30,15 @@ def add_parser(sub) -> None:
         action.add_argument("resource_id")
         action.add_argument("--if-version", required=True, type=int)
     copying = actions.add_parser("preserve", help="explicit private regular-file copy; no complete worktree archive")
-    copying.add_argument("resource_id")
-    copying.add_argument("--if-version", required=True, type=int)
-    copying.add_argument("--confirm", action="store_true")
+    directory = actions.add_parser("preserve-directory", help="explicit bounded directory USTAR copy; no worktree/database recovery or restore")
+    for action in (copying, directory):
+        action.add_argument("resource_id")
+        action.add_argument("--if-version", required=True, type=int)
+        action.add_argument("--confirm", action="store_true")
     verifying = actions.add_parser("verify-copy", help="explicit full payload hash; no source/cleanup verification")
     verifying.add_argument("preservation_id")
     verifying.add_argument("--confirm", action="store_true")
-    for action in (registering, pinning, extending, copying):
+    for action in (registering, pinning, extending, copying, directory):
         action.add_argument("--by", required=True, help="unauthenticated local audit label")
         action.add_argument("--reason", required=True)
 
@@ -45,7 +47,7 @@ def command(args, _cwd: str) -> int:
     try:
         if args.retention_action in {"list", "show"}:
             return _read(args)
-        if args.retention_action in {"preserve", "verify-copy"}:
+        if args.retention_action in {"preserve", "preserve-directory", "verify-copy"}:
             return _copy(args)
         if args.retention_action == "register":
             value = store.register(args.source, args.path, args.kind, args.by, args.reason,
@@ -67,9 +69,13 @@ def _copy(args) -> int:
     if args.retention_action == "verify-copy":
         result = verify_copy(args.preservation_id, confirm=args.confirm)
     else:
-        value = preserve(args.resource_id, args.by, args.reason, args.if_version, confirm=args.confirm)
+        copier = preserve
+        if args.retention_action == "preserve-directory":
+            from .task_directory_preservation import preserve_directory
+            copier = preserve_directory
+        value = copier(args.resource_id, args.by, args.reason, args.if_version, confirm=args.confirm)
         result = {"preservation_id": value["preservation_id"], "resource_id": value["resource_id"],
-            "payload": value["payload"], "created_at": value["created_at"],
+            "payload": value["payload"], "directory_copy": value.get("directory_copy"), "created_at": value["created_at"],
             "verification": "full_copy_readback_at_creation_not_future_freshness_or_complete_archive",
             "cleanup_authority": "not_granted", "recoverable_archive_verified": False}
     print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))

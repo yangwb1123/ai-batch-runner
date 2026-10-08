@@ -1,4 +1,4 @@
-"""Explicit single-file preservation and byte verification; no complete-archive grants."""
+"""Explicit saved-byte verification and publication; never recovery/disposal grants."""
 from __future__ import annotations
 
 import os
@@ -36,19 +36,19 @@ def load_receipt(key: str) -> dict:
     return value
 
 
-def _source(value: dict, expected: int) -> tuple:
+def _source(value: dict, expected: int, *, kind: str = "file") -> tuple:
     if type(expected) is not int or expected != value["version"]:
         raise ValueError("explicit preservation resource revision conflicts")
-    if value["kind"] != "file":
-        raise ValueError("only registered regular files may be copied; directories/worktrees need separate complete recovery support")
+    if value["kind"] != kind:
+        raise ValueError("copy needs the explicitly registered kind; preserve handles files, preserve-directory handles directories, not worktree recovery")
     source = resolve_source(value["source_id"])
     if digest(source) != value["source_digest"]:
         raise ValueError("preservation source definition changed")
-    path, root, info = _scope(source, str(Path(value["source_root"]) / value["relative_path"]), "file")
+    path, root, info = _scope(source, str(Path(value["source_root"]) / value["relative_path"]), kind)
     identity = ("device", "inode", "uid", "mode")
     if root != value["root_identity"] or any(info[key] != value["registration_stat"][key] for key in identity):
         raise ValueError("preservation path/root identity changed; a new object was not adopted")
-    if info["bytes"] > MAX_PAYLOAD_BYTES:
+    if kind == "file" and info["bytes"] > MAX_PAYLOAD_BYTES:
         raise ValueError("preservation source exceeds payload byte budget; no truncation")
     archive = checked_path(preservation_root())
     runtime, workspace = Path(source["data_dir"]), Path(source["workspace"]) if source["workspace"] else None
@@ -126,14 +126,28 @@ def verify_copy(key: str, *, confirm: bool = False) -> dict:
     if info["mode"] & 0o077:
         raise ValueError("preserved payload is not private")
     payload = copy_stream(path, None, info)
-    if payload != value["payload"] or load_receipt(key) != value:
+    if payload != value["payload"]:
+        raise ValueError("preserved copy or receipt does not match its original recorded bytes")
+    directory = _directory_copy(value, path, info)
+    if load_receipt(key) != value:
         raise ValueError("preserved copy or receipt does not match its original recorded bytes")
     return {"schema_version": 1, "preservation_id": key, "resource_id": value["resource_id"],
-        "verified_at": stamp(), "payload": payload, "verification": "recorded_copy_bytes_matching",
+        "verified_at": stamp(), "payload": payload, "directory_copy": directory,
+        "verification": "recorded_copy_bytes_matching",
         "basis": "explicit_full_copy_hash_not_current_source_or_complete_recovery_verification",
         "current_source_checked": False, "recoverable_archive_verified": False,
         "cleanup_authority": "not_granted", "grants_execution": False,
         "note": "matching copy bytes do not authorize source removal, restore, merge or upload"}
+
+
+def _directory_copy(value: dict, path: Path, info: dict) -> dict | None:
+    if value["schema_version"] == 1:
+        return None  # legacy receipts stay byte-for-byte unchanged, not migrated
+    from .task_directory_archive import verify_directory
+    result = verify_directory(path, info)
+    if result != value["directory_copy"]:
+        raise ValueError("directory copy members/counts do not match their recorded summary")
+    return result
 
 
 def preservation_views(resources: list) -> list[str]:
@@ -182,4 +196,6 @@ def _public(value: dict) -> dict:
             "payload": value["payload"], "created_at": value["created_at"],
             "by": display(value["by"], 128), "reason": display(value["reason"], 256),
             "current_payload_reverified": False, "current_source_reverified": False,
-            "scope": "one_recorded_file_copy_not_complete_directory_or_worktree_archive"}
+            "directory_copy": value.get("directory_copy"),
+            "scope": ("one_registered_directory_sample_not_worktree_database_or_complete_recovery" if value["schema_version"] == 2
+                      else "one_recorded_file_copy_not_complete_directory_or_worktree_archive")}
