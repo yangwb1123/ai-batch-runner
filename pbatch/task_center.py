@@ -27,6 +27,7 @@ from .task_repair_view import attach_repairs, repair_views
 from .task_retention_view import attach_resources, resource_views
 from .task_preservation import preservation_views
 from .task_feedback_view import feedback_views
+from .task_attention import attention_view
 
 SCHEMA_VERSION = 1
 MAX_TASKS = 200
@@ -47,6 +48,7 @@ def snapshot(limit: int = 100, source_id: str = "", now: float | None = None) ->
         payload["diagnostics"].extend(notes)
     except (OSError, ValueError) as exc:
         payload["diagnostics"].append(display(str(exc)))
+        payload["attention"] = attention_view(payload, [])
         return payload
     candidates = []
     for source in sources:
@@ -63,6 +65,7 @@ def snapshot(limit: int = 100, source_id: str = "", now: float | None = None) ->
     payload["status_counts"] = dict(Counter(task["status"] for task in payload["tasks"]))
     if source_id and not payload["sources"]:
         payload["diagnostics"].append("task source not found")
+    payload["attention"] = attention_view(payload, candidates)
     return payload
 
 

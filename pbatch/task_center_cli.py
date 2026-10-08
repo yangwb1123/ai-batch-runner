@@ -14,6 +14,8 @@ def add_parsers(sub) -> None:
     parser.add_argument("--id", default="", help="inspect one recent task")
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--tui", action="store_true", help="独立只读任务看板；不启动 Agent 或 Hub")
+    parser.add_argument("--attention", action="store_true", help="仅显示已有需关注事实；不是干预或修复授权")
     parser.add_argument("--follow", action="store_true", help="poll; JSON mode emits JSONL snapshots")
     parser.add_argument("--interval", type=float, default=5.0)
     parser = sub.add_parser("sources", help="登记自定义 runtime；不移动、不删除项目数据")
@@ -67,20 +69,20 @@ def tasks_command(args, _cwd: str) -> int:
         print("ops tasks: interval must be finite and at least one second")
         return 2
     try:
+        attention = getattr(args, "attention", False)
+        if attention and (args.id or getattr(args, "tui", False)):
+            raise ValueError("--attention cannot be combined with --id or --tui")
+        if getattr(args, "tui", False):
+            if args.json or args.follow:
+                raise ValueError("--tui cannot be combined with --json or --follow")
+            from .task_center_terminal_view import validate_options
+            validate_options(args.limit, args.interval, args.id)
+            from .task_center_terminal import run_terminal
+            return run_terminal(args.limit, args.source, args.id, args.interval)
         while True:
             view = task_center.snapshot(args.limit, args.source)
-            if args.id:
-                selected = next((row for row in view["tasks"] if row["task_id"] == args.id), None)
-                if selected is None:
-                    print("task not found in the bounded recent window")
-                    return 1
-                print(json.dumps(selected, ensure_ascii=False, indent=None if args.follow else 2,
-                                 allow_nan=False))
-            elif args.json:
-                print(json.dumps(view, ensure_ascii=False, indent=None if args.follow else 2,
-                                 allow_nan=False), flush=True)
-            else:
-                print(format_tasks(view), flush=True)
+            if not _print_task_view(args, view):
+                return 1
             if not args.follow:
                 return 0
             time.sleep(args.interval)
@@ -89,6 +91,25 @@ def tasks_command(args, _cwd: str) -> int:
     except (OSError, ValueError) as exc:
         print(f"ops tasks: {exc}")
         return 2
+
+
+def _print_task_view(args, view: dict) -> bool:
+    value = view
+    if getattr(args, "attention", False):
+        value = view["attention"]
+        formatter = format_attention
+    elif args.id:
+        value = next((row for row in view["tasks"] if row["task_id"] == args.id), None)
+        if value is None:
+            print("task not found in the bounded recent window")
+            return False
+        formatter = None
+    else:
+        formatter = format_tasks
+    text = (json.dumps(value, ensure_ascii=False, indent=None if args.follow else 2, allow_nan=False)
+            if args.json or formatter is None else formatter(value))
+    print(text, flush=True)
+    return True
 
 
 def _shown(value: object) -> str:
@@ -125,7 +146,25 @@ def format_tasks(view: dict) -> str:
                      f"{process['workspace']} (进程活动不等于任务进展)")
     lines.extend("NOTE: " + note for note in
                  [*view["diagnostics"], *view["activity"]["diagnostics"]])
+    if view.get("attention"):
+        value = view["attention"]
+        lines.append(f"需关注事实={value['observed_items']}；引用遗漏={value['omitted_items']}（非不同缺陷/原因数；--attention 查看）")
     lines.append("有界窗口观测；产物存在/执行成功不代表目标已验收；历史耗时先验不是实时 ETA 或执行授权。")
+    return "\n".join(lines)
+
+
+def format_attention(value: dict) -> str:
+    from .task_center_io import display
+    lines = [f"需关注事实 {value['observed_items']}；显示 {len(value['items'])}；遗漏 {value['omitted_items']}",
+             "只读观察，非不同缺陷/根因数；零项不证明安全、完整覆盖或无需人工判断。"]
+    coverage = value["coverage"]
+    lines.append(f"已准入来源 {coverage['source_records']}；任务候选 {coverage['task_candidates']}；"
+                 f"快照诊断 {coverage['snapshot_diagnostics']} 条；任务窗口不完整 {coverage['task_window_partial']}")
+    for item in value["items"]:
+        target = item["target"]
+        lines.append(f"{item['attention_id']}  source={item['source_id']}  {target['kind']}:{target['record_id']}")
+        lines.append("  " + display(item["reason_code"], 80) + " | " + display(item["summary"], 256))
+    lines.append("观察提示不是执行/恢复/合并/清场/上传授权；不复位原预算或期限。")
     return "\n".join(lines)
 
 

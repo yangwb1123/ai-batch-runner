@@ -5,6 +5,7 @@ from pathlib import Path
 
 from .task_center_io import checked_path, display
 from .task_feedback_io import private_root
+from .task_feedback_duplicates import attach_duplicates
 from .task_feedback_schema import MAX_DRAFTS, digest
 from .task_feedback_store import feedback_root, load_feedback
 
@@ -29,6 +30,7 @@ def feedback_views(sources: list) -> tuple[list, list]:
                 _read(path, selected, records, notes)
     except (ValueError, OSError) as exc:
         notes.append("feedback unavailable: " + display(str(exc), 512))
+    attach_duplicates(records, incomplete=bool(notes))
     return records, notes
 
 
@@ -52,7 +54,9 @@ def _public(value: dict, source: dict) -> dict:
         "summary": display(value["summary"], 256) if status == "local_draft_only" else None,
         "created_at": value["created_at"], "source_digest": value["source_digest"],
         "copy": {"input_sha256": value["input"]["sha256"], "input_bytes": value["input"]["bytes"],
-                 "case_sha256": value["case_sha256"], "current_copy_reverified": False,
+                 "case_sha256": value["case_sha256"], "case_content_sha256": value.get("case_content_sha256"),
+                 "content_identity_basis": "recorded_v2_metadata" if value["schema_version"] == 2 else "legacy_untracked",
+                 "current_copy_reverified": False,
                  "basis": "registration_time_private_copy_not_current_source_or_independent_reproduction"},
         "audit": [{**row, "by": display(row["by"], 128), "reason": display(row["reason"], 256)} for row in value["audit"]],
         "claim_basis": "operator_declared_synthetic_not_independently_verified_or_safe_to_publish",

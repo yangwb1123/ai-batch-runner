@@ -17,6 +17,9 @@ def add_parser(sub) -> None:
     showing = actions.add_parser("show")
     showing.add_argument("feedback_id")
     showing.add_argument("--source", default="")
+    verifying = actions.add_parser("verify-copy", help="显式复核私有副本字节；不打开原文件、不复现案例")
+    verifying.add_argument("feedback_id")
+    verifying.add_argument("--confirm", action="store_true")
     drafting = actions.add_parser("draft", help="显式复制登记根内的纯 JSON 合成案例；不执行正文")
     drafting.add_argument("--source", required=True)
     drafting.add_argument("--file", required=True)
@@ -33,6 +36,11 @@ def command(args, _cwd: str) -> int:
     try:
         if args.feedback_action in {"list", "show"}:
             return _read(args)
+        if args.feedback_action == "verify-copy":
+            from .task_feedback_integrity import verify_copy
+            print(json.dumps(verify_copy(args.feedback_id, confirm=args.confirm), ensure_ascii=False,
+                indent=2, allow_nan=False))
+            return 0
         if args.feedback_action == "draft":
             value = store.draft(args.source, args.file, args.by, args.reason, confirm=args.confirm)
         else:
@@ -63,6 +71,8 @@ def _read(args) -> int:
         for row in view["feedback"]:
             print(f"{row['feedback_id']} v{row['version']} {row['project']} {row['status']}")
             print("  " + (row["summary"] or "摘要已撤回或当前来源定义不匹配") + "；未复现、未授上传/执行权")
+            matches = row["duplicate_inspection"]
+            print(f"  内容元数据匹配候选 {matches['observed_matches']}；{matches['selection']}（非同根因、非完整去重）")
         for note in view["diagnostics"]:
             print("NOTE: " + note)
     return 0

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from .task_center_intent_report import INTENT_SCRIPT
+from .task_center_attention_report import ATTENTION_SCRIPT
 
 
 _PAGE = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
@@ -23,6 +24,11 @@ summary{cursor:pointer;padding:.5rem} #intents td{overflow-wrap:anywhere}
 <label>项目 <select id="source"><option value="">所有已接入项目</option></select></label>
 <button id="refresh">刷新</button><span id="summary"></span>
 <p id="error" role="status"></p>
+<h2>需关注事实（不是干预授权）</h2>
+<p class="note">仅来自已接入的有界记录；不是实时预检、根因或必做操作。静默不算故障，未知不是零；未连接通知/执行器。</p>
+<p id="attention-summary" role="status">等待新快照。</p>
+<div class="table-wrap"><table><thead><tr><th>项目 / 来源</th><th>完整记录引用</th>
+<th>观察事实</th><th>详情</th></tr></thead><tbody id="attention"></tbody></table></div>
 <div class="table-wrap"><table><thead><tr><th>项目 / 类型</th><th>任务</th>
 <th>最近状态 / 步骤</th><th>时长</th><th>模型配置</th><th>Token / 费用</th>
 <th>产物 / 验收</th><th>详情</th></tr></thead><tbody id="tasks"></tbody></table></div>
@@ -91,7 +97,7 @@ function renderTask(task){
   const button=document.createElement('button');
   button.textContent=task.repair_preview&&task.repair_preview.applicability==='failure_observation'?
     '失败 / 恢复预览（只读）':'详情';
-  button.addEventListener('click',()=>{selectedGoal='';selectedIntent='';selectedRepair='';selectedResource='';selectedFeedback='';selected=task.task_id;
+  button.addEventListener('click',()=>{selectedGoal='';selectedIntent='';selectedRepair='';selectedResource='';selectedFeedback='';selectedAttention='';selected=task.task_id;
     clearIntentPanel();detail.textContent=JSON.stringify(task,null,2);});
   cell(tr,'').appendChild(button);tbody.appendChild(tr);
 }
@@ -104,7 +110,7 @@ function renderGoal(goal){
   cell(tr,resources(goal.consumption)+(goal.consumption.shared_execution_observations?
     '；存在共享调用，不可跨目标相加':'')+'；独立验收未验证');
   const button=document.createElement('button');button.textContent='详情';
-  button.addEventListener('click',()=>{selected='';selectedIntent='';selectedRepair='';selectedResource='';selectedFeedback='';selectedGoal=goal.goal_id;
+  button.addEventListener('click',()=>{selected='';selectedIntent='';selectedRepair='';selectedResource='';selectedFeedback='';selectedAttention='';selectedGoal=goal.goal_id;
     clearIntentPanel();detail.textContent=JSON.stringify(goal,null,2);});
   cell(tr,'').appendChild(button);document.getElementById('goals').appendChild(tr);
 }
@@ -120,7 +126,7 @@ function renderRepair(item){
   cell(tr,assessment?('不可执行 / '+assessment.decision+'；阻塞 '+assessment.blockers.join('；')):
     '检查不可用；不可执行');
   const button=document.createElement('button');button.textContent='请求详情（只读）';
-  button.addEventListener('click',()=>{selected='';selectedGoal='';selectedIntent='';selectedResource='';selectedFeedback='';selectedRepair=item.repair_id;
+  button.addEventListener('click',()=>{selected='';selectedGoal='';selectedIntent='';selectedResource='';selectedFeedback='';selectedAttention='';selectedRepair=item.repair_id;
     clearIntentPanel();detail.textContent=JSON.stringify(item,null,2);});
   cell(tr,'').appendChild(button);document.getElementById('repairs').appendChild(tr);
 }
@@ -132,31 +138,40 @@ function renderResource(item){
   cell(tr,item.policy+'；复核日期 '+item.review_at+'；过期不是删除批准');
   const button=document.createElement('button');button.textContent='保留计划（只读）';
   button.addEventListener('click',()=>{selected='';selectedGoal='';selectedIntent='';selectedRepair='';
-    selectedFeedback='';selectedResource=item.resource_id;clearIntentPanel();detail.textContent=JSON.stringify(item,null,2);});
+    selectedFeedback='';selectedAttention='';selectedResource=item.resource_id;clearIntentPanel();detail.textContent=JSON.stringify(item,null,2);});
   cell(tr,'保留；未授清场权 ').appendChild(button);document.getElementById('resources').appendChild(tr);
 }
-function safeFeedback(item){return item.status==='local_draft_only'?item:{...item,summary:null};}
+function safeFeedback(item){return item.status==='local_draft_only'&&item.state==='draft'?item:
+  {...item,summary:null,duplicate_inspection:null};}
+function feedbackMatches(item){
+  const matches=item.duplicate_inspection;
+  return matches?'内容元数据匹配候选 '+shown(matches.observed_matches)+'；'+matches.selection+
+    '（非同根因、非完整去重；副本未复核）':'内容匹配不可用；不复用旧关联';
+}
 function renderFeedback(item){
   item=safeFeedback(item);
   const tr=document.createElement('tr');cell(tr,item.project+' / '+item.feedback_id);
   cell(tr,item.status+' / '+(item.summary||'摘要已撤回或当前来源定义不匹配'));
-  cell(tr,'独立复现未完成；根因仅未验证假设；修复/回归/发布/原任务验收未求证');
+  cell(tr,'独立复现未完成；根因仅未验证假设；修复/回归/发布/原任务验收未求证；'+feedbackMatches(item));
   const button=document.createElement('button');button.textContent='草案元数据（只读）';
   button.addEventListener('click',()=>{selected='';selectedGoal='';selectedIntent='';selectedRepair='';selectedResource='';
-    selectedFeedback=item.feedback_id;clearIntentPanel();detail.textContent=JSON.stringify(item,null,2);});
+    selectedAttention='';selectedFeedback=item.feedback_id;clearIntentPanel();detail.textContent=JSON.stringify(item,null,2);});
   cell(tr,'未授执行/上传权 ').appendChild(button);document.getElementById('feedback').appendChild(tr);
 }
 __INTENT_VIEW_SCRIPT__
+__ATTENTION_VIEW_SCRIPT__
 function clearIntentPanel(){
   const pane=document.getElementById('intent-detail');pane.replaceChildren();pane.hidden=true;
 }
 function clearView(note){
   ['tasks','goals','intents','repairs','resources','feedback','activity'].forEach(id=>document.getElementById(id).replaceChildren());
-  clearIntentPanel();detail.textContent=note;
+  clearIntentPanel();clearAttention();detail.textContent=note;
 }
 async function refresh(force=false){
   if(busy&&!force)return;
   const version=++requestVersion,chosen=source.value;
+  clearAttention();
+  if(selectedAttention)detail.textContent='正在核对关注事实；不展示旧引用。';
   if(pending)pending.abort();
   const controller=new AbortController();pending=controller;busy=true;
   document.getElementById('intents').replaceChildren();clearIntentPanel();
@@ -182,6 +197,7 @@ async function refresh(force=false){
     (view.repairs||[]).forEach(renderRepair);
     (view.resources||[]).forEach(renderResource);
     (view.feedback||[]).forEach(renderFeedback);
+    renderAttention(view);
     const activity=document.getElementById('activity');activity.replaceChildren();
     view.activity.processes.forEach(p=>{const tr=document.createElement('tr');
       cell(tr,p.workspace);cell(tr,p.pid+' / '+p.presence);
@@ -214,7 +230,7 @@ async function refresh(force=false){
   }finally{if(version===requestVersion){busy=false;pending=null;}}
 }
 document.getElementById('refresh').addEventListener('click',()=>refresh(true));
-source.addEventListener('change',()=>{selected='';selectedGoal='';selectedIntent='';selectedRepair='';selectedResource='';selectedFeedback='';
+source.addEventListener('change',()=>{selected='';selectedGoal='';selectedIntent='';selectedRepair='';selectedResource='';selectedFeedback='';selectedAttention='';
   clearView('正在读取所选来源，旧项目的记录和线索已移除。');
   document.getElementById('summary').textContent='等待所选来源的新快照';
   document.getElementById('error').textContent='';refresh(true);});
@@ -223,4 +239,4 @@ refresh();setInterval(refresh,5000);
 
 
 def page_html() -> str:
-    return _PAGE.replace("__INTENT_VIEW_SCRIPT__", INTENT_SCRIPT)
+    return _PAGE.replace("__INTENT_VIEW_SCRIPT__", INTENT_SCRIPT).replace("__ATTENTION_VIEW_SCRIPT__", ATTENTION_SCRIPT)

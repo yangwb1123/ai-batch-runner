@@ -19,7 +19,7 @@ class Element {
   }
 }
 const ids={};
-for(const id of ['source','tasks','goals','intents','repairs','resources','feedback','activity','detail','intent-detail','summary','error','refresh']) {
+for(const id of ['source','tasks','goals','intents','repairs','resources','feedback','attention','attention-summary','activity','detail','intent-detail','summary','error','refresh']) {
   ids[id]=new Element(id==='source'?'select':'section');
 }
 ids['intent-detail'].hidden=true;
@@ -41,6 +41,7 @@ async function respond(index,view) {
 function selectIntent() { ids.intents.descendants('button')[0].emit('click'); }
 function output() {
   return {intents:ids.intents.textContent,repairs:ids.repairs.textContent,resources:ids.resources.textContent,feedback:ids.feedback.textContent,panel:ids['intent-detail'].textContent,
+    attention:ids.attention.textContent,attention_summary:ids['attention-summary'].textContent,
     panel_hidden:ids['intent-detail'].hidden,detail:ids.detail.textContent,error:ids.error.textContent,
     summary:ids.summary.textContent,all:allText(),
     requests:requests.map(r=>({path:r.path,aborted:r.options.signal.aborted,
@@ -67,7 +68,35 @@ async function main() {
     console.log(JSON.stringify(output()));return;
   }
   await respond(0,input.views[0]);
-  if(input.mode.startsWith('feedback')) {
+  if(input.mode.startsWith('attention')) {
+    ids.attention.descendants('button')[0].emit('click');
+    const item=JSON.parse(ids.detail.textContent);
+    assert.equal(item.operator_action,'not_selected_or_authorized');
+    assert.equal(item.capabilities.control,false);assert.equal(item.capabilities.cleanup,false);
+    assert.equal(requests.length,1);
+    if(input.mode==='attention_select_other') {
+      ids.tasks.descendants('button')[0].emit('click');
+      evaluate('refresh(true)');await respond(1,input.views[1]);
+      assert(!ids.detail.textContent.includes('attention_id'));
+    }else if(input.mode==='attention_switch'||input.mode==='attention_stale_error') {
+      evaluate('refresh(true)');
+      assert.equal(ids.attention.children.length,0);
+      ids.source.value=input.source;ids.source.emit('change');
+      assert.equal(requests[1].options.signal.aborted,true);
+      assert.equal(ids.attention.children.length,0);
+      assert(!ids.detail.textContent.includes(input.old_marker));
+      await respond(2,input.views[1]);
+      if(input.mode==='attention_switch')await respond(1,input.views[0]);
+      else{requests[1].reject(new Error('old attention request failed'));await tick();await tick();}
+      assert(!allText().includes(input.old_marker));
+    }else if(input.mode!=='attention') {
+      evaluate('refresh(true)');assert.equal(ids.attention.children.length,0);
+      assert(ids.detail.textContent.includes('不展示旧引用'));
+      if(input.mode==='attention_failure'){requests[1].reject(new Error('transport unavailable'));await tick();await tick();}
+      else await respond(1,input.views[1]);
+      assert(!allText().includes(input.old_marker));
+    }
+  }else if(input.mode.startsWith('feedback')) {
     ids.feedback.descendants('button')[0].emit('click');
     const item=JSON.parse(ids.detail.textContent);
     assert.equal(item.execution_authority,'not_granted');

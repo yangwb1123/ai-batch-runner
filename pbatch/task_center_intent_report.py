@@ -128,7 +128,7 @@ function renderIntent(item,goals,sources){
   cell(tr,hintPreview(item));
   const button=document.createElement('button');button.textContent='线索 / 引用 / 审计';
   button.addEventListener('click',()=>{if(busy)return;
-    selected='';selectedGoal='';selectedRepair='';selectedResource='';selectedFeedback='';selectedIntent=item.intent_id;showIntent(item,goals,sources);});
+    selected='';selectedGoal='';selectedRepair='';selectedResource='';selectedFeedback='';selectedAttention='';selectedIntent=item.intent_id;showIntent(item,goals,sources);});
   cell(tr,'').appendChild(button);document.getElementById('intents').appendChild(tr);
 }
 """

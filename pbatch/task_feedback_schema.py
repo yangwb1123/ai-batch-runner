@@ -38,6 +38,12 @@ def feedback_key(source_id: str, case_id: str) -> str:
     return "fd-" + digest([source_id, case_id])[:32]
 
 
+def content_digest(value: dict) -> str:
+    """All closed case fields except the label ID; text/order is never normalized."""
+    validate_case(value)
+    return digest({key: item for key, item in value.items() if key != "case_id"})
+
+
 def _schema(value) -> None:
     if type(value) is not int or value != 1:
         raise ValueError("unsupported feedback schema")
@@ -75,9 +81,15 @@ def validate_case(value: dict) -> dict:
 
 
 def validate_state(value: dict) -> dict:
-    fields(value, {"schema_version", "feedback_id", "source_id", "source_digest", "case_id", "case_sha256",
-        "input", "summary", "created_at", "version", "state", "audit"})
-    _schema(value["schema_version"])
+    expected = {"schema_version", "feedback_id", "source_id", "source_digest", "case_id", "case_sha256",
+        "input", "summary", "created_at", "version", "state", "audit"}
+    if not isinstance(value, dict) or type(value.get("schema_version")) is not int or value["schema_version"] not in {1, 2}:
+        raise ValueError("unsupported feedback metadata schema")
+    if value["schema_version"] == 2:
+        expected.add("case_content_sha256")
+        if not matches(DIGEST_PATTERN, value.get("case_content_sha256")):
+            raise ValueError("invalid feedback content identity digest")
+    fields(value, expected)
     if not matches(SOURCE_PATTERN, value["source_id"]) or not matches(NAME_PATTERN, value["case_id"]):
         raise ValueError("invalid feedback source/case identity")
     if value["feedback_id"] != feedback_key(value["source_id"], value["case_id"]):

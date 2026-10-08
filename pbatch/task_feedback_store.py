@@ -11,8 +11,9 @@ from .task_sources import catalog_path, registered_sources
 from .task_state_io import atomic_write, locked
 from .user_dirs import pbatch_runtime_home
 from .task_feedback_io import private_root, proof, publish, read_bytes, stat_key
+from .task_feedback_integrity import validate_copy
 from .task_feedback_schema import (FEEDBACK_PATTERN, MAX_DRAFTS, MAX_INPUT_BYTES, MAX_METADATA_BYTES,
-    decode, digest, feedback_key, state_bytes, validate_case, validate_state)
+    content_digest, decode, digest, feedback_key, state_bytes, validate_case, validate_state)
 
 
 def feedback_root() -> Path:
@@ -89,9 +90,10 @@ def _records(root: Path) -> list[dict]:
 
 def _new(source: dict, case: dict, reference: dict, by: str, reason: str) -> dict:
     at = stamp()
-    value = {"schema_version": 1, "feedback_id": feedback_key(source["source_id"], case["case_id"]),
+    value = {"schema_version": 2, "feedback_id": feedback_key(source["source_id"], case["case_id"]),
         "source_id": source["source_id"], "source_digest": digest(source), "case_id": case["case_id"],
-        "case_sha256": digest(case), "input": reference, "summary": display(case["summary"], 256),
+        "case_sha256": digest(case), "case_content_sha256": content_digest(case),
+        "input": reference, "summary": display(case["summary"], 256),
         "created_at": at, "version": 1, "state": "draft",
         "audit": [{"version": 1, "action": "drafted", "by": by, "reason": reason, "at": at}]}
     return validate_state(value)
@@ -104,9 +106,7 @@ def _recheck(source: dict, path: Path, observed: tuple) -> None:
 
 def _verify_case(value: dict) -> None:
     raw, _ = read_bytes(feedback_root() / (value["feedback_id"] + ".case"), MAX_INPUT_BYTES, private=True)
-    if (proof(Path(value["input"]["path"]), raw) != value["input"] or
-            digest(validate_case(decode(raw, MAX_INPUT_BYTES))) != value["case_sha256"]):
-        raise ValueError("feedback private copy changed; no existing evidence was overwritten")
+    validate_copy(value, raw)
 
 
 def _unchanged(previous: dict, value: dict) -> dict:
@@ -114,7 +114,9 @@ def _unchanged(previous: dict, value: dict) -> dict:
         raise ValueError("feedback withdrawal is permanent; draft cannot be reactivated")
     keys = ("source_id", "source_digest", "case_id", "case_sha256", "input", "summary")
     first, audit = previous["audit"][0], value["audit"][0]
-    if any(previous[key] != value[key] for key in keys) or (first["by"], first["reason"]) != (audit["by"], audit["reason"]):
+    if (any(previous[key] != value[key] for key in keys) or
+            (previous["schema_version"] == 2 and previous["case_content_sha256"] != value["case_content_sha256"]) or
+            (first["by"], first["reason"]) != (audit["by"], audit["reason"])):
         raise ValueError("feedback case/source/input/audit cannot be rewritten; use an explicitly different case ID")
     _verify_case(previous)
     return previous
