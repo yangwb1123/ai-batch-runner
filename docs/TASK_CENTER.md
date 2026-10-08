@@ -11,6 +11,7 @@ pi-batch ops tasks
 pi-batch ops tasks --json
 pi-batch ops tasks --follow --interval 5 --json   # JSONL 快照，Ctrl-C 退出
 pi-batch ops tasks --id tc-...                  # 查询当前有界窗口内的任务
+pi-batch ops tasks --tui                        # 独立只读终端任务看板
 
 # 自定义 /tmp 等运行目录明确登记一次，不扫描整机，也不重启正在运行的任务。
 pi-batch ops sources add my-project \
@@ -597,6 +598,49 @@ runtime 根身份及来源定义必须仍一致；版本必须准确。只允许
 恢复演练，因此不是工作树完整归档，更不是删除许可。复制/复核不调用模型，但存储、
 I/O、CPU 的价格及 lifetime 成本仍未知；不把副本收据计作独立验收或交付效率。
 
+### 第五批第三个切片：明确选择的有界目录字节副本（不是 worktree/数据库恢复）
+
+```bash
+# 仅接受已登记为 directory 的 runtime 后代；原有 preserve 仍只接受 file。
+pi-batch ops retention preserve-directory rr-... --if-version 1 --confirm \
+  --by maintainer --reason "保存这个明确选定目录的当前字节样本"
+pi-batch ops retention verify-copy pp-... --confirm
+```
+
+`bounded-directory-bytes-v1` 在确认、准确资源版本、原目录 inode/device/uid/mode、来源定义
+和根身份复核后，保存一个完整的**有界采样窗口**；超限不取子集、不省略或截断成员。
+它不自动发现目录，不接受 workspace/runtime 根、kind worktree 或含 `.git` 的目录；
+不读取外部 Git common-dir、refs、lease 或执行历史，也不启动 Git、provider/子进程。
+
+- 最多 **256 项（含选中根和每个空目录）**、16 层、相对名严格 UTF-8 最多 99 字节；
+  拒绝绝对/不规范/traversal/backslash/控制及 bidi 字符、`.git`、链接/FIFO/特殊类型、
+  hard-link alias、重复物理身份、不同 device、uid 不匹配和 setuid/setgid/sticky 模式。
+  字节数据和可执行位保留，不把文本中的命令/URL当指令。uid/device 样本不是独占归属、
+  mount/lease 或恶意同 uid 写入者隔离的证明。
+- 完整源文件字节及整个无压缩 **USTAR 容器（含 headers、padding）**各受 16 MiB 预算。
+  逐目录 fd/path stat 与全部名字清单有界采样；每个文件完整读前后复核，结束重新枚举
+  比较全部名字/stat，再复核资源/来源。可见变化、读失败、超限、锁冲突均不给收据。
+  这些是顺序的稳定性样本，**不是原子跨文件或应用/数据库一致性快照、硬实时 I/O**。
+- 使用已有独立私有保全目录和不覆盖的 payload-first/receipt-last 发布；fsync 后完整
+  读回容器。新**私有 receipt schema 2**增加 `directory_copy`：format、完整项/文件/
+  目录数、内容字节和 canonical member SHA-256；身份还绑定完整容器摘要及根 stat。
+  root-relative names/正文只在 0600 `.blob` 内，public 只显示计数与摘要，不暴露成员名。
+  USTAR 为可解析的字节容器，不含链接、扩展、脚本或压缩；uid/gid/mtime 归零，不冒充
+  原 owner、时间线或可恢复执行上下文。旧 schema 1 收据不迁移、不重写；两种共享原
+  64 收据/8 KiB metadata 预算，损坏旧证据和孤立 payload 保留，不删来腾空间。
+- `verify-copy --confirm` 对目录副本还严格检查每个 USTAR header、相对名/parent/order、
+  类型/模式、完整 body、零 padding/结束块、全成员摘要与全部计数；global hash 匹配
+  不足以容忍未知/损坏容器。只读保存的 payload，不重开原目录，**不 extract/还原**。
+  缺失、篡改或 verification 竞态拒绝，不修复旧副本。原 source 已丢失仍可显式复核。
+- 普通 CLI/TUI/认证 HTTP/Web 继续只读收据 metadata；不枚举目录、不重验容器、不提供
+  HTTP preserve-directory/restore/download。`current_payload_reverified=false`、
+  `archive_verified=false`、plan `preserve` 和七项未求证处置检查不变。签名原因仍为
+  unauthenticated label；相同字节副本 no-op，不重置日期、预算、deadline 或保护。
+
+成功只表示保存/核对了这些被明确选中字节的完整有界样本，不是独立验收或完整恢复演练。
+Git 外部对象、原权限/owner 语义、活动 lease、跨文件一致性、未保存成果的集成与正式
+处置授权仍须分别求证；没有还原、删除、worktree 清场、上传或自动升级权。
+
 ## 第六批第一个切片：本地最小合成反馈草案（不执行、不上传）
 
 ```bash
@@ -655,6 +699,292 @@ synthetic 与署名都是未认证声明，不是独立证明、无隐私保证�
 复验；本切片没有自动 learn promotion、二进制更新或 live repair。测试只用自有合成文件；
 Node VM 结果不是实际浏览器、移动端、跨租户授权或真实 provider 的验收。
 
+### 第六批第二个切片：反馈副本显式字节复核与内容元数据匹配
+
+```bash
+pi-batch ops feedback verify-copy fd-... --confirm
+pi-batch ops feedback list --source my-project --json
+```
+
+`verify-copy` 是一次性的**已保存副本字节检查**，不是案例复现。无确认时不读 metadata
+或副本；只接受 typed `fd-...`，不接受路径/URL/原文件参数。读取私有 metadata 与一个
+`.case` 的完整字节（仍最多 64 KiB），验证严格 JSON、输入字节数/SHA-256、闭合案例
+摘要及新 schema 的内容身份，随后重新读取 metadata；若 withdrawal/记录变更则不返回
+匹配结果。文件不稳定、损坏、缺失、非私有、symlink/hard-link/FIFO/uid 冲突都拒绝，
+不截断、不修复旧证据，不创建锁/收据/目录，也不执行命令、模型或网络访问。
+
+- 可在原输入/source 丢失或永久撤回后明确检查自己的私有副本，不重开原路径或爬取
+  已删来源。返回 `recorded_copy_bytes_matching`/exit 0 **只说明完整副本与已记载字节
+  和案例摘要匹配**，不是 metadata 被认证、原对象仍存在、可恢复归档或复现成功。
+  `current_source_checked=false`、`stores_receipt=false`、独立复现 `not_performed`，
+  根因 `unverified_hypothesis`，执行/清场/上传/发布权限仍不授予。结果仅此刻的有界
+  stat/metadata 样本，不是文件系统原子快照或恶意同 uid 写入者隔离。
+- 新登记的**私有 metadata schema 2** 增加 `case_content_sha256`；输入案例 schema
+  仍是 1，public 投影也仍是 1。内容身份保留完整 summary、inputs 名字/文本/**顺序**、
+  expected/observed/hypothesis 与所有其它闭合案例字段，**只排除 case_id 标签**；使用
+  canonical JSON（对象 key 排序），不改空白、大小写、Unicode 或 input 顺序。
+  不按脱敏标题/署名/时间接近度/词义猜测“同一问题”。
+- schema 1 的旧 metadata 继续验证、查询、幂等登记与永久 withdrawal；不会为了增加
+  content hash 迁移、补写或重新盖章。显式字节检查可计算一个仅本次返回的内容摘要，
+  **也不回写旧 metadata**；普通查询仍给出 legacy content identity 未追踪，不能把
+  同标题或 case 全摘要当作相同完整内容。
+- `duplicate_inspection` 是纯 metadata 投影：仅将**同完整 source_id + 当前相同
+  source definition**、未撤回且内容身份已记录的草案作匹配候选。不同 case_id 仍是
+  两条独立不可重写草案；不合并、覆盖、撤回、重命名、复用原成功或提升为已复现事故。
+  stale/withdrawn 不加入候选，legacy 不猜 hash。零候选只是“窗口内没有观察到其它
+  匹配 metadata”，不是唯一性、全部历史覆盖或无重复问题的证明。
+- 保留窗口中全部候选计数，最多显示 8 个按完整 typed ID 排序的 peer references，
+  另记遗漏数量。坏记录、枚举预算或记录数限制显式标为 incomplete；未追踪内容的
+  记录数也保留。`current_copies_reverified=false`、语义比较 `not_performed`、根因
+  等价 `not_verified`、merge/reuse 权限 `not_granted`。即使副本已损坏或丢失，查询
+  也只显示“记载的元数据候选”，不会偷偷读取 `.case` 来认证它或重建旧记录。
+- CLI/HTTP/tasks/Web 显示同一候选投影，不受任务显示 limit 影响，不跨过滤 source
+  暴露匹配关系。Web 把候选数与“非同根因、非完整去重；副本未复核”一起显示；stale、
+  withdrawn 或 client 状态不一致时删除旧摘要/peer 关系。刷新、切换来源、迟到请求
+  的既有失效规则保持不变。
+- 没有 HTTP/Web 字节检查或正文下载能力；GET query 的 `verify-copy/confirm` 不授
+  能力，POST 仍拒绝。普通 list/show/refresh 仍不读原文件、副本正文，不创建状态，
+  不跑 Git/provider/命令。显式检查不形成长期“已验证” badge，不计作独立验收或
+  根因去重成果；I/O、CPU 价格与 lifetime 消耗未追踪，不能把这些费用记成零。
+
+## 第七批第一个切片：独立只读终端任务看板
+
+```bash
+pi-batch ops tasks --tui
+pi-batch ops tasks --tui --source my-project --limit 100 --interval 5
+pi-batch ops tasks --tui --source src-... --id tc-...
+```
+
+这是新的本地观察入口，**不是** Agent 交互 TUI、Hub、多设备调度器或 Native Pipeline
+控制台。现有那些控制器与会话不变；看板不导入它们或调用其恢复/执行/取消动作。
+
+- 与 CLI/Web 使用同一 `task_center.snapshot(limit, source)`，展示任务、目标、已授权
+  意图线索、恢复请求、保留资源与反馈草案六类 public 记录；详情不再次查询原文件或
+  私有 payload。既有快照的准入、窗口、归属、计费、证据与保全限制原样保留。
+- 上方来源输入框按 Enter 后才应用：仅是原 CLI 的登记 ID/名称过滤，不是文件路径、
+  URL、命令、tenant/instance grant。未知名称/路径式文本不能变成任意目录读取能力。
+  分类下拉框只是本次快照的显示过滤，不新增读取。表格 Enter/点击选择详情，按
+  `r`/`Ctrl-R` 刷新，`q`/`Ctrl-Q`/`Ctrl-C` 退出看板；输入框中的字母不触发快捷动作。
+- 用完整 typed ID 及记录类别路由，不能用标题、脱敏显示、PID/时间邻近度合并记录。
+  不接收歧义/无来源/重复身份或超预算 public 列表；筛选来源与快照冲突则清除事实。
+  `--id` 必须是完整任务 ID；不在窗口只是不可见，不代表完成、删除或仍有授权。
+- 任务详情先显示上一/当前观测阶段、声明下一步、墙钟耗时、报告 token/明确币种费用、
+  产物存在/声明数，再显示同一 JSON 事实；没有实时 ETA、独立验收或 lifetime 总账
+  时仍为未追踪。关联消耗含共享、包含式范围，不能把重叠数相加或做效率排名。
+  恢复检查仍不可执行；资源仍保留；反馈候选仍非同根因、非副本实时认证。
+- 每次刷新先清空旧表格、摘要、诊断及详情，仅保留**完整选择 ID**用于本次数据中的
+  重新定位。来源切换还清空选择；失败/缺记录/withdrawal/revoke/来源失效不恢复旧事实。
+  请求 generation 阻止迟到数据或错误覆盖新范围；退出使结果失效，不取消真实 Agent。
+- 每个看板至多一个文件快照 reader，加一个“最新范围待刷新”标记。计时器在忙时
+  不排队；手工刷新/范围切换可使旧结果失效，但不取消重启底层 reader 或堆积线程。
+  默认 5 秒、最短 1 秒；这是轮询间隔，不是硬实时读取截止或进度保证。已开始的
+  文件 I/O 不能据此声称被取消、成为原子快照或隔离恶意同 uid 写入者。
+- 文本用 plain Rich Text/无 markup Static 展示；命令、URL、角色与诊断仅是引用。
+  C0/ANSI、C1 和方向控制不能成为终端动作或身份；JSON 中必要时转义，保留字节字段
+  原义。详情最多显示 128 KiB UTF-8 前缀，显式标明不是完整 JSON；不静默 salvage、
+  不追加读取隐藏正文。withdrawn/stale/inconsistent 反馈隐藏旧摘要与 peer 关系；
+  意图授权失效时隐藏分析。未显示/未读取的数据不是不存在。
+- 不创建看板状态、catalog、锁、收据、导出或日志；没有登记/修改/withdraw/verify-copy/
+  Git inspect/执行/上传/升级/清场按钮，没有 command palette、网络请求或 provider
+  调用。`--tui` 不与 `--json`/`--follow` 混用；已有 CLI 输出默认行为不改变。
+
+测试用自有合成记录、headless Textual 与私有目录；这些结果不是真实 provider、实际
+终端可用性/无障碍、移动端或跨租户部署验收。此本地首切片未接入 Hub；认证原生
+元数据入口见下面第七批第三个切片。本地看板仍不能绕过或代替远端授权边界。
+
+## 第七批第二个切片：共享的需关注事实（不是干预授权）
+
+```bash
+pi-batch ops tasks --attention
+pi-batch ops tasks --attention --source my-project --json
+pi-batch ops tasks --attention --json --follow --interval 5
+# 独立终端看板中选择「关注事实」分类；Web 顶部展示同一观察清单。
+```
+
+- `task_attention.attention_view()` 是纯确定性投影：只使用本次已准入的候选、public
+  metadata 与来源覆盖，不补读 checkpoint、产物、原历史、反馈/保全 payload，不调用
+  Git/provider/网络/进程探测，不读新时钟，不创建告警、ack、锁、收据或通知投递。
+  HTTP 仍仅在已认证的 global `/api/tasks` GET 返回同一 `attention`；query flags
+  不授予检查/修复能力，不增加路径读取或 mutation endpoint。
+- 支持的提示是**精确记录状态**，不对诊断 prose/标题做关键词根因分类：最新失败、
+  拒绝、流水线/gate/validation/合并/预算/provider/recovery 阻断；已准入来源覆盖
+  的读错/损坏/截断/缺口；本地目标拒绝/证据不再匹配，历史契约失效/目标不可用，
+  恢复请求声明到期，未永久保护的资源复核到期，以及草案来源定义变化。
+  各提示附固定 reason code、完整 source + typed target identity 和原记录状态引用。
+  旧失败之后最新记录成功则不再提示那个失败，但**不删除旧失败记录**。
+- 运行/静默、取消/中断、待验收、未知金额/ETA、legacy 未记录内容 hash、内容匹配
+  候选或正常 withdrawal/revoke **不因此变成故障或必做操作**。缺少可准入事实
+  不编造引用；catalog 诊断仍计入覆盖，零条关注项不证明安全、完整、没有遗漏或
+  不需人工判断。提示不等于实时仍被阻断、已知根因或独立验收失败。
+- 任务关注计数使用全部已准入 candidates，**先于任务显示 limit**；遗漏任务的
+  提示也可以显示，但不能因此读取它的产物或扩大其它 metadata 窗口。保留最多
+  128 个关注引用，完整计数/按 reason 与 kind 分组/遗漏数另列。按完整 attention
+  ID 稳定排序，不是严重性/近期/效率排名；计数不是不同故障、同根因事故或唯一
+  待处理工作数，父子记录可描述同一次失败，不能把它们算成独立缺陷。
+- 不回传旧历史/草案摘要、正文、原始私有路径或未显示的证据内容；只有固定说明与
+  已公开元数据引用。at-ID 由完整 source、kind、target ID 与固定 reason 决定，
+  不以标题、脱敏显示、PID、时间或用户署名猜身份。目标可能不在本次任务表窗口，
+  不代表已解决/删除；未增加隐藏展开、自动重试、复用成功或跨来源查询。
+- CLI `--attention` 与 `--id`/`--tui` 明确互斥，JSON follow 仍为 JSONL，普通
+  `ops tasks` 保留原任务数据并追加观察计数。终端新增只读分类，旧 schema1
+  快照缺少 attention 时不伪造零；未知 attention schema/身份/超预算列表拒绝。
+  Web 用 textContent/JSON 文本，选中事实不发送额外请求；刷新立即清除旧清单和
+  选中引用，切换来源、失败、缺失、迟到响应/错误不恢复旧事实。
+- 每项 `operator_action=not_selected_or_authorized`、`root_cause=not_verified`；
+  仍无执行/恢复/合并/清场/上传/预算期限复位权。资源到期仍保留，声明请求过期
+  不等于原 deadline/预算验证；本地操作人拒绝不冒充独立评审。此清单没有通知
+  投递/ack、调度、Hub tenant grant 或 Console 远端入口。
+
+测试以自有合成状态与实际共享快照覆盖纯度、完整身份、显示遗漏、不变的权限、
+CLI/认证 HTTP/终端一致、Web 失效与 literal 内容；Node VM/headless 不是实际浏览器、
+广泛终端可用性/无障碍/移动端/多设备验收，实际执行/复现/发布仍未启用。
+
+## 第七批第三个切片：认证 Hub 原生任务事实与远端共享入口
+
+```bash
+# 使用既有的用户登录配置或私有 token 文件；不把凭据放 URL/命令参数。
+pi-batch fleet tasks --hub https://hub.example --json
+pi-batch fleet tasks --attention --json
+pi-batch fleet tasks --source src-<完整24位hex> --tui
+pi-batch fleet tasks --json --follow --interval 5
+# 同源 Web：/api/v1/agent/task-center/view（无数据的公共 shell）
+# 数据 GET：/api/v1/agent/task-center?limit=100&source=src-<完整24位hex>
+```
+
+- **接入范围**是已经明确发布到 Hub 的 instance/session/turn 元数据，不是远端整机、
+  私有 runtime、全部 Campaign、计算任务或已认证多设备完整清单。Gateway 默认、
+  本地 `ops tasks`、原生 Agent/Hub 控制 TUI 与受保护 Campaign 均不改变。这里不
+  自动发现/上传本地目标、历史、恢复、资源或反馈，五组明确为 `untracked_not_imported`；
+  空数组是共享显示容器，不是五类数据已不存在或已经完整读取。
+- 数据入口只接受 user 身份，仍先验证签名/tenant/client grant 和可选 membership
+  门禁。**同时要求** `agent.instances:read` 与 `agent.sessions:read`，不借 session
+  scope 暴露另外受保护的实例心跳/代际。tenant 与 instance allowlist 在 SQL 的 LIMIT
+  **之前**生效；Gateway、别的 tenant、单独 compute scope 和未知/路径 query 不获额外权。
+  非 loopback 仍要求 TLS，开发静态凭据仍只能 loopback；没有新增/拓宽 grant。
+- 在既有 Hub 数据库一个 `query_only` 读取事务中最多选 64 个授权实例、512 个 session
+  和 512 个 turn，额外一行只判断窗口缺口；SQLite VM 工作另有限额。源过滤只认当前
+  授权 64-source 窗口中的完整 source ID，不循环翻页/反查整库、不猜实例名或路径。
+  窗口外/无权限/缺失来源统一不提供记录；不据此推断删除。发生裁剪时库内遗漏总量未知，
+  显示遗漏与库窗口遗漏分别表述；SQLite 读事务不是设备/文件系统/进程原子快照或 lease。
+- 不选择/解析/回传 prompt、消息/event payload、commands、actor、幂等键、原生历史或
+  本机目录正文；不调用新时钟、provider、进程/设备探测、Git 或修复/归档验证。这里没有
+  业务写入/调度/收据/通知；不将 SQLite 自身的读取协调声明成无锁文件系统隔离。
+- source/task/attention 身份采用独立 Hub namespace + **完整 tenant/instance/session/turn**，
+  不按标题、local ID 或时间合并。session → turn 父子关系显式保留；父记录可能在显示
+  窗口之外，此时不是已完成或消失。Hub 与本地记录**不会自动去重或相加**，两者尚无
+  经过验证的映射。状态只是已记录状态；标签不是原用户目标，generation/冻结不是 liveness。
+  没有读取执行开始/消耗/产物证据，因此耗时、token、币种、provider 请求、验收与 ETA
+  保持未知，不将 queued→terminal 的登记间隔冒充执行耗时或计入效率。
+- `attention` 直接复用纯共享算法，先于任务显示 limit，最多 128 个引用、完整有界
+  计数/遗漏；这里的来源缺口只是元数据读取窗口。提示仍不是根因、不同事故数、必做
+  操作或恢复批准，不复位原期限/预算。取消/中断/lost 本身不被改称失败根因。
+- Python 客户端至多一次元数据 GET、2 MiB 响应；重建/核对封闭的公开任务投影，拒绝
+  多余私有字段、身份/计数/权限冲突、未知 shape 与不一致的已显示关注引用。请求前后
+  credential context 改变则拒绝旧结果；无本地账本、events/body、其它端点或旧缓存兜底。
+  `fleet tasks --tui` 复用独立观察器的单 reader/最新待刷新标记、清空先于刷新与 generation
+  fencing，不接入现有 Hub 的 send/cancel/compute widgets。退出只表示退出观察器。
+- Web 是 **Console 可消费的只读 Web 入口，不是 Flutter Console 已集成/发布**。公共
+  shell 没有任何租户数据；它不接受 URL/query 凭据。临时 bearer 只留页内存，输入即
+  清空旧事实，字段随后清空；不写 local/sessionStorage，清除本页凭据不冒充服务端撤销。
+  所有数据 GET 重新鉴权，401/403 停止自动读取；同源连接、无重定向、no-store、no-referrer、
+  hash CSP。最多一个请求和一个最新待刷新标记，忙时 timer 不堆积；源/凭据切换、失败、
+  格式冲突或迟到结果不恢复旧事实。文字只用 textContent，命令/HTML 是引用；详情是
+  限缩的公开字段显示，不是完整 JSON/正文，不额外 fetch。没有操作、外发或升级控件。
+
+新增回归以自有 HTTP/SQLite、真实本地签名 JWT、合成元数据与 Node VM/headless TUI
+检查权限交集、授权先于裁剪、无正文选择、跨端身份/关注一致、缺口/损坏、凭据 fence、
+literal 内容和失效规则；不声称生产 issuer、实际远端设备、Flutter、无障碍或移动端已验收。
+
+**仍未完成全部规划**：受控修复执行/独立复现/发布升级、完整可恢复归档与授权清场、
+provider/全生命周期计量、语义/效率/ETA，以及 Hub 计算/本地账本的显式授权桥接、Flutter
+与真实跨设备/平台验收仍有缺口。实现这些机制不授权在受保护任务上实际执行或删除；
+已知真实 Codex 访问约束也不能通过改账户、绕过区域限制或排除原测试换取验收。
+
+## 第七批第四个切片：显式计算任务元数据观察（不调度、不合并）
+
+```bash
+pi-batch fleet tasks --compute --json
+pi-batch fleet tasks --compute --attention --json
+pi-batch fleet tasks --compute --source src-<完整24位hex> --tui
+# 独立 Web shell：/api/v1/agent/compute-task-center/view
+# 数据 GET：/api/v1/agent/compute-task-center?limit=100&source=src-<完整24位hex>
+```
+
+- 默认仍是原生 session/turn 视图。`--compute` **选择独立的计算元数据窗口**，不是把
+  两类记录汇总/去重/相加；两者 source/task 的 namespace 不同，原生 source ID 不能
+  用来扩大计算读取范围。没有本地账本上传、设备清单/放置探测或 Flutter 控件集成。
+- 继续要求 user、当前 tenant/client grant 和可选 membership，**同时要求**既有
+  `agent.instances:read` 与 `agent.tasks:read`。只读任务所记载的 **source instance**，
+  不把 destination 的 `compute_instances`/设备权限反向当作读取其它来源的授权。
+  `agent.sessions:read` 不能替代计算权限，计算读取权限也不能打开原生会话投影。
+- 授权 SQL 先于 LIMIT：一个 query-only 事务最多 64 个授权来源和 512 个任务，再多
+  一行只检查窗口缺口；VM 工作有界。完整来源 ID 只在已准入的 64-source 窗口内解析。
+  不循环翻页或猜任务/来源；无权/窗口外不返回记录，不推断删除，裁剪后库总遗漏未知。
+- 只选择 task/source/session ID、已记录 generation/state 与登记/更新时间；**不选择、
+  解析或回传** `data_json`、`request_json`、argv/workdir、result、artifact/device/
+  workspace、actor 或幂等键，不读取 session 标签、event body、私有历史或新时钟。
+  读取不初始化 schema、不启动 broker/tick、Fabric/provider/网络探测或执行命令。
+  未配置 compute 返回不可用，而不是在 GET 中自动安装/启动；普通 SQLite 读取协调
+  不等于设备快照、独占锁/lease、硬实时 I/O 或隔离恶意同 uid 写入者。
+- 完整 tenant/instance/session/compute-task 身份进入独立 ID。session ID 是已记录的
+  引用，**不是已解析的原生父任务或目标绑定**；destination/attempt/turn 未读，保持
+  未追踪。任务 ID 不是用户目标；queued→terminal 时间差不作为执行时长；generation/
+  heartbeat/state 不证明活性。token/费用/provider 请求/独立验收/真实 ETA 仍为未知。
+  `lost`、取消、排队和成功不因此成为已知故障/已验收；精确 `failed` 只产生共享关注事实。
+- 关注计数先于任务显示 limit，128 个有界引用/完整已准入计数/遗漏；非事故去重、优先级
+  或修复授权。客户端只读取一次 2 MiB 元数据响应，重建闭合计算投影；私有字段、跨 profile
+  身份/phase、伪造数量/费用/权限或 credential context 变化都拒绝，无 native/local/
+  task-body/旧缓存兜底。相同独立终端观察器和 Web 使用已有的失效/单 reader/文本规则。
+- 新 Web shell 无租户数据或凭据；事实 GET 重新认证，bearer 仅页内存、无 URL/storage，
+  hash CSP 随该固定计算脚本生成。没有取消/重试/reschedule/删除/上传或预算/期限复位
+  动作；HTTP mutation/body/未知或重复 query/重复 Content-Length 仍拒绝。退出只是退出
+  看板，不取消任务或释放 lease。现有计算控制 API 与 Agent/Hub TUI 均未改变。
+
+合成 HTTP/SQLite、SQL column authorizer、签名 JWT、CLI/headless TUI 和实际交付的
+Web JS 回归只验证此读取机制。元数据中的坏私有 JSON 可以保持不可读而不被解释为命令；
+这不证明对应计算任务本身可用、真实设备/生产 issuer/Flutter/跨平台或独立成果已验收。
+本切片未实现统一跨来源合并、真实执行遥测、完整可恢复归档或 live repair/清场。
+
+## 第七批第五个切片：显式计算源会话身份引用（不是执行/本地映射）
+
+```bash
+pi-batch fleet tasks --compute --source-sessions --json
+pi-batch fleet tasks --compute --source-sessions --tui
+# 数据：GET /api/v1/agent/compute-task-center/source-sessions?limit=100&source=src-<完整24位hex>
+# 无数据 shell：/api/v1/agent/compute-task-center/source-sessions/view
+```
+
+默认原生/计算视图及其权限均不变；必须显式选择此第三个 profile，**同时**具备
+`agent.instances:read`、`agent.tasks:read`、`agent.sessions:read`。既有 user 身份、
+JWT/development grant、tenant/source-instance allowlist、membership 仍先于 SQL LIMIT
+生效；destination compute 权限不替代源读取权。没有自动授予权限或本地账本发现/上传。
+
+一个 query-only 事务在 64 个来源窗口内各读取最多 512 条计算记录/源 session 元数据，
+分别多取一行检测裁剪，并共享有界 SQLite VM 工作预算。源 session **仅**选择完整
+instance/session 身份、generation 和登记更新时间；不选择标签/frozen/project、正文、
+原生 turn/event、命令/结果 JSON、设备或 actor。来源仍接受计算 namespace 的完整
+source ID；原生 source ID/名称/路径不会扩大窗口。没有单条 session 兜底查找。
+
+`hub-compute-source-session-references-v1` 保留计算任务的完整身份，为每个候选记录
+附加稳定 `hr-...` 引用。仅在该窗口内 instance/session/**generation 均完全一致**时
+给出 `observed_recorded_reference` 及独立原生 namespace 的 source/task 指针；其它情况
+均为 `unresolved_in_authorized_window`，不区分缺失/外租户/窗口外/代际不一致，不猜
+旧代际/同名/相近时间的目标。指针不证明目标会显示在另一次原生 GET 中。
+
+引用计数先于任务显示裁剪；多个计算任务指向同一 session 仍是多个引用，不去重成
+事故或产出。session 窗口裁剪明确披露，遗漏总量未知；未解析引用不是故障告警。
+`parent_execution_verified`、`goal_binding_verified`、`deduplication_authority`、
+`billing_addition_authority`、`grants_execution` 永远为 false；费用、执行耗时、活性、
+独立验收和 ETA 仍未追踪。元数据 identity 匹配不是因果关系、执行父子关系、目标绑定、
+账单相加或 local/native/compute 等价证明。此处**没有完成跨本地账本的验证映射**。
+
+CLI/Python/TUI/Web 都仅执行一次有界元数据 GET，无原生/计算默认端点、本地历史或
+旧缓存回退。凭据/来源变化先清空事实，单 reader/generation fence 拒绝迟到响应；
+Web 的公开 shell 不授予读取权，bearer 仍只在当前页内存中、无 URL/storage。
+仅 literal 引用显示，不自动打开目标、下载正文或增加控制；mutation/query/body 限制
+继续生效。没有 provider 调用、schema/controller 初始化、执行/取消/修复/上传/清场。
+这是 Console 可消费入口，不是 Flutter、真实设备、平台、无障碍或部署验收。
+
 ## 后续批次与验收条件
 
 | 批次 | 内容 | 完成判定 |
@@ -663,8 +993,8 @@ Node VM 结果不是实际浏览器、移动端、跨租户授权或真实 provi
 | 3（已实现五个切片） | 授权导出/原生范围重放、角色线索与 Web 引用、历史耗时检验、显式关联的阶段消耗 | 保留来源/覆盖；调用去重、失败与共享消耗可见；全量请求计量、语义预测与独立验收效率仍待实现 |
 | 4（已实现预览/请求登记/只读检查/显式 Git 诊断） | 失败检查提案、声明限制、永久撤回、缺证阻塞与一次性工作区诊断；后续有预算的项目修复、工具改进任务与独立验证 | 预览/登记不授执行权；真实修复需在预授权范围内产生代码/测试；正常门禁；不无限重试或自我授权 |
 | 5（已实现显式保全登记/72h 复核/永久保护/只读计划） | 后续归档验证与安全清场 | 只回收登记资源；无活跃引用；未保存成果不删；历史/恢复信息仍可查询 |
-| 6（已实现显式本地合成草案/不可重写审计/永久撤回/只读投影） | 后续独立复现任务与审查发布闭环 | 默认不外发；原始 runtime 不进 Git；只晋升可复现的回归测试/修复 |
-| 7 | Hub 多设备授权与 TUI/Console 共享入口 | 不绕过 tenant/instance 授权；所有端看到相同身份、事实和操作回执 |
+| 6（已实现本地合成草案/不可重写审计/永久撤回/显式副本字节检查/内容元数据匹配） | 后续独立复现任务与审查发布闭环 | 默认不外发；原始 runtime 不进 Git；只晋升可复现的回归测试/修复 |
+| 7（已实现本地只读 TUI/关注事实及独立的认证 Hub 原生/计算元数据 CLI/TUI/Web 入口） | 后续经验证的跨来源关联/本地账本授权桥接、Flutter 与真实多设备验收 | 不绕过 tenant/instance 授权；共享完整身份与事实；只读入口不伪造操作回执或部署完成 |
 
 每批先提供测试保护，再增加自动化。任务绑定工具版本，更新从新任务或明确检查点启用。
 清场、外发和自动修复没有因这个只读入口而获得授权；硬门禁和合并权限不改变。
