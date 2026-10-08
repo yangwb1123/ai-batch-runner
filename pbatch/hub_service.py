@@ -86,6 +86,10 @@ class HubService:
         return turn
 
     def _get(self, parts: list, query: dict, principal: HubPrincipal) -> dict:
+        if parts in (["task-center"], ["compute-task-center"], ["compute-task-center", "source-sessions"]):
+            from .hub_task_center_api import dispatch
+            return dispatch(self, "GET", query, principal, compute=parts[0] == "compute-task-center",
+                            source_sessions=parts == ["compute-task-center", "source-sessions"])[1]
         if set(query) - {"instance_id", "after", "limit"}:
             raise ValueError("unsupported query parameter")
         if parts == ["instances"]:
@@ -121,6 +125,9 @@ class HubService:
         return {"data": rows, "next_cursor": rows[-1][cursor_key] if rows else default}
 
     def _post(self, parts: list, body: dict, principal: HubPrincipal, key: str) -> dict:
+        from .hub_task_center_api import is_route
+        if is_route(parts, include_views=True):
+            raise HubAccessError("method_not_allowed", "task-center is read-only", 405)
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "turns":
             self._session(principal, parts[1], "agent.sessions:write")
             _only(body, {"prompt"})

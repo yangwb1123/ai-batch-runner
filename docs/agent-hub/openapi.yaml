@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Snaplink Agent Hub API
-  version: 1.10.0
+  version: 1.13.0
   description: >-
     Tenant-scoped directory and command API for sessions owned by distinct
     Agent Hub instances. This API lists instances and sessions, submits a
@@ -43,6 +43,224 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthEnvelope'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/v1/agent/task-center/view:
+    get:
+      tags: [User API]
+      operationId: taskCenterShell
+      summary: Credential-free static read-only viewer shell, containing no tenant data
+      description: >-
+        No query parameters, body or mutation headers are accepted. This shell
+        does not read a store or grant access. Its transient in-memory bearer
+        is sent only to the same-origin authenticated task-center GET, never
+        persisted or added to a URL. Hash CSP, no-store and no-referrer apply.
+        This Web entry is not deployed Flutter or independent device acceptance.
+      security: []
+      responses:
+        '200':
+          description: Literal static HTML; no user facts or credentials embedded.
+          content:
+            text/html:
+              schema: {type: string}
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/v1/agent/task-center:
+    get:
+      tags: [User API]
+      operationId: readTaskCenter
+      summary: Read authorized Hub-native session and turn facts, never execute tasks
+      description: >-
+        Both instance and session read scopes are required. Tenant/instance
+        filtering precedes LIMIT. One query-only metadata transaction selects
+        at most 64 instances and 512 rows per session/turn group, with a bounded
+        SQLite VM-work allowance. No prompts, events, commands, actor, local
+        runtimes or private histories are selected. This is not compute access,
+        a machine inventory, live preflight or a lease. Source selection only
+        resolves in the admitted source window; unavailable and unauthorized
+        sources supply no records. Task display trimming does not change the
+        attention candidate counts. Local and Hub identities are not merged.
+        Unknown usage, currency, execution duration, goal acceptance and ETA
+        remain unknown. Mutation methods return 405; body, mutation headers,
+        duplicate/unknown query parameters and URL credentials are refused.
+      x-principal-kind: user
+      x-required-scopes: [agent.instances:read, agent.sessions:read]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - name: source
+          in: query
+          required: false
+          description: Full opaque source ID in the authorized 64-source window, not a path/name/URL/grant.
+          schema:
+            type: string
+            pattern: '^$|^src-[a-f0-9]{24}$'
+            default: ''
+      responses:
+        '200':
+          description: Shared schema1 metadata window; no execution or upload authority.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskCenterEnvelope'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/v1/agent/compute-task-center/view:
+    get:
+      tags: [User API]
+      operationId: computeTaskCenterShell
+      summary: Public static compute observer shell with no tenant data or credentials
+      description: >-
+        Selects only the same-origin authenticated compute metadata endpoint.
+        No URL credentials, queries, body, storage, task control or data upload.
+        Hash CSP, no-store and no-referrer apply. Not deployed Flutter acceptance.
+      security: []
+      responses:
+        '200':
+          description: Literal static HTML; facts require their own authenticated GET.
+          content:
+            text/html:
+              schema: {type: string}
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/v1/agent/compute-task-center:
+    get:
+      tags: [User API]
+      operationId: readComputeTaskCenter
+      summary: Independent metadata-only compute task observation, never dispatch
+      description: >-
+        Both instance and task read grants are required. Source-instance tenant
+        predicates precede LIMIT; destination compute permissions do not grant
+        source reads. One query-only transaction selects at most 64 instances
+        and 512 tasks, plus one row for truncation, under a SQLite VM-work cap.
+        Only full task/source/session identity, generation, state and recorded
+        timestamps are selected. No data_json, request_json, argv, result,
+        device, actor, session label, event body, private history or live clock.
+        No schema creation, broker start, Fabric probe, cancellation or retry.
+        Registration is not execution duration; costs, liveness, goal acceptance
+        and ETA remain unknown. Its namespace is independent from the native
+        task observer; views are not merged or added. Source resolution stays
+        inside the authorized source window. Attention precedes task display
+        trimming and is not root-cause/incident/acceptance or execution evidence.
+        Body, mutation headers, duplicate/unknown queries or URL credentials
+        refuse. Methods other than GET return 405. Compute must be configured.
+      x-principal-kind: user
+      x-required-scopes: [agent.instances:read, agent.tasks:read]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - name: source
+          in: query
+          required: false
+          description: Full compute-view source ID in its authorized 64-source window, not a device or native-source grant.
+          schema:
+            type: string
+            pattern: '^$|^src-[a-f0-9]{24}$'
+            default: ''
+      responses:
+        '200':
+          description: Shared schema1 metadata window with hub-compute-task-facts-v1 method; no authority.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskCenterEnvelope'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          description: Compute is not configured or the metadata store is unavailable; no initialization or fallback.
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/v1/agent/compute-task-center/source-sessions/view:
+    get:
+      tags: [User API]
+      operationId: computeSourceSessionReferenceShell
+      summary: Static credential-free identity-reference shell, not a data grant
+      description: >-
+        Only its same-origin authenticated reference metadata GET is used.
+        No tenant facts, body, URL credential, storage, pointer-follow-up,
+        upload or execution control. Hash CSP, no-store, no-referrer apply.
+        Not completed Flutter, accessibility, device or deployment acceptance.
+      security: []
+      responses:
+        '200':
+          description: Literal HTML shell; reference facts require all three read scopes.
+          content:
+            text/html:
+              schema: {type: string}
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /api/v1/agent/compute-task-center/source-sessions:
+    get:
+      tags: [User API]
+      operationId: readComputeSourceSessionReferences
+      summary: Explicit recorded source-session identity references, not execution parents or equivalence
+      description: >-
+        User, membership, tenant and source-instance grants precede LIMIT and
+        require instance, task and session read scopes together. No grant
+        expansion; destination permission grants no source read. One query-only
+        transaction, 64 sources and 512 compute rows plus 512 session metadata
+        rows, one extra row each for truncation, and shared SQLite VM-work cap.
+        Session selection is limited to instance/session identity, generation
+        and recorded update time. No labels, frozen, project, turns, events,
+        bodies, command/result JSON, devices, actors, local ledgers or histories.
+        A pointer in the separate native namespace is emitted only for an exact
+        admitted instance/session/generation match. Unresolved means unavailable
+        in this window, not absent, foreign, deleted or an incident. No targeted
+        outside-window lookup or pointer-follow-up fetch. Counts precede display
+        trim, do not deduplicate incidents or add costs. No verified execution
+        parent, goal binding, semantic equivalence, local mapping, liveness,
+        billing addition or authority; costs, duration, acceptance and ETA unknown.
+        No schema/controller/provider initialization, dispatch, repair, deletion,
+        upload, cancellation or clock/budget reset. No profile/history/cache
+        fallback. Body, mutation headers, duplicate/unsupported query refuse;
+        valid authenticated mutation methods return 405. Compute must be configured.
+      x-principal-kind: user
+      x-required-scopes: [agent.instances:read, agent.tasks:read, agent.sessions:read]
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - name: source
+          in: query
+          required: false
+          description: Full compute-source opaque ID in the admitted window, not native ID, instance name, path or URL.
+          schema:
+            type: string
+            pattern: '^$|^src-[a-f0-9]{24}$'
+            default: ''
+      responses:
+        '200':
+          description: Shared schema1 hub-compute-source-session-references-v1 projection; false authority flags.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskCenterEnvelope'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          description: Compute not configured or metadata unavailable; no initialization or fallback.
         default:
           $ref: '#/components/responses/Error'
 
@@ -1589,6 +1807,108 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorEnvelope'
   schemas:
+    SourceSessionReference:
+      type: object
+      additionalProperties: false
+      description: >-
+        Only explicit three-scope metadata observations carry this reference.
+        Exact recorded instance/session/generation identity match, not a verified
+        execution parent, goal binding, semantic equivalence or local mapping.
+        Unresolved has null target; matching has an independently namespaced
+        native pointer, not proof it will appear in another native task window.
+        Python checks full identity/digests and all false authority flags.
+      required: [schema_version, reference_id, basis, state, target, liveness,
+        parent_execution_verified, goal_binding_verified, deduplication_authority,
+        billing_addition_authority, grants_execution]
+      properties:
+        schema_version: {type: integer, enum: [1]}
+        reference_id: {type: string, pattern: '^hr-[a-f0-9]{32}$'}
+        basis:
+          type: string
+          enum: [recorded_instance_session_generation_match_only_not_execution_parent_or_equivalence]
+        state: {type: string, enum: [observed_recorded_reference, unresolved_in_authorized_window]}
+        target:
+          type: object
+          nullable: true
+          additionalProperties: false
+          required: [namespace, source_id, task_id, tenant_id, instance_id, session_id, reported_generation, last_recorded_at]
+          properties:
+            namespace: {type: string, enum: [hub-native-task-facts-v1]}
+            source_id: {type: string, pattern: '^src-[a-f0-9]{24}$'}
+            task_id: {type: string, pattern: '^tc-[a-f0-9]{32}$'}
+            tenant_id: {type: string, minLength: 1, maxLength: 256}
+            instance_id: {type: string, minLength: 1, maxLength: 256}
+            session_id: {type: string, minLength: 1, maxLength: 256}
+            reported_generation: {type: integer, minimum: 1}
+            last_recorded_at: {type: number, minimum: 0}
+        liveness: {type: string, enum: [not_verified]}
+        parent_execution_verified: {type: boolean, enum: [false]}
+        goal_binding_verified: {type: boolean, enum: [false]}
+        deduplication_authority: {type: boolean, enum: [false]}
+        billing_addition_authority: {type: boolean, enum: [false]}
+        grants_execution: {type: boolean, enum: [false]}
+    TaskCenterEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/TaskCenterSnapshot'
+    TaskCenterSnapshot:
+      type: object
+      additionalProperties: false
+      description: >-
+        Independent hub-native-task-facts-v1, hub-compute-task-facts-v1 or explicitly selected
+        hub-compute-source-session-references-v1 shared public projection. Detailed task/source
+        field consistency and closed nested authority are checked by the Python
+        consumer. See TASK_CENTER.md for identity, coverage and privacy semantics.
+        Empty metadata display groups mean untracked_not_imported, never absent
+        histories/resources or complete discovery. Counts describe metadata
+        records, not accepted output or distinct failures. The viewer never
+        downloads or independently verifies payloads.
+      required: [schema_version, generated_at, window_only, sources, tasks, goals, intents,
+        repairs, resources, feedback, diagnostics, observed_task_count, omitted_tasks,
+        status_counts, activity, scope, attention]
+      properties:
+        schema_version: {type: integer, enum: [1]}
+        generated_at: {type: string, nullable: true, description: No new clock is read; currently null.}
+        window_only: {type: boolean, enum: [true]}
+        sources:
+          type: array
+          maxItems: 64
+          items: {type: object}
+        tasks:
+          type: array
+          maxItems: 200
+          items:
+            type: object
+            properties:
+              source_session_reference:
+                $ref: '#/components/schemas/SourceSessionReference'
+        goals: {type: array, maxItems: 0, items: {type: object}}
+        intents: {type: array, maxItems: 0, items: {type: object}}
+        repairs: {type: array, maxItems: 0, items: {type: object}}
+        resources: {type: array, maxItems: 0, items: {type: object}}
+        feedback: {type: array, maxItems: 0, items: {type: object}}
+        diagnostics: {type: array, items: {type: string}}
+        observed_task_count: {type: integer, minimum: 0, maximum: 1024}
+        omitted_tasks: {type: integer, minimum: 0, maximum: 1024}
+        status_counts: {type: object, additionalProperties: {type: integer, minimum: 0}}
+        activity: {type: object, description: Remote process/lease liveness is untracked.}
+        scope:
+          type: object
+          description: Per-request user resource grant; partial windows have unknown omitted DB totals.
+          properties:
+            method: {type: string, enum: [hub-native-task-facts-v1, hub-compute-task-facts-v1, hub-compute-source-session-references-v1]}
+            grants_execution: {type: boolean, enum: [false]}
+            complete_inventory: {type: boolean, enum: [false]}
+        attention:
+          type: object
+          description: Same bounded attention method as local tasks; not causes, priorities or intervention grants.
+          properties:
+            method: {type: string, enum: [bounded-attention-facts-v1]}
+            grants_execution: {type: boolean, enum: [false]}
+            zero_items_proves_safety_or_no_missing_work: {type: boolean, enum: [false]}
     ErrorEnvelope:
       type: object
       additionalProperties: false

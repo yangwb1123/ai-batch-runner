@@ -22,6 +22,9 @@ def hub_main(argv: Optional[list[str]] = None) -> int:
     if values and values[0] == "auth":
         from .hub_auth_cli import main as auth_main
         return auth_main(values[1:])
+    if values and values[0] == "tasks":
+        from .hub_task_center_cli import main as tasks_main
+        return tasks_main(values[1:])
     if values and values[0] == "compute":
         from .hub_compute_cli import main as compute_main
         return compute_main(values[1:])
@@ -43,7 +46,7 @@ def _parser() -> argparse.ArgumentParser:
     actions = parser.add_subparsers(dest="action", required=True)
     for name in ("instances", "sessions", "show", "send", "events", "cancel",
                  "agent", "tui", "init", "serve", "compute", "integrations", "auth",
-                 "session-create", "session-request"):
+                 "session-create", "session-request", "tasks"):
         _add_action(actions, name)
     _common_hub(actions.choices["instances"])
     _common_hub(actions.choices["sessions"])
@@ -95,6 +98,7 @@ def _help_for(name: str) -> str:
         "compute": "discover devices and dispatch computations",
         "instances": "list connected pi-batch instances",
         "sessions": "list sessions across instances",
+        "tasks": "read authenticated Hub task/attention facts; no execution controls",
         "session-create": "request a fresh session on one remote instance",
         "session-request": "inspect a remote session creation request",
         "show": "show one remote session",

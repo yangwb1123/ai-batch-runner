@@ -112,6 +112,26 @@ class HubHandler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
+    def _public_read(self, path: str, query: dict) -> None:
+        if path == "/healthz":
+            self._write(200, {"data": {"status": "ok"}})
+            return
+        from .hub_task_center_api import validate_read_headers
+        from .hub_task_center_report import page_html, security_policy
+        if query:
+            raise ValueError("task viewer shell does not accept query parameters or credentials")
+        validate_read_headers(path, self.headers)
+        compute = path.startswith("/api/v1/agent/compute-task-center/")
+        source_sessions = path == "/api/v1/agent/compute-task-center/source-sessions/view"
+        body = page_html(compute=compute, source_sessions=source_sessions).encode("utf-8")  # no principal/store/controller
+        self.send_response(200)
+        for key, value in {"Content-Type": "text/html; charset=utf-8", "Content-Length": str(len(body)),
+                           "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+                           "X-Content-Type-Options": "nosniff", "Content-Security-Policy": security_policy(compute=compute, source_sessions=source_sessions)}.items():
+            self.send_header(key, value)
+        self.end_headers()
+        self.wfile.write(body)
+
     @staticmethod
     def _event_page(payload: dict) -> bytes:
         # Finite replay pages bound server threads. Clients reconnect using the
@@ -131,8 +151,9 @@ class HubHandler(BaseHTTPRequestHandler):
             self._origin()
             parsed = urlsplit(self.path)
             query = _query(parsed.query, strict=placement_path(parsed.path))
-            if method == "GET" and parsed.path == "/healthz":
-                self._write(200, {"data": {"status": "ok"}})
+            if method == "GET" and parsed.path in {"/healthz", "/api/v1/agent/task-center/view",
+                    "/api/v1/agent/compute-task-center/view", "/api/v1/agent/compute-task-center/source-sessions/view"}:
+                self._public_read(parsed.path, query)
                 return
             if len(self.headers.get_all("Authorization", [])) != 1:
                 raise HubAccessError("unauthorized", "one Bearer token is required", 401)
@@ -140,8 +161,10 @@ class HubHandler(BaseHTTPRequestHandler):
             if method == "GET":
                 from .hub_session_request_api import validate_read_headers
                 from .hub_compute_placement import validate_read_headers as validate_placement_headers
+                from .hub_task_center_api import validate_read_headers as validate_task_headers
                 validate_read_headers(parsed.path, self.headers)
                 validate_placement_headers(parsed.path, self.headers)
+                validate_task_headers(parsed.path, self.headers)
             sse = (method == "GET" and parsed.path.endswith("/events")
                    and "text/event-stream" in self.headers.get("Accept", ""))
             if sse and "after" not in query and self.headers.get("Last-Event-ID"):
@@ -171,13 +194,14 @@ class HubHandler(BaseHTTPRequestHandler):
     def do_PUT(self):
         from .hub_session_close_api import is_route
         from .hub_compute_placement import is_route as placement_route
+        from .hub_task_center_api import is_route as observer_route
         from .hub_service import PREFIX
         from urllib.parse import unquote
         path = urlsplit(self.path).path
         parts = [unquote(part) for part in path[len(PREFIX) + 1:].split("/")]
         if path.startswith(PREFIX + "/") and (
-                is_route(parts) or placement_route(parts) or parts == ["session-operations"]
-                or parts == ["gateway", "session-close-requests"]):
+                is_route(parts) or placement_route(parts) or observer_route(parts, include_views=True)
+                or parts in (["session-operations"], ["gateway", "session-close-requests"])):
             self._request(self.command)
         else:
             self.send_error(501, "Unsupported method")

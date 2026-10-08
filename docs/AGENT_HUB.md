@@ -249,6 +249,73 @@ Console 运行其 Flutter 分析、测试与工程门禁。跨仓运行状态与
 具体通过项、全仓既有样式问题和未执行项见
 [`VERIFICATION.md`](agent-hub/VERIFICATION.md)。
 
+## 共享只读任务入口（原生元数据，非全机聚合）
+
+```bash
+pi-batch fleet tasks --json
+pi-batch fleet tasks --attention
+pi-batch fleet tasks --source src-<完整24位hex> --tui
+```
+
+`GET /api/v1/agent/task-center` 在既有 user 身份、membership、tenant/instance grant
+内提供共享 schema1 任务/关注投影，**同时**要求 `agent.instances:read` 和
+`agent.sessions:read`。授权 SQL 过滤先于窗口限制；64 个实例、每类 512 个原生
+session/turn、200 个任务显示/128 个关注引用，窗口裁剪后库内遗漏总量未知。source
+是授权来源窗口中的完整 opaque ID，不是目录/URL/实例名；无权限和窗口外均不泄露记录。
+
+这里只选择 session/turn 状态与标签、显式父子身份、已记录代际/时间；不选择 prompt、
+event body、命令、actor/幂等键，不重新打开用户 runtime/历史。不新增 grant、写入、
+控制、自动上传、进程探测或模型调用。未知消耗/验收/耗时/ETA 不变成零，登记时间
+不冒充执行开始，冻结/代际/心跳不证明 lease 或活性；没有独立验证的本地记录映射。
+
+`fleet tasks --tui` 是独立观察器，不包含原 Hub TUI 的发送/取消/计算控件。Python
+客户端只读一次有界 2 MiB 响应，封闭投影冲突或读取期间凭据改变即拒绝，没有
+其它端点/本地历史/旧缓存兜底。schema、预算、授权 fence 与详细限制见
+[`TASK_CENTER.md`](TASK_CENTER.md#第七批第三个切片认证-hub-原生任务事实与远端共享入口)。
+
+`/api/v1/agent/task-center/view` 是无凭据、无租户数据的公共静态 Web shell，**不是**
+数据业务路由的认证豁免。所有事实仍由认证 GET 提供；bearer 不进 URL/storage，
+仅留当前页内存；清除本页凭据不是服务端撤销。TLS/loopback/CORS 边界保持，hash CSP
+与 no-store/no-referrer 限制生效。只用 literal 文本与限缩的公开显示字段，没有隐式
+正文 fetch 或 mutation/上传按钮。这是 Console 可消费的 Web 入口，不代表 Flutter
+Console 集成、真实 issuer/远端部署、跨设备/平台或无障碍验收完成。
+
+### 独立的计算任务元数据观察
+
+`fleet tasks --compute [--json|--attention|--tui]` 显式选择计算观察器；默认原生视图不变。
+`GET /api/v1/agent/compute-task-center` 同时需要 `agent.instances:read` 和
+`agent.tasks:read`，沿既有 user/membership/tenant 与 **source instance** grant 过滤，
+不把 destination compute 权限当作其它来源读取权。窗口最多 64 来源/512 计算记录，
+不选择或解析 private JSON、argv/workdir/result、device/actor/幂等键、session 标签。
+不启动 schema/broker/Fabric/provider、不取消/重试/reschedule，不复位期限或预算。
+
+其 source/task ID 与原生投影处于不同 namespace；不去重、合并计费或发明父任务。
+已记录 session ID 未在原生窗口解析；登记时间不是执行开始，费用/耗时/独立验收/ETA
+仍未追踪。Python 的单次有界 GET、封闭准入、credential fence、关注计数先于显示
+裁剪，与独立 TUI/Web 的清旧事实/单 reader/literal 内容规则相同。公共无数据 shell
+为 `/api/v1/agent/compute-task-center/view`，所有事实仍重新鉴权，无控制/上传入口。
+详见 [`TASK_CENTER.md`](TASK_CENTER.md#第七批第四个切片显式计算任务元数据观察不调度不合并)。
+这不是全机/全生命周期清单、Flutter 集成、真实设备或发布验收。
+
+### 显式计算源会话身份引用（额外会话读权限，不是父子/等价证明）
+
+`fleet tasks --compute --source-sessions [--json|--tui]` 选择第三个只读 profile；数据 GET
+为 `/api/v1/agent/compute-task-center/source-sessions`，无数据 Web shell 为该路径加
+`/view`。同时需要实例、计算任务、会话三类 read scope 与既有 user/tenant/source grant；
+默认两类观察器不变，没有 grant 扩张或自动查本地账本。
+
+一个 query-only 元数据事务在已授权 64 来源/各 512 计算与 session 记录窗口中核对
+完整 instance/session/generation，仅匹配记录生成独立 namespace 的原生任务指针。
+没有标签/正文/event/命令/结果/设备读取或窗口外单条查找；没有匹配则标记窗口内未解析，
+不是缺失/删除/故障证明。计数先于显示裁剪，同一 session 的多个引用不作去重或计费相加。
+代际/登记时间/事务不是活性、lease、执行父子关系、目标绑定或 local/native/compute
+等价证明，所有执行/父子/去重/计费权标志仍 false，费用/耗时/验收/ETA 仍未知。
+
+单次 2 MiB response、封闭投影、credential fence、TUI/Web 先清旧事实/单 reader/literal
+引用规则沿用；不跟随指针 fetch，不回退其它 profile，不派发/修复/删除/上传或复位预算。
+详细边界见 [`TASK_CENTER.md`](TASK_CENTER.md#第七批第五个切片显式计算源会话身份引用不是执行本地映射)。
+该切片并未完成已验证本地账本映射、Flutter、真实设备、无障碍、部署或发布验收。
+
 ## 后续里程碑
 
 1. GPU 探测/调度已实现；真实 CUDA 工作负载和跨设备部署仍需验收。

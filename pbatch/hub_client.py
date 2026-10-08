@@ -182,6 +182,18 @@ class HubClient:
         """An in-memory fence only; never display or persist this credential digest."""
         return self.base_url, hashlib.sha256(self._authorization_token().encode()).digest()
 
+    def task_snapshot(self, limit: int = 100, source: str = "") -> dict:
+        from .hub_task_center_client import read_snapshot
+        return read_snapshot(self, limit, source)
+
+    def compute_task_snapshot(self, limit: int = 100, source: str = "") -> dict:
+        from .hub_compute_task_center_client import read_snapshot
+        return read_snapshot(self, limit, source)
+
+    def compute_source_session_snapshot(self, limit: int = 100, source: str = "") -> dict:
+        from .hub_task_source_sessions_client import read_snapshot
+        return read_snapshot(self, limit, source)
+
     def list_session_operations(self, instance_id: str = "", *, before: str = "", limit: int = 20):
         from .hub_session_operations_client import read_page
         return read_page(self, instance_id, before, limit)
