@@ -51,6 +51,29 @@ Invalid Request / Parse error，另固定覆盖可解码的非请求与解码器
 这些是遍历与默认测试输入的修复，不是旧 CI 超时的完整根因证明；全量 CI
 是否通过必须以完整 `make ci` 结果为准，不能以局部提速或栈转储后的活动代替。
 
+### SQLite 并发与私有状态回归
+
+`PoolStore` 的初始化、数据库/sidecar 权限检查、SQLite 事务到 rollback/close 共用
+原来初始化使用的 **POSIX 父目录 flock**；此前检查 journal 时另一个正常事务可
+提交并替换 inode，使严格的「检查期间文件变化」拒绝也命中正常并发。现在协作实例
+在检查前取得锁，避免该窗口；没有删 journal、忽略 inode/uid/硬链接或关闭其它 DB
+描述符（后者会丢失本进程的 POSIX SQLite record locks）。守卫等待与 SQLite busy wait
+共用原有 10 秒争用预算，不把两段等待叠加；I/O/事务执行仍不是硬实时截止。
+
+独立的 Linux `tui-soak` 合成 provider 证据库也在其自有 scratch 目录锁内打开、读取/
+提交和关闭 SQLite 连接，避免多个 fixture 进程同时抢 journal 与读锁。锁等待与 SQLite
+busy wait 共用原有 **3 秒**；锁忙、坏 JSON、遗漏序号、超限、导出失败仍阻断验收，
+不返回伪造空记录或提前推进 cursor。SIGKILL 仍只留下「完整已提交或无记录」的证据，
+内核释放锁，不加 lock-breaking、cleanup、模型调用或延长 Agent/验收/任务期限。
+
+`test_llm_pool_store_guard.py` / `test_tui_soak_store_guard.py` 验证检查/连接/关闭时锁
+仍持有、等待剩余预算、异常 rollback、拒绝路径替换与未知所有者，以及异常/被杀释放。
+原有多进程、16-thread admission、quota/暂停/配置快照、SIGKILL、固定字节/记录预算、
+完整 export 和原 SQLite busy 断言保留。锁只协调采用此机制的实例；不保证其它 SQLite
+客户端、旧进程或恶意同 uid 写入者安全，也不是账户授权/lease 或真实 provider 验收。
+受控双写事务重现了 journal 检查窗口；这不是所有历史 CI 失败/超时的完整归因。
+全量 `make ci` 仍须独立报告，不能以离线通过或去掉原有真实 provider 测试冒充全绿。
+
 ### Agent 结构化产物门禁
 
 `jsonschema=<path>` 是任务/阶段级 validator，不默认加入本仓库 CI。它调用

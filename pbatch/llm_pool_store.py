@@ -8,7 +8,6 @@ resets remain blocks until a successful exclusive probe, not merely until a time
 
 from __future__ import annotations
 
-from . import file_lock as fcntl
 import math
 import os
 import re
@@ -23,6 +22,7 @@ from pathlib import Path
 
 from . import llm_pool_quota_store as quota
 from .llm_pool_quota_store import UsageRefresh
+from .llm_pool_state_guard import state_guard
 
 
 @dataclass(frozen=True)
@@ -141,14 +141,9 @@ def _private_file(path):
 
 def _bootstrap(path):
     """Serialize publication until its temporary hardlink is removed (POSIX)."""
-    descriptor = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-                         | getattr(os, "O_NOFOLLOW", 0))
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+    with state_guard(path.parent):
         if not path.exists():
             _publish_database(path)
-    finally:
-        os.close(descriptor)
 
 
 def _publish_database(path):
@@ -224,6 +219,8 @@ class PoolStore:
     """Each operation owns a connection and an IMMEDIATE SQLite transaction.
 
     POSIX private user state: no symlink components or multiply linked DB files.
+    Bootstrap, permission checks and transactions share a directory flock so
+    cooperating stores cannot replace a journal during its permission check.
     Path checks assume trusted ancestors and no malicious same-user renames;
     sqlite3 opens by pathname, so checks cannot eliminate all pathname TOCTOU.
     """
@@ -242,33 +239,35 @@ class PoolStore:
 
     @contextmanager
     def _transaction(self, *, prune=True):
-        connection = None
         try:
             _directories(self.path.parent, create=False)
-            _private_file(self.path)
-            for suffix in ("-journal", "-wal", "-shm"):
-                sidecar = Path(str(self.path) + suffix)
+            with state_guard(self.path.parent) as deadline:
+                connection = None
                 try:
-                    _private_file(sidecar)
-                except FileNotFoundError:
-                    pass
-            connection = sqlite3.connect(self.path.as_uri() + "?mode=rw", uri=True,
-                                         timeout=10, isolation_level=None)
-            connection.row_factory = sqlite3.Row
-            connection.execute("PRAGMA foreign_keys=ON")
-            connection.execute("PRAGMA trusted_schema=OFF")
-            connection.execute("PRAGMA synchronous=FULL")
-            connection.execute("BEGIN IMMEDIATE")
-            _validate_db(connection)
-            if prune:
-                connection.execute("DELETE FROM leases WHERE expires_at<=?", (time.time(),))
-            yield connection
-            connection.commit()
+                    _private_file(self.path)
+                    for suffix in ("-journal", "-wal", "-shm"):
+                        sidecar = Path(str(self.path) + suffix)
+                        try:
+                            _private_file(sidecar)
+                        except FileNotFoundError:
+                            pass
+                    connection = sqlite3.connect(self.path.as_uri() + "?mode=rw", uri=True,
+                        timeout=max(0.0, deadline - time.monotonic()), isolation_level=None)
+                    connection.row_factory = sqlite3.Row
+                    connection.execute("PRAGMA foreign_keys=ON")
+                    connection.execute("PRAGMA trusted_schema=OFF")
+                    connection.execute("PRAGMA synchronous=FULL")
+                    connection.execute("BEGIN IMMEDIATE")
+                    _validate_db(connection)
+                    if prune:
+                        connection.execute("DELETE FROM leases WHERE expires_at<=?", (time.time(),))
+                    yield connection
+                    connection.commit()
+                finally:
+                    if connection is not None:
+                        connection.close()  # Rollback/close before releasing the directory guard.
         except (OSError, sqlite3.Error) as exc:
             raise PoolStoreError("pool state unavailable; admission refused") from exc
-        finally:
-            if connection is not None:
-                connection.close()  # Also rolls back failed transactions.
 
     def acquire(self, accounts: tuple[PoolAccount, ...] | list[PoolAccount],
                 model: str, ttl: float, exclude: set[str] | None = None,

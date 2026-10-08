@@ -1,9 +1,10 @@
 """Atomic fixture evidence: committed SQLite rows and a harness-owned JSONL export."""
 
-from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
+
+from tui_soak_store_guard import connection
 
 
 MAX_BYTES, MAX_RECORDS, LOCK_TIMEOUT = 1024 * 1024, 128, 3.0
@@ -19,11 +20,11 @@ def append_provider_event(path: Path, value: dict) -> None:
     raw = (json.dumps(value) + "\n").encode("utf-8")
     if len(raw) > MAX_BYTES:
         raise ValueError("oversized provider evidence record")
-    with closing(sqlite3.connect(database_path(path), timeout=LOCK_TIMEOUT)) as connection:
-        connection.execute("BEGIN IMMEDIATE")
-        connection.execute(SCHEMA)
-        connection.execute("INSERT INTO events (payload) VALUES (?)", (raw,))
-        connection.commit()
+    with connection(database_path(path), LOCK_TIMEOUT) as store:
+        store.execute("BEGIN IMMEDIATE")
+        store.execute(SCHEMA)
+        store.execute("INSERT INTO events (payload) VALUES (?)", (raw,))
+        store.commit()
 
 
 class ProviderLog:
@@ -31,16 +32,16 @@ class ProviderLog:
         self.path, self.failure = path, failure
         self.offset, self.exhausted = 0, False
         try:
-            with closing(sqlite3.connect(database_path(path), timeout=LOCK_TIMEOUT)) as connection:
-                connection.execute(SCHEMA)
-                connection.commit()
+            with connection(database_path(path), LOCK_TIMEOUT) as store:
+                store.execute(SCHEMA)
+                store.commit()
         except sqlite3.Error as exc:
             raise failure(f"cannot initialize provider evidence store: {exc}") from exc
 
     def read(self) -> list[dict]:
         try:
-            with closing(sqlite3.connect(database_path(self.path), timeout=LOCK_TIMEOUT)) as connection:
-                rows = self._batch(connection)
+            with connection(database_path(self.path), LOCK_TIMEOUT) as store:
+                rows = self._batch(store)
         except sqlite3.Error as exc:
             raise self.failure(f"cannot read provider evidence store: {exc}") from exc
         self.exhausted = not rows
