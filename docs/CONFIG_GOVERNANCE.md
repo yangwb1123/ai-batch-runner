@@ -44,10 +44,12 @@ pi-batch config check --file path/to/pi-batch.yaml --json
 `requires_any`，便于确认某个跨语言门禁为什么执行或跳过。
 
 运行时状态也遵循同一个 `data_dir`：记忆索引、被拒产物、真值/因果账本、设备状态、
-Pinned 上下文和预算文件均写入该目录；未设置时仍默认为项目内 `.pi-batch/`。项目级证据
-（例如 `docs/advance/`、决策日志和交付物）仍保留在项目目录中，不会因为迁移运行时目录而
-丢失。`isolate --copy-memory` 会把父项目的运行时状态复制成 worktree 的本地快照，并让
-子进程继续使用该快照，避免多个 worktree 共享同一份可变账本。
+Pinned 上下文和预算文件均写入该目录；默认位于用户级 `~/.abr/projects/<workspace-id>/`，
+不因执行目录是项目根目录而生成项目内 `.pi-batch/`。`PBATCH_RUNTIME_HOME` 可改变运行根；
+`--data-dir` 优先于 `PBATCH_DATA_DIR`，可精确指定项目运行目录。项目明确指定的证据目录、
+决策日志和交付物仍按声明写入；旧运行数据不会自动搬迁或删除。
+`isolate --copy-memory` 把父项目运行数据复制到新 worktree 对应的用户级 runtime；
+子进程绑定该独立目录，避免多个 worktree 共享同一份可变账本。
 
 ## 版本策略
 

@@ -105,7 +105,7 @@ private key 等）只显示 `<redacted>`。
 - **1086+ 回归测试 + 42 eval 用例**；`pi-batch check` 8 门禁聚合自检
 - 零 LLM 确定性核心：所有检测/路由/校验纯 stdlib + ast，可测试、fail closed
 - Meta 流水线可把规划器与并行角色分配给不同模型；`delegation_only` 在适配器层禁用规划器工具；`routing-eval` 以账本观测报告延迟、完成率、返工与 usage，并支持同任务指纹的基线配对比较，见 [`docs/MODEL_DELEGATION.md`](docs/MODEL_DELEGATION.md)
-- 详见 `docs/`（AADM 理论四卷、AGENT_ORGANIZATION、CAMPAIGN_LESSONS）与 `AGENTS.md`
+- 使用手册见 `docs/`；在本仓库修改代码前，先读 [AGENTS.md](AGENTS.md) 的执行契约、实现导航与验收要求。
 
 ```
 <bin> -p PROMPT [--model M] [--provider P] [--thinking T] [--tools T] [--exclude-tools T]
@@ -888,7 +888,7 @@ tasks:
 pi-batch.py              thin entry shim (re-exports the pbatch package)
 pbatch/                  engine + bounded evidence/memory + campaign package
 pi-batch.yaml            agent.bin, session_flags, validators registry, commit prefix
-AGENTS.md                agent-facing guide to the whole toolkit (Chinese; local adapt note)
+AGENTS.md                concise agent execution contract, ownership map, and validation requirements
 quality.py               upstream-synced org scanner (func lines, complexity, dup bodies)
 prompts/                 19 reference role-prompt templates (architect, tech-lead, qa-lead, ...)
 pipelines/               example pipeline configs (code-impl, full-sdlc, generic example)
