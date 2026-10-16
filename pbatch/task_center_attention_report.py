@@ -1,6 +1,8 @@
 """Text-only attention rendering from the existing shared JSON response. No actions or extra fetches."""
 
-ATTENTION_SCRIPT = """
+from .task_center_attention_admission import ADMISSION_SCRIPT
+
+ATTENTION_SCRIPT = ADMISSION_SCRIPT + """
 let selectedAttention='';
 function clearAttention(){
   document.getElementById('attention').replaceChildren();
@@ -12,7 +14,7 @@ function showAttention(item){
 }
 function renderAttention(view){
   const value=view.attention;
-  if(!value){clearAttention();document.getElementById('attention-summary').textContent='关注事实未追踪；不推断零或安全。';return;}
+  if(!attentionOwn(view,'attention')){clearAttention();document.getElementById('attention-summary').textContent='关注事实未追踪；不推断零或安全。';return;}
   document.getElementById('attention-summary').textContent='已观察 '+shown(value.observed_items)+
     ' 项；引用遗漏 '+shown(value.omitted_items)+'；来源诊断 '+shown(value.coverage.snapshot_diagnostics)+
     ' 条（不是不同缺陷/根因数；零项不证明完整覆盖或无需人工判断）';

@@ -169,24 +169,36 @@ def _cmd_overview(args, cwd: str) -> int:
 def _cmd_instances(args, cwd: str) -> int:
     """Progress per workspace runtime dir, flagged only on evidence."""
     from .instance_view import instance_rows
+    if args.stale_seconds <= 0 or args.repeat_seconds < 0:
+        print("instances: stale-seconds must be positive; repeat-seconds cannot be negative")
+        return 2
     payload = instance_rows(stale_seconds=args.stale_seconds)
     notified = None
     if args.notify:
         from . import instance_alerts
         rows = payload["workspaces"]
+        complete = {row["workspace"] for row in rows if row["observation_complete"]}
         notified = instance_alerts.notify(
-            rows, url=args.webhook_url, repeat_seconds=args.repeat_seconds)
+            rows, url=args.webhook_url, repeat_seconds=args.repeat_seconds,
+            resolvable_workspaces=complete)
     if args.json:
         print(json.dumps({"view": payload, "notified": notified},
                          ensure_ascii=False, indent=2))
         return 0
+    return _print_instances(payload, notified, args.webhook_url)
+
+
+def _instance_count(value: object) -> str:
+    return "未追踪" if value is None else str(value)
+
+
+def _print_instances(payload: dict, notified: Optional[dict], webhook_url: str) -> int:
     if payload["unavailable"]:
         print(f"runtime home unavailable: {payload['unavailable']}")
         return 0
     rows = payload["workspaces"]
     if not rows:
-        print("no workspace runtime directories found")
-        return 0
+        print("本次有界窗口没有可显示的工作空间账本记录；不证明没有运行实例。")
     print(f"{'workspace':<28} {'state':<10} {'idle':>7} {'pass':>5} "
           f"{'fail':>5} {'cited':>6}  flag")
     for row in rows:
@@ -194,13 +206,19 @@ def _cmd_instances(args, cwd: str) -> int:
         print(f"{row['workspace'][:28]:<28} "
               f"{str(row['session_state'] or '-'):<10} "
               f"{(f'{idle}s' if idle is not None else '-'):>7} "
-              f"{row['passes']:>5} {row['failures']:>5} {row['cited_stages']:>6}  "
+              f"{_instance_count(row['passes']):>5} {_instance_count(row['failures']):>5} "
+              f"{_instance_count(row['cited_stages']):>6}  "
               f"{row['flag'] or '-'}")
         if row["flag_reason"]:
             print(f"    {row['flag_reason']}")
-    print(f"\nflag rule: {payload['flag_rule']}")
+        if not row["observation_complete"]:
+            print("    观察窗口部分/不可用：未知不等于零、完成或已恢复。")
+    print("\n有界工作空间账本观察；不是逐进程清单、完整历史或卡死证明。")
+    if payload["coverage"]["truncated"] or payload["coverage"]["malformed"]:
+        print("工作空间目录窗口部分/包含拒绝项；遗漏数量未知。")
+    print(f"flag rule: {payload['flag_rule']}")
     if notified is not None:
-        target = args.webhook_url or "stdout"
+        target = webhook_url or "stdout"
         print(f"alerts: due={notified['due']} sent={notified['sent']} "
               f"resolved={notified['resolved']} via {target}")
     return 0

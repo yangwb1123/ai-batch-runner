@@ -53,7 +53,9 @@ summary{cursor:pointer;padding:.5rem} #intents td{overflow-wrap:anywhere}
 <div class="table-wrap"><table><thead><tr><th>项目 / 草案</th><th>状态 / 摘要</th>
 <th>求证阶段</th><th>详情</th></tr></thead><tbody id="feedback"></tbody></table></div>
 <h2>进程活动（不等于任务进展）</h2>
-<div class="table-wrap"><table><thead><tr><th>项目目录</th><th>PID / 存在性</th>
+<p class="note">仅已知登记窗口；PID 探测包含权限/未知结果，不能核验原进程身份或活性。
+心跳差值不是有效进展，未来时钟/缺失数据为未追踪；无控制或清场权。</p>
+<div class="table-wrap"><table><thead><tr><th>项目目录</th><th>PID / 保守观察</th>
 <th>登记状态 / 心跳</th></tr></thead><tbody id="activity"></tbody></table></div>
 <h2>记录详情</h2><section id="intent-detail" hidden aria-live="polite"></section>
 <pre id="detail">选择任务、目标或历史查看公开的只读投影。</pre>
@@ -170,14 +172,12 @@ function clearView(note){
 async function refresh(force=false){
   if(busy&&!force)return;
   const version=++requestVersion,chosen=source.value;
-  clearAttention();
+  clearView('正在读取有界快照；不展示旧的缓存记录。');
+  document.getElementById('summary').textContent='等待读取的新快照；旧统计不是当前事实。';
+  document.getElementById('error').textContent='';
   if(selectedAttention)detail.textContent='正在核对关注事实；不展示旧引用。';
   if(pending)pending.abort();
   const controller=new AbortController();pending=controller;busy=true;
-  document.getElementById('intents').replaceChildren();clearIntentPanel();
-  document.getElementById('repairs').replaceChildren();
-  document.getElementById('resources').replaceChildren();
-  document.getElementById('feedback').replaceChildren();
   if(selectedFeedback)detail.textContent='正在核对反馈草案；不展示旧的缓存记录。';
   if(selectedResource)detail.textContent='正在核对保留计划；不展示旧的缓存记录。';
   if(selectedIntent)detail.textContent='正在重新核对历史授权；不展示旧的缓存线索。';
@@ -185,6 +185,7 @@ async function refresh(force=false){
   try{
     const view=await getJson('/api/tasks?limit=200'+(chosen?'&source='+encodeURIComponent(chosen):''),controller.signal);
     if(version!==requestVersion||chosen!==source.value)return;
+    admitAttention(view,chosen);
     if(!chosen){
       const options=[new Option('所有已接入项目','')];
       view.sources.forEach(s=>options.push(new Option(s.name,s.source_id)));

@@ -74,11 +74,121 @@ busy wait 共用原有 **3 秒**；锁忙、坏 JSON、遗漏序号、超限、�
 受控双写事务重现了 journal 检查窗口；这不是所有历史 CI 失败/超时的完整归因。
 全量 `make ci` 仍须独立报告，不能以离线通过或去掉原有真实 provider 测试冒充全绿。
 
+Fixture 的有界 SELECT 现在仅在连接/目录 guard 内复制 `(id, bytes)`；保留原行数/
+字节/序号准入，SQLite 关闭后才释放 guard，再解码已复制的完整 batch。JSON 校验
+不再占据数据库锁，但**全批通过才导出/推进 cursor**；坏 JSON、非 UTF-8、缺序、
+超限或导出失败仍拒绝，不返回空成功、不重查/拼接新写入。schema/顺序/read API、
+128 条/1MiB/3 秒预算和 SQLite-close-before-unlock 不变，未触碰 PoolStore/Agent。
+`tests/test_tui_soak_batch_decode.py` 确定性验证关闭/解锁早于解码，解码期间的合法写入
+可提交且本批仍只返回选中的字节、坏批不部分导出，以及 raw 类型/字节准入不后移。
+旧作用域的受控用例会复现同类 `cooperative store is locked`；这证明一个可消除的
+锁占用机制，**不证明所有历史 CI 锁超时的根因**，也不保证调度公平或锁永不超时。
+
+`tests/test_state_guard_deadlines.py` 固定时钟验证：flock 即使成功，若已到共享等待
+期限也须拒绝；获锁后目录/私有 sidecar 检查耗尽预算，不得以 `timeout=0` 打开
+SQLite 或开始事务。PoolStore 仍 10 秒、fixture 仍 3 秒，不重置/叠加等待期限；
+无效布尔/零/负值/非有限/非数值预算在时钟/文件访问前拒绝。fixture 同时检查 fd
+与命名目录 uid，变化或未知边界不授予准入。拒绝后关闭自有 guard，保存已有库和
+导出游标；不破锁、不删 sidecar、不恢复账户。此为准入检查而非文件 I/O/事务的
+硬实时保证，也不是旧并发锁超时的完整根因或公平性证明。
+
+Linux fixture guard 的争用等待在 10/11ms 两个间隔间交替，首个仍 10ms；每次按
+原 deadline 的剩余时间截短，不增加轮询频率、重置预算或准许过期锁。固定 10ms
+轮询可能与周期性重复持锁同相位，持续错过存在的空闲窗口；
+`tests/test_tui_soak_poll_phase.py` 用整数纳秒时钟/受控可用区间重现旧行为，并验证
+漂移后在原预算内取得窗口、永久占用仍拒绝、短剩余预算不被延长。此模型证明一个
+轮询别名机制，不证明机器上历次超时的唯一根因，也不是 FIFO、实时或公平性保证。
+只调整合成 fixture；PoolStore/account/Agent/provider 等待和执行策略不采用此漂移。
+
+Fixture JSONL 导出现在由 `tools/tui_soak_export.py` 检查完整写入，初次独占创建为
+0600，后续只追加仍与已记录 dev/inode/uid/类型/单链接/大小/mtime/ctime 一致的文件。
+既存导出不自动接管（含空库/新 reader），目录在 reader 创建时绑定并在实际打开/
+追加前后复核，路径替换/链接/未知所有者/截短/额外写入拒绝，不读取旧正文来猜测恢复。
+短写或未知 write 返回值、write/flush/close 失败均不推进 SQLite cursor、不返回本批
+成功；reader 锁定导出拒绝，后续在 DB 读取前停止，不将整批再次追加到已损坏前缀。
+保留已写字节、数据库、别名/替换现场和可能的空文件，不 truncate/unlink/自动重试；
+原目录阻挡仍抛 OSError。`tests/test_tui_soak_export.py` 固定注入短写/部分写后异常/
+flush/close、FD 包装失败、旧导出/二次 reader、文件与真实目录替换、FIFO/链接、
+空查询前损坏拒绝及正常顺序/权限；原全批校验、128 条/1MiB/3 秒、SIGKILL/导出
+门禁不变。样本只涉及合成 fixture；顺序 stat/独占创建不证明独占 lease、敌对同 uid
+隔离或原子快照，也不是掉电持久性、文件 I/O 硬期限、数据库/整套 worktree 恢复。
+
+### 多会话实例观察回归
+
+`tests/test_instance_observation.py` 固定覆盖同会话终态替换、多个会话交错、追加
+顺序而非时间戳排序、损坏/未完成尾行不回退到旧状态、未知计数及 CLI 只读边界。
+`tests/test_instance_observation_io.py` 检查大账本确实只读有界尾部、行对齐/单行和
+记录预算、严格 UTF-8/重复键/非有限 JSON、路径/类型/uid/别名拒绝、读取变化及
+有界目录枚举。原有 `test_instance_view.py` / `test_instance_alerts.py` 保留。
+`tests/test_instance_alert_coverage.py` 验证部分/损坏/空/缺失覆盖不解除旧告警，完整
+终态窗口才能解除，并保留投递失败重试语义。均为私有 synthetic fixture，不读取
+正在运行的 Campaign/实例、不调用模型，不证明所有历史错误或真实多设备验收。
+
+### 注册进程只读查询回归
+
+`tests/test_registry_observation.py` 覆盖空目录查询无写入、已有 fallback 选择、不从
+拒绝目录扩大读范围、关闭 argv/body/内部路径投影、文字控制安全、覆盖诊断及
+声明状态/保守 PID 观察与进展的分离。`tests/test_registry_observation_io.py` 用私有
+fixture 验证真实字节/目录/记录预算、读取变化/描述符关闭、别名/类型/uid/JSON 拒绝，
+以及活动视图的原始主机比较和不同注册路径不按 PID/时间猜测合并。原有 registry
+登记/心跳/显式 prune 测试保留；新测试不读取或清理真实实例登记、不调用 provider。
+`tests/test_activity_observation.py` 再覆盖目录准入早于枚举/PID 探测、读取后目录消失/
+替换丢弃旧事实而不伪装成初始缺失、解码后的孤立 Unicode 代理字符拒绝与合法代理
+对保留、C1/bidi 文字安全、未来开始/心跳未知而非零秒、未知 PID 行可见为缺口、
+缺失/预算未读覆盖与固定无权字段。既有 PID 保守探测与进程控制/锁门禁不改写。
+
+`tests/test_tui_signal_wait.py` 对原 PTY smoke 的轮询做确定性竞态回归：先检查预期
+退出谓词、再第二次 poll，可能将两次 poll 之间的正常退出误报为“提前退出”。修复
+为先缓存本轮退出观察、再核对谓词；原 10 秒共享 deadline、预期退出码、两条自有
+进程身份、零活后代及 durable UNKNOWN/不伪造成功的检查均保留。该受控复现只证明
+一个轮询机制，不解释所有历史 PTY/取消失败；原 `worker.join(2)` 取消门禁未放宽。
+
+### TUI 补全时序与真实 Codex 诊断
+
+`tests/test_tui_composer_events.py` 固定注入迟到的 `Input.Changed`：旧值不得失效
+当前补全上下文，当前值和真实清空仍须生效。`test_tui_dynamic_completion.py` 在
+实际无头 TUI 中验证旧事件不关闭 picker、不丢弃冻结快照、不额外调用 RPC/setter；
+真实新输入仍关闭旧 picker。等待条件核对 Compose/Mount 完成，而非仅看到已入栈的
+screen 类型；没有加长原等待预算、吞掉挂载异常或删除只读/次数/会话断言。
+
+真实 Codex smoke 仍在 CLI 已安装时运行，不新增 skip、替换 provider 或改写账号。
+失败断言显示有界脱敏的状态、退出码及原因，不再被 pytest 的整份 snapshot 截断
+隐藏认证错误；timeline 用例还核对真实 assistant 文本，用户 prompt 内的 `LISTED`
+不能单独充当成功证据。`tests/test_tui_codex_diagnostics.py` 验证失败仍失败、诊断
+脱敏/截断且不回显私有 workspace。令牌过期、refresh-token reuse 或 provider 拒绝
+必须恢复实际认证/服务后重跑；不能以这些本地回归通过冒充完整 `make ci` 全绿。
+
+取消进程回归的 `/proc/<pid>/stat` 观察不先 `exists()` 再读，避免进程在两步间
+退出造成假失败；只将 ENOENT/ESRCH 视为已消失，存在的进程仍必须是 `Z`。
+`tests/test_review_process_observation.py` 验证活动状态不被接受、权限/IO/坏格式不
+被吞掉；原有子进程停止、无关进程存活及等待预算断言不变。
+
 ### Agent 结构化产物门禁
 
 `jsonschema=<path>` 是任务/阶段级 validator，不默认加入本仓库 CI。它调用
 `scripts/check-json-schema.py`，在产物原子落盘和 `--reuse` 复验前校验纯 JSON；
 非法 JSON、未知约束关键字、外部 `$ref` 和 schema 不匹配均 fail closed。
+
+### 本地 Web 刷新失效回归
+
+`tests/test_task_center_refresh_browser.py` + `tests/fixtures/task_center_pending_browser.js`
+在隔离 Node VM 中运行交付的 page script，验证普通定时/强制刷新发出共享 GET 前
+清除旧任务/目标/活动、选择详情和旧时间/计数；完整新响应才能恢复同 ID 的选择。
+失败、乱序成功/错误不能复活旧事实，literal markup 不创建 DOM 或额外请求。
+原历史/反馈/资源/请求/关注与 HTTP 认证回归不改写；无模型、现场历史或实际实例
+读取。VM 不是实际浏览器/设备或可访问性验收，客户端 abort 也不是任务取消证明。
+
+### 本地 Web 关注投影准入回归
+
+`tests/test_task_attention_web_admission.py` + `tests/fixtures/task_attention_admission_browser.js`
+运行交付脚本，验证显式 null/false/零与真正缺字段 legacy 的区分，关闭字段/证据/
+权限、128 引用预算、计数/覆盖/汇总、完整身份/来源过滤、歧义重复、稳定顺序、
+合法/孤立 Unicode 对、任务显示窗口外引用、损坏后旧响应/错误 fence 与 GET-only。
+未知 shape/额外私有字段不能回显；根因/操作/权限不能借 UI 升级。
+原反馈/资源两个 source-switch fixture 只重建新空窗口的 attention 覆盖（旧 fixture
+删除 sources 却留 source_records=1）；原断言、认证、控制拒绝和晚到响应测试保留，
+另有显式回归确认旧覆盖冲突仍被拒绝。VM 是私有合成证据，非 provider/真实浏览器/
+设备/部署验收，不核验 digest/进程活性，不补读未显示目标或原始正文。
 
 ## 使用
 
