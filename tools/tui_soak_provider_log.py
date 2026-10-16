@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import sqlite3
 
+from tui_soak_export import Export
 from tui_soak_store_guard import connection
 
 
@@ -31,6 +32,7 @@ class ProviderLog:
     def __init__(self, path: Path, failure):
         self.path, self.failure = path, failure
         self.offset, self.exhausted = 0, False
+        self.export = Export(path, failure)
         try:
             with connection(database_path(path), LOCK_TIMEOUT) as store:
                 store.execute(SCHEMA)
@@ -39,6 +41,7 @@ class ProviderLog:
             raise failure(f"cannot initialize provider evidence store: {exc}") from exc
 
     def read(self) -> list[dict]:
+        self.export.require_usable()
         try:
             with connection(database_path(self.path), LOCK_TIMEOUT) as store:
                 rows = self._batch(store)
@@ -47,12 +50,15 @@ class ProviderLog:
         self.exhausted = not rows
         if not rows:
             return []
+        # Decode only the copied bounded batch, after SQLite closes and its
+        # directory guard releases. Refuse the whole batch before exporting.
+        values = [self._decode(raw) for _identity, raw in rows]
         # Only the harness writes this export; fixture processes never append
-        # here. A failed export aborts acceptance and never advances its cursor.
-        with self.path.open("ab") as output:
-            output.write(b"".join(raw for _identity, raw, _value in rows))
+        # here. Incomplete/refused exports preserve bytes and block later reads,
+        # without replaying a batch or advancing its SQLite cursor.
+        self.export.append(b"".join(raw for _identity, raw in rows))
         self.offset = rows[-1][0]
-        return [value for _identity, _raw, value in rows]
+        return values
 
     def _batch(self, connection) -> list[tuple]:
         rows, total = [], 0
@@ -66,8 +72,7 @@ class ProviderLog:
                 raise self.failure("provider evidence sequence has a missing committed record")
             if rows and total + size > MAX_BYTES:
                 break
-            value = self._decode(raw)
-            rows.append((identity, raw, value))
+            rows.append((identity, raw))
             total += size
         return rows
 

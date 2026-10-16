@@ -11,7 +11,7 @@ import pytest
 from test_task_center_http import server, request
 from test_task_retention import source, retained, _view
 from test_task_center_browser import run_browser
-from pbatch import task_center, task_retention_store as store
+from pbatch import task_attention, task_center, task_retention_store as store
 from pbatch.ops import ops_main
 
 
@@ -117,6 +117,9 @@ def test_source_changes_abort_old_retention_plan_and_old_errors_cannot_restore_i
     new = copy.deepcopy(old)
     new["resources"] = []
     new["sources"] = []
+    # Rebuild the index for this new window; stale coverage must be refused.
+    new["attention"] = task_attention.attention_view(new, [])
+    assert new["attention"]["coverage"]["source_records"] == 0
     result = run_browser([old, new], mode, source="src-" + "b" * 24, old_marker="OLD-SOURCE-RETENTION")
     assert result["resources"] == "" and "OLD-SOURCE-RETENTION" not in result["all"]
     assert result["requests"][1]["aborted"] is True

@@ -35,6 +35,8 @@ def _acquire(descriptor, deadline):
     while True:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if time.monotonic() >= deadline:
+                raise TimeoutError("pool cooperative state guard wait budget exhausted")
             return
         except BlockingIOError:
             remaining = deadline - time.monotonic()
@@ -45,15 +47,18 @@ def _acquire(descriptor, deadline):
 
 @contextmanager
 def state_guard(parent: Path):
-    deadline = time.monotonic() + LOCK_TIMEOUT
-    if not math.isfinite(LOCK_TIMEOUT) or LOCK_TIMEOUT <= 0:
+    if (isinstance(LOCK_TIMEOUT, bool) or not isinstance(LOCK_TIMEOUT, (int, float)) or
+            not math.isfinite(LOCK_TIMEOUT) or LOCK_TIMEOUT <= 0):
         raise ValueError("pool guard timeout must be finite and positive")
+    deadline = time.monotonic() + LOCK_TIMEOUT
     descriptor = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
                          | getattr(os, "O_NOFOLLOW", 0))
     try:
         _check_directory(descriptor, parent)
         _acquire(descriptor, deadline)
         _check_directory(descriptor, parent)
+        if time.monotonic() >= deadline:
+            raise TimeoutError("pool cooperative state guard wait budget exhausted")
         yield deadline
     finally:
         os.close(descriptor)  # No deletion/lock breaking; kernel releases on exit/kill.

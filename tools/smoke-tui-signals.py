@@ -36,10 +36,13 @@ def wait_for(terminal: Terminal, predicate, label: str, timeout: float = 10) -> 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         terminal.pump()
+        # A predicate may itself poll for the expected exit. Cache the earlier
+        # status so a second poll cannot call that same desired exit premature.
+        exited = terminal.process.poll()
         if predicate():
             return
-        if terminal.process.poll() is not None:
-            raise SoakFailure(f"TUI exited before {label}: {terminal.process.returncode}")
+        if exited is not None:
+            raise SoakFailure(f"TUI exited before {label}: {exited}")
     raise SoakFailure(f"deadline waiting for {label}")
 
 

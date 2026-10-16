@@ -251,8 +251,11 @@ class PoolStore:
                             _private_file(sidecar)
                         except FileNotFoundError:
                             pass
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("pool state wait budget exhausted")
                     connection = sqlite3.connect(self.path.as_uri() + "?mode=rw", uri=True,
-                        timeout=max(0.0, deadline - time.monotonic()), isolation_level=None)
+                        timeout=remaining, isolation_level=None)
                     connection.row_factory = sqlite3.Row
                     connection.execute("PRAGMA foreign_keys=ON")
                     connection.execute("PRAGMA trusted_schema=OFF")

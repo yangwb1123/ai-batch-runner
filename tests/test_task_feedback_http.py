@@ -12,7 +12,7 @@ import pytest
 from test_task_center_http import server, request
 from test_task_feedback import source, feedback, drafting, input_file, case
 from test_task_center_browser import run_browser
-from pbatch import task_center, task_feedback_store as store
+from pbatch import task_attention, task_center, task_feedback_store as store
 from pbatch.task_feedback_view import feedback_views
 from pbatch.ops import ops_main
 
@@ -137,6 +137,9 @@ def test_source_switch_aborts_old_feedback_and_late_response_or_error_cannot_res
     old = task_center.snapshot()
     old["feedback"][0]["summary"] = "OLD-SOURCE-FEEDBACK"
     new = copy.deepcopy(old); new["feedback"] = []; new["sources"] = []
+    # A new empty source window must not carry the previous source's attention counts.
+    new["attention"] = task_attention.attention_view(new, [])
+    assert new["attention"]["coverage"]["source_records"] == 0
     result = run_browser([old, new], mode, source="src-" + "b" * 24, old_marker="OLD-SOURCE-FEEDBACK")
     assert result["feedback"] == "" and "OLD-SOURCE-FEEDBACK" not in result["all"]
     assert result["requests"][1]["aborted"] is True and result["error"] == ""
