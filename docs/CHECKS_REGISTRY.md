@@ -163,6 +163,19 @@ screen 类型；没有加长原等待预算、吞掉挂载异常或删除只读/
 `tests/test_review_process_observation.py` 验证活动状态不被接受、权限/IO/坏格式不
 被吞掉；原有子进程停止、无关进程存活及等待预算断言不变。
 
+### 快照呈现合并与最终交接回归
+
+`tests/test_tui_snapshot_delivery.py` 用自有 worker/UI 时钟与 typed controller 重验：
+UI 阻塞不能把已确认终态拖出原 deadline；1000 个连续 delta 只产生一条通知且应用
+最新不可变快照（事实不丢失）；陈旧通知重放不能消费更新的待处理通知；被拒绝的
+通知不回滚事实且允许后续通知；卸载后不再应用迟到快照；操作完成后的最终同步交接
+不依赖待处理通知。`SnapshotDelivery` 以 controller 身份、delivery、ticket 与已应用
+revision 栅栏精确通知，`reidentify/close` 使旧通知失效。
+
+这些用例只证明本地呈现准入契约：无真实 provider、Codex 凭据或设备参与，不证明
+历史 presentation 候选实现、真实 PTY 之外的平台验收或执行授权；完整 CI 仍保留原
+真实 provider 与 PTY 测试，不以局部通过代替完整 CI、集成或发布验收。
+
 ### Structured 与托管必需折叠准入回归
 
 `tests/test_tui_structured_admission.py` 与 `tests/test_tui_fold_admission.py` 用自有

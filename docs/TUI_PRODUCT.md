@@ -63,6 +63,14 @@ capture 成功返回后，按原绝对 deadline 接受完成/失败/中断。重
 False 的非终态不进入 Structured TaskResult 正文、stderr 或 message-item 投影，
 未准入终态阻断完成。旧 void sink 的 None 与无 sink 回调路径保留，不重新定义
 其他历史返回值；presentation RuntimeError 丢失显示不抹去已经折叠的 provider 事实。
+
+呈现（presentation）与折叠（folding）分离：worker 折叠后只登记最新的不可变快照，
+同一时刻最多一条 `RuntimeSnapshotReady` 通知，UI 走到该通知时按精确
+controller/delivery/ticket/revision/unmounting 栅栏应用最新快照；陈旧或重放的
+ticket 不会消费更新的待处理通知，拒绝通知也不回滚已折叠事实且不阻止后续通知。
+控制器替换（native attach/detach、恢复/切换）使旧通知失效。操作完成后仍有最终
+同步交接：已确认的终态在 finish 回调与 busy 释放之前直接应用，不依赖待处理通知；
+busy 期间的最终交接仍会等待 UI，这是有意的收尾，不是新的执行窗口或授权。
 App Server 审查同样不捕获未准入正文/finding，capture 异常或耗尽期限不得提前
 解除 watchdog。同步呈现目前仍可能占用消费窗口，不因此延长或重置任务期限。
 

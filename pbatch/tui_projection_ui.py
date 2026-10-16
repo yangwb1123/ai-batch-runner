@@ -17,6 +17,7 @@ from .tui_journal import RuntimeEventJournal, RuntimeEventJournalError
 from .tui_native import (
     NativePipelineAttachment, NativePipelineControlChannel)
 from .tui_protocol import RuntimeEvent, TERMINAL_TURN_STATES, TurnState
+from .tui_snapshot_delivery import RuntimeSnapshotReady, SnapshotDelivery
 
 
 _PRESENTATION_CALLBACKS = frozenset({
@@ -46,6 +47,8 @@ class TUIProjectionMixin:
 
     def _init_runtime_projection(self) -> None:
         self._event_controller = TUIEventController()
+        self._snapshot_delivery = SnapshotDelivery(
+            self._post_runtime_snapshot, self._event_controller)
         self._adapter_workspace_id = ""
         self._journal_session_id = ""
         self._journal_identity: tuple = ()
@@ -93,6 +96,7 @@ class TUIProjectionMixin:
         self._native_pipeline_journal = journal
         self._native_pipeline_attachment = attachment
         self._event_controller = controller
+        self._snapshot_delivery.reidentify(controller)
         self._runtime_view = controller.snapshot()
         self._projection_driven = True
         self._last_status = "Native pipeline attached (read-only)"
@@ -141,6 +145,7 @@ class TUIProjectionMixin:
         self._native_pipeline_previous = None
         if previous is not None:
             self._event_controller, self._runtime_view, self._projection_driven = previous
+            self._snapshot_delivery.reidentify(self._event_controller)
         if (getattr(self, "is_mounted", False)
                 and not getattr(self, "_unmounting", False)):
             self._refresh_status()
@@ -249,6 +254,7 @@ class TUIProjectionMixin:
         self._native_pipeline_journal = journal
         self._native_pipeline_controller = durable
         self._event_controller = durable
+        self._snapshot_delivery.reidentify(durable)
         self._runtime_view = durable.snapshot()
         controller.close()
         return durable
@@ -265,8 +271,18 @@ class TUIProjectionMixin:
         if not self._projection_driven:
             return
         view = self._event_controller.snapshot()
-        if view.turn_state in TERMINAL_TURN_STATES:
-            self._runtime_finish_view = view
+        if view.turn_state not in TERMINAL_TURN_STATES:
+            return
+        self._runtime_finish_view = view
+        if view.revision <= self._runtime_view.revision:
+            return
+        if threading.get_ident() == getattr(self, "_ui_thread_id", 0):
+            self._apply_runtime_snapshot(view)
+            return
+        try:
+            self.call_from_thread(self._apply_runtime_snapshot, view)
+        except (AttributeError, RuntimeError, TypeError):
+            pass  # the application closed while a runtime was unwinding
 
     def _apply_runtime_finish(self) -> None:
         view, self._runtime_finish_view = self._runtime_finish_view, None
@@ -492,6 +508,7 @@ class TUIProjectionMixin:
                     self._ingest_pending_idle_event(event, controller)
         previous = self._event_controller
         self._event_controller = controller
+        self._snapshot_delivery.reidentify(controller)
         self._journal_session_id = session_id
         self._journal_identity = journal.identity
         self._runtime_view = controller.snapshot()
@@ -632,6 +649,26 @@ class TUIProjectionMixin:
         payload = event.payload if isinstance(event.payload, dict) else {}
         return event.kind, payload
 
+    def _post_runtime_snapshot(self, message: RuntimeSnapshotReady) -> bool:
+        """Post one coalesced notice; a headless harness refuses safely."""
+        post = getattr(self, "post_message", None)
+        if not callable(post) or not getattr(self, "is_mounted", False):
+            return False
+        try:
+            return bool(post(message))
+        except (AttributeError, RuntimeError, TypeError):
+            return False
+
+    def on_runtime_snapshot_ready(self, message: RuntimeSnapshotReady) -> None:
+        """Apply the newest folded view when the UI reaches its notice."""
+        view = self._snapshot_delivery.take(message.delivery_id, message.ticket)
+        if view is None:
+            return
+        if (getattr(self, "_unmounting", False)
+                or not getattr(self, "is_mounted", False)):
+            return
+        self._apply_runtime_snapshot(view)
+
     def _ingest_runtime_event(self, event: RuntimeEvent) -> bool:
         """Report required folding admission, independently of presentation."""
         event = self._submitted_runtime_event(event)
@@ -649,10 +686,7 @@ class TUIProjectionMixin:
         if threading.get_ident() == self._ui_thread_id:
             self._apply_runtime_snapshot(view)
             return True
-        try:
-            self.call_from_thread(self._apply_runtime_snapshot, view)
-        except RuntimeError:
-            pass  # the application closed while a runtime was unwinding
+        self._snapshot_delivery.offer(self._event_controller, view)
         return True
 
     def _apply_runtime_snapshot(self, view: TUIViewSnapshot) -> None:
@@ -845,4 +879,5 @@ class TUIProjectionMixin:
         except (AttributeError, RuntimeError, TypeError):
             pass
         finally:
+            self._snapshot_delivery.close()
             self._event_controller.close()
