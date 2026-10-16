@@ -16,7 +16,8 @@ import uuid
 from typing import Any, Optional
 
 from . import review
-from .tui_lifecycle import TUIRuntimeLifecycleMixin, next_runtime_event, operation_timeout
+from .tui_lifecycle import (
+    TUIRuntimeLifecycleMixin, next_runtime_event, operation_timeout, require_terminal_projection)
 from .product import format_product_brief, product_brief
 from .tui_review import (
     REVIEW_TIMEOUT_SECONDS,
@@ -167,11 +168,12 @@ class TUIReviewMixin:
                 raise RuntimeError("App Server review event stream closed")
             kind, payload = self._runtime_event_context(handle, event)
             terminal = kind in {"turn.completed", "turn.failed", "turn.interrupted"}
+            admitted = self._ingest_runtime_event(event)
+            require_terminal_projection(kind, admitted)
+            if admitted is not False:
+                capture_runtime_review_event(capture, event)
             if terminal:
                 self._runtime_operation.complete()
-            self._ingest_runtime_event(event)
-            capture_runtime_review_event(capture, event)
-            if terminal:
                 return kind, payload
 
     def _finish_review(self, payload: dict[str, Any], outcome: Any,

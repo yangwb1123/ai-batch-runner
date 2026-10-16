@@ -163,6 +163,25 @@ screen 类型；没有加长原等待预算、吞掉挂载异常或删除只读/
 `tests/test_review_process_observation.py` 验证活动状态不被接受、权限/IO/坏格式不
 被吞掉；原有子进程停止、无关进程存活及等待预算断言不变。
 
+### Structured 与托管必需折叠准入回归
+
+`tests/test_tui_structured_admission.py` 与 `tests/test_tui_fold_admission.py` 用自有
+时钟/adapter/typed controller 和有界 journal 重新复现原期限与准入边界，不把
+临时目录中已经不可用的历史源码、日志或 PASS 重新认定为证据。Structured 在
+初始化/会话/handle/消费与必需折叠后复核同一 RuntimeOperation 期限；done/stream
+关闭不能绕过，及时终态不被迟醒协调/timer 反转。明确 False 的正文、warning/error
+不重新进入结果，也不耗尽 item 容量或替换已接受部分正文；终态 False 必须拒绝。
+旧 void/无 sink 与非 False 历史行为保留；呈现不可用不同于必需折叠拒绝。
+
+托管 turn 与 App Server review 先折叠，再在原期限内完成；review capture 只取
+准入事件且仍为必需工作。已保存 provider 成功与本地失败并列保留，结果/异常
+收尾不得显示 Ready/succeeded，也不另造 provider 失败或宣称副作用回滚。
+原 RuntimeOperation 类、状态表、timeout、stop/grace/join、输出/item 上限和既有
+真实 provider/PTY 断言未修改。同步呈现成本未消除；本次不声称恢复所有消失的
+runtime fencing/呈现提案，不证明真实 Codex、历史 journal 故障或平台验收根因。
+这些受控用例无真实 provider；完整 CI 仍保留原真实 provider 测试，不以局部通过
+代替完整 CI、集成源码或发布验收。
+
 ### Agent 结构化产物门禁
 
 `jsonschema=<path>` 是任务/阶段级 validator，不默认加入本仓库 CI。它调用

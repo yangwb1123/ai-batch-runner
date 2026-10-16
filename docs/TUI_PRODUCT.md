@@ -56,6 +56,25 @@ workspace/session/run/turn；该记录只表示提交意图，不证明 provider
 空闲期间或上一轮完成后断连同样可以用 `/new` 重连；若 provider 暂不可用，
 可再次显式尝试。重连保留旧会话的故障证据，开启新会话且不会自动重放任务。
 
+必需 runtime 折叠先于终态完成：执行消费者只在 journal/controller 与适用的审查
+capture 成功返回后，按原绝对 deadline 接受完成/失败/中断。重复/提交过滤的
+终态不能只凭 kind 或 handle.done 作为新的完成；空闲/恢复去重仍为幂等无操作。
+读入回执的 True 表示必需折叠准入，不是呈现成功、独立验收或执行授权；显式
+False 的非终态不进入 Structured TaskResult 正文、stderr 或 message-item 投影，
+未准入终态阻断完成。旧 void sink 的 None 与无 sink 回调路径保留，不重新定义
+其他历史返回值；presentation RuntimeError 丢失显示不抹去已经折叠的 provider 事实。
+App Server 审查同样不捕获未准入正文/finding，capture 异常或耗尽期限不得提前
+解除 watchdog。同步呈现目前仍可能占用消费窗口，不因此延长或重置任务期限。
+
+Structured Exec backend 复用既有 `RuntimeOperation`：adapter 构造完成后、初始化
+之前启动原 timeout，检查初始化、会话交接、handle 绑定、消费与必需折叠后的原
+期限；及时确认的终态不因协调线程/过期 timer 迟醒反转。stream 关闭或 done 本身
+不是终态证据。构造、任意阻塞第三方调用/文件 I/O 不新增硬实时保证；原 stop、
+grace/join 与输出/item 上限不放宽，没有自动 provider 重试或账户/模型切换。
+provider 终态已保存但本地 deadline/准入失败时保留原事实，不补造矛盾的 provider
+失败；界面明确显示 Failed (local acceptance)，而非 Ready/succeeded。此显示不是
+副作用回滚，也不证明真实 provider 失败根因或设备/部署验收。
+
 关闭 transport 会显式释放本地 stdin/stdout/stderr 描述符，不依赖对象回收。
 POSIX 管道使用可中止的非阻塞读写：即使脱离进程组的后代仍持有管道，关闭也会
 结束本地阻塞的读写操作，专用读取线程退出，线程池中的执行线程可以继续复用；

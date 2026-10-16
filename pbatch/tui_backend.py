@@ -90,7 +90,7 @@ class TUIBackend:
         self._turn_done.set()
         self._turn_procs: tuple = ()
         self._turn_interrupt: Optional[Callable[[], None]] = None
-        self._runtime_event_sink: Optional[Callable[[RuntimeEvent], None]] = None
+        self._runtime_event_sink: Optional[Callable[[RuntimeEvent], Optional[bool]]] = None
         self.provider_thread_id = ""
         self.provider_resume_required = False
         self.provider_fork_required = False
@@ -119,8 +119,8 @@ class TUIBackend:
             self._configure_sinks()
 
     def set_runtime_event_sink(
-            self, sink: Optional[Callable[[RuntimeEvent], None]]) -> None:
-        """Attach a raw typed-event sink before a structured turn starts."""
+            self, sink: Optional[Callable[[RuntimeEvent], Optional[bool]]]) -> None:
+        """Attach required folding; False filters, legacy void/None admits."""
         if sink is not None and not callable(sink):
             raise TypeError("runtime event sink must be callable or None")
         with self._state_lock:

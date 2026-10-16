@@ -571,7 +571,9 @@ class PiBatchTUI(TUIRuntimeLifecycleMixin, TUISettingsMixin, TUISessionMixin, TU
         self._reconcile_runtime_failure(message)
         if not self._turn_stderr_seen:
             self._append_active("error", message)
-        self._last_status = self._projected_terminal_label() or "Failed"
+        projected = self._projected_terminal_label()
+        self._last_status = ("Failed (local acceptance)"
+                             if projected == "Ready" else projected or "Failed")
 
     def _finish_turn_result(self, result: Any) -> None:
         success, stdout, stderr, reason = _result_fields(result)
@@ -585,7 +587,9 @@ class PiBatchTUI(TUIRuntimeLifecycleMixin, TUISettingsMixin, TUISessionMixin, TU
                 and not self._turn_stderr_seen):
             self._append_active("error", reason)
         fallback = "Ready" if success else "Failed"
-        self._last_status = self._projected_terminal_label() or fallback
+        projected = self._projected_terminal_label()
+        self._last_status = ("Failed (local acceptance)" if not success and projected == "Ready"
+                             else projected or fallback)
 
     def _set_busy(self, busy: bool) -> None:
         if busy:

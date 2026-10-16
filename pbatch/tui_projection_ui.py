@@ -632,11 +632,11 @@ class TUIProjectionMixin:
         payload = event.payload if isinstance(event.payload, dict) else {}
         return event.kind, payload
 
-    def _ingest_runtime_event(self, event: RuntimeEvent) -> None:
-        """Fold a trusted envelope synchronously, then cross the UI boundary."""
+    def _ingest_runtime_event(self, event: RuntimeEvent) -> bool:
+        """Report required folding admission, independently of presentation."""
         event = self._submitted_runtime_event(event)
         if event is None:
-            return
+            return False
         try:
             view = self._event_controller.ingest(event)
         except (OverflowError, RuntimeError, ValueError):
@@ -645,14 +645,15 @@ class TUIProjectionMixin:
                 self._runtime_blocked_reason = reason
             raise
         if view is None:
-            return
+            return False
         if threading.get_ident() == self._ui_thread_id:
             self._apply_runtime_snapshot(view)
-            return
+            return True
         try:
             self.call_from_thread(self._apply_runtime_snapshot, view)
         except RuntimeError:
             pass  # the application closed while a runtime was unwinding
+        return True
 
     def _apply_runtime_snapshot(self, view: TUIViewSnapshot) -> None:
         """The only runtime-event path allowed to mutate Textual presentation."""
@@ -753,6 +754,8 @@ class TUIProjectionMixin:
 
     def _projection_status_state(self, fallback: str) -> str:
         state = self._runtime_view.turn_state if self._projection_driven else ""
+        if state == TurnState.SUCCEEDED and self._last_status == "Failed (local acceptance)":
+            return "failed"
         return state.lower() if state else fallback
 
     def _projected_terminal_label(self) -> str:

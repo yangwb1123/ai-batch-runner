@@ -114,6 +114,12 @@ class RuntimeOperation:
             pass  # close is the bounded fallback when interrupt is unsupported
 
 
+def require_terminal_projection(kind: str, admitted: Any) -> None:
+    """Refuse explicitly unadmitted terminals; retain legacy void receipts."""
+    if kind in {"turn.completed", "turn.failed", "turn.interrupted"} and admitted is False:
+        raise RuntimeError("runtime terminal event was not admitted by required projection")
+
+
 def operation_timeout(app: Any, fallback: float = 0) -> float:
     """Resolve the configured turn deadline without depending on a fake backend."""
     from . import config
@@ -217,10 +223,11 @@ class TUIRuntimeLifecycleMixin:
                 raise RuntimeError("runtime event stream closed during a turn")
             kind, payload = self._runtime_event_context(handle, event)
             terminal = kind in {"turn.completed", "turn.failed", "turn.interrupted"}
-            if terminal and operation is not None:
-                operation.complete()
-            self._ingest_runtime_event(event)
+            admitted = self._ingest_runtime_event(event)
             if terminal:
+                require_terminal_projection(kind, admitted)
+                if operation is not None:
+                    operation.complete()
                 return {"success": kind == "turn.completed", "stdout": "", "stderr": "",
                         "reason": payload.get("reason", ""),
                         "returncode": payload.get("returncode", 0)}

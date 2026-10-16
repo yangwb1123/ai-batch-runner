@@ -13,16 +13,18 @@ from typing import Any, Callable, ContextManager, Optional
 from . import config
 from .lock import LOCK_EXIT_CODE, acquire_lock, release_lock
 from .models import Task, TaskResult
+from .tui_lifecycle import RuntimeOperation, RuntimeOperationStopped, require_terminal_projection
 from .tui_messages import MessageProjection
 
 
 AdapterFactory = Callable[..., Any]
 Notify = Callable[[str, str], None]
-EventSink = Callable[[Any], None]
+EventSink = Callable[[Any], Optional[bool]]
 
 
 class _StructuredState:
-    def __init__(self) -> None:
+    def __init__(self, operation: RuntimeOperation) -> None:
+        self.operation = operation
         self.stdout: list[str] = []
         self.stderr: list[str] = []
         self.messages = MessageProjection(config.OUTPUT_MAX_BYTES)
@@ -144,12 +146,16 @@ def _invoke_structured(
     adapter = _new_adapter(factory, backend)
     control = _InterruptController(adapter, notify)
     install_interrupt(control.interrupt)
-    started = time.monotonic()
-    state = _StructuredState()
+    operation = RuntimeOperation(adapter, backend.timeout, "agent")
+    started = operation.deadline - backend.timeout
+    state = _StructuredState(operation)
     consumer = None
     try:
+        operation.check()
         adapter.initialize({"workspace_id": backend.cwd})
+        operation.check()
         _adopt_provider_session(adapter, backend, notify)
+        operation.check()
         if is_cancelled():
             return _cancelled_result(task)
         handle = adapter.start_turn({
@@ -157,12 +163,12 @@ def _invoke_structured(
             "run_id": f"tui-{uuid.uuid4().hex}",
         })
         control.set_handle(handle)
+        operation.bind(handle)
         consumer = threading.Thread(
             target=_consume_events, args=(adapter, state, notify, event_sink),
             name=f"tui-structured-{turn}", daemon=True)
         consumer.start()
-        timed_out = _await_structured(
-            adapter, control, state, started, backend.timeout, is_cancelled)
+        timed_out = _await_structured(adapter, control, state, is_cancelled)
         # The provider thread id is only known AFTER the turn: real adapters
         # capture it from the first thread.started event while consuming
         # events (fake adapters preset it at construction — a trap). Without
@@ -170,7 +176,10 @@ def _invoke_structured(
         _store_provider_thread(adapter, backend)
         return _structured_result(
             backend, task, state, started, timed_out, is_cancelled)
+    except RuntimeOperationStopped:
+        return _structured_result(backend, task, state, started, True, is_cancelled)
     finally:
+        operation.finish()
         try:
             adapter.close()
         except Exception as exc:
@@ -290,9 +299,14 @@ def _consume_events(adapter: Any, state: _StructuredState, notify: Notify,
                     event_sink: Optional[EventSink]) -> None:
     try:
         for event in adapter.events():
+            state.operation.check()
             if event_sink is not None:
-                event_sink(event)
+                admitted = event_sink(event)
+                require_terminal_projection(str(getattr(event, "kind", "")), admitted)
+                if admitted is False:
+                    continue
             if _project_event(event, state, notify, present=event_sink is None):
+                state.operation.complete()
                 return
         if not state.terminal:
             state.error = RuntimeError(
@@ -341,20 +355,24 @@ def _project_event(event: Any, state: _StructuredState, notify: Notify, *,
 
 
 def _await_structured(adapter: Any, control: _InterruptController,
-                      state: _StructuredState, started: float, timeout: int,
+                      state: _StructuredState,
                       is_cancelled: Callable[[], bool]) -> bool:
-    deadline = started + timeout
     timed_out = False
     while not state.done.wait(0.05):
         if is_cancelled():
             control.interrupt()
-        if time.monotonic() >= deadline:
+        try:
+            state.operation.check()
+        except RuntimeOperationStopped:
             timed_out = True
-            control.interrupt()
         if (timed_out or is_cancelled()) and not state.done.wait(1.0):
             adapter.close()
             state.done.wait(1.0)
             break
+    try:
+        state.operation.check()
+    except RuntimeOperationStopped:
+        timed_out = True
     return timed_out
 
 
