@@ -52,7 +52,8 @@ def alert_key(workspace: str, flag: str) -> str:
 
 def sync_alerts(rows: list[dict], now: Optional[int] = None,
                 repeat_seconds: int = DEFAULT_REPEAT_SECONDS,
-                cwd: str = "") -> tuple[list[dict], list[str]]:
+                cwd: str = "", *,
+                resolvable_workspaces: Optional[set[str]] = None) -> tuple[list[dict], list[str]]:
     """Reconcile stored alerts against currently flagged rows.
 
     Returns ``(due, resolved)``: alerts that should be delivered now, and keys
@@ -74,7 +75,9 @@ def sync_alerts(rows: list[dict], now: Optional[int] = None,
                     "idle_seconds": row["idle_seconds"],
                     "first_seen": int((entry or {}).get("first_seen") or moment),
                     "repeat": bool(entry)})
-    resolved = [key for key in stored if key not in flagged]
+    resolved = [key for key in stored if key not in flagged and
+                (resolvable_workspaces is None or
+                 key.rsplit(":", 1)[0] in resolvable_workspaces)]
     return due, sorted(resolved)
 
 
@@ -118,14 +121,16 @@ def deliver(payload: dict, url: str) -> bool:
 
 
 def notify(rows: list[dict], url: str = "", repeat_seconds: int = DEFAULT_REPEAT_SECONDS,
-           cwd: str = "", now: Optional[int] = None) -> dict:
+           cwd: str = "", now: Optional[int] = None, *,
+           resolvable_workspaces: Optional[set[str]] = None) -> dict:
     """Reconcile, deliver what is due, and record only what was announced.
 
     An alert whose delivery failed is *not* marked notified, so the next run
     retries it instead of staying silent forever because an endpoint was down.
     """
     moment = int(now if now is not None else datetime.now(timezone.utc).timestamp())
-    due, resolved = sync_alerts(rows, moment, repeat_seconds, cwd)
+    due, resolved = sync_alerts(rows, moment, repeat_seconds, cwd,
+                                resolvable_workspaces=resolvable_workspaces)
     sent: list[str] = []
     for alert in due:
         payload = {"kind": "pbatch.instance.flagged",

@@ -6,10 +6,13 @@ private user runtime `~/.abr/runs/<pid>.json` (one file per process — no cross
 write contention), heartbeats its last activity every 60s via a daemon
 thread, and unregisters on exit. When the home directory is read-only,
 the registry deterministically falls back to a per-user runtime/temp
-directory. `pi-batch ps` lists live runs across the user's repositories.
+directory. `pi-batch ps` lists a bounded window of registered run metadata,
+not all live processes across the user's repositories.
 
-Lock-free read path: list_runs() only scans and stat()s files; a stale
-file (dead pid) is reported with status=dead and can be pruned.
+Queries select an existing registry without a write probe and use bounded,
+closed metadata projections. PID presence (including conservative unknown
+probe results) and a heartbeat do not verify original identity or progress.
+Only an explicit --prune invocation retains the existing maintenance action.
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ import json
 import math
 import os
 import socket
+import stat
 import sys
 import tempfile
 import threading
@@ -26,6 +30,7 @@ from pathlib import Path
 
 from .user_dirs import pbatch_runtime_home
 from . import process_identity
+from .registry_observation import diagnostics, literal, scan
 
 HEARTBEAT_INTERVAL = 60  # seconds
 
@@ -173,31 +178,74 @@ def _heartbeat_loop() -> None:
         heartbeat()
 
 
-def list_runs() -> list[dict]:
-    """All registry entries for live processes on this host, oldest first.
-    Entries whose pid is dead are returned with status='dead' so callers
-    can show or prune them."""
-    runs: list[dict] = []
-    directory = _registry_dir()
-    if not directory.is_dir():
-        return runs
-    for path in sorted(directory.glob("*.json")):
+def _read_registry_dir() -> Path:
+    """Choose only existing roots; an unsafe existing root is not a fallback grant."""
+    candidates = _registry_candidates()
+    if _own_path is not None:
+        candidates = [_own_path.parent, *candidates]
+    for path in dict.fromkeys(candidates):
         try:
-            meta = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+            mode = path.lstat().st_mode
+        except (FileNotFoundError, NotADirectoryError):
             continue
-        if not isinstance(meta, dict):
-            continue
-        pid = meta.get("pid")
-        if not process_identity.valid_pid(pid) or path.stem != str(pid):
-            continue
-        if meta.get("host") != socket.gethostname():
-            meta["status"] = "unknown"
+        except OSError:
+            return path
+        if stat.S_ISDIR(mode) or stat.S_ISLNK(mode):
+            return path
+    return candidates[0] if candidates else _REGISTRY_DIR
+
+
+def _observed_time(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except (ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) and 0 <= number <= 10**15 else None
+
+
+def _run_record(path: Path, meta: dict) -> dict | None:
+    pid = meta.get("pid")
+    if not process_identity.valid_pid(pid) or path.stem != str(pid):
+        return None
+    host, status = meta.get("host"), literal(meta.get("status"), 64)
+    presence = "unknown_host"
+    if isinstance(host, str) and host == socket.gethostname():
+        presence = "pid_present_or_unknown" if _alive(pid) else "pid_absent"
+        reported = "dead" if presence == "pid_absent" else status
+    else:
+        reported = "unknown"
+    return {"pid": pid, "host": literal(host, 128), "status": reported,
+            "registered_status": status, "presence": presence,
+            "start": _observed_time(meta.get("start")),
+            "last_active": _observed_time(meta.get("last_active")),
+            "mode": literal(meta.get("mode"), 64), "repo": literal(meta.get("repo"), 1024),
+            "session": literal(meta.get("session"), 128), "_file": str(path),
+            "liveness": "not_verified", "progress": "untracked", "controllable": False}
+
+
+def run_snapshot(*, include_files: bool = False) -> dict:
+    """One selected existing registry window, not an all-process inventory."""
+    pairs, coverage = scan(_read_registry_dir())
+    runs = []
+    for path, value in pairs:
+        record = _run_record(path, value)
+        if record is None:
+            coverage["malformed"] += 1
         else:
-            meta["status"] = "dead" if not _alive(pid) else meta.get("status", "?")
-        meta["_file"] = str(path)
-        runs.append(meta)
-    return runs
+            if not include_files:
+                record.pop("_file")
+            runs.append(record)
+    return {"schema_version": 1, "runs": runs, "coverage": coverage,
+            "diagnostics": diagnostics(coverage), "complete_inventory": False,
+            "scope": "bounded_selected_existing_registry_metadata_not_process_inventory",
+            "grants_execution": False}
+
+
+def list_runs() -> list[dict]:
+    """Legacy list projection; CLI reports coverage and never exposes private _file."""
+    return run_snapshot(include_files=True)["runs"]
 
 
 def prune_dead() -> int:
@@ -228,26 +276,21 @@ def _timestamp(value: object, fallback: float) -> float:
 
 
 def format_ps(runs: list[dict]) -> str:
-    """Human-readable table: PID / MODE / REPO / SESSION / AGE / IDLE /
-    STATUS / ARGV."""
+    """Literal metadata table; never render arbitrary argv or private extra fields."""
     lines = [f"{'PID':<8} {'MODE':<10} {'REPO':<44} {'SESSION':<24} "
-             f"{'AGE':<7} {'IDLE':<6} STATUS  ARGV"]
+             f"{'AGE':<7} {'IDLE':<6} STATE    PRESENCE"]
     now = time.time()
-    for r in runs:
-        start = _timestamp(r.get("start"), now)
-        age = now - start
-        idle = now - _timestamp(r.get("last_active"), start)
-        argv = r.get("argv", [])
-        argv = " ".join(str(arg) for arg in argv) if isinstance(argv, list) else ""
-        if len(argv) > 60:
-            argv = argv[:57] + "..."
-        repo = str(r.get("repo", "?"))
+    for record in runs:
+        start, heartbeat = _observed_time(record.get("start")), _observed_time(record.get("last_active"))
+        age = "未追踪" if start is None or start > now else _fmt_age(now - start)
+        idle = "未追踪" if heartbeat is None or heartbeat > now else _fmt_age(now - heartbeat)
+        repo = literal(record.get("repo"), 1024)
         if len(repo) > 44:
             repo = "..." + repo[-41:]
-        lines.append(f"{r.get('pid', 0):<8} {str(r.get('mode', '?')):<10} "
-                     f"{repo:<44} {str(r.get('session', ''))[:24]:<24} "
-                     f"{_fmt_age(age):<7} {_fmt_age(idle):<6} "
-                     f"{str(r.get('status', '?')):<8} {argv}")
+        lines.append(f"{record.get('pid', 0):<8} {literal(record.get('mode'), 10):<10} "
+                     f"{repo:<44} {literal(record.get('session'), 24):<24} "
+                     f"{age:<7} {idle:<6} {literal(record.get('status'), 64):<8} "
+                     f"{literal(record.get('presence'), 64)}")
     return "\n".join(lines)
 
 
@@ -260,22 +303,27 @@ def _fmt_age(seconds: float) -> str:
 
 
 def ps_main(argv: list) -> None:
-    """`pi-batch ps [--json] [--prune]`: list live runs across repos."""
+    """`pi-batch ps [--json] [--prune]`: bounded registered metadata, not live inventory."""
     import argparse
     parser = argparse.ArgumentParser(
         prog="pi-batch.py ps",
-        description="List live pi-batch runs (global registry).")
+        description="Observe bounded registered pi-batch metadata, not a live process inventory.")
     parser.add_argument("--json", action="store_true", help="emit JSON")
     parser.add_argument("--prune", action="store_true",
                         help="remove dead-pid registry entries first")
     args = parser.parse_args(argv)
     if args.prune:
         prune_dead()
-    runs = list_runs()
+    view = run_snapshot()
+    runs = view["runs"]
+    for note in view["diagnostics"]:
+        print(f"ps: {note}", file=sys.stderr)
     if args.json:
-        print(json.dumps(runs, ensure_ascii=False, indent=2, default=str))
+        public = [{key: value for key, value in row.items() if key != "_file"} for row in runs]
+        print(json.dumps(public, ensure_ascii=False, indent=2, allow_nan=False))
         return
     if not runs:
-        print("No live pi-batch runs.")
-        return
-    print(format_ps(runs))
+        print("No registrations in this bounded window; not proof that no processes are running.")
+    else:
+        print(format_ps(runs))
+    print("只读有界注册元数据；PID/心跳不是原进程身份或有效进展；无控制权。")

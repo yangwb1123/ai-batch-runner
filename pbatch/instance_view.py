@@ -22,12 +22,12 @@ surface; a consumer can tell what it is looking at.
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from .config import log
+from .instance_observation_io import project_window, read_window, window_clear
+from .instance_session_view import UNFINISHED_SESSION_STATES, session_facts
 from .user_dirs import pbatch_runtime_home
 
 INSTANCE_VIEW_SCHEMA_VERSION = 1
@@ -38,12 +38,6 @@ MAX_SESSION_RECORDS = 200
 RECEIPTS_RELATIVE = ("pipeline", "receipts.jsonl")
 SESSION_LEDGER = "sessions.jsonl"
 RECEIPT_SCHEMA_VERSION = 1
-
-#: Session states that mean the work is still in flight. Anything else —
-#: MERGED, ABORTED, DIRTY, CONFLICT, TEST_FAILED, NO_GATE, QUEUE_REFUSED,
-#: READY — is finished, one way or another, so silence after it is expected.
-UNFINISHED_SESSION_STATES = frozenset(
-    {"CREATED", "RUNNING", "REBASING", "VALIDATING", "MERGING"})
 
 _TS_FORMAT = "%Y-%m-%d %H:%M:%S"
 
@@ -56,9 +50,14 @@ def projects_root() -> Path:
 def instance_rows(stale_seconds: int = 900,
                   limit: int = MAX_WORKSPACES) -> dict:
     """One row per workspace runtime directory, plus the rule that flagged it."""
+    if type(stale_seconds) is not int or stale_seconds <= 0:
+        raise ValueError("stale seconds must be a positive integer")
+    if type(limit) is not int or not 0 <= limit <= MAX_WORKSPACES:
+        raise ValueError("workspace limit must be between 0 and 200")
     root = projects_root()
+    projects, coverage = project_window(root, limit)
     rows = []
-    for project in _project_dirs(root, limit):
+    for project in projects:
         row = _row(project, stale_seconds)
         if row is not None:
             rows.append(row)
@@ -69,80 +68,79 @@ def instance_rows(stale_seconds: int = 900,
         "flag_rule": ("unfinished isolate session with no completed stage for "
                       "stale_seconds, or two or more consecutive failed stages"),
         "workspaces": rows,
-        "unavailable": None if root.is_dir() else str(root),
+        "unavailable": None if coverage["available"] else str(root),
+        "coverage": coverage,
+        "complete_inventory": False,
+        "scope": "bounded_workspace_ledger_metadata_not_process_or_lifetime_inventory",
+        "grants_execution": False,
     }
 
 
 def _project_dirs(root: Path, limit: int) -> list[Path]:
-    if not root.is_dir():
-        return []
-    try:
-        found = sorted(path for path in root.iterdir() if path.is_dir())
-    except OSError as exc:
-        log.debug("instance view: cannot enumerate %s (%s)", root, exc)
-        return []
-    return found[:max(0, int(limit))]
+    return project_window(root, limit)[0]
 
 
 def _row(project: Path, stale_seconds: int) -> Optional[dict]:
-    receipts = _read_jsonl(project.joinpath(*RECEIPTS_RELATIVE),
-                           MAX_RECEIPTS_PER_WORKSPACE, RECEIPT_SCHEMA_VERSION)
-    if not receipts and not (project / SESSION_LEDGER).exists():
+    receipts, receipt_window = read_window(project.joinpath(*RECEIPTS_RELATIVE),
+                                           MAX_RECEIPTS_PER_WORKSPACE)
+    records, session_window = read_window(project / SESSION_LEDGER, MAX_SESSION_RECORDS)
+    if receipt_window["status"] == session_window["status"] == "missing":
         return None
-    latest = _receipt_view(receipts)
-    state, unfinished = _session_view(project)
-    idle = _idle_seconds(latest["last_activity"])
-    row = {
-        "workspace": project.name,
-        "stages": latest["stages"],
-        "passes": latest["passes"],
-        "failures": latest["failures"],
-        "cited_stages": latest["cited_stages"],
-        "consecutive_failures": latest["consecutive_failures"],
-        "last_stage": latest["last_stage"],
-        "last_activity": latest["last_activity"],
-        "idle_seconds": idle,
-        "session_state": state,
-        "session_unfinished": unfinished,
-        "receipt_records": len(receipts),
-        "malformed_records": latest["malformed_records"],
-        "flag": "",
-        "flag_reason": "",
-    }
+    latest = _receipt_view(receipts, receipt_window)
+    sessions = session_facts(records, session_window)
+    count = sum(_receipt_schema(record) for record in receipts)
+    if not count:
+        for key in ("stages", "passes", "failures", "cited_stages", "consecutive_failures"):
+            latest[key] = None
+    if receipt_window["incomplete"]:
+        latest.update(last_stage="", last_activity="", consecutive_failures=None)
+    row = {"workspace": project.name, **latest, **sessions,
+           "idle_seconds": _idle_seconds(latest["last_activity"]),
+           "receipt_records": count, "receipt_window": receipt_window,
+           "session_window": session_window,
+           "observation_complete": (window_clear(receipt_window) and window_clear(session_window)
+                                    and bool(count) and bool(sessions["sessions_observed"])),
+           "liveness": "not_verified", "grants_execution": False,
+           "flag": "", "flag_reason": ""}
     row["flag"], row["flag_reason"] = _flag(row, stale_seconds)
     return row
 
 
-def _receipt_view(receipts: list[dict]) -> dict:
-    """Counts and latest stage over the bounded receipt window.
+def _receipt_schema(record: object) -> bool:
+    return (isinstance(record, dict) and type(record.get("schema_version")) is int
+            and record["schema_version"] == RECEIPT_SCHEMA_VERSION)
 
-    A record that carries the schema version but no stage name is not evidence
-    that a stage finished, so it is not counted as one — inflating activity
-    would defeat the purpose of a view meant to spot activity that stopped. The
-    raw record count is still reported alongside, so a malformed ledger is
-    visible rather than quietly discarded.
-    """
-    stages = passes = failures = cited = 0
-    malformed = 0
+
+def _receipt_record(record: object) -> bool:
+    if not _receipt_schema(record):
+        return False
+    stage, ok, cited = record.get("stage"), record.get("ok"), record.get("knowledge_cited", 0)
+    return (isinstance(stage, str) and bool(stage.strip()) and len(stage) <= 128
+            and type(ok) is bool and type(cited) is int and 0 <= cited <= 10**9)
+
+
+def _receipt_view(receipts: list, window: Optional[dict] = None) -> dict:
+    """Count recorded stages; gaps reset a sequence instead of joining failures."""
+    stages = passes = failures = cited = malformed = consecutive = 0
     last_stage = last_activity = ""
-    consecutive = 0
     for record in receipts:
-        if not str(record.get("stage") or ""):
-            malformed += 1
+        if not _receipt_record(record):
+            malformed += int(_receipt_schema(record))
+            consecutive, last_stage, last_activity = 0, "", ""
+            if window is not None and record is not None:
+                window["malformed"] += 1
             continue
         stages += 1
-        if record.get("ok"):
+        if record["ok"]:
             passes += 1
             consecutive = 0
         else:
             failures += 1
             consecutive += 1
-        if int(record.get("knowledge_cited") or 0):
-            cited += 1
-        stamp = str(record.get("ts") or "")
-        if stamp >= last_activity:
-            last_activity = stamp
-            last_stage = str(record.get("stage") or "")
+        cited += int(bool(record.get("knowledge_cited", 0)))
+        last_stage = record["stage"]
+        stamp = record.get("ts")
+        last_activity = stamp if isinstance(stamp, str) and len(stamp) <= 32 else ""
     return {"stages": stages, "passes": passes, "failures": failures,
             "cited_stages": cited, "consecutive_failures": consecutive,
             "malformed_records": malformed,
@@ -150,13 +148,10 @@ def _receipt_view(receipts: list[dict]) -> dict:
 
 
 def _session_view(project: Path) -> tuple[Optional[str], bool]:
-    """Latest isolate session state, and whether work is still in flight."""
-    records = _read_jsonl(project / SESSION_LEDGER, MAX_SESSION_RECORDS)
-    for record in records:
-        state = str(record.get("status") or record.get("state") or "")
-        if state:
-            return state, state in UNFINISHED_SESSION_STATES
-    return None, False
+    """Compatibility projection; False means no observed unfinished session."""
+    records, window = read_window(project / SESSION_LEDGER, MAX_SESSION_RECORDS)
+    facts = session_facts(records, window)
+    return facts["session_state"], bool(facts["session_unfinished"])
 
 
 def _flag(row: dict, stale_seconds: int) -> tuple[str, str]:
@@ -167,15 +162,22 @@ def _flag(row: dict, stale_seconds: int) -> tuple[str, str]:
     requires an unfinished session from an independent ledger, and repeated
     verified failures stand on their own.
     """
-    if row["consecutive_failures"] >= 2:
+    if (row["consecutive_failures"] or 0) >= 2:
         return "consecutive_failures", (
-            f"{row['consecutive_failures']} consecutive failed stages")
+            f"{row['consecutive_failures']} consecutive recorded failed stages")
     idle = row["idle_seconds"]
-    if row["session_unfinished"] and idle is not None and idle > stale_seconds:
+    usable = _suffix_clear(row["receipt_window"]) and _suffix_clear(row["session_window"])
+    if usable and row["session_unfinished"] and idle is not None and idle > stale_seconds:
         return "silent_unfinished_session", (
-            f"session {row['session_state']} unfinished, "
-            f"nothing completed for {idle}s")
+            f"{len(row['unfinished_sessions'])} observed unfinished isolate session(s), "
+            f"no recorded completed stage for {idle}s; not proof of a stuck process")
     return "", ""
+
+
+def _suffix_clear(window: dict) -> bool:
+    """Truncation limits coverage, but cannot negate a positive retained fact."""
+    return (window["available"] and not window["malformed"]
+            and not window["incomplete"] and not window["error"])
 
 
 def _idle_seconds(stamp: str) -> Optional[int]:
@@ -190,29 +192,9 @@ def _idle_seconds(stamp: str) -> Optional[int]:
 
 def _read_jsonl(path: Path, limit: int,
                 schema_version: Optional[int] = None) -> list[dict]:
-    """Bounded tail read of a JSONL ledger; unreadable means empty, not error.
-
-    ``schema_version`` filters when the caller owns a versioned format. It must
-    stay None for ledgers that carry their own version (the isolate session
-    ledger does), or every record is silently dropped and the view reports an
-    empty state it never observed.
-    """
-    if not path.is_file():
-        return []
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()[-max(0, limit):]
-    except OSError as exc:
-        log.debug("instance view: cannot read %s (%s)", path, exc)
-        return []
-    records = []
-    for line in lines:
-        try:
-            value = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(value, dict):
-            continue
-        if schema_version is not None and value.get("schema_version") != schema_version:
-            continue
-        records.append(value)
-    return records
+    """Compatibility list projection; row observation also retains coverage/gaps."""
+    records, _window = read_window(path, limit)
+    return [value for value in records if isinstance(value, dict)
+            and (schema_version is None or
+                 (type(value.get("schema_version")) is int and
+                  value["schema_version"] == schema_version))]
