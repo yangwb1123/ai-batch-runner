@@ -637,6 +637,17 @@ EVIDENCE_MAX_SOURCES = _int_setting(_EVIDENCE_CFG, "max_sources", 64, 1)
 # 128KiB per-argument ceiling and reject predictably before subprocess spawn.
 PROMPT_MAX_BYTES = _int_setting(_PROMPT_CFG, "max_bytes", 120 * 1024, 0)
 
+# Oversized stage prompts: default fail-closed.  `truncate` is the explicit
+# opt-in that clamps only injected evidence with a visible marker; the runner's
+# argv check still rejects anything that remains over budget.
+_PROMPT_OVERFLOW = (
+    str(_PROMPT_CFG.get("overflow", "fail")).strip().lower()
+    if isinstance(_PROMPT_CFG, dict) else "fail")
+if _PROMPT_OVERFLOW not in ("fail", "truncate"):
+    log.warning("prompt.overflow must be 'fail' or 'truncate'; using 'fail'")
+    _PROMPT_OVERFLOW = "fail"
+PROMPT_OVERFLOW = _PROMPT_OVERFLOW
+
 # Validator diagnostics are useful only in small tails; cap both pipes so a
 # noisy external gate cannot OOM the coordinator before its timeout.
 VALIDATION_OUTPUT_MAX_BYTES = _int_setting(

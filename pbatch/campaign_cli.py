@@ -41,6 +41,8 @@ def _wire_runtime(args: argparse.Namespace) -> None:
     config.AGENT_THINKING_OVERRIDE = getattr(args, "thinking", "")
     config.MEMORY_MODE = args.memory_mode
     config.STREAM_OUTPUT = args.stream_output
+    if getattr(args, "prompt_overflow", ""):
+        config.PROMPT_OVERFLOW = args.prompt_overflow
     # Campaign telemetry is enabled by default in the runtime data directory;
     # an explicit --events-file still provides an isolated ledger.
     metering.EVENTS_FILE = args.events_file or str(

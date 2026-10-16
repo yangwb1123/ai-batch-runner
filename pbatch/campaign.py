@@ -49,6 +49,9 @@ def _add_campaign_selection_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--top-only", action="store_true")
     parser.add_argument("--skip-passed", action="store_true")
     parser.add_argument("--reuse", action="store_true")
+    parser.add_argument("--prompt-overflow", choices=["fail", "truncate"], default="",
+                        help="oversized stage prompts: fail closed (default) or "
+                             "explicitly truncate bounded evidence with a marker")
     parser.add_argument("--retry-failed", action="store_true")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--jobs", type=int, help="parallel module analyses")

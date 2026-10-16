@@ -66,6 +66,12 @@ def _add_source_args(p: argparse.ArgumentParser) -> None:
                    help="file suffix for --from-dir (default: .md)")
 
 
+def _add_prompt_policy_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--prompt-overflow", choices=["fail", "truncate"], default="",
+                   help="oversized stage prompts: fail closed (default) or "
+                        "explicitly truncate bounded evidence with a visible marker")
+
+
 def _add_runtime_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--pipeline", metavar="FILE",
                    help="run a multi-stage pipeline from YAML file")
@@ -75,6 +81,7 @@ def _add_runtime_args(p: argparse.ArgumentParser) -> None:
                         "(classifier.frontend_pipeline; explicit --pipeline wins)")
     p.add_argument("--reuse", action="store_true",
                    help="reuse existing .out.md files (skip regeneration)")
+    _add_prompt_policy_args(p)
     p.add_argument("--reuse-legacy", action="store_true",
                    help="existence-only reuse check (skip validators; escape hatch for T1 freshness revalidation)")
     p.add_argument("--reuse-fingerprint", action="store_true",
@@ -519,6 +526,8 @@ def _wire_agent(args) -> None:
     config.AGENT_THINKING_OVERRIDE = args.thinking
     config.MEMORY_MODE = args.memory_mode
     config.STREAM_OUTPUT = args.stream_output
+    if getattr(args, "prompt_overflow", ""):
+        config.PROMPT_OVERFLOW = args.prompt_overflow
 
 
 def _preflight_agent(parser: argparse.ArgumentParser, args) -> None:

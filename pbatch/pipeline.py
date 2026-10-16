@@ -28,6 +28,7 @@ from . import pipeline_receipts as _receipts
 from .evidence import combine_outputs, source_manifest
 from .gate_contract import evaluate_gate_artifacts, gate_verdict as _gate_verdict
 from .meta import run_meta_stage
+from .prompt_budget import fit_prompt_evidence
 from .repo_gates import (capture_stage_baseline,
                          capture_stage_dirty_paths,  # re-exported for callers
                          commit_stage_outputs as _git_commit_stage,
@@ -120,10 +121,12 @@ def _task_prompt(task_def: dict, input_content: str, input_stem: str, input_path
     if not prompt:
         log.error("Task in stage needs 'prompt' or an existing 'prompt_template' file")
         return ""
-    return (prompt.replace("{input_content}", input_content)
-                 .replace("{input_stem}", input_stem)
-                 .replace("{input_path}", input_path)
-                 .replace("{prompt}", original_prompt))
+    return fit_prompt_evidence(
+        input_content,
+        prompt.replace("{input_content}", input_content)
+              .replace("{input_stem}", input_stem)
+              .replace("{input_path}", input_path)
+              .replace("{prompt}", original_prompt))
 def _expected_fp(prompt: str, out: str, validate_cmd: str, model: str,
                  provider: str, fp_mode: bool, workdir: str = "",
                  agent: str = "", thinking: str = "", tools: str = "",
