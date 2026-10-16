@@ -71,6 +71,21 @@ ticket 不会消费更新的待处理通知，拒绝通知也不回滚已折叠�
 控制器替换（native attach/detach、恢复/切换）使旧通知失效。操作完成后仍有最终
 同步交接：已确认的终态在 finish 回调与 busy 释放之前直接应用，不依赖待处理通知；
 busy 期间的最终交接仍会等待 UI，这是有意的收尾，不是新的执行窗口或授权。
+
+Codex exec 适配器的生命周期栅栏：同一时刻只允许一个已登记轮次；spawn 本身不在
+lifecycle 锁内，但准入预留与发布、worker 启动、close 都在同一栅栏下，避免并发
+`start_turn` 丢失第一个已返回的进程。spawn 返回后才发现 runtime 已关闭时拒绝启动
+（`codex exec runtime closed during process startup`）并只回收本次新返回的进程；
+worker 部分启动失败保留原错误，只 join 已启动线程并回收本次进程。
+
+轮次身份以精确 `TurnHandle` 对象为栅栏：陈旧 reader 不能改写 provider/resume 身份、
+usage、artifact 或向当前轮次注入事件；`thread.started` 只在该轮次仍为 QUEUED 且未
+登记过时被接受，终态后的迟到 header 不改变后续 resume 目标。中断请求先要求精确
+匹配当前轮次，允许省略字段的当前轮简写，但显式 session/run/actor/workspace 字段
+必须匹配字符串；在 header/start 交接后再次核对同一 handle 与进程，否则以
+`codex exec interrupt target changed before admission` 拒绝，不停止替换后的进程、
+不设置全局中断标志。已确认终态优先于迟到中断；中断仍不是已验证停止或副作用回滚，
+不新增 provider/账户/区域行为。
 App Server 审查同样不捕获未准入正文/finding，capture 异常或耗尽期限不得提前
 解除 watchdog。同步呈现目前仍可能占用消费窗口，不因此延长或重置任务期限。
 

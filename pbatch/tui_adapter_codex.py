@@ -108,6 +108,9 @@ class CodexExecAdapter:
         self._cwd, self._argv_prefix = os.fspath(cwd), prefix
         self._spawn, self._queue = spawn or _default_spawn, _EventQueue(maxsize)
         self._lock, self._publish_lock, self._closed = threading.RLock(), threading.RLock(), False
+        self._lifecycle_lock = threading.RLock()
+        self._starting = False
+        self._turn_header_admitted = False
         self._initialized = self._session_announced = False
         self._overflow_reported = self._terminal = self._interrupt_requested = False
         self._session_ready = threading.Event()
@@ -184,7 +187,8 @@ class CodexExecAdapter:
     def _ensure_session_replaceable(self) -> None:
         self._ensure_open()
         with self._lock:
-            if self._active is not None and not self._active.done:
+            if (self._starting or self._active is not None
+                    and not self._active.done):
                 raise RuntimeError("cannot replace an active runtime session")
     def _reset_session_announcement(self) -> None:
         self._session_announced = False
@@ -193,27 +197,61 @@ class CodexExecAdapter:
         raise UnsupportedOperation("steer_turn", "turn_steer")
     def resolve_approval(self, decision: Any) -> None:
         raise UnsupportedOperation("resolve_approval", "typed_approvals")
-    def start_turn(self, request: StartTurnRequest | str | Mapping[str, Any], *,
-                   argv: Sequence[str] | None = None) -> TurnHandle:
-        self._ensure_open()
-        if not self._initialized:
-            raise RuntimeError("initialize must be called before start_turn")
-        default = request if isinstance(request, str) else ""
-        prompt = str(_request_value(request, "prompt", default))
-        if not prompt.strip():
-            raise ValueError("prompt must not be empty")
-        handle = self._new_handle(request)
-        with self._lock:
-            mode = self._session_mode
-            self._turn_mode = mode
-        command = self._spawn_argv(prompt, mode, argv)
-        process = self._spawn(command, self._cwd)
-        with self._lock:
+    def _admit_start(self) -> None:
+        with self._lifecycle_lock:
+            self._ensure_open()
+            if not self._initialized:
+                raise RuntimeError("initialize must be called before start_turn")
+            if self._starting or (self._active is not None and not self._active.done):
+                raise RuntimeError("a codex exec turn is already running")
+            self._starting = True
+
+    def _publish_start(self, handle: TurnHandle, process: Any) -> None:
+        with self._lifecycle_lock:
+            try:
+                self._ensure_open()
+            except RuntimeError:
+                raise RuntimeError(
+                    "codex exec runtime closed during process startup") from None
+            if self._active is not None and not self._active.done:
+                raise RuntimeError("a codex exec turn is already running")
             self._active, self._process = handle, process
             self._terminal = self._interrupt_requested = self._overflow_reported = False
+            self._turn_header_admitted = False
             self._usage, self._protocol_errors, self._started_monotonic = {}, 0, time.monotonic()
-        self._start_workers(handle, process)
-        return handle
+            self._threads = self._start_workers(handle, process)
+
+    def _abandon_start(self, process: Any) -> None:
+        """Clean only the process this refused startup newly owns."""
+        with self._lifecycle_lock:
+            if self._process is process:
+                self._active, self._process = None, None
+        _stop_process(process)
+
+    def start_turn(self, request: StartTurnRequest | str | Mapping[str, Any], *,
+                   argv: Sequence[str] | None = None) -> TurnHandle:
+        self._admit_start()
+        process: Any = None
+        try:
+            default = request if isinstance(request, str) else ""
+            prompt = str(_request_value(request, "prompt", default))
+            if not prompt.strip():
+                raise ValueError("prompt must not be empty")
+            handle = self._new_handle(request)
+            with self._lock:
+                mode = self._session_mode
+                self._turn_mode = mode
+            command = self._spawn_argv(prompt, mode, argv)
+            process = self._spawn(command, self._cwd)
+            self._publish_start(handle, process)
+            return handle
+        except BaseException:
+            if process is not None:
+                self._abandon_start(process)
+            raise
+        finally:
+            with self._lifecycle_lock:
+                self._starting = False
     def _spawn_argv(self, prompt: str, mode: str,
                     argv: Sequence[str] | None = None) -> tuple[str, ...]:
         base = tuple(str(part) for part in (self._argv_prefix if argv is None else argv))
@@ -237,7 +275,7 @@ class CodexExecAdapter:
             turn_id=str(_request_value(request, "turn_id", "") or _id("turn")),
             actor_id=str(_request_value(request, "actor_id", "agent_main") or
                          "agent_main"), started_at=_now())
-    def _start_workers(self, handle: TurnHandle, process: Any) -> None:
+    def _start_workers(self, handle: TurnHandle, process: Any) -> list[threading.Thread]:
         stdout = threading.Thread(target=self._read_stdout, args=(handle, process),
                                   name=f"codex-out-{handle.turn_id}", daemon=True)
         stderr = threading.Thread(target=self._read_stderr, args=(handle, process),
@@ -245,10 +283,11 @@ class CodexExecAdapter:
         monitor = threading.Thread(
             target=self._monitor, args=(handle, process, stdout, stderr),
             name=f"codex-wait-{handle.turn_id}", daemon=True)
-        self._threads = [stdout, stderr, monitor]
-        stdout.start()
-        stderr.start()
-        monitor.start()
+        started: list[threading.Thread] = []
+        for worker in (stdout, stderr, monitor):
+            worker.start()
+            started.append(worker)
+        return started
     def _read_stdout(self, handle: TurnHandle, process: Any) -> None:
         for source_line in getattr(process, "stdout", ()) or ():
             raw = str(source_line).rstrip("\r\n")
@@ -278,11 +317,24 @@ class CodexExecAdapter:
             self._start_provider_turn(handle)
             self._publish(handle, "runtime.warning",
                           {"stream": "stderr", **_text("text", raw)})
+    def _is_current(self, handle: TurnHandle) -> bool:
+        """True only for the exact accepted, not-yet-done current turn."""
+        with self._lock:
+            return (not self._closed and handle is self._active
+                    and not handle.done)
+
     def _dispatch(self, handle: TurnHandle, value: dict[str, Any], raw: str) -> None:
+        if not self._is_current(handle):
+            return
         provider_type = str(value.get("type", ""))
         if provider_type == "thread.started":
             provider_id = str(value.get("thread_id", "") or "")
             with self._lock:
+                if (self._closed or handle is not self._active or handle.done
+                        or self._terminal or handle.state != TurnState.QUEUED
+                        or self._turn_header_admitted):
+                    return
+                self._turn_header_admitted = True
                 self._provider_session_id = provider_id
                 self._session.provider_session_id = provider_id
                 if self._turn_mode == "forked":
@@ -312,7 +364,9 @@ class CodexExecAdapter:
     def _start_provider_turn(self, handle: TurnHandle) -> None:
         with self._publish_lock:
             with self._lock:
-                if self._terminal or handle.state != TurnState.QUEUED:
+                if (self._terminal or handle is not self._active
+                        or self._closed or handle.done
+                        or handle.state != TurnState.QUEUED):
                     return
             self._publish(handle, "turn.queued", {
                 "turn_id": handle.turn_id, "state": TurnState.QUEUED})
@@ -419,7 +473,8 @@ class CodexExecAdapter:
             "type": _bound(provider_type or "<missing>", 256)[0], **_text("raw", raw)})
     def _ensure_session_event(self, handle: TurnHandle) -> None:
         with self._lock:
-            if self._session_announced:
+            if (self._session_announced or self._closed
+                    or handle is not self._active or handle.done):
                 return
             self._session_announced = True
         payload = {
@@ -459,7 +514,8 @@ class CodexExecAdapter:
     def _finish(self, handle: TurnHandle, kind: str, state: str,
                 payload: dict[str, Any]) -> None:
         with self._lock:
-            if self._terminal or handle.done:
+            if (self._terminal or handle.done or self._closed
+                    or handle is not self._active):
                 return
             self._terminal, handle.state = True, state
         self._publish(handle, kind,
@@ -471,28 +527,63 @@ class CodexExecAdapter:
     def interrupt_turn(self, request: Any) -> None:
         """回收当前进程组后提交不可回退的 interrupted 终态。"""
         self._ensure_open()
-        default = request if isinstance(request, str) else ""
-        turn_id = str(_request_value(request, "turn_id", default))
-        with self._lock:
-            handle = self._active
-            if handle is None or handle.turn_id != turn_id:
-                raise ValueError("interrupt request does not match the active turn")
-            if self._interrupt_requested:
-                return
-            if self._terminal or handle.done:
-                raise RuntimeError("cannot interrupt a terminal turn")
-            process = self._process
+        handle, process = self._interrupt_target(request)
+        if self._interrupt_requested:
+            return
         self._ensure_session_event(handle)
         self._start_provider_turn(handle)
-        with self._lock:
-            if self._interrupt_requested:
-                return
-            if self._terminal or handle.done:
-                raise RuntimeError("cannot interrupt a terminal turn")
-            self._interrupt_requested, handle.state = True, TurnState.INTERRUPTING
+        with self._lifecycle_lock:
+            with self._lock:
+                if self._interrupt_requested:
+                    return
+                if (self._closed or handle is not self._active
+                        or handle.done or self._terminal
+                        or self._process is not process):
+                    raise RuntimeError(
+                        "codex exec interrupt target changed before admission")
+                self._interrupt_requested, handle.state = True, TurnState.INTERRUPTING
         self._publish(handle, "turn.interrupting", {"state": handle.state})
         _stop_process(process)
         self._finish(handle, "turn.interrupted", TurnState.INTERRUPTED, {})
+
+    def _interrupt_target(self, request: Any) -> tuple[TurnHandle, Any]:
+        """Resolve the exact active turn and its process, refusing aliases."""
+        identity: dict[str, str] = {}
+        if isinstance(request, str):
+            if not request:
+                raise ValueError("interrupt request turn_id must be a non-empty string")
+            identity["turn_id"] = request
+        else:
+            for name in ("turn_id", "session_id", "run_id", "actor_id", "workspace_id"):
+                value = _request_value(request, name, None)
+                if value is None:
+                    continue
+                if isinstance(value, bool) or not isinstance(value, str) or not value:
+                    raise ValueError(
+                        f"interrupt request {name} must be a non-empty string")
+                identity[name] = value
+        turn_id = identity.pop("turn_id", "")
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("codex exec runtime is closed")
+            handle = self._active
+            if handle is None or not turn_id or handle.turn_id != turn_id:
+                raise ValueError("interrupt request does not match the active turn")
+            scope = {
+                "session_id": self._session.session_id,
+                "run_id": handle.run_id,
+                "actor_id": handle.actor_id,
+                "workspace_id": self._session.workspace_id,
+            }
+            for name, value in identity.items():
+                if value != scope[name]:
+                    raise ValueError(
+                        "interrupt request does not match the active turn scope")
+            if self._interrupt_requested:
+                return handle, None
+            if self._terminal or handle.done:
+                raise RuntimeError("cannot interrupt a terminal turn")
+            return handle, self._process
     def events(self) -> Iterator[RuntimeEvent]:
         """阻塞消费事件；close 且队列耗尽后自然 StopIteration。"""
         while True:
@@ -502,13 +593,15 @@ class CodexExecAdapter:
             yield event
     def close(self) -> None:
         """幂等回收进程组、读线程与事件队列。"""
-        with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            process, handle = self._process, self._active
+        with self._lifecycle_lock:
+            with self._lock:
+                if self._closed:
+                    return
+                self._closed = True
+                process, handle = self._process, self._active
+                workers = list(self._threads)
         _stop_process(process)
-        for worker in list(self._threads):
+        for worker in workers:
             if worker is not threading.current_thread():
                 worker.join(timeout=1.0)
         if handle is not None:
@@ -521,7 +614,7 @@ class CodexExecAdapter:
             with self._lock:
                 late_turn = (self._terminal and kind.startswith("turn.") and kind not in {
                     "turn.completed", "turn.failed", "turn.interrupted"})
-                if self._closed or late_turn:
+                if (self._closed or late_turn or handle is not self._active):
                     return
                 seq = self._seq_by_run.get(handle.run_id, 0) + 1
                 self._seq_by_run[handle.run_id] = seq

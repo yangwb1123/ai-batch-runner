@@ -163,6 +163,20 @@ screen 类型；没有加长原等待预算、吞掉挂载异常或删除只读/
 `tests/test_review_process_observation.py` 验证活动状态不被接受、权限/IO/坏格式不
 被吞掉；原有子进程停止、无关进程存活及等待预算断言不变。
 
+### Codex exec 启动/轮次/中断栅栏回归
+
+`tests/test_tui_codex_fencing.py` 用自有 spawn/JSONL 推送进程重验：并发
+`start_turn` 只允许一个 provider，竞争方在被拒绝时不停止已接受进程；spawn 期间
+close 拒绝启动并只回收本次返回的进程；worker 部分启动失败保留原错误并回收；
+陈旧 reader 不能改写 resume 身份/usage/artifact，也不能向当前轮次注入事件；
+`thread.started` 必须在本轮次 turn.started 之前且只登记一次；中断省略字段可作
+当前轮简写，但显式不匹配/空值/别名必须拒绝，且 header/start 交接后目标变更时
+于设置标志与停止前拒绝。
+
+这些用例无真实 provider/凭据/区域参与，不证明历史启动/轮次/中断提案实现、真实
+Codex 失败根因或平台验收；完整 CI 仍保留原真实 provider/PTY 测试，不以局部通过
+代替完整 CI、集成或发布验收。中断失败不代表副作用已回滚。
+
 ### 快照呈现合并与最终交接回归
 
 `tests/test_tui_snapshot_delivery.py` 用自有 worker/UI 时钟与 typed controller 重验：
