@@ -77,6 +77,27 @@ def test_task_prompt_applies_both_policies(monkeypatch):
     assert EVIDENCE_TRUNCATION_MARKER in bounded
 
 
+def test_truncate_reserves_space_for_the_prepended_note(monkeypatch):
+    monkeypatch.setattr(config, "PROMPT_MAX_BYTES", 4096)
+    monkeypatch.setattr(config, "PROMPT_OVERFLOW", "truncate")
+    evidence = "HEAD " + ("z" * 8192) + " TAIL"
+    rendered = f"INSTRUCTIONS {evidence} END"
+    note = "N" * 1024 + "\n"
+    bounded = fit_prompt_evidence(evidence, rendered, reserve_bytes=len(note.encode()))
+    assert len((note + bounded).encode()) <= 4096
+    assert EVIDENCE_TRUNCATION_MARKER in bounded
+
+
+def test_task_prompt_reserve_keeps_final_prompt_within_budget(monkeypatch):
+    monkeypatch.setattr(config, "PROMPT_MAX_BYTES", 4096)
+    monkeypatch.setattr(config, "PROMPT_OVERFLOW", "truncate")
+    evidence = "HEAD " + ("z" * 8192) + " TAIL"
+    note = "N" * 1024 + "\n"
+    task = {"prompt": "INSTRUCTIONS {input_content} END"}
+    bounded = _task_prompt(task, evidence, "in", "in.md", "", reserve_bytes=len(note.encode()))
+    assert len((note + bounded).encode()) <= 4096
+
+
 def test_batch_cli_wiring_applies_prompt_overflow(monkeypatch):
     monkeypatch.setattr(config, "PROMPT_OVERFLOW", "fail")
     args = SimpleNamespace(agent_bin="pi", thinking="max", memory_mode="auto",

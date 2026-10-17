@@ -94,7 +94,8 @@ def _fanned_output_tasks(stage: Stage, prev_outputs: list, verified: str,
         # {input_content}/{input_stem} placeholders.
         for task_def in stage.tasks:
             prompt = _task_prompt(task_def, input_content, input_stem, str(out_path),
-                                  original_prompt)
+                                  original_prompt,
+                                  reserve_bytes=len(verified.encode("utf-8")) + 1 if verified else 0)
             if verified:
                 prompt = f"{verified}\n{prompt}" if prompt else verified
             if not prompt:
@@ -140,7 +141,8 @@ def _aggregate_tasks(stage: Stage, prev_outputs: list, model_override: str = "",
     reused = []
     for task_def in stage.tasks:
         prompt = _task_prompt(task_def, combined, "combined", source_manifest(prev_outputs),
-                              original_prompt)
+                              original_prompt,
+                              reserve_bytes=len(verified_note.encode("utf-8")) + 1 if verified_note else 0)
         if verified_note:
             prompt = f"{verified_note}\n{prompt}" if prompt else verified_note
         if not prompt:

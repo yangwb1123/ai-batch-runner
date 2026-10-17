@@ -103,7 +103,7 @@ def _pipeline_resource_errors(data: dict) -> list[str]:
                         f"{config.INPUT_MAX_BYTES} bytes: {value}")
     return errors
 def _task_prompt(task_def: dict, input_content: str, input_stem: str, input_path: str,
-                original_prompt: str = "") -> str:
+                original_prompt: str = "", reserve_bytes: int = 0) -> str:
     """Build the prompt for a task definition: a literal 'prompt' string or
     a 'prompt_template' file, with {input_content}/{input_stem}/{input_path}
     placeholders plus {prompt} (the original task prompt that launched the
@@ -126,7 +126,8 @@ def _task_prompt(task_def: dict, input_content: str, input_stem: str, input_path
         prompt.replace("{input_content}", input_content)
               .replace("{input_stem}", input_stem)
               .replace("{input_path}", input_path)
-              .replace("{prompt}", original_prompt))
+              .replace("{prompt}", original_prompt),
+        reserve_bytes=reserve_bytes)
 def _expected_fp(prompt: str, out: str, validate_cmd: str, model: str,
                  provider: str, fp_mode: bool, workdir: str = "",
                  agent: str = "", thinking: str = "", tools: str = "",

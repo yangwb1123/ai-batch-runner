@@ -34,29 +34,32 @@ def _truncate_utf8(text: str, budget: int) -> str:
 
 def fit_prompt_evidence(
         evidence: str, rendered: str, *,
-        limit: Optional[int] = None, policy: Optional[str] = None) -> str:
+        limit: Optional[int] = None, policy: Optional[str] = None,
+        reserve_bytes: int = 0) -> str:
     """Return ``rendered`` bounded to the configured prompt budget.
 
-    Only ``policy == 'truncate'`` changes the prompt.  Every other value keeps
-    the original fail-closed behavior for the runner's argv check, and a
-    prompt whose non-evidence overhead already exceeds the limit is returned
-    unchanged so the runner still rejects it.
+    ``reserve_bytes`` accounts for text the caller prepends after this helper
+    (for example the re-verified upstream-artifact block), so the final argv
+    value still fits the runner's budget.
     """
     limit = config.PROMPT_MAX_BYTES if limit is None else limit
     policy = config.PROMPT_OVERFLOW if policy is None else policy
     if limit <= 0 or policy != "truncate" or not evidence:
         return rendered
-    if len(rendered.encode("utf-8")) <= limit:
+    allowed = limit - max(0, int(reserve_bytes or 0))
+    if allowed <= 0:
+        return rendered
+    if len(rendered.encode("utf-8")) <= allowed:
         return rendered
     without = rendered.replace(evidence, "", 1)
     marker_bytes = len(EVIDENCE_TRUNCATION_MARKER.encode("utf-8"))
-    available = limit - len(without.encode("utf-8")) - marker_bytes
+    available = allowed - len(without.encode("utf-8")) - marker_bytes
     if available <= 0:
         return rendered
     replacement = _truncate_utf8(evidence, available)
     if replacement == evidence:
         return rendered
     bounded = rendered.replace(evidence, replacement, 1)
-    if len(bounded.encode("utf-8")) > limit:
+    if len(bounded.encode("utf-8")) > allowed:
         return rendered
     return bounded
