@@ -54,16 +54,21 @@ stages:
     aggregate: true
     gate: true
     read_only: true
-    # One bounded remediation round: the fix agent has full tools, may edit the
+    # Two bounded remediation rounds: the fix agent has full tools, may edit the
     # design artifacts but not commit, and the gate is re-run with the fix report
-    # as extra evidence. The gate criteria are unchanged; a second FAIL halts.
-    gate_fix_rounds: 1
+    # as extra evidence. The gate criteria are unchanged; a repeated FAIL halts.
+    gate_fix_rounds: 2
     gate_fix_prompt: |
       The design gate rejected this direction. Resolve every blocking finding
       below by updating the design artifacts in this worktree with concrete,
       testable decisions (interfaces, failure modes, assertions, migration
       steps). Do not implement the feature in code; do not commit. Do not
       remove or soften the gate criteria or the findings.
+
+      End the report with a closure table that maps EVERY finding to either a
+      concrete resolution (with the file/section and the decision or assertion
+      that closes it) or an explicit evidence-backed rejection. Findings with
+      no table row count as unresolved.
 
       GATE VERDICT REASON:
       {reason}
