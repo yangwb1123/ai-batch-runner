@@ -898,7 +898,8 @@ def _run_gate_fix_loop(stage: Stage, stage_outputs: dict, validate_cmd: str,
     results: list = []
     for fix_round in range(1, stage.gate_fix_rounds + 1):
         fix_result, fix_report = run_gate_fix(
-            stage, gate_outputs, fix_round, validate_cmd, session_name)
+            stage, gate_outputs, fix_round, validate_cmd, session_name,
+            model_override=model_override, timeout_override=timeout_override)
         results.append(fix_result)
         if not fix_result.success:
             log.error("GATE-FIX loop stopped after round %d (fix task failed)", fix_round)

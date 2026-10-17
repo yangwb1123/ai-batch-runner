@@ -464,3 +464,36 @@ def test_gate_fix_uses_stage_agent_for_remediation_task(tmp_path, monkeypatch):
     # JSONL verdict text flows into the fix prompt
     assert "VERDICT: FAIL - checklist only" in invoked[0].prompt
     assert "turn.completed" not in invoked[0].prompt
+
+
+def test_gate_fix_inherits_campaign_model_and_timeout(tmp_path, monkeypatch):
+    """The remediation task must run the campaign model with the campaign
+    timeout, not the bare default (which made acceptance fixes time out)."""
+    from pbatch import runner
+    from pbatch.gate_fix import run_gate_fix
+    from pbatch.models import Stage, TaskResult
+
+    stage = Stage(name="acceptance", agent="pi", from_outputs="x",
+                  gate=True, cwd=str(tmp_path))
+    gate_out = tmp_path / "gate.md"
+    gate_out.write_text("VERDICT: FAIL - missing evidence\n", encoding="utf-8")
+    invoked = []
+
+    def fake_run(task, **kwargs):
+        invoked.append(task)
+        return TaskResult(task, True, stdout="ok", elapsed=0.1)
+
+    monkeypatch.setattr(runner, "run_task", fake_run)
+    monkeypatch.setattr(runner, "_save_validated",
+                        lambda task, result, cmd: True)
+    import pbatch.memory as memory_mod
+    monkeypatch.setattr(memory_mod, "record_task", lambda result: None)
+
+    run_gate_fix(stage, [str(gate_out)], 1, "", "s",
+                 model_override="openai-codex/gpt-6.1-sol", timeout_override=5400)
+    assert invoked and invoked[0].model == "openai-codex/gpt-6.1-sol"
+    assert invoked[0].timeout == 5400
+
+    invoked.clear()
+    run_gate_fix(stage, [str(gate_out)], 1, "", "s")
+    assert invoked and invoked[0].timeout == 1800

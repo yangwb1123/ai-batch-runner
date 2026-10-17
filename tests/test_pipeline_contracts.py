@@ -751,7 +751,7 @@ def test_gate_fix_code_changes_are_committed_only_after_final_pass(
         task.output_path().write_text(verdict, encoding="utf-8")
         return [TaskResult(task, True, stdout=verdict, returncode=0)]
 
-    def fix_once(stage, outputs, fix_round, validate_cmd, session_name):
+    def fix_once(stage, outputs, fix_round, validate_cmd, session_name, **_kwargs):
         source.write_text("value = fixed\n", encoding="utf-8")
         report = tmp_path / "gate-fix-1.md"
         report.write_text("fixed report\n", encoding="utf-8")

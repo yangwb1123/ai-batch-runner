@@ -126,7 +126,8 @@ def _normalize_fix_report(result: TaskResult) -> None:
 
 
 def run_gate_fix(stage: Stage, gate_outputs: list, fix_round: int,
-                 validate_cmd: str, session_name: str) -> tuple[TaskResult, str]:
+                 validate_cmd: str, session_name: str, *,
+                 model_override: str = "", timeout_override: int = 0) -> tuple[TaskResult, str]:
     """One gate-fix iteration: remediation task -> validate -> report path.
     The report is folded into the gate re-execution as extra evidence."""
     reason = gate_fail_reason(gate_outputs) or "(no reason extracted)"
@@ -135,9 +136,10 @@ def run_gate_fix(stage: Stage, gate_outputs: list, fix_round: int,
     gate_dir.mkdir(parents=True, exist_ok=True)
     report = gate_dir / f"{stage.name}-fix-{fix_round}.md"
     task = Task(prompt=gate_fix_prompt(stage, reason, findings),
-                output=str(report), agent=stage.agent, model=stage.model,
+                output=str(report), agent=stage.agent,
+                model=stage.model or model_override,
                 provider=stage.provider, cwd=stage.cwd,
-                timeout=max(AGENT_DEFAULT_TIMEOUT, 1800))
+                timeout=max(AGENT_DEFAULT_TIMEOUT, timeout_override or 1800))
     task.memory = {"stage": f"{stage.name}-fix", "memory_mode": "execute"}
     add_task_context_paths(task, gate_outputs, strict=False)
     fix_validate = stage.gate_fix_validate if stage.gate_fix_validate is not None else validate_cmd
