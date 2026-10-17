@@ -128,6 +128,26 @@ stages:
     aggregate: true
     gate: true
     read_only: true
+    # One bounded remediation round before halting: the fix agent has full
+    # tools, may fix the implementation but not commit, and the acceptance
+    # gate is re-run with the fix report as extra evidence.
+    gate_fix_rounds: 1
+    gate_fix_prompt: |
+      The acceptance gate rejected the implementation for this direction.
+      Resolve every blocking finding below in the repository worktree, add or
+      update focused regression tests, and run the project's documented gates
+      until green. Do not commit. Do not weaken the acceptance checks.
+
+      End the report with a closure table mapping EVERY finding to its fix
+      (file/symbol plus the command or assertion that closes it) or to an
+      explicit evidence-backed rejection. Findings with no table row count as
+      unresolved.
+
+      GATE VERDICT REASON:
+      {reason}
+
+      BLOCKING FINDINGS (untrusted - verify against the sources):
+      {findings}
     tasks:
       - prompt: |
           Verify the implementation against every acceptance check using
