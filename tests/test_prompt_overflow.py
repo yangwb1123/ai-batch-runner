@@ -2,7 +2,8 @@
 
 from types import SimpleNamespace
 
-from pbatch import campaign_cli, cli, config
+from pbatch import campaign_cli, campaign_runtime, cli, config
+from pbatch.meta import _role_prompt
 from pbatch.pipeline import _task_prompt
 from pbatch.prompt_budget import EVIDENCE_TRUNCATION_MARKER, fit_prompt_evidence
 
@@ -98,3 +99,30 @@ def test_campaign_cli_wiring_applies_prompt_overflow(tmp_path, monkeypatch):
         rate_limit=0, rate_burst=0)
     campaign_cli._wire_runtime(args)
     assert config.PROMPT_OVERFLOW == "truncate"
+
+
+def test_isolated_command_propagates_prompt_overflow(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "PROMPT_OVERFLOW", "truncate")
+    command = campaign_runtime.isolated_command(
+        tmp_path, tmp_path / "pipeline.yaml", tmp_path / "run.log", ["--model", "m"])
+    assert "--prompt-overflow" in command
+    assert command[command.index("--prompt-overflow") + 1] == "truncate"
+    monkeypatch.setattr(config, "PROMPT_OVERFLOW", "fail")
+    default = campaign_runtime.isolated_command(
+        tmp_path, tmp_path / "pipeline.yaml", tmp_path / "run.log", ["--model", "m"])
+    assert "--prompt-overflow" not in default
+
+
+def test_role_prompt_is_bounded_under_truncate(monkeypatch):
+    monkeypatch.setattr(config, "PROMPT_MAX_BYTES", 2048)
+    combined = "CONTEXT-HEAD " + ("y" * 8192) + " CONTEXT-TAIL"
+    item = {"task": "Review the context", "role": "reviewer"}
+    stage = SimpleNamespace(role_dir="")
+    monkeypatch.setattr(config, "PROMPT_OVERFLOW", "fail")
+    oversized = _role_prompt(stage, item, combined)
+    assert len(oversized.encode()) > 2048
+    monkeypatch.setattr(config, "PROMPT_OVERFLOW", "truncate")
+    bounded = _role_prompt(stage, item, combined)
+    assert len(bounded.encode()) <= 2048
+    assert bounded.startswith("Review the context")
+    assert EVIDENCE_TRUNCATION_MARKER in bounded

@@ -74,6 +74,11 @@ def isolated_command(worktree: Path, pipeline_path: Path, logfile: Path,
            "--log-file", str(logfile)]
     if metering.EVENTS_FILE:
         cmd.extend(["--events-file", metering.EVENTS_FILE])
+    # Isolated children start a fresh process; the prompt-overflow policy is
+    # process config and must be passed explicitly or the child falls back to
+    # the fail-closed default.
+    if config.PROMPT_OVERFLOW and config.PROMPT_OVERFLOW != "fail":
+        cmd.extend(["--prompt-overflow", config.PROMPT_OVERFLOW])
     # Older project-local shims may lack --run-id; coordinator outcomes remain
     # authoritative while those children create their own metering run ids.
     if metering.RUN_ID and (is_frozen() or entrypoint == tool_entrypoint):
@@ -106,7 +111,10 @@ def run_isolated_child(worktree: Path, pipeline_path: Path, logfile: Path,
                   else Path(config.TOOL_ROOT) / "pi-batch.py")
     runner = cli_argv(entrypoint=entrypoint)
     command = [*runner, str(pipeline_path), "--reuse", "--reuse-fingerprint",
-               "--log-file", str(logfile), *agent_args]
+               "--log-file", str(logfile)]
+    if config.PROMPT_OVERFLOW and config.PROMPT_OVERFLOW != "fail":
+        command.extend(["--prompt-overflow", config.PROMPT_OVERFLOW])
+    command.extend(agent_args)
     proc = subprocess.Popen(command, cwd=worktree, stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL, start_new_session=True)
     with _ACTIVE_LOCK:

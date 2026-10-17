@@ -26,6 +26,7 @@ from . import config
 from .config import AGENT_DEFAULT_WORKERS, _resolve_validators, log
 from .context_inject import add_task_context_paths, prepare_task_context
 from .evidence import combine_outputs
+from .prompt_budget import fit_prompt_evidence
 from .models import Stage, Task, TaskResult
 from .relevance import (constrain_role_plan, format_suggestions,
                         load_role_keywords, score_roles)
@@ -646,6 +647,7 @@ def _build_meta_prompt_task(stage: Stage, role_names: list, combined: str, model
             "DELEGATION-ONLY CONTROLLER: do not inspect files, call tools, or "
             "perform the requested work yourself. Select bounded child roles "
             "and return only the required JSON role plan.\n\n" + meta_prompt)
+    meta_prompt = fit_prompt_evidence(combined, meta_prompt)
     task = Task(prompt=meta_prompt, agent=stage.agent, cwd=stage.cwd,
                 tools=stage.tools, exclude_tools=stage.exclude_tools,
                 no_tools=_meta_task_no_tools(stage))
@@ -720,12 +722,15 @@ def _build_one_role_task(stage: Stage, item: dict, combined: str,
 def _role_prompt(stage: Stage, item: dict, combined: str) -> Optional[str]:
     task_desc = item["task"]
     if task_desc:
-        return f"{task_desc}\n\nContext (current deliverables):\n{combined}"
+        return fit_prompt_evidence(
+            combined, f"{task_desc}\n\nContext (current deliverables):\n{combined}")
     template = _load_role_template(stage.role_dir, item["role"])
     if template is None:
         return None
-    return template.replace("{input_content}", combined).replace(
-        "{input_stem}", stage.name)
+    return fit_prompt_evidence(
+        combined,
+        template.replace("{input_content}", combined).replace(
+            "{input_stem}", stage.name))
 
 
 def _route_role_task(stage: Stage, task: Task, role: str,
