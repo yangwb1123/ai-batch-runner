@@ -13,8 +13,7 @@ from typing import Optional
 
 from . import config
 
-EVIDENCE_TRUNCATION_MARKER = (
-    "\n[evidence truncated: prompt byte budget reached]\n")
+EVIDENCE_TRUNCATION_MARKER = config.PROMPT_TRUNCATION_MARKER
 _HEAD_RATIO = 3
 
 

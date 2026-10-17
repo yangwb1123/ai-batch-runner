@@ -336,6 +336,7 @@ def build_agent_argv(bin_name: str, prompt: str, *, model: str = "",
                      exclude_tools: str = "", no_tools: bool = False,
                      session_flags: Optional[list] = None) -> list[str]:
     """Build an agent argv from the configured adapter, without a shell."""
+    prompt = bound_prompt(prompt)
     if no_tools and tools:
         raise ValueError("no_tools cannot be combined with an explicit tools allowlist")
     no_tools_args = agent_no_tools_args(bin_name) if no_tools else ()
@@ -647,6 +648,35 @@ if _PROMPT_OVERFLOW not in ("fail", "truncate"):
     log.warning("prompt.overflow must be 'fail' or 'truncate'; using 'fail'")
     _PROMPT_OVERFLOW = "fail"
 PROMPT_OVERFLOW = _PROMPT_OVERFLOW
+
+# Visible marker for any bounded prompt; shared with pbatch.prompt_budget so
+# targeted evidence trimming and the final argv guard use the same wording.
+PROMPT_TRUNCATION_MARKER = "\n[evidence truncated: prompt byte budget reached]\n"
+
+
+def bound_prompt(prompt: str) -> str:
+    """Final fail-closed guard for the single argv value handed to agents.
+
+    ``prompt.overflow = truncate`` keeps a head/tail window plus a visible
+    marker; every other policy returns the prompt untouched so the runner's
+    argv check still rejects it.
+    """
+    limit, policy = PROMPT_MAX_BYTES, PROMPT_OVERFLOW
+    if limit <= 0 or policy != "truncate" or not prompt:
+        return prompt
+    raw = prompt.encode("utf-8")
+    if len(raw) <= limit:
+        return prompt
+    marker = PROMPT_TRUNCATION_MARKER.encode("utf-8")
+    if limit <= len(marker):
+        return prompt
+    budget = limit - len(marker)
+    head_budget = budget * 3 // 4
+    tail_budget = budget - head_budget
+    bounded = (raw[:head_budget].decode("utf-8", "ignore")
+               + PROMPT_TRUNCATION_MARKER
+               + raw[len(raw) - tail_budget:].decode("utf-8", "ignore"))
+    return bounded if len(bounded.encode("utf-8")) <= limit else prompt
 
 # Validator diagnostics are useful only in small tails; cap both pipes so a
 # noisy external gate cannot OOM the coordinator before its timeout.

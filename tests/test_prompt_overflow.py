@@ -98,6 +98,29 @@ def test_task_prompt_reserve_keeps_final_prompt_within_budget(monkeypatch):
     assert len((note + bounded).encode()) <= 4096
 
 
+def test_bound_prompt_is_the_final_argv_guard(monkeypatch):
+    monkeypatch.setattr(config, "PROMPT_MAX_BYTES", 2048)
+    monkeypatch.setattr(config, "PROMPT_OVERFLOW", "fail")
+    prompt = "HEAD " + ("q" * 8192) + " TAIL"
+    assert config.bound_prompt(prompt) == prompt
+    monkeypatch.setattr(config, "PROMPT_OVERFLOW", "truncate")
+    bounded = config.bound_prompt(prompt)
+    assert len(bounded.encode()) <= 2048
+    assert bounded.startswith("HEAD ") and bounded.endswith(" TAIL")
+    assert EVIDENCE_TRUNCATION_MARKER in bounded
+
+
+def test_build_agent_argv_bounds_the_prompt(monkeypatch):
+    monkeypatch.setattr(config, "PROMPT_MAX_BYTES", 2048)
+    monkeypatch.setattr(config, "PROMPT_OVERFLOW", "truncate")
+    prompt = "HEAD " + ("q" * 8192) + " TAIL"
+    cmd = config.build_agent_argv("pi", prompt)
+    index = config.agent_prompt_index("pi")
+    assert len(cmd[index].encode()) <= 2048
+    assert max(len(value.encode()) for value in cmd[1:]) <= 2048
+    assert EVIDENCE_TRUNCATION_MARKER in cmd[index]
+
+
 def test_batch_cli_wiring_applies_prompt_overflow(monkeypatch):
     monkeypatch.setattr(config, "PROMPT_OVERFLOW", "fail")
     args = SimpleNamespace(agent_bin="pi", thinking="max", memory_mode="auto",
