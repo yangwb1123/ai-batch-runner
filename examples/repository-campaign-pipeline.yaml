@@ -128,10 +128,11 @@ stages:
     aggregate: true
     gate: true
     read_only: true
-    # One bounded remediation round before halting: the fix agent has full
-    # tools, may fix the implementation but not commit, and the acceptance
-    # gate is re-run with the fix report as extra evidence.
-    gate_fix_rounds: 1
+    # Two bounded remediation rounds before halting (the design gate also needs
+    # two in practice): the fix agent has full tools, may fix the
+    # implementation but not commit, and the acceptance gate is re-run with the
+    # fix report as extra evidence.
+    gate_fix_rounds: 2
     gate_fix_prompt: |
       The acceptance gate rejected the implementation for this direction.
       Resolve every blocking finding below in the repository worktree, add or
