@@ -96,6 +96,15 @@ def test_identity_not_inferred_from_title_pid_or_timestamp():
     assert two["verified_refs"][0]["ended_at"] == 999.0
 
 
+def test_malformed_rows_are_counted_not_classified_or_silently_dropped():
+    result = execution_mapping([_row(), "not-a-row", None])
+    assert result["execution_observations"] == 1
+    assert result["malformed_observations"] == 2
+    assert result["verified_spawn_and_outcome"] == 1
+    with pytest.raises(ValueError, match="list of observation rows"):
+        execution_mapping({"kind": "agent"})
+
+
 def test_invalid_limit_refuses_before_classification():
     with pytest.raises(ValueError, match="positive integer"):
         execution_mapping([_row()], limit=0)

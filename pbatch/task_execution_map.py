@@ -23,21 +23,12 @@ def execution_mapping(rows: list, *, partial: bool = False,
     """
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
         raise ValueError("execution mapping limit must be a positive integer")
-    executions = [row for row in rows
-                  if row.get("kind") == "agent" and row.get("phase") == "execution"]
-    verified, spawn_only, outcome_without_spawn, legacy = [], [], [], []
-    for row in executions:
-        spawn, status = row.get("spawn_observed"), str(row.get("status") or "")
-        if row.get("legacy_identity"):
-            legacy.append(row)
-        elif spawn is True and status in TERMINAL_STATUSES:
-            verified.append(row)
-        elif spawn is True:
-            spawn_only.append(row)
-        elif status in TERMINAL_STATUSES:
-            outcome_without_spawn.append(row)
-        else:
-            spawn_only.append(row)
+    if not isinstance(rows, (list, tuple)):
+        raise ValueError("execution mapping requires a list of observation rows")
+    malformed = sum(1 for row in rows if not isinstance(row, dict))
+    executions = [row for row in rows if isinstance(row, dict)
+                  and row.get("kind") == "agent" and row.get("phase") == "execution"]
+    verified, spawn_only, outcome_without_spawn, legacy = _classify(executions)
     refs = [_ref(row) for row in verified]
     return {
         "method": METHOD,
@@ -48,7 +39,8 @@ def execution_mapping(rows: list, *, partial: bool = False,
         "spawn_only_active_observations": len(spawn_only),
         "outcome_without_spawn_observation": len(outcome_without_spawn),
         "legacy_identity_observations": len(legacy),
-        "other_phase_observations": len(rows) - len(executions),
+        "other_phase_observations": len(rows) - len(executions) - malformed,
+        "malformed_observations": malformed,
         "verified_refs": refs[:limit],
         "omitted_verified_refs": max(0, len(refs) - limit),
         "unverified_outcome_refs": [_ref(row) for row in outcome_without_spawn[:MAX_UNVERIFIED_REFS]],
@@ -63,6 +55,23 @@ def execution_mapping(rows: list, *, partial: bool = False,
                  "observation has unverified provenance; window counts must not be added "
                  "to other windows"),
     }
+
+
+def _classify(executions: list) -> tuple:
+    verified, spawn_only, outcome_without_spawn, legacy = [], [], [], []
+    for row in executions:
+        spawn, status = row.get("spawn_observed"), str(row.get("status") or "")
+        if row.get("legacy_identity"):
+            legacy.append(row)
+        elif spawn is True and status in TERMINAL_STATUSES:
+            verified.append(row)
+        elif spawn is True:
+            spawn_only.append(row)
+        elif status in TERMINAL_STATUSES:
+            outcome_without_spawn.append(row)
+        else:
+            spawn_only.append(row)
+    return verified, spawn_only, outcome_without_spawn, legacy
 
 
 def _ref(row: dict) -> dict:
