@@ -25,6 +25,8 @@ def _empty(reason: str) -> dict:
     return {"status": "untracked", "reason": reason, "duration_range_seconds": None,
         "sample_count": 0, "sample_limit": MAX_SAMPLES, "calibration": None,
         "remaining_seconds": None, "eta": None, "confidence": "untracked",
+        "prior_remaining_interval_seconds": None, "prior_observed_seconds": None,
+        "prior_remaining_basis": None, "not_a_live_eta": True,
         "basis": "same_source_stage_declared_prompt_and_config",
         "limitations": "repository, session state, load and semantic difficulty are not controlled",
         "grants_execution": False, "quality_ranking": "not_performed"}
@@ -90,7 +92,7 @@ def _contains(train: list, actual: float) -> bool:
     return lower <= actual <= upper
 
 
-def forecast_for(source_id: str, row: dict, priors: dict) -> dict:
+def forecast_for(source_id: str, row: dict, priors: dict, *, now=None) -> dict:
     profile = _profile(row)
     if row["kind"] != "agent" or profile is None:
         return _empty("execution_profile_untracked")
@@ -98,4 +100,31 @@ def forecast_for(source_id: str, row: dict, priors: dict) -> dict:
     # Completed calls get no retrospective "prediction" trained on themselves.
     if row["status"] not in {"running", "queued", "retrying"}:
         result = _empty("attempt_already_reported_terminal")
+    else:
+        _prior_remaining(result, row, now)
     return result
+
+
+def _prior_remaining(result: dict, row: dict, now) -> None:
+    """Bounded prior interval minus observed elapsed; never a live ETA.
+
+    ``remaining_seconds``/``eta`` stay null: only an explicitly labelled
+    backtested fingerprint interval is reported, and only when the start of the
+    current observation and its spawn evidence are actually recorded.
+    """
+    if result.get("status") != "historical_prior_only" or not result.get("duration_range_seconds"):
+        return
+    started, moment = number(row.get("started_at")), number(now)
+    if row.get("spawn_observed") is not True:
+        result["prior_remaining_basis"] = "spawn_observation_missing"
+        return
+    if started is None or moment is None or moment < started:
+        result["prior_remaining_basis"] = "observation_start_not_recorded"
+        return
+    elapsed = float(moment) - float(started)
+    low, high = result["duration_range_seconds"]
+    result["prior_observed_seconds"] = round(elapsed, 3)
+    result["prior_remaining_interval_seconds"] = [round(max(0.0, low - elapsed), 3),
+                                                  round(max(0.0, high - elapsed), 3)]
+    result["prior_remaining_basis"] = "backtested_same_fingerprint_interval_minus_observed_elapsed"
+    result["live_context_verified"] = False
