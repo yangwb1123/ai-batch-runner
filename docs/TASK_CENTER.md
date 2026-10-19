@@ -266,6 +266,27 @@ CLI/Web 显示 `forecast.duration_range_seconds` 的**历史先验**。仓库内
 实际负载与语义难度没有受到控制；少量历史检验不是统计保证，因此 `remaining_seconds`
 和 `eta` 仍为 None。不据此延长超时、重置截止、重试、排名或计算已验收成果性价比。
 
+### 已验证执行映射与有界剩余区间
+
+`ops tasks --json` 顶层 `execution_mapping` 只把已记录的 spawn/终态观测按精确
+`run_id/task_id/attempt/phase` 与任务身份配对，并显式区分：
+
+- `verified_spawn_and_outcome`：既有 spawn 证据又有终态；
+- `outcome_without_spawn_observation`：有身份与终态但缺 spawn 证据 —— 只计数并保留
+  未验证来源，既不当成已验证执行，也不当作 0；
+- `spawn_only_active_observations`：有 spawn 无终态 —— 是观测，不是存活证明；
+- `legacy_identity_observations`：缺少 run/task 身份的旧记录，单独计数。
+
+窗口不完整（截断/损坏/读取失败）时 `coverage=partial_window` 且 `unknown_not_zero=true`，
+计数只是下界。映射不做标题/PID/时间戳推断、不发现新来源、不探测进程，也不代表
+所有权、验收或执行授权；refs 有界并显示省略数。
+
+active 任务的 `forecast.prior_remaining_interval_seconds` 只在同时满足：同指纹回测先验
+成立、`spawn_observed is True`、`started_at` 已记录且不晚于当前时间时给出，数值为
+“历史区间 − 已观测时长”并截断到 0；`remaining_seconds` 与 `eta` 保持 None，
+`not_a_live_eta=true`，理由是时钟、存活与未来负载未验证。缺 spawn、缺开始时间或
+无回测先验时不给出区间，并写明 `prior_remaining_basis`。
+
 ### 第二个切片：目标关联的阶段消耗
 
 `ops tasks`、`ops goals show/list --json` 与认证后的 HTTP/Web 共用 `consumption` 投影：

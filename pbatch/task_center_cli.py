@@ -9,7 +9,13 @@ from . import task_center, task_sources
 
 
 def add_parsers(sub) -> None:
-    parser = sub.add_parser("tasks", help="全局任务进度、成本与产物（只读）")
+    parser = sub.add_parser(
+        "tasks", help="全局任务进度、成本与产物（只读）",
+        description="只读有界窗口；观测不等于验收或控制。",
+        epilog=("execution_mapping: 按精确 run/task/attempt/phase 配对的已记录 spawn/终态观测；"
+                "缺 spawn 证据的结果保留未验证来源，spawn-only 不是存活，窗口不完整时计数为下界。"
+                "forecast.prior_remaining_interval_seconds: 仅有回测同指纹先验、已记录开始且"
+                "spawn_observed=True 时给出的区间；remaining_seconds/eta 仍为 None，不是实时 ETA。"))
     parser.add_argument("--source", default="", help="source ID or registered name")
     parser.add_argument("--id", default="", help="inspect one recent task")
     parser.add_argument("--limit", type=int, default=100)
