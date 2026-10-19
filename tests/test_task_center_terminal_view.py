@@ -176,12 +176,18 @@ def test_retained_fields_do_not_invent_acceptance_eta_billing_or_execution():
 
 def test_task_facts_reports_bounded_prior_interval_and_never_a_live_eta():
     record = {"flow": {}, "time": {}, "delivery": {},
+              "execution_mapping": {"verified_spawn_and_outcome": 1,
+                                    "outcome_without_spawn_observation": 2,
+                                    "spawn_only_active_observations": 0,
+                                    "coverage": "observed_rows_only",
+                                    "unknown_not_zero": False},
               "forecast": {"prior_remaining_interval_seconds": [1.5, 4.0],
                            "prior_remaining_basis": "backtested_same_fingerprint_interval_minus_observed_elapsed",
                            "not_a_live_eta": True}}
     text = task_facts(record)
     assert "历史先验剩余区间=1.5\u20134.0 秒" in text
     assert "not_a_live_eta=True" in text and "remaining_seconds/eta 仍为 null" in text
+    assert "\n执行映射：已验证=1" in text and "缺 spawn 证据=2" in text
     assert "历史先验剩余区间=未追踪" in task_facts({"flow": {}, "time": {}, "delivery": {}})
 
 

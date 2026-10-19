@@ -162,7 +162,8 @@ def task_facts(record: dict) -> str:
         "（" + shown(usage.get("token_coverage")) + "）；费用=" + ("; ".join(amounts) or "币种/费用未追踪") +
         "（" + shown(billing.get("financial_coverage")) + "；窗口内/关联范围可重叠，非全程账单）\n" +
         "产物存在/声明=" + shown(delivery.get("present_files")) + "/" + shown(delivery.get("declared_files")) +
-        "；独立验收未验证；剩余时间/实时 ETA 未追踪。" + _prior_interval_line(record))
+        "；独立验收未验证；剩余时间/实时 ETA 未追踪。" + _prior_interval_line(record)
+        + _mapping_line(record.get("execution_mapping"), "\n"))
 
 
 def _prior_interval_line(record: dict) -> str:
@@ -178,10 +179,10 @@ def _prior_interval_line(record: dict) -> str:
             "；remaining_seconds/eta 仍为 null）")
 
 
-def _mapping_line(mapping: object) -> str:
+def _mapping_line(mapping: object, prefix: str = " ") -> str:
     if not isinstance(mapping, dict):
         return ""
-    return (" 执行映射：已验证=" + shown(mapping.get("verified_spawn_and_outcome")) +
+    return (prefix + "执行映射：已验证=" + shown(mapping.get("verified_spawn_and_outcome")) +
             "；缺 spawn 证据=" + shown(mapping.get("outcome_without_spawn_observation")) +
             "（来源未验证，不是 0）；spawn-only=" + shown(mapping.get("spawn_only_active_observations")) +
             "（不是存活）；窗口=" + shown(mapping.get("coverage")) +

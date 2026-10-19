@@ -151,6 +151,7 @@ def _task(source: dict, rows: list[dict], partial: bool, now: float, priors: dic
         "llm": _models(rows), "usage": usage, "billing": billing_metrics(rows, partial),
         "efficiency": efficiency(usage),
         "forecast": forecast_for(source["source_id"], last, priors, now=now),
+        "execution_mapping": execution_mapping(rows, partial=partial),
         "artifacts": artifacts,
         "delivery": {"declared_files": len(artifacts) if any(row["output_tracking"] for row in rows)
                      else None,

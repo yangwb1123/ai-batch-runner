@@ -212,3 +212,16 @@ def test_bad_cli_limits_fail_before_snapshot(source, args, capsys):
     from pbatch.ops import ops_main
     assert ops_main(["tasks", *args]) == 2
     assert "ops tasks:" in capsys.readouterr().out
+
+
+def test_generated_task_carries_a_bounded_execution_mapping(source):
+    ledger(source, [agent_row(attempt=1, spawn_observed=True),
+                    agent_row(attempt=2, status="failed",
+                              ts="2026-10-10T00:00:30Z")])
+    task = only_task(source)
+    mapping = task["execution_mapping"]
+    assert mapping["method"] == "verified-execution-mapping-v1"
+    assert mapping["execution_observations"] == 2
+    assert mapping["verified_spawn_and_outcome"] == 1
+    assert mapping["outcome_without_spawn_observation"] == 1
+    assert mapping["unknown_not_zero"] is False
