@@ -22,6 +22,7 @@ from .task_intent_view import attach_intents, intent_views
 from .task_duration import build_priors, forecast_for
 from .task_billing import billing_metrics
 from .task_consumption import attach_consumption
+from .task_execution_map import execution_mapping
 from .task_repair_preview import attach_repair_previews
 from .task_repair_view import attach_repairs, repair_views
 from .task_retention_view import attach_resources, resource_views
@@ -42,6 +43,7 @@ def snapshot(limit: int = 100, source_id: str = "", now: float | None = None) ->
                "window_only": True, "sources": [], "tasks": [], "goals": [], "intents": [], "repairs": [],
                "resources": [], "feedback": [], "diagnostics": [],
                "observed_task_count": 0, "omitted_tasks": 0, "status_counts": {},
+               "execution_mapping": execution_mapping([], partial=True),
                "activity": activity_snapshot() if not source_id else {"processes": [], "diagnostics": []}}
     try:
         sources, notes = discover_sources()
@@ -61,6 +63,9 @@ def snapshot(limit: int = 100, source_id: str = "", now: float | None = None) ->
     priors = build_priors(candidates)
     payload["tasks"] = [_task(source, rows, partial, now, priors)
                         for _, _, source, rows, partial in candidates[:limit]]
+    payload["execution_mapping"] = execution_mapping(
+        [row for _, _, _, rows, _ in candidates for row in rows],
+        partial=any(partial for _, _, _, _, partial in candidates))
     _enrich(payload, candidates, now)
     payload["status_counts"] = dict(Counter(task["status"] for task in payload["tasks"]))
     if source_id and not payload["sources"]:
