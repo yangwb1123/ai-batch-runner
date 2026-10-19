@@ -162,7 +162,31 @@ def task_facts(record: dict) -> str:
         "（" + shown(usage.get("token_coverage")) + "）；费用=" + ("; ".join(amounts) or "币种/费用未追踪") +
         "（" + shown(billing.get("financial_coverage")) + "；窗口内/关联范围可重叠，非全程账单）\n" +
         "产物存在/声明=" + shown(delivery.get("present_files")) + "/" + shown(delivery.get("declared_files")) +
-        "；独立验收未验证；剩余时间/实时 ETA 未追踪。")
+        "；独立验收未验证；剩余时间/实时 ETA 未追踪。" + _prior_interval_line(record))
+
+
+def _prior_interval_line(record: dict) -> str:
+    forecast = record.get("forecast") if isinstance(record.get("forecast"), dict) else {}
+    interval = forecast.get("prior_remaining_interval_seconds")
+    if (not isinstance(interval, (list, tuple)) or len(interval) != 2
+            or any(isinstance(value, bool) or not isinstance(value, (int, float))
+                   for value in interval)):
+        return ("\n历史先验剩余区间=未追踪（"
+                + shown(forecast.get("prior_remaining_basis") or forecast.get("reason")) + "）")
+    return ("\n历史先验剩余区间=" + shown(interval[0]) + "–" + shown(interval[1]) +
+            " 秒（同指纹回测先验减已观测时长；not_a_live_eta=" + shown(forecast.get("not_a_live_eta")) +
+            "；remaining_seconds/eta 仍为 null）")
+
+
+def _mapping_line(mapping: object) -> str:
+    if not isinstance(mapping, dict):
+        return ""
+    return (" 执行映射：已验证=" + shown(mapping.get("verified_spawn_and_outcome")) +
+            "；缺 spawn 证据=" + shown(mapping.get("outcome_without_spawn_observation")) +
+            "（来源未验证，不是 0）；spawn-only=" + shown(mapping.get("spawn_only_active_observations")) +
+            "（不是存活）；窗口=" + shown(mapping.get("coverage")) +
+            "；计数为下界=" + shown(mapping.get("unknown_not_zero")) +
+            "。不按标题/PID/时间戳推断，不代表验收或授权。")
 
 
 def json_detail(value: dict) -> str:
@@ -203,7 +227,8 @@ class TerminalView:
             self.fail(generation, exc)
             raise ValueError("invalid terminal snapshot: " + plain(str(exc), 512)) from exc
         self.items, self.snapshot = items, frozen
-        self.message = "有界账本观测；产物/执行成功不等于验收，历史耗时不是实时 ETA。"
+        self.message = ("有界账本观测；产物/执行成功不等于验收，历史耗时不是实时 ETA。"
+                        + _mapping_line(frozen.get("execution_mapping")))
         return True
 
     def fail(self, generation: int, error: object) -> bool:

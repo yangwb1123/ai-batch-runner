@@ -7,7 +7,8 @@ import json
 import pytest
 
 from pbatch.task_center_terminal_view import (
-    KINDS, MAX_DETAIL_BYTES, TerminalView, json_detail, plain, records, row_cells, validate_options,
+    KINDS, MAX_DETAIL_BYTES, TerminalView, json_detail, plain, records, row_cells, task_facts,
+    validate_options,
 )
 
 SOURCE = "src-" + "a" * 24
@@ -170,4 +171,27 @@ def test_retained_fields_do_not_invent_acceptance_eta_billing_or_execution():
         billing={"comparable_reported_amount": None}, capabilities={"control": False, "cleanup": False})
     model = TerminalView(); model.publish(model.invalidate(), value); model.select(next(iter(model.items)))
     assert json.loads(model.detail()) == value["tasks"][0]
+    assert "不等于验收" in model.message and "不是实时 ETA" in model.message
+
+
+def test_task_facts_reports_bounded_prior_interval_and_never_a_live_eta():
+    record = {"flow": {}, "time": {}, "delivery": {},
+              "forecast": {"prior_remaining_interval_seconds": [1.5, 4.0],
+                           "prior_remaining_basis": "backtested_same_fingerprint_interval_minus_observed_elapsed",
+                           "not_a_live_eta": True}}
+    text = task_facts(record)
+    assert "历史先验剩余区间=1.5\u20134.0 秒" in text
+    assert "not_a_live_eta=True" in text and "remaining_seconds/eta 仍为 null" in text
+    assert "历史先验剩余区间=未追踪" in task_facts({"flow": {}, "time": {}, "delivery": {}})
+
+
+def test_view_message_reports_mapping_bounds_without_inference_claims():
+    view = sample()
+    view["execution_mapping"] = {"verified_spawn_and_outcome": 3,
+        "outcome_without_spawn_observation": 2, "spawn_only_active_observations": 1,
+        "coverage": "partial_window", "unknown_not_zero": True}
+    model = TerminalView()
+    assert model.publish(model.invalidate(), view)
+    assert "执行映射：已验证=3" in model.message
+    assert "缺 spawn 证据=2" in model.message and "计数为下界=True" in model.message
     assert "不等于验收" in model.message and "不是实时 ETA" in model.message
