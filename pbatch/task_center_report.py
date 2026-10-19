@@ -90,8 +90,12 @@ function renderTask(task){
   cell(tr,task.title||task.local_task_id);
   cell(tr,task.status+' / '+(task.flow.last_observed_stage||task.phase)+
     '; 声明下一步 '+shown(task.flow.next_stage)+' ('+task.flow.next_status+')');
+  const priorInterval=(task.forecast||{}).prior_remaining_interval_seconds;
   cell(tr,shown(task.time.elapsed_wall_seconds)+' 秒；剩余 '+shown(task.time.remaining_seconds)+
-    '; 历史耗时先验 '+shown(task.forecast.duration_range_seconds)+' (非实时 ETA)');
+    '; 历史耗时先验 '+shown(task.forecast.duration_range_seconds)+' (非实时 ETA)'+
+    '；'+(Array.isArray(priorInterval)?'先验剩余区间 '+priorInterval.join('–')+
+      ' 秒（非实时 ETA；remaining/eta 为 null）':
+      '先验剩余区间 未追踪（'+shown((task.forecast||{}).prior_remaining_basis)+'）'));
   cell(tr,task.llm.map(m=>(m.provider||'?')+'/'+(m.model||'?')).join(', ')||'未追踪');
   cell(tr,resources(task.consumption||task));
   cell(tr,shown(task.delivery.present_files)+'/'+shown(task.delivery.declared_files)+
@@ -217,8 +221,13 @@ async function refresh(force=false){
       detail.textContent=item?JSON.stringify(item,null,2):'资源登记不在当前视图中；不代表已删除或可清场。';}
     if(selectedFeedback){const item=(view.feedback||[]).find(r=>r.feedback_id===selectedFeedback);
       detail.textContent=item?JSON.stringify(safeFeedback(item),null,2):'草案不在当前视图中；不代表已上传、复现或仍有效。';}
+    const mapping=view.execution_mapping||{};
     document.getElementById('summary').textContent='接入 '+view.sources.length+' 个来源；窗口观察到 '+
-      view.observed_task_count+' 个任务；更新于 '+view.generated_at;
+      view.observed_task_count+' 个任务；更新于 '+view.generated_at+
+      '；执行映射：已验证 '+shown(mapping.verified_spawn_and_outcome)+'，缺 spawn 证据 '+
+      shown(mapping.outcome_without_spawn_observation)+'（来源未验证，不是 0），spawn-only '+
+      shown(mapping.spawn_only_active_observations)+'（不是存活），窗口 '+shown(mapping.coverage)+
+      '，计数为下界 '+shown(mapping.unknown_not_zero)+'；不按标题/PID/时间戳推断，不代表验收或授权。';
     const problems=view.sources.flatMap(s=>s.coverage.filter(c=>c.error||c.malformed||c.truncated||c.incomplete)
       .map(c=>s.name+'/'+c.feed+': 数据不可读、损坏或窗口不完整'));
     document.getElementById('error').textContent=[...view.diagnostics,

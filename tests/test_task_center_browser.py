@@ -244,3 +244,15 @@ def test_request_inspection_markup_is_text_only_and_does_not_render_an_execution
     result = run_browser([view], "request")
     assert markup in result["repairs"] and result["tags"] == 0
     assert len(result["requests"]) == 1
+
+
+def test_execution_mapping_bounds_are_visible_in_the_read_only_page(source):
+    _, snapshot = normalized_view(source)
+    view = copy.deepcopy(snapshot)
+    view["execution_mapping"] = {"verified_spawn_and_outcome": 2,
+        "outcome_without_spawn_observation": 1, "spawn_only_active_observations": 0,
+        "coverage": "partial_window", "unknown_not_zero": True}
+    result = run_browser([view])
+    assert "执行映射" in result["summary"]
+    assert "缺 spawn 证据 1" in result["summary"] and "计数为下界 true" in result["summary"]
+    assert "不代表验收或授权" in result["summary"]
