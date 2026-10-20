@@ -256,3 +256,27 @@ def test_execution_mapping_bounds_are_visible_in_the_read_only_page(source):
     assert "执行映射" in result["summary"]
     assert "缺 spawn 证据 1" in result["summary"] and "计数为下界 true" in result["summary"]
     assert "不代表验收或授权" in result["summary"]
+
+
+def test_web_task_row_renders_bounded_prior_interval_not_a_live_eta():
+    from test_task_center_refresh_browser import _view
+
+    pending_fixture = Path(__file__).parent / "fixtures" / "task_center_pending_browser.js"
+    script = re.search(r"<script>(.*?)</script>", page_html(), re.S).group(1)
+
+    def render(forecast, marker):
+        view = _view(marker)
+        view["tasks"][0]["forecast"] = forecast
+        result = subprocess.run([NODE, str(pending_fixture)], input=json.dumps({
+            "script": script, "views": [_view("owned-interval-old"), view], "mode": "complete",
+            "old_marker": "owned-interval-old", "new_marker": marker}),
+            capture_output=True, text=True, timeout=15)
+        assert result.returncode == 0, result.stderr
+        return json.loads(result.stdout)["final"]["all"]
+
+    text = render({"duration_range_seconds": [10, 20],
+                   "prior_remaining_interval_seconds": [7.0, 17.0]}, "owned-interval-new")
+    assert "先验剩余区间 7–17 秒" in text and "remaining/eta 为 null" in text
+    text = render({"duration_range_seconds": None,
+                   "prior_remaining_basis": "insufficient_completed_samples"}, "owned-interval-none")
+    assert "先验剩余区间 未追踪" in text
