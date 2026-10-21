@@ -31,6 +31,7 @@ class PipelineWait:
     timed_out: bool = False
     stalled: bool = False
     no_progress_seconds: float = 0.0
+    budget_exhausted: bool = False
 
 
 def lease_file(worktree: Path, direction_id: str) -> Path:
@@ -136,7 +137,8 @@ def _pid_is_same_process(payload: dict) -> bool:
 
 def prepare_lease(path: Path, *, pid: int, direction_id: str,
                   worktree: Path, pipeline: Path, logfile: Path,
-                  timeout: int, no_progress_timeout: int) -> dict:
+                  timeout: int, no_progress_timeout: int,
+                  process_start_identity: str | None = None) -> dict:
     """Create a lease, rejecting a still-live owner and removing stale data."""
     exists = path.exists() or path.is_symlink()
     previous = _read_json(path)
@@ -155,7 +157,8 @@ def prepare_lease(path: Path, *, pid: int, direction_id: str,
         "schema": 1,
         "status": "running",
         "pid": int(pid),
-        "process_start_ticks": process_start_ticks(pid),
+        "process_start_ticks": (process_start_ticks(pid) if process_start_identity is None
+                                else process_start_identity),
         "direction_id": _bounded_text(direction_id),
         "worktree": _bounded_text(worktree.resolve()),
         "pipeline": _bounded_text(pipeline.resolve()),
@@ -270,41 +273,85 @@ def _stop_group(proc: subprocess.Popen, grace: float = _STOP_GRACE_SECONDS) -> N
         pass
 
 
+def _deadline_wait(deadline, now: float, stop) -> PipelineWait | None:
+    if deadline is not None and deadline.expired(now):
+        stop()
+        return PipelineWait(-1, budget_exhausted=True)
+    return None
+
+
+def _time_limit(deadline, now, stop, timeout, started, last_progress, progress_timeout):
+    budget = _deadline_wait(deadline, now, stop)
+    if budget is not None:
+        return budget
+    if timeout > 0 and now - started >= timeout:
+        stop()
+        return PipelineWait(-1, timed_out=True,
+                            no_progress_seconds=(max(0.0, now - last_progress)
+                                                 if progress_timeout > 0 and last_progress is not None else 0.0))
+    return None
+
+
+def _poll_result(proc, window):
+    limited = window(time.monotonic())
+    if limited is not None:
+        return limited
+    returncode = proc.poll()
+    limited = window(time.monotonic())
+    if limited is not None:
+        return limited
+    return PipelineWait(returncode) if returncode is not None else None
+
+
+def _poll_delay(now: float, started: float, timeout: int, deadline) -> float:
+    delays = [_POLL_SECONDS]
+    if timeout > 0:
+        delays.append(max(0.0, timeout - (now - started)))
+    if deadline is not None:
+        delays.append(deadline.remaining(now))
+    return min(delays)
+
+
 def wait_for_pipeline(proc: subprocess.Popen, *, logfile: Path, pipeline: Path,
                       timeout: int, no_progress_timeout: int,
-                      lease_path: Path, lease: dict) -> PipelineWait:
+                      lease_path: Path, lease: dict, started_at: float | None = None,
+                      deadline=None, stop=None) -> PipelineWait:
     """Monitor deadlines and bounded deliverable artifacts.
 
     Logs, lease writes, and the static pipeline manifest are not progress.
     """
-    started = time.monotonic()
-    last_progress = started
-    previous_marker = _artifact_marker(pipeline)
+    started = time.monotonic() if started_at is None else started_at
+    stop = stop or (lambda: _stop_group(proc, grace=0))
+    last_progress = None  # execution time is charged, but artifact history is not observed yet
+    previous_marker = None
     last_lease_write = started
+    window = lambda now: _time_limit(deadline, now, stop, timeout, started,
+                                     last_progress, no_progress_timeout)
     while True:
-        returncode = proc.poll()
-        if returncode is not None:
-            return PipelineWait(returncode)
-        now = time.monotonic()
+        observed = _poll_result(proc, window)
+        if observed is not None:
+            return observed
         current_marker = _artifact_marker(pipeline)
-        progressed = current_marker != previous_marker
-        if progressed:
-            previous_marker = current_marker
+        now = time.monotonic()
+        budget = window(now)
+        if budget is not None:
+            return budget
+        progressed = previous_marker is not None and current_marker != previous_marker
+        if previous_marker is None or progressed:
             last_progress = now
+        previous_marker = current_marker
         if now - last_lease_write >= _LEASE_WRITE_INTERVAL:
             _touch_lease(lease_path, lease,
                          progress_at=_now() if progressed else None)
             last_lease_write = now
-        if timeout > 0 and now - started >= timeout:
-            _stop_group(proc, grace=0)
-            return PipelineWait(
-                -1, timed_out=True,
-                no_progress_seconds=(max(0.0, now - last_progress)
-                                     if no_progress_timeout > 0 else 0.0))
+        checked_at = time.monotonic()
+        limited = window(checked_at)
+        if limited is not None:
+            return limited
         if (no_progress_timeout > 0 and
                 now - last_progress >= no_progress_timeout):
             stalled_for = max(0.0, now - last_progress)
-            _stop_group(proc, grace=0)
+            stop()
             return PipelineWait(-1, stalled=True,
                                 no_progress_seconds=stalled_for)
-        time.sleep(_POLL_SECONDS)
+        time.sleep(_poll_delay(checked_at, started, timeout, deadline))

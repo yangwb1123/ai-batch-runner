@@ -19,7 +19,11 @@ Both are opt-in; with neither configured the behaviour is unchanged.
 from __future__ import annotations
 
 import json
+import math
+import threading
 import time
+from dataclasses import dataclass, field, replace
+from time import monotonic
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -71,7 +75,11 @@ def parse_deadline(value: str) -> float | None:
     """Accept ISO-8601 or epoch seconds; reject anything else fail-closed."""
     if not str(value or "").strip():
         return None
-    return _parse_time(str(value).strip())
+    try:
+        stamp = _parse_time(str(value).strip())
+        return stamp if stamp is not None and math.isfinite(stamp) else None
+    except (OSError, ValueError, OverflowError):
+        return None
 
 
 def deadline_for(budget_seconds: int, deadline_at: str,
@@ -125,10 +133,92 @@ def gate(settings, root: Path):
     A missing ledger's fallback must not slide forward on every check. This
     admission gate does not interrupt work already running.
     """
-    cutoff, _origin = deadline_for(
-        settings.budget_seconds, settings.deadline_at, state_path_for(root, settings))
+    frozen = getattr(settings, "_execution_deadline", None)
+    if frozen is None:
+        cutoff, _origin = deadline_for(
+            settings.budget_seconds, settings.deadline_at, state_path_for(root, settings))
+        frozen = _clock_cap(cutoff) if cutoff is not None else None
 
     def allowed() -> bool:
-        return cutoff is None or time.time() < cutoff
+        return frozen is None or not frozen.expired(monotonic())
 
     return allowed
+
+
+class CampaignDeadlineExpired(RuntimeError):
+    """An isolated attempt stopped for budget, not an ordinary pipeline failure."""
+
+    def __init__(self, reason: str, evidence: list[str]):
+        super().__init__(reason)
+        self.evidence = list(evidence)
+
+
+class CampaignGuardFailed(RuntimeError):
+    """Required execution supervision is unavailable; preserve effects, never retry blindly."""
+
+
+@dataclass(frozen=True)
+class ExecutionDeadline:
+    epoch: float
+    monotonic: float
+    _exhausted: threading.Event = field(default_factory=threading.Event, compare=False, repr=False)
+
+    def expired(self, now: float) -> bool:
+        if self._exhausted.is_set():
+            return True
+        if now >= self.monotonic or time.time() >= self.epoch:
+            self._exhausted.set()
+        return self._exhausted.is_set()
+
+    def remaining(self, now: float) -> float:
+        if self.expired(now):
+            return 0.0
+        return max(0.0, min(self.monotonic - now, self.epoch - time.time()))
+
+
+def _clock_cap(epoch: float) -> ExecutionDeadline:
+    return ExecutionDeadline(epoch, monotonic() + (epoch - time.time()))
+
+
+def with_frozen_deadline(settings, root: Path):
+    """Carry one coordinator cutoff to worktrees without rereading their ledgers."""
+    if getattr(settings, "_execution_deadline", None) is not None:
+        return settings
+    if settings.deadline_at and parse_deadline(settings.deadline_at) is None:
+        raise ValueError("invalid campaign deadline")
+    cutoff, _origin = deadline_for(
+        settings.budget_seconds, settings.deadline_at, state_path_for(root, settings))
+    if cutoff is None:
+        return settings
+    if not math.isfinite(cutoff):
+        raise ValueError("invalid coordinator campaign deadline")
+    frozen = replace(settings, deadline_at=str(cutoff))
+    frozen._execution_deadline = _clock_cap(cutoff)
+    return frozen
+
+
+def execution_settings(settings, started: float):
+    """Private runtime copy: share one clock/latch through parent and child paths."""
+    deadline = execution_deadline(settings, started)
+    if deadline is None or getattr(settings, "_execution_deadline", None) is not None:
+        return settings
+    frozen = replace(settings)
+    frozen._execution_deadline = deadline
+    return frozen
+
+
+def execution_deadline(settings, started: float) -> ExecutionDeadline | None:
+    """Execution accepts only absolute cutoffs; relative budgets need a coordinator."""
+    frozen = getattr(settings, "_execution_deadline", None)
+    if frozen is not None:
+        return frozen
+    raw = getattr(settings, "deadline_at", "")
+    if not raw:
+        if getattr(settings, "budget_seconds", 0):
+            raise ValueError("campaign deadline requires a frozen coordinator cutoff")
+        return None
+    epoch = parse_deadline(raw)
+    if epoch is None:
+        raise ValueError("invalid campaign deadline")
+    # Anchor before spawn/lease setup; wall rollback cannot extend this attempt.
+    return ExecutionDeadline(epoch, started + (epoch - time.time()))

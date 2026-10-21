@@ -328,9 +328,12 @@ check. See [Campaign admission fixes and limits](CAMPAIGN_ADMISSION_FIXES.md).
 
 Campaign time-budget/deadline checks also guard new directions, including queued
 isolated directions. An expired budget is a terminal exit 3 even with
-`--rounds 0`; it does not trigger another round or a round commit. This is not
-an in-flight campaign deadline: work already running still uses its existing
-task/pipeline timeouts and is not interrupted by these admission checks.
+`--rounds 0`; it does not trigger another round or a round commit. Budgeted
+isolated implementation attempts now also carry the coordinator cutoff into an
+independent owned-child alarm; continuing output and lease/artifact I/O cannot
+reset it. Coordinator-side analysis and serial implementation still have only
+their existing task timeouts plus admission checks. See
+[isolated-attempt deadlines and limits](CAMPAIGN_ISOLATED_DEADLINE.md).
 
 Pi session files remain append-only and untouched. Metering caches each file's
 device/inode, byte offset, and cumulative numeric usage, then scans only newly
@@ -349,7 +352,15 @@ from observing each other's partial repository changes. Isolated branches are
 not auto-merged; state records the branch, commit, and worktree evidence for the
 repository's normal review/merge process. `implementation.timeout` (14400s by
 default) is a wall-clock ceiling for each isolated direction; expiry kills the
-whole child pipeline group and records a failed outcome. The Bash
+owned child pipeline group and records a failed outcome. A campaign cutoff
+is distinct: it records `BUDGET_BLOCKED`, preserves the worktree, and bypasses
+parent finalization and automatic recovery. If termination is unobserved, the
+already-bound live/unknown owner lease is retained. Pre-binding ownership is
+only tracked in-process; this is not durable pre-spawn reservation or orphan
+containment. Exclusive private deadline receipts record
+available identity and refusal evidence, never rollback or group-containment
+proof. Python/OS scheduling and coordinator Git/I/O are not hard real-time, and
+escaped process groups/provider-side effects are not contained. The Bash
 `scripts/full-auto.sh` entry is only a compatibility wrapper.
 
 Each isolated direction also has a bounded lease under its worktree's runtime

@@ -137,7 +137,10 @@ def test_queued_isolated_direction_rechecks_coordinator_budget(monkeypatch, tmp_
     by_title = {item.direction.title: item for item in outcomes}
 
     assert ran == ["first"]
-    assert by_title["first"].status == PipelineStatus.PASSED
+    # The first batch was admission-only. The worker now also checks publication:
+    # this stub advances the clock before returning, so it cannot publish PASS.
+    assert by_title["first"].status == PipelineStatus.BUDGET_BLOCKED
+    assert by_title["first"].recovery_status == "PRESERVED"
     blocked = by_title["second"]
     assert blocked.status == PipelineStatus.BUDGET_BLOCKED
     assert blocked.branch == "campaign/second"

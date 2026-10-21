@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .campaign_budget import parse_deadline
+from .campaign_budget import ExecutionDeadline, parse_deadline
 
 
 DEFAULT_ANALYSIS_PROMPT = """Analyze module '{module}' at {module_path} and its related interfaces in the repository.
@@ -142,6 +142,8 @@ class CampaignSettings:
     # an optional absolute cutoff.  0 / "" disables the stop.
     budget_seconds: int = 0
     deadline_at: str = ""
+    # Runtime-only batch clock/latch; absent from original settings.__dict__ and config input.
+    _execution_deadline: ExecutionDeadline | None = field(default=None, init=False, repr=False, compare=False)
     worktree_root: str = ""  # 空 = data_dir/worktrees（PBATCH_DATA_DIR 感知）
     analysis_minutes: float = 3
     pipeline_minutes: float = 20

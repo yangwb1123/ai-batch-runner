@@ -13,7 +13,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .campaign_artifacts import isolated_run_evidence
-from .campaign_budget import BUDGET_BLOCKED_REASON, gate as budget_gate
+from .campaign_budget import (BUDGET_BLOCKED_REASON, execution_settings,
+                              gate as budget_gate, with_frozen_deadline)
+from .campaign_deadline import check_deadline
+from .campaign_isolated_outcome import (IsolatedAttempt, check_publication,
+                                         preparation_outcome, stopped_outcome)
 from .campaign_gate_feedback import (
     inject_prior_gate_feedback as _inject_prior_gate_feedback,
     prior_gate_feedback as _prior_gate_feedback,
@@ -360,6 +364,7 @@ def _artifact_evidence(pipeline_path: Path, results: list) -> list[str]:
 def run_directions_isolated(root: Path, settings: CampaignSettings,
                             items: list[tuple[Direction, Path]], jobs: int,
                             agent_args: list[str]) -> list[PipelineOutcome]:
+    settings = with_frozen_deadline(settings, root)
     should_run = budget_gate(settings, root)
     outcomes = []
     prepared = []
@@ -369,10 +374,12 @@ def run_directions_isolated(root: Path, settings: CampaignSettings,
                                             BUDGET_BLOCKED_REASON, 0, [str(analysis)]))
             continue
         try:
+            prepared_at = time.monotonic()
             worktree, branch, baseline = _ensure_worktree(root, settings, direction)
             prepared.append((direction, analysis, worktree, branch, baseline))
         except Exception as exc:
-            outcomes.append(PipelineOutcome(direction, "PIPELINE_FAILED", str(exc), 0, []))
+            outcomes.append(preparation_outcome(PipelineOutcome, exc, direction, analysis,
+                                                settings, root, prepared_at))
     with ThreadPoolExecutor(max_workers=jobs) as pool:
         futures = [pool.submit(_safe_worktree_run, settings, direction, analysis,
                                worktree, branch, baseline, agent_args,
@@ -386,25 +393,28 @@ def run_directions_isolated(root: Path, settings: CampaignSettings,
 def _safe_worktree_run(settings: CampaignSettings, direction: Direction,
                        analysis_path: Path, worktree: Path, branch: str,
                        baseline: str, agent_args: list[str], should_run=None) -> PipelineOutcome:
-    if should_run is not None and not should_run():
-        return PipelineOutcome(direction, PipelineStatus.BUDGET_BLOCKED,
-                               BUDGET_BLOCKED_REASON, 0, [str(analysis_path)],
-                               branch=branch, baseline_commit=baseline)
+    started = time.monotonic()
     try:
-        return _run_in_worktree(
+        settings = execution_settings(settings, started)
+        if should_run is not None and not should_run():
+            return PipelineOutcome(direction, PipelineStatus.BUDGET_BLOCKED,
+                                   BUDGET_BLOCKED_REASON, 0, [str(analysis_path)],
+                                   branch=branch, baseline_commit=baseline)
+        outcome = _run_in_worktree(
             settings, direction, analysis_path, worktree, branch, baseline, agent_args)
+        check_publication(outcome, getattr(settings, "_execution_deadline", None), worktree)
+        return outcome
     except Exception as exc:
-        repository = git_worktree_evidence(worktree)
-        return PipelineOutcome(
-            direction, "PIPELINE_FAILED", str(exc), 0, [str(worktree)], branch,
-            repository["head_commit"], baseline, repository["clean_commit"],
-            repository["dirty_evidence"], repository["dirty_digest"])
+        return stopped_outcome(PipelineOutcome, exc, direction, worktree, branch,
+                               baseline, started, git_worktree_evidence,
+                               getattr(settings, "_execution_deadline", None))
 
 
 def _run_in_worktree(settings: CampaignSettings, direction: Direction, analysis_path: Path,
                      worktree: Path, branch: str, baseline: str,
                      agent_args: list[str]) -> PipelineOutcome:
     start = time.monotonic()
+    settings = execution_settings(settings, start)
     local_analysis = _copy_local_analysis(worktree, direction, analysis_path)
     recovery_root = config.data_dir(str(worktree)) / "campaign-recovery"
     run_dir = settings.output_path(worktree) / "runs" / direction.direction_id
@@ -427,28 +437,38 @@ def _run_in_worktree(settings: CampaignSettings, direction: Direction, analysis_
     # concurrent rotation; isolated model bodies remain in artifacts/sessions.
     returncode, timed_out, stalled, no_progress_seconds = _run_isolated_child(
         cmd, settings, direction, worktree, pipeline_path, logfile)
+    attempt = IsolatedAttempt(settings, direction, worktree, branch, baseline,
+                              pipeline_path, logfile, start, start_clean, recovery_root)
+    return _complete_isolated_attempt(attempt, returncode, timed_out, stalled, no_progress_seconds)
+
+
+def _complete_isolated_attempt(a, returncode, timed_out, stalled, no_progress_seconds):
+    check_deadline(a.settings, a.direction, a.worktree, a.pipeline, a.logfile, phase="after_child")
     status = (PipelineStatus.PIPELINE_FAILED if timed_out or stalled
-              else _isolated_status(returncode, logfile))
-    reason = isolated_failure_reason(settings, returncode, timed_out, stalled)
-    repository = git_worktree_evidence(worktree)
+              else _isolated_status(returncode, a.logfile))
+    reason = isolated_failure_reason(a.settings, returncode, timed_out, stalled)
+    repository = git_worktree_evidence(a.worktree)
+    check_deadline(a.settings, a.direction, a.worktree, a.pipeline, a.logfile, phase="before_finalize")
     if returncode == 0 and not timed_out and not stalled:
         reason, repository = _finalize_worktree(
-            worktree, branch, baseline, direction.direction_id)
+            a.worktree, a.branch, a.baseline, a.direction.direction_id)
         if reason:
             status = PipelineStatus.PIPELINE_FAILED
-    evidence = [str(worktree), str(pipeline_path), str(logfile)]
-    evidence.extend(isolated_run_evidence(pipeline_path))
+    check_deadline(a.settings, a.direction, a.worktree, a.pipeline, a.logfile, phase="before_artifacts")
+    evidence = [str(a.worktree), str(a.pipeline), str(a.logfile)]
+    evidence.extend(isolated_run_evidence(a.pipeline))
+    check_deadline(a.settings, a.direction, a.worktree, a.pipeline, a.logfile, phase="before_recovery")
     recovery, repository, reason = _recover_isolated_worktree(
-        settings, direction, worktree, baseline, branch, recovery_root,
-        start_clean, status, reason, repository)
+        a.settings, a.direction, a.worktree, a.baseline, a.branch, a.recovery_root,
+        a.start_clean, status, reason, repository)
     evidence.extend(recovery.evidence)
+    check_deadline(a.settings, a.direction, a.worktree, a.pipeline, a.logfile, phase="publication")
     return PipelineOutcome(
-        direction, status, reason, time.monotonic() - start, evidence, branch,
-        repository["head_commit"], baseline, repository["clean_commit"],
+        a.direction, status, reason, time.monotonic() - a.started, evidence, a.branch,
+        repository["head_commit"], a.baseline, repository["clean_commit"],
         repository["dirty_evidence"], repository["dirty_digest"],
         recovery_status=recovery.status, recovery_reason=recovery.reason,
-        recovery_evidence=recovery.evidence,
-        no_progress_seconds=no_progress_seconds)
+        recovery_evidence=recovery.evidence, no_progress_seconds=no_progress_seconds)
 
 
 def _recover_isolated_worktree(settings, direction, worktree, baseline, branch,
