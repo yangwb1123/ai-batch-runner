@@ -331,8 +331,13 @@ isolated directions. An expired budget is a terminal exit 3 even with
 `--rounds 0`; it does not trigger another round or a round commit. Budgeted
 isolated implementation attempts now also carry the coordinator cutoff into an
 independent owned-child alarm; continuing output and lease/artifact I/O cannot
-reset it. Coordinator-side analysis and serial implementation still have only
-their existing task timeouts plus admission checks. See
+reset it. The analysis phase shares the same coordinator clock/latch: modules
+not yet dispatched are recorded as `BUDGET_BLOCKED`, each call's timeout is
+capped by the remaining window, retry sleeps cannot continue past the cutoff,
+and a mid-analysis stop returns terminal exit 3 without selection. Serial
+in-tree implementation still has only its existing task timeouts plus the
+shared admission checks. See
+[analysis-phase budget and limits](CAMPAIGN_ANALYSIS_DEADLINE.md) and
 [isolated-attempt deadlines and limits](CAMPAIGN_ISOLATED_DEADLINE.md).
 
 Pi session files remain append-only and untouched. Metering caches each file's

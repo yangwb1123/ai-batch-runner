@@ -7,6 +7,8 @@ import re
 import time
 from pathlib import Path
 
+from .campaign_analysis_retry import deadline_admission, retryable_tasks
+from .campaign_budget import bound_task_timeout, retry_delay_before_cutoff
 from .campaign_models import CampaignSettings, Direction, safe_slug
 from .memory_io import reverse_lines
 from .campaign_state import digest, failure_fingerprint, tool_digest, tree_digest
@@ -297,17 +299,30 @@ def _preserve_invalid_analysis(task: Task) -> str:
         return ""
 
 
+def _retry_sleep(deadline, retry_delay: float, attempt: int) -> bool:
+    """Backoff bounded by the shared cutoff; False stops the retry loop."""
+    delay = retry_delay_before_cutoff(
+        deadline, max(0, retry_delay) * (2 ** attempt))
+    if delay is None:
+        return False
+    time.sleep(delay)
+    return True
+
+
 def run_analysis_tasks(tasks: list[Task], jobs: int, retries: int,
-                       retry_delay: float = 10, validator=None) -> dict[str, TaskResult]:
-    """Run independent analyses in parallel and retry only failed tasks."""
+                       retry_delay: float = 10, validator=None,
+                       deadline=None) -> dict[str, TaskResult]:
+    """Run analyses in parallel; a shared deadline caps calls and retry sleeps."""
     pending = list(tasks)
     final = {}
     prior_failures = {}
-    from .provider_breaker import is_provider_failure_reason
     for attempt in range(retries + 1):
         if not pending:
             break
-        results = run_parallel(pending, jobs)
+        if not all(bound_task_timeout(task, deadline) for task in pending):
+            break
+        options = {} if deadline is None else {"admit": deadline_admission(deadline)}
+        results = run_parallel(pending, jobs, **options)
         for result in results:
             if result.success and validator and not validator(result):
                 preserved = _preserve_invalid_analysis(result.task)
@@ -317,21 +332,9 @@ def run_analysis_tasks(tasks: list[Task], jobs: int, retries: int,
                     result.reason += f"; rejected artifact: {preserved}"
                 result.task.output_path().unlink(missing_ok=True)
             final[str(result.task.output_path())] = result
-        pending = []
-        if attempt < retries:
-            for result in results:
-                if result.success or not is_retryable(result.reason):
-                    continue
-                if is_provider_failure_reason(result.reason):
-                    continue
-                key = str(result.task.output_path())
-                signature = failure_fingerprint("", "ANALYSIS", result.reason)
-                if prior_failures.get(key) == signature:
-                    continue
-                prior_failures[key] = signature
-                pending.append(result.task)
-        if pending and attempt < retries:
-            time.sleep(max(0, retry_delay) * (2 ** attempt))
+        pending = retryable_tasks(results, prior_failures, attempt < retries)
+        if pending and not _retry_sleep(deadline, retry_delay, attempt):
+            break
     return final
 
 

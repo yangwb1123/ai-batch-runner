@@ -15,7 +15,8 @@ def run_parallel(tasks: list, workers: int, validate_cmd: str,
                  retries: int, retry_delay: float, backoff: float,
                  min_interval: float, waves: Optional[list], cancel_event,
                  run_retried, wait_for_cancel, kill_active_procs,
-                 cancelled_result, budget_message, result_callback=None) -> list:
+                 cancelled_result, budget_message, result_callback=None,
+                 admit=None) -> list:
     wave_plan = validate_parallel_plan(tasks, waves)
     if waves is not None and not wave_plan:
         return []
@@ -28,7 +29,8 @@ def run_parallel(tasks: list, workers: int, validate_cmd: str,
     results, capped = _run_batches(
         batches, tasks, workers, total, validate_cmd, retries, retry_delay,
         backoff, min_interval, cancel_event, run_retried, wait_for_cancel,
-        kill_active_procs, cancelled_result, budget_message, result_callback)
+        kill_active_procs, cancelled_result, budget_message, result_callback,
+        admit=admit)
     if capped:
         raise SystemExit(3)
     return results
@@ -37,7 +39,8 @@ def run_parallel(tasks: list, workers: int, validate_cmd: str,
 def _run_batches(batches, tasks, workers, total, validate_cmd, retries,
                  retry_delay, backoff, min_interval, cancel_event,
                  run_retried, wait_for_cancel, kill_active_procs,
-                 cancelled_result, budget_message, result_callback=None):
+                 cancelled_result, budget_message, result_callback=None,
+                 admit=None):
     results, capped = [], False
     with ThreadPoolExecutor(max_workers=workers) as pool:
         for position, batch in enumerate(batches):
@@ -49,7 +52,7 @@ def _run_batches(batches, tasks, workers, total, validate_cmd, retries,
             futures, submitted, hit_cap = _submit_batch(
                 pool, batch, tasks, total, validate_cmd, retries,
                 retry_delay, backoff, cancel_event, budget_message,
-                run_retried)
+                run_retried, admit=admit)
             capped = capped or hit_cap
             wave_results, capped = _collect(
                 futures, total, min_interval, capped, cancel_event,
@@ -71,7 +74,7 @@ def _run_batches(batches, tasks, workers, total, validate_cmd, retries,
 
 def _submit_batch(pool, batch, tasks, total, validate_cmd, retries,
                   retry_delay, backoff, cancel_event, budget_message,
-                  run_retried):
+                  run_retried, admit=None):
     futures, submitted = {}, set()
     for index in batch:
         if _cancel_requested(cancel_event):
@@ -81,18 +84,24 @@ def _submit_batch(pool, batch, tasks, total, validate_cmd, retries,
             return futures, submitted, True
         future = pool.submit(
             _run_one, run_retried, tasks[index], index + 1, total,
-            validate_cmd, retries, retry_delay, backoff, cancel_event)
+            validate_cmd, retries, retry_delay, backoff, cancel_event,
+            admit=admit)
         futures[future] = tasks[index]
         submitted.add(index)
     return futures, submitted, False
 
 
 def _run_one(run_retried, task, index, total, validate_cmd, retries,
-             retry_delay, backoff, cancel_event):
+             retry_delay, backoff, cancel_event, admit=None):
+    if admit is not None:
+        refused = admit(task)
+        if refused is not None:
+            return refused
     try:
         return run_retried(task, validate_cmd, index, total, retries,
                            retry_delay, backoff, parallel=True,
-                           cancel_event=task_cancel_event(cancel_event, task))
+                           cancel_event=task_cancel_event(cancel_event, task),
+                           admit=admit)
     except SystemExit as exc:
         if exc.code == 3:
             return None

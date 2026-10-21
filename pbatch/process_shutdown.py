@@ -16,12 +16,28 @@ def shutdown_requested() -> bool:
     return _STOPPING
 
 
-def spawn_registered(spawn, stop):
-    """Publish each child before shutdown can finish, including spawn races."""
+class SpawnRefused(RuntimeError):
+    """A caller-owned admission predicate refused the spawn under the lock."""
+
+    def __init__(self, result):
+        super().__init__("spawn refused before process creation")
+        self.result = result
+
+
+def spawn_registered(spawn, stop, admit=None):
+    """Publish each child before shutdown can finish, including spawn races.
+
+    ``admit`` runs under the same lock as the spawn, so a worker that waited
+    for another worker's process creation re-evaluates its cutoff immediately
+    before Popen instead of trusting a check made before the wait.
+    """
     global _SPAWNING_THREAD
     with _LOCK:
         if shutdown_requested():
             raise RuntimeError("process cancelled by CLI shutdown")
+        refused = admit() if admit is not None else None
+        if refused is not None:
+            raise SpawnRefused(refused)
         _SPAWNING_THREAD = threading.get_ident()
         try:
             process = spawn()

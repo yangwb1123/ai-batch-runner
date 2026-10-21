@@ -270,6 +270,21 @@ def test_first_artifact_observation_is_not_unobserved_stall(monkeypatch, tmp_pat
     assert len(scans) == 2
 
 
+def test_zero_window_latches_between_wall_samples(monkeypatch):
+    samples = [101.0, 102.0]  # expired() sees one sample, remaining() the next
+    clock = SimpleNamespace(mono=9.5)
+    monkeypatch.setattr(campaign_budget, "time", SimpleNamespace(
+        time=lambda: samples.pop(0), monotonic=lambda: clock.mono))
+    # Construct directly so both samples belong to the observed zero window;
+    # execution_deadline() would consume the first sample while building.
+    deadline = campaign_budget.ExecutionDeadline(102.0, 10.0)
+
+    assert deadline.remaining(9.5) == 0.0
+    assert deadline._exhausted.is_set()
+    clock.mono = 9.0
+    assert deadline.expired(9.0) is True  # a wall rollback cannot reopen it
+
+
 def test_short_remaining_budget_bounds_the_next_sleep(monkeypatch, tmp_path):
     clock = _clock(monkeypatch)
     deadline = execution_deadline(CampaignSettings(deadline_at="100.125"), 10.0)

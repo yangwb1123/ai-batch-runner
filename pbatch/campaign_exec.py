@@ -13,10 +13,11 @@ import time
 from pathlib import Path
 
 from . import config, metering
-from .campaign_analysis import (analysis_fingerprint, build_analysis_task,
-                                discover_modules, parse_directions,
-                                run_analysis_tasks, select_directions)
-from .campaign_models import CampaignSettings, Direction
+from .campaign_analysis import build_analysis_task, discover_modules, select_directions
+from .campaign_analysis_phase import (_analyze_modules, _pending_analysis_modules,
+                                      _reuse_enabled)
+from .campaign_budget import context_settings
+from .campaign_models import CampaignSettings, Direction, safe_nonnegative_int
 from .campaign_exec_planning import (
     _available_invocations, _build_campaign_plan, _print_plan,
 )
@@ -33,13 +34,7 @@ from .campaign_pipeline import (PipelineOutcome, direction_fingerprint,
 from .campaign_state import (digest, failure_fingerprint, tool_digest,
                              tool_head, write_summary)
 from .campaign_strategy import read_usage
-from .models import Task
 from .config import log
-from .lock import acquire_lock, release_lock
-from .registry import mark_running, unregister
-from .runner import kill_active_procs, run_argv
-from .text_io import read_text_bounded
-from .campaign_recovery import update_round_recovery
 
 
 class CampaignSignalInterrupt(KeyboardInterrupt):
@@ -107,19 +102,11 @@ def run_campaign(context: CampaignContext) -> int:
         return _blocked_campaign(context, plan)
     if _budget_exhausted(context):
         return 3
+    context_settings(context)  # one clock/latch shared by analysis and pipelines
     analysis_scope = set(plan.selected)
-    pause_reason, pause_evidence = _provider_breaker_admission(
-        getattr(context.args, "provider", ""),
-        getattr(context.args, "agent_bin", ""))
-    if pause_reason:
-        _event(context, "__provider__", "__provider__", "",
-               PipelineStatus.PROVIDER_BREAKER_PAUSED, "", pause_evidence,
-               reason=pause_reason)
-        write_summary(context.store,
-                      context.settings.summary_path(context.root),
-                      context.settings.name)
-        log.error("CAMPAIGN paused before analysis: %s", pause_reason)
-        return 1
+    pause = _provider_admission_pause(context)
+    if pause is not None:
+        return pause
     _preflight_validators(context)
     _event(context, "__campaign__", "__plan__", "", "CAMPAIGN_PLAN", "",
            [], reason=plan.reason, extra={"strategy": plan.mapping()})
@@ -127,7 +114,9 @@ def run_campaign(context: CampaignContext) -> int:
            tool_digest(), [tool_head()],
            reason="tool code digest (pbatch + pi-batch.py + pi-batch.yaml); "
                   "invalidates analysis/direction reuse when the tool changes")
-    directions, failures = _analyze_modules(context, modules, analysis_scope)
+    directions, failures = _analyze_modules(context, modules, analysis_scope, _event)
+    if getattr(context, "analysis_budget_stopped", False):
+        return _analysis_budget_stop(context)
     selected, selection_failures = _select(context, modules, directions)
     failures += selection_failures
     outcomes = _implement(context, selected)
@@ -141,6 +130,29 @@ def run_campaign(context: CampaignContext) -> int:
     return (3 if any(item.status == PipelineStatus.BUDGET_BLOCKED for item in outcomes)
             else 1 if failures else 0)
 
+def _provider_admission_pause(context: CampaignContext) -> int | None:
+    reason, evidence = _provider_breaker_admission(
+        getattr(context.args, "provider", ""),
+        getattr(context.args, "agent_bin", ""))
+    if not reason:
+        return None
+    _event(context, "__provider__", "__provider__", "",
+           PipelineStatus.PROVIDER_BREAKER_PAUSED, "", evidence, reason=reason)
+    write_summary(context.store, context.settings.summary_path(context.root),
+                  context.settings.name)
+    log.error("CAMPAIGN paused before analysis: %s", reason)
+    return 1
+
+
+def _analysis_budget_stop(context: CampaignContext) -> int:
+    _event(context, "__campaign__", "__budget__", "", "CAMPAIGN_BUDGET_EXHAUSTED",
+           "", [], reason="campaign deadline exhausted during analysis; "
+                          "no directions selected")
+    write_summary(context.store, context.settings.summary_path(context.root),
+                  context.settings.name)
+    return 3
+
+
 def _blocked_campaign(context: CampaignContext, plan) -> int:
     _event(context, "__campaign__", "__plan__", "", "CAMPAIGN_PLAN", "",
            [], reason=plan.reason, extra={"strategy": plan.mapping()})
@@ -150,102 +162,6 @@ def _blocked_campaign(context: CampaignContext, plan) -> int:
                   context.settings.name)
     return 3
 
-
-def _analyze_modules(context: CampaignContext, modules: list[str],
-                     analysis_scope: set[str] | None = None) -> tuple[dict[str, list[Direction]], int]:
-    started = time.monotonic()
-    tasks, fingerprints, directions = {}, {}, {}
-    failures = 0
-    for module in modules:
-        task, parsed, fp, deduplicated = _prepare_analysis(
-            context, module, analysis_scope, _reuse_enabled(context.args))
-        fingerprints[module] = fp
-        if parsed:
-            directions[module] = parsed
-        if deduplicated:
-            failures += 1
-        if task is not None:
-            tasks[module] = task
-    output_modules = {str(task.output_path()): module for module, task in tasks.items()}
-    results = run_analysis_tasks(
-        list(tasks.values()), context.settings.analysis_jobs,
-        context.settings.analysis_retries, context.args.retry_delay,
-        lambda result: bool(_parse_analysis_file(
-            output_modules[str(result.task.output_path())], result.task)))
-    for module, task in tasks.items():
-        parsed, failed = _finish_analysis(
-            context, module, task, results.get(str(task.output_path())),
-            fingerprints[module])
-        if parsed:
-            directions[module] = parsed
-        failures += failed
-    context.analysis_elapsed = time.monotonic() - started
-    return directions, failures
-
-
-def _prepare_analysis(context, module: str, analysis_scope,
-                      reuse: bool) -> tuple[Task | None, list[Direction], str, bool]:
-    task = build_analysis_task(
-        context.root, context.settings, module, context.args.model,
-        context.args.provider, context.args.timeout,
-        getattr(context.args, "focus", ""))
-    fp = analysis_fingerprint(context.root, context.settings, module,
-                              context.snapshot, task)
-    if reuse and context.store.reusable(module, "__analysis__", fp, ("ANALYZED",)):
-        parsed = _parse_analysis_file(module, task)
-        if parsed:
-            return None, parsed, fp, False
-    if analysis_scope is not None and module not in analysis_scope:
-        return None, [], fp, False
-    previous = context.store.latest_event(module, "__analysis__")
-    same_input = previous.get("fingerprint") == fp
-    count = _safe_nonnegative_int(previous.get("same_failure_count", 0)) \
-        if same_input else 0
-    if (not getattr(context.args, "force", False) and same_input and count >= 2
-            and previous.get("failure_fingerprint")):
-        _event(context, module, "__analysis__", "", "ANALYSIS_DEDUPLICATED",
-               fp, [str(task.output_path())],
-               "unchanged analysis failure repeated twice; change inputs or use --force",
-               extra={"failure_fingerprint": previous["failure_fingerprint"],
-                      "failure_status": "ANALYSIS_FAILED",
-                      "same_failure_count": count})
-        return None, [], fp, True
-    _event(context, module, "__analysis__", "", "ANALYZING", fp,
-           [str(task.output_path())], extra={
-               "prior_failure_fingerprint": previous.get(
-                   "failure_fingerprint", "") if same_input else "",
-               "prior_failure_count": count})
-    return task, [], fp, False
-
-
-def _finish_analysis(context, module: str, task: Task, result,
-                     fingerprint: str) -> tuple[list[Direction], int]:
-    parsed = _parse_analysis_file(module, task) if result and result.success else []
-    if not parsed:
-        task.output_path().unlink(missing_ok=True)
-        reason = result.reason if result else "analysis produced no structured directions"
-        signature = failure_fingerprint(fingerprint, "ANALYSIS_FAILED", reason)
-        previous = context.store.latest_event(module, "__analysis__")
-        prior_signature = previous.get("prior_failure_fingerprint", "")
-        prior_count = _safe_nonnegative_int(previous.get("prior_failure_count", 0))
-        count = prior_count + 1 if prior_signature == signature else 1
-        _event(context, module, "__analysis__", "", "ANALYSIS_FAILED",
-               fingerprint, [], reason, extra={
-                   "failure_fingerprint": signature,
-                   "failure_status": "ANALYSIS_FAILED",
-                   "same_failure_count": count})
-        return [], 1
-    _event(context, module, "__analysis__", "", "ANALYZED", fingerprint,
-           [str(task.output_path())], elapsed=result.elapsed)
-    return parsed, 0
-
-def _parse_analysis_file(module: str, task) -> list[Direction]:
-    path = task.output_path()
-    try:
-        return parse_directions(module, read_text_bounded(
-            path, config.OUTPUT_MAX_BYTES, "campaign analysis"))
-    except (OSError, ValueError):
-        return []
 
 def _select(context: CampaignContext, modules: list[str],
             directions: dict[str, list[Direction]]) -> tuple[list[tuple[Direction, Path, str]], int]:
@@ -288,7 +204,7 @@ def _prepare_direction(context, direction: Direction, analysis: Path):
         return None, False
     previous = context.store.latest_event(direction.module, direction.direction_id)
     same_input = previous.get("fingerprint") == fingerprint
-    count = (_safe_nonnegative_int(previous.get("same_failure_count", 0))
+    count = (safe_nonnegative_int(previous.get("same_failure_count", 0))
              if same_input else 0)
     if (not getattr(context.args, "force", False) and same_input and count >= 2
             and previous.get("failure_fingerprint")):
@@ -353,10 +269,11 @@ def _execute_pipeline_batch(context, items, concurrency):
     for direction, analysis, fingerprint in items:
         _direction_event(context, direction, "RUNNING", fingerprint, analysis)
     started = time.monotonic()
+    settings = context_settings(context)
     if context.settings.pipeline_concurrency > 1:
         raw = [(direction, analysis) for direction, analysis, _ in items]
         outcomes = run_directions_isolated(
-            context.root, context.settings, raw, concurrency, _agent_args(context.args))
+            context.root, settings, raw, concurrency, _agent_args(context.args))
     else:
         outcomes = [_run_direction_safe(context, direction, analysis)
                     for direction, analysis, _ in items]
@@ -408,7 +325,7 @@ def _round_metrics_identity(context, metrics):
 def _run_direction_safe(context: CampaignContext, direction: Direction,
                         analysis: Path):
     try:
-        return run_direction(context.root, context.settings, direction, analysis,
+        return run_direction(context.root, context_settings(context), direction, analysis,
                              context.args.model, context.args.provider, context.args.timeout,
                              _reuse_enabled(context.args))
     except Exception as exc:
@@ -448,39 +365,8 @@ def _direction_event(context: CampaignContext, direction: Direction, status: str
     _event(context, direction.module, direction.direction_id, direction.title,
            status, fingerprint, [str(analysis)], reason, extra=extra)
 
-def _safe_nonnegative_int(value) -> int:
-    try:
-        return max(0, int(value))
-    except (TypeError, ValueError, OverflowError):
-        return 0
-
-
-def _reuse_enabled(args: argparse.Namespace) -> bool:
-    return not getattr(args, "force", False) and (
-        getattr(args, "reuse", False) or getattr(args, "skip_passed", False)
-        or getattr(args, "retry_failed", False))
-
 def _campaign_plan(context: CampaignContext, modules: list[str]):
     return _build_campaign_plan(context, modules, _pending_analysis_modules)
-
-
-def _pending_analysis_modules(context: CampaignContext,
-                              modules: list[str]) -> list[str]:
-    if not _reuse_enabled(context.args):
-        return list(modules)
-    pending = []
-    for module in modules:
-        task = build_analysis_task(context.root, context.settings, module,
-                                   context.args.model, context.args.provider,
-                                   context.args.timeout,
-                                   getattr(context.args, "focus", ""))
-        fingerprint = analysis_fingerprint(context.root, context.settings, module,
-                                           context.snapshot, task)
-        reusable = context.store.reusable(module, "__analysis__", fingerprint,
-                                          ("ANALYZED",))
-        if not reusable or not _parse_analysis_file(module, task):
-            pending.append(module)
-    return pending
 
 
 

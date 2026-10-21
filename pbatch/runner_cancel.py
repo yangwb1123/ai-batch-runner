@@ -66,23 +66,43 @@ def wait_for_cancel(seconds: float, cancel_event: Any, sleep) -> bool:
     return False
 
 
-def rate_gate(task, cancel_event=None) -> bool:
-    """Wait for provider admission but never spawn after cancellation."""
+def rate_gate(task, cancel_event=None, timeout=None) -> bool:
+    """Wait for provider admission but never spawn after cancellation.
+
+    ``timeout`` bounds the wait by a caller-owned window (campaign cutoff);
+    the historical 300s ceiling still applies.
+    """
     if cancel_requested(cancel_event):
         return False
     if ratelimit.RATE_PER_SECOND <= 0 and not ratelimit.PROVIDER_RATES:
         return True
+    wait = 300.0 if timeout is None else min(300.0, max(0.0, timeout))
     if cancel_event is None:
-        accepted = ratelimit.acquire(task.provider or "", timeout=300.0)
+        accepted = ratelimit.acquire(task.provider or "", timeout=wait)
     else:
         accepted = ratelimit.acquire(
-            task.provider or "", timeout=300.0, cancel_event=cancel_event)
+            task.provider or "", timeout=wait, cancel_event=cancel_event)
     if not accepted:
         if cancel_requested(cancel_event):
             return False
-        log.warning("RATE: token wait timed out for provider '%s' (300s); spawning anyway",
-                    task.provider or "default")
+        log.warning("RATE: token wait timed out for provider '%s' (%.0fs); spawning anyway",
+                    task.provider or "default", wait)
     return True
+
+
+def rate_bounded_admission(task, cancel_event, admit, cancelled, gate,
+                           started_at=None) -> Any:
+    """Bound the rate wait, then re-admit at the true pre-spawn boundary.
+
+    Returns a refusal TaskResult (no spawn) or None when the caller may spawn.
+    ``started_at`` is the task's monotonic run start so the deadline check can
+    account for time already spent before this boundary.
+    """
+    limit = getattr(admit, "rate_timeout", None) if admit is not None else None
+    timeout = limit() if limit is not None else None
+    if gate(task, cancel_event, timeout) is False or cancel_requested(cancel_event):
+        return cancelled(task)
+    return admit(task, started_at) if admit is not None else None
 
 
 def cancelled_result(task: Task) -> TaskResult:

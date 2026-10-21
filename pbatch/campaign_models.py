@@ -77,6 +77,14 @@ def _number(value) -> float:
         return 0.0
 
 
+def safe_nonnegative_int(value) -> int:
+    """Coerce untrusted counters to a non-negative int, never raising."""
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 def _strings(value) -> tuple[str, ...]:
     """Normalize a list of strings; tolerate a single string (LLMs
     sometimes emit evidence/acceptance as one string instead of an array)

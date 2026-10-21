@@ -173,7 +173,11 @@ class ExecutionDeadline:
     def remaining(self, now: float) -> float:
         if self.expired(now):
             return 0.0
-        return max(0.0, min(self.monotonic - now, self.epoch - time.time()))
+        window = min(self.monotonic - now, self.epoch - time.time())
+        if window <= 0:
+            self._exhausted.set()  # an observed empty window is terminal
+            return 0.0
+        return window
 
 
 def _clock_cap(epoch: float) -> ExecutionDeadline:
@@ -205,6 +209,53 @@ def execution_settings(settings, started: float):
     frozen = replace(settings)
     frozen._execution_deadline = deadline
     return frozen
+
+
+def context_settings(context):
+    """Freeze one coordinator cutoff; analysis, queues and rounds share it."""
+    settings = getattr(context, "deadline_settings", None)
+    if settings is None:
+        settings = with_frozen_deadline(context.settings, context.root)
+        context.deadline_settings = settings
+    return settings
+
+
+def context_deadline(context):
+    """The shared batch clock/latch, or None when no budget is configured."""
+    return getattr(context_settings(context), "_execution_deadline", None)
+
+
+def bound_task_timeout(task, deadline, started_at: float | None = None) -> bool:
+    """Cap one task's timeout by the remaining batch window; False = expired.
+
+    ``started_at`` is the runner's monotonic run start. The task timeout is
+    measured from there, so a re-admission after preparation/rate/lock waits
+    must add the already-consumed interval instead of resetting the window to
+    the time left at the admission moment.
+    """
+    if deadline is None:
+        return True
+    now = time.monotonic()
+    if deadline.expired(now):
+        return False
+    window = deadline.remaining(now)
+    if window <= 0:
+        return False  # observed zero/negative window is refusal, never a credit
+    if started_at is not None:
+        window += max(0.0, now - started_at)
+    cap = max(1, math.ceil(window))
+    task.timeout = min(task.timeout or cap, cap)
+    return True
+
+
+def retry_delay_before_cutoff(deadline, delay: float) -> float | None:
+    """Sleep duration before a retry, or None when the cutoff already passed."""
+    if deadline is None:
+        return max(0.0, delay)
+    remaining = deadline.remaining(time.monotonic())
+    if remaining <= 0:
+        return None
+    return min(max(0.0, delay), remaining)
 
 
 def execution_deadline(settings, started: float) -> ExecutionDeadline | None:

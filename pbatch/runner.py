@@ -52,12 +52,14 @@ from .process_exec import (ValidationResult, _DrainTimeout, run_bounded,
                            read_chunks, validate_timeout,
                            _kill_group as _kill_command_group)
 from .provider_env import provider_child_env
-from .process_shutdown import forget_process, interrupt_after_spawn, spawn_registered
+from .process_shutdown import (SpawnRefused as _SpawnRefused, forget_process,
+                               interrupt_after_spawn, spawn_registered)
 from .runner_cancel import (
     CancelledDrain as _CancelledDrain, cancel_requested as _cancel_requested,
     cancelled_result as _cancelled_result,
     join_stream_threads as _join_stream_threads,
-    rate_gate as _rate_gate_impl,
+    rate_bounded_admission as _rate_bounded_admission,
+    rate_gate as _rate_gate,
     task_cancel_event as _task_cancel_event,
     wait_for_cancel as _wait_for_cancel_impl,
 )
@@ -160,16 +162,18 @@ def _kill_group(proc: Optional[subprocess.Popen]) -> None:
     _kill_command_group(proc)
 def kill_proc_group(proc: subprocess.Popen) -> None:
     _kill_group(proc)
-def _spawn_agent(cmd: list, workdir: str, env: dict) -> subprocess.Popen:
+def _spawn_agent(cmd: list, workdir: str, env: dict, admit=None, task=None,
+                 started_at=None) -> subprocess.Popen:
     """Spawn the agent in its own process group (killed on timeout or
     interrupt). stdin is /dev/null: prompts
     arrive via argv (piped stdin prompts are buffered by the CLI first),
     so an inherited pipe would let stdin-hungry agents (e.g. codex exec
     appends piped stdin as a <stdin> block) swallow or hang on batch input."""
+    gate = (lambda: admit(task, started_at)) if admit is not None else None
     return spawn_registered(lambda: subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         stdin=subprocess.DEVNULL, text=True, cwd=workdir,
-        env=provider_child_env(env), start_new_session=True), _kill_group)
+        env=provider_child_env(env), start_new_session=True), _kill_group, gate)
 def _agent_not_found(task: Task) -> TaskResult:
     """The agent binary is missing from PATH: a permanent, non-retryable
     failure (never saved as an artifact)."""
@@ -228,7 +232,7 @@ def _finish_spawned_result(result, task, flags, stdout_lines, session_id,
         result, task, session_id, name, workdir, usage, trace_id, attempt)
 
 
-def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = False, session_flags: Optional[list] = None, session_name: str = "", attempt: int = 1, trace_task_id: str = "", stdout_target=None, stderr_target=None, cancel_event=None) -> TaskResult:
+def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = False, session_flags: Optional[list] = None, session_name: str = "", attempt: int = 1, trace_task_id: str = "", stdout_target=None, stderr_target=None, cancel_event=None, admit=None) -> TaskResult:
     if _cancel_requested(cancel_event):
         return _cancelled_result(task)
     trace_task_id = trace_task_id or make_task_id(metering.RUN_ID, task.prompt, task.output, task.workdir(), task_index)
@@ -247,11 +251,11 @@ def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = F
         if (cooldown := _pb_cooldown(task)) is not None:
             return _finish_result(cooldown, task, session_id, effective_name, workdir, usage_before, trace_task_id, attempt)
         _budget_gate(task, key, workdir, effective_name, trace_task_id, attempt)
-        rate_ok = (_rate_gate(task, effective_name) if cancel_event is None else
-                   _rate_gate(task, effective_name, cancel_event=cancel_event))
-        if rate_ok is False or _cancel_requested(cancel_event):
-            return _cancelled_result(task)
-        proc = _spawn_agent(cmd, workdir, env)
+        blocked = _rate_bounded_admission(task, cancel_event, admit,
+                                          _cancelled_result, _rate_gate, start)
+        if blocked is not None: return blocked
+        extra = (admit, task, start) if admit is not None else ()
+        proc = _spawn_agent(cmd, workdir, env, *extra)
         _register_proc(proc)
         record_task_started(task, trace_task_id, attempt, workdir, session_id, effective_name, proc.pid)
         write_marker(key, workdir, agent_pid=proc.pid)
@@ -268,6 +272,7 @@ def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = F
         result.streamed_output, result.streamed_stderr = stdout_streamed, stream_requested
         return _finish_spawned_result(result, task, session_flags, stdout_lines,
             session_id, effective_name, workdir, usage_before, trace_task_id, attempt)
+    except _SpawnRefused as refused: return refused.result
     except Exception as exc:
         return _task_exception_result(
             exc, task, proc, start, session_flags, stdout_lines, session_id,
@@ -313,9 +318,6 @@ def _prepare_task_run(task: Task, cmd: list, task_index: int, total: int, parall
     capture_usage = metering.EVENTS_FILE or config.AGENT_LEDGER_ENABLED
     usage = metering.session_usage(workdir, usage_ref) if capture_usage else None
     return prefix, env, key, usage
-
-def _rate_gate(task: Task, session_name: str = "", cancel_event=None) -> bool:
-    return _rate_gate_impl(task, cancel_event)
 
 def _output_path_is_symlink(task: Task) -> bool:
     """T0.1: probe the UNRESOLVED output path — output_path() resolves
@@ -824,7 +826,8 @@ def _wait_for_cancel(seconds: float, cancel_event=None) -> bool:
 def _run_with_gate(task: Task, validate_cmd: str, index: int, total: int,
                     session_flags: Optional[list] = None, parallel: bool = False,
                     session_name: str = "", attempt: int = 1,
-                    trace_task_id: str = "", cancel_event=None) -> TaskResult:
+                    trace_task_id: str = "", cancel_event=None,
+                    admit=None) -> TaskResult:
     """Run one task and push its result through the engineering gate;
     a gate rejection marks the task failed with the exit signature."""
     worktree_before = capture_worktree_state(task.workdir())
@@ -833,7 +836,7 @@ def _run_with_gate(task: Task, validate_cmd: str, index: int, total: int,
     result = run_task(task, task_index=index, total=total, parallel=parallel,
                       session_flags=session_flags, session_name=session_name,
                       attempt=attempt, trace_task_id=trace_task_id,
-                      cancel_event=cancel_event)
+                      cancel_event=cancel_event, admit=admit)
     if result.success and _cancel_requested(cancel_event):
         result = _cancelled_result(task)
     if result.success:
@@ -862,14 +865,14 @@ def _run_retried(task: Task, validate_cmd: str, index: int, total: int,
                  retries: int, retry_delay: float, backoff: float,
                  session_flags=None, retry_flags=None, parallel: bool = False,
                  session_name: str = "", continue_flags=None,
-                 cancel_event=None) -> TaskResult:
+                 cancel_event=None, admit=None) -> TaskResult:
     """Run once plus exactly retries bounded retry attempts."""
     trace_task_id = make_task_id(
         metering.RUN_ID, task.prompt, task.output, task.workdir(), index)
     result = _run_with_gate(task, validate_cmd, index, total, session_flags,
                             parallel, session_name, attempt=1,
                             trace_task_id=trace_task_id,
-                            cancel_event=cancel_event)
+                            cancel_event=cancel_event, admit=admit)
     established = result.session_established
     for attempt in range(1, retries + 1):
         if result.success or _cancel_requested(cancel_event):
@@ -896,7 +899,7 @@ def _run_retried(task: Task, validate_cmd: str, index: int, total: int,
                                 parallel, session_name,
                                 attempt=attempt + 1,
                                 trace_task_id=trace_task_id,
-                                cancel_event=cancel_event)
+                                cancel_event=cancel_event, admit=admit)
         established = established or result.session_established
         result.session_established = established
     return result
@@ -957,14 +960,14 @@ def run_parallel(tasks: list[Task], workers: int = 0, validate_cmd: str = "",
                  retries: int = 0, retry_delay: float = 10.0,
                  backoff: float = 2.0, min_interval: float = 0.0,
                  waves: Optional[list] = None, cancel_event=None,
-                 result_callback=None) -> list[TaskResult]:
-    """Run parallel tasks through the bounded scheduling helper."""
+                 result_callback=None, admit=None) -> list[TaskResult]:
+    """Run parallel tasks; ``admit`` may refuse a queued task before spawn."""
     bind_parallel_tasks(tasks)
     return _run_parallel_impl(
         tasks, workers, validate_cmd, retries, retry_delay, backoff,
         min_interval, waves, cancel_event, _run_retried,
         _wait_for_cancel, kill_active_procs, _cancelled_result,
-        _BUDGET_MESSAGE, result_callback)
+        _BUDGET_MESSAGE, result_callback, admit=admit)
 def print_summary(results: list[TaskResult]) -> None:
     """Print an execution summary table."""
     total = len(results)
