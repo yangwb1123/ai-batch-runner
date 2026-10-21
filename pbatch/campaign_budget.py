@@ -111,3 +111,24 @@ def state_path_for(root: Path, settings) -> Path:
         return settings.state_path(root)
     except (AttributeError, OSError, ValueError):
         return Path(root) / "docs" / "auto" / "state.jsonl"
+
+
+BUDGET_BLOCKED_REASON = ("campaign budget or deadline expired before this "
+                         "direction started")
+
+
+def gate(settings, root: Path):
+    """Return a callable reporting whether new campaign work may start.
+
+    Resolve once against the coordinator ledger, not a worktree's private
+    runtime. Re-check the clock before preparation and again after queueing.
+    A missing ledger's fallback must not slide forward on every check. This
+    admission gate does not interrupt work already running.
+    """
+    cutoff, _origin = deadline_for(
+        settings.budget_seconds, settings.deadline_at, state_path_for(root, settings))
+
+    def allowed() -> bool:
+        return cutoff is None or time.time() < cutoff
+
+    return allowed

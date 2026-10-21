@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .campaign_artifacts import isolated_run_evidence
+from .campaign_budget import BUDGET_BLOCKED_REASON, gate as budget_gate
 from .campaign_gate_feedback import (
     inject_prior_gate_feedback as _inject_prior_gate_feedback,
     prior_gate_feedback as _prior_gate_feedback,
@@ -245,6 +246,9 @@ def _atomic_yaml(path: Path, data: dict) -> None:
 def run_direction(root: Path, settings: CampaignSettings, direction: Direction,
                   analysis_path: Path, model: str = "", provider: str = "",
                   timeout: int = 0, reuse: bool = False) -> PipelineOutcome:
+    if not budget_gate(settings, root)():
+        return PipelineOutcome(direction, PipelineStatus.BUDGET_BLOCKED,
+                               BUDGET_BLOCKED_REASON, 0, [str(analysis_path)])
     start = time.monotonic()
     baseline = _git_text(root, ["rev-parse", "HEAD"])
     branch = _git_text(root, ["branch", "--show-current"])
@@ -252,16 +256,7 @@ def run_direction(root: Path, settings: CampaignSettings, direction: Direction,
         root, excludes=(settings.output_dir,))
     start_clean = bool(baseline and start_state["clean_commit"] == baseline)
     if baseline and not start_clean:
-        detail = " | ".join(start_state["dirty_evidence"][:5])
-        return PipelineOutcome(
-            direction, PipelineStatus.PIPELINE_FAILED,
-            "refusing campaign execution in a pre-existing dirty worktree"
-            + (f": {detail}" if detail else ""), 0,
-            [str(analysis_path)], baseline_commit=baseline,
-            dirty_evidence=start_state["dirty_evidence"],
-            dirty_digest=start_state["dirty_digest"],
-            recovery_status=RECOVERY_BLOCKED,
-            recovery_reason="pre-existing worktree changes preserved")
+        return _dirty_worktree_outcome(direction, analysis_path, baseline, start_state)
     recovery_root = config.data_dir(str(root)) / "campaign-recovery"
     run_dir = settings.path(root, settings.output_dir) / "runs" / direction.direction_id
     recovery_mode = settings.recovery_enabled and has_failed_attempt(run_dir)
@@ -324,6 +319,19 @@ def _recover_direction(root: Path, settings: CampaignSettings,
     return recovery
 
 
+def _dirty_worktree_outcome(direction: Direction, analysis: Path,
+                            baseline: str, state: dict) -> PipelineOutcome:
+    detail = " | ".join(state["dirty_evidence"][:5])
+    return PipelineOutcome(
+        direction, PipelineStatus.PIPELINE_FAILED,
+        "refusing campaign execution in a pre-existing dirty worktree"
+        + (f": {detail}" if detail else ""), 0,
+        [str(analysis)], baseline_commit=baseline,
+        dirty_evidence=state["dirty_evidence"], dirty_digest=state["dirty_digest"],
+        recovery_status=RECOVERY_BLOCKED,
+        recovery_reason="pre-existing worktree changes preserved")
+
+
 def _recovery_budget_outcome(direction: Direction, analysis: Path,
                              baseline: str, reason: str) -> PipelineOutcome:
     return PipelineOutcome(
@@ -352,9 +360,14 @@ def _artifact_evidence(pipeline_path: Path, results: list) -> list[str]:
 def run_directions_isolated(root: Path, settings: CampaignSettings,
                             items: list[tuple[Direction, Path]], jobs: int,
                             agent_args: list[str]) -> list[PipelineOutcome]:
+    should_run = budget_gate(settings, root)
     outcomes = []
     prepared = []
     for direction, analysis in items:
+        if not should_run():
+            outcomes.append(PipelineOutcome(direction, PipelineStatus.BUDGET_BLOCKED,
+                                            BUDGET_BLOCKED_REASON, 0, [str(analysis)]))
+            continue
         try:
             worktree, branch, baseline = _ensure_worktree(root, settings, direction)
             prepared.append((direction, analysis, worktree, branch, baseline))
@@ -362,16 +375,21 @@ def run_directions_isolated(root: Path, settings: CampaignSettings,
             outcomes.append(PipelineOutcome(direction, "PIPELINE_FAILED", str(exc), 0, []))
     with ThreadPoolExecutor(max_workers=jobs) as pool:
         futures = [pool.submit(_safe_worktree_run, settings, direction, analysis,
-                               worktree, branch, baseline, agent_args)
+                               worktree, branch, baseline, agent_args,
+                               should_run)
                    for direction, analysis, worktree, branch, baseline in prepared]
         for future in as_completed(futures):
             outcomes.append(future.result())
     return outcomes
 
 
-def _safe_worktree_run(settings: CampaignSettings, direction: Direction, analysis_path: Path,
-                       worktree: Path, branch: str, baseline: str,
-                       agent_args: list[str]) -> PipelineOutcome:
+def _safe_worktree_run(settings: CampaignSettings, direction: Direction,
+                       analysis_path: Path, worktree: Path, branch: str,
+                       baseline: str, agent_args: list[str], should_run=None) -> PipelineOutcome:
+    if should_run is not None and not should_run():
+        return PipelineOutcome(direction, PipelineStatus.BUDGET_BLOCKED,
+                               BUDGET_BLOCKED_REASON, 0, [str(analysis_path)],
+                               branch=branch, baseline_commit=baseline)
     try:
         return _run_in_worktree(
             settings, direction, analysis_path, worktree, branch, baseline, agent_args)

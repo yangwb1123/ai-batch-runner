@@ -207,6 +207,8 @@ def run_campaign_loop(context: CampaignContext) -> int:
         context.round_progress = 0
         context.recovery_blocked = False
         rc = _implementation().run_campaign(context)
+        if rc == 3:
+            return 3  # budget/strategy admission is terminal, not a failed round to retry
         if rc and code == 0:
             code = rc
         stalled_rounds, stop_reason = update_round_recovery(

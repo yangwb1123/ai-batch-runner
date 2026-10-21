@@ -310,6 +310,8 @@ def run_campaign_loop(context: CampaignContext) -> int:
         context.round_progress = 0
         context.recovery_blocked = False
         result = run_campaign(context)
+        if result == 3:
+            return 3  # keep the historical facade's terminal admission semantics aligned
         if result and code == 0:
             code = result
         stalled_rounds, stop_reason = update_round_recovery(

@@ -82,7 +82,7 @@ def _budget_exhausted(context: CampaignContext) -> bool:
         return False
     log.error("CAMPAIGN stopped: %s", reason)
     _event(context, "__campaign__", "__budget__", "", "CAMPAIGN_BUDGET_EXHAUSTED",
-           "", reason=reason)
+           "", [], reason=reason)
     try:
         write_summary(context.store,
                       context.settings.summary_path(context.root),
@@ -138,7 +138,8 @@ def run_campaign(context: CampaignContext) -> int:
                   context.settings.name)
     passed = sum(1 for outcome in outcomes if outcome.status == PipelineStatus.PASSED)
     log.info("CAMPAIGN complete: %d passed, %d failed", passed, failures)
-    return 1 if failures else 0
+    return (3 if any(item.status == PipelineStatus.BUDGET_BLOCKED for item in outcomes)
+            else 1 if failures else 0)
 
 def _blocked_campaign(context: CampaignContext, plan) -> int:
     _event(context, "__campaign__", "__plan__", "", "CAMPAIGN_PLAN", "",
@@ -406,7 +407,6 @@ def _round_metrics_identity(context, metrics):
 
 def _run_direction_safe(context: CampaignContext, direction: Direction,
                         analysis: Path):
-    from .campaign_pipeline import PipelineOutcome
     try:
         return run_direction(context.root, context.settings, direction, analysis,
                              context.args.model, context.args.provider, context.args.timeout,

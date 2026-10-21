@@ -8,6 +8,7 @@ from pathlib import Path
 
 from . import config
 from .campaign_state import _git_output
+from .campaign_validator_preflight import validator_readiness_errors
 from .cmd_expand import expand_cmd
 from .config import log, validator_applies
 from .runner import run_validation
@@ -123,6 +124,11 @@ def _preflight_validators(context) -> int:
         log.error("PREFLIGHT: pipeline schema rejected before model calls: %s", exc)
         raise SystemExit(4) from exc
     _preflight_isolated_runtime(context)
+    errors = validator_readiness_errors(pipeline, context.root)
+    if errors:
+        for error in errors[:20]:
+            log.error("PREFLIGHT: %s", error)
+        raise SystemExit(4)
     specs = _preflight_collect_specs(pipeline)
     required = tuple(getattr(context.settings, "preflight_required_validators", ()))
     missing = [name for name in required if name not in {item[0] for item in specs}]

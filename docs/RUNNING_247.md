@@ -320,7 +320,17 @@ The shipped `examples/repository-campaign.yaml` uses a four-module cold-start
 batch template; set `analysis.batch_size: 0` only when an exhaustive pass is
 intentional and no adaptive cap is available. Pipeline schema, configured repo
 validators, baseline gates, and isolated runtime identities are checked before
-analysis calls.
+analysis calls. Direct validator startup references (including task and gate-fix
+validators) are also checked before analysis; missing executables/scripts or
+malformed quotes are configuration errors, not baseline quality failures.
+Compound/dynamic shell commands remain explicitly unverified by this static
+check. See [Campaign admission fixes and limits](CAMPAIGN_ADMISSION_FIXES.md).
+
+Campaign time-budget/deadline checks also guard new directions, including queued
+isolated directions. An expired budget is a terminal exit 3 even with
+`--rounds 0`; it does not trigger another round or a round commit. This is not
+an in-flight campaign deadline: work already running still uses its existing
+task/pipeline timeouts and is not interrupted by these admission checks.
 
 Pi session files remain append-only and untouched. Metering caches each file's
 device/inode, byte offset, and cumulative numeric usage, then scans only newly
