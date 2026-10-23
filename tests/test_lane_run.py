@@ -186,3 +186,53 @@ def test_a_blocked_gate_records_its_output_tail_in_the_receipt(tmp_path):
     row = receipt["lanes"][0]
     assert row["merge_status"] == "merge_blocked"
     assert "synthetic-gate-failure" in row["merge_tail"]
+
+
+def _gate_script(root: Path, name: str) -> str:
+    return str(root.parent / name)
+
+
+def test_gate_failure_without_test_ids_is_not_retried(tmp_path):
+    root = _repo(tmp_path)
+    _commit_script(root, "alpha", "alpha.txt", "alpha")
+    lane = lane_run.Lane(lane_id="alpha", branch="feat/alpha",
+                         worktree=root.parent / "wt-alpha",
+                         command=(str(root.parent / "alpha.sh"),))
+    receipt = lane_run.run_round(root, [lane], gate="echo broken >&2; exit 1")
+    row = receipt["lanes"][0]
+    assert row["merge_status"] == "merge_blocked" and row["merge_attempts"] == 1
+    assert row["flake_evidence"]["failed_node_ids"] == []
+    assert row["flake_evidence"]["isolated_rerun_passed"] is False
+
+
+def test_gate_flake_is_retried_once_when_the_named_test_passes_in_isolation(tmp_path):
+    root = _repo(tmp_path)
+    _commit_script(root, "alpha", "alpha.txt", "alpha")
+    lane = lane_run.Lane(lane_id="alpha", branch="feat/alpha",
+                         worktree=root.parent / "wt-alpha",
+                         command=(str(root.parent / "alpha.sh"),))
+    state = root.parent / "gate-count"
+    gate = ("n=$(cat %s 2>/dev/null || echo 0); echo $((n+1)) > %s; "
+            "[ $n -ge 1 ] || { echo 'FAILED tests/test_x.py::test_y' >&2; exit 1; }"
+            % (state, state))
+    seen = []
+    receipt = lane_run.run_round(root, [lane], gate=gate,
+                                 rerun=lambda worktree, ids: seen.append(list(ids)) or (True, "1 passed"))
+    row = receipt["lanes"][0]
+    assert seen == [["tests/test_x.py::test_y"]]
+    assert row["merge_status"] == "merged" and row["merge_attempts"] == 2
+    assert row["flake_evidence"]["isolated_rerun_passed"] is True
+
+
+def test_a_flake_that_fails_in_isolation_is_not_retried(tmp_path):
+    root = _repo(tmp_path)
+    _commit_script(root, "alpha", "alpha.txt", "alpha")
+    lane = lane_run.Lane(lane_id="alpha", branch="feat/alpha",
+                         worktree=root.parent / "wt-alpha",
+                         command=(str(root.parent / "alpha.sh"),))
+    gate = "echo 'FAILED tests/test_x.py::test_y' >&2; exit 1"
+    receipt = lane_run.run_round(root, [lane], gate=gate,
+                                 rerun=lambda worktree, ids: (False, "1 failed"))
+    row = receipt["lanes"][0]
+    assert row["merge_status"] == "merge_blocked" and row["merge_attempts"] == 1
+    assert row["flake_evidence"]["isolated_rerun_passed"] is False

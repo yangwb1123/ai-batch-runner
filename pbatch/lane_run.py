@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import contextlib
 import fnmatch
+import re
+import sys
 import io
 import json
 import subprocess
@@ -32,6 +34,10 @@ from .config import data_dir
 MAX_LANES = 8
 MAX_COMMAND_OUTPUT = 32 * 1024
 LANE_TIMEOUT_DEFAULT = 3600
+GATE_FAILURE_MARKER = "gate failed"
+MAX_FLAKE_RETRIES = 1
+_ISOLATED_RERUN_TIMEOUT = 900
+_FAILED_LINE = re.compile(r"^FAILED (\S+)", re.MULTILINE)
 
 
 class LanePlanError(ValueError):
@@ -87,13 +93,17 @@ class LaneOutcome:
     merge_commit: str = ""
     evidence: list = field(default_factory=list)
     merge_tail: str = ""
+    merge_attempts: int = 0
+    flake_evidence: dict = field(default_factory=dict)
 
     def receipt(self) -> dict:
         return {"lane": self.lane.lane_id, "branch": self.lane.branch,
                 "status": self.status, "reason": self.reason[:500],
                 "exit_code": self.exit_code, "elapsed_seconds": self.elapsed_seconds,
                 "merge_status": self.merge_status, "merge_commit": self.merge_commit,
-                "merge_tail": self.merge_tail[-800:]}
+                "merge_tail": self.merge_tail[-800:],
+                "merge_attempts": self.merge_attempts,
+                "flake_evidence": self.flake_evidence}
 
 
 def validate_plan(root: Path, lanes: list, gate: str) -> None:
@@ -196,7 +206,30 @@ def _remove_worktree(root: Path, lane: Lane) -> None:
     _git(["branch", "-D", lane.branch], root)
 
 
-def _merge_one(root: Path, item: LaneOutcome, gate: str, base: str) -> bool:
+def failed_node_ids(output: str) -> list:
+    """Test ids pytest printed for a failing gate; empty when none are known."""
+    seen = []
+    for node_id in _FAILED_LINE.findall(output or ""):
+        if node_id not in seen:
+            seen.append(node_id)
+    return seen[:20]
+
+
+def isolated_rerun(worktree: Path, node_ids: list, *, timeout: int = _ISOLATED_RERUN_TIMEOUT):
+    """Re-run only the tests a failed gate reported, in that lane's worktree."""
+    if not node_ids:
+        return False, "gate output named no failing test ids"
+    command = [sys.executable, "-m", "pytest", *node_ids, "-q"]
+    try:
+        result = subprocess.run(command, cwd=str(worktree), capture_output=True,
+                                text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, "isolated re-run could not complete: %s" % type(exc).__name__
+    tail = ((result.stdout or "") + (result.stderr or ""))[-400:]
+    return result.returncode == 0, tail
+
+
+def _merge_one(root: Path, item: LaneOutcome, gate: str, base: str, rerun=None) -> bool:
     options = session_merge.SessionOptions(
         session_id="lane-" + item.lane.lane_id, base=base, gate=gate)
     captured = io.StringIO()
@@ -206,13 +239,23 @@ def _merge_one(root: Path, item: LaneOutcome, gate: str, base: str) -> bool:
     output = captured.getvalue()
     item.evidence.extend(line for line in output.splitlines()[-4:])
     item.merge_tail = output.strip()[-800:]
+    item.merge_attempts += 1
     item.merge_status = "merged" if code == 0 else "merge_blocked"
     if code == 0:
         item.merge_commit = _git(["rev-parse", "HEAD"], root).stdout.strip()
         return True
     item.status = "merge_blocked"
     item.reason = "session merge exited %d" % code
-    return False
+    if GATE_FAILURE_MARKER not in output or item.merge_attempts > MAX_FLAKE_RETRIES:
+        return False
+    node_ids = failed_node_ids(output)
+    passed, detail = (rerun or isolated_rerun)(item.lane.worktree, node_ids)
+    item.flake_evidence = {"failed_node_ids": node_ids, "isolated_rerun_passed": passed,
+                           "isolated_rerun_tail": detail[-400:],
+                           "policy": "retry the gate once only when the named tests pass in isolation"}
+    if not passed:
+        return False
+    return _merge_one(root, item, gate, base, rerun)
 
 
 def _block(item: LaneOutcome, blocked: list, status: str, reason: str) -> None:
@@ -221,7 +264,8 @@ def _block(item: LaneOutcome, blocked: list, status: str, reason: str) -> None:
     blocked.append(item)
 
 
-def _merge_ready(root: Path, ready: list, blocked: list, gate: str, base: str) -> list:
+def _merge_ready(root: Path, ready: list, blocked: list, gate: str, base: str,
+                 rerun=None) -> list:
     merged = []
     for item in ready:
         violations = scope_violations(root, item.lane)
@@ -235,7 +279,7 @@ def _merge_ready(root: Path, ready: list, blocked: list, gate: str, base: str) -
             _block(item, blocked, "lane_uncommitted",
                    "lane worktree still has uncommitted changes; commit inside the lane")
             continue
-        if _merge_one(root, item, gate, base):
+        if _merge_one(root, item, gate, base, rerun):
             merged.append(item)
         else:
             blocked.append(item)
@@ -243,7 +287,7 @@ def _merge_ready(root: Path, ready: list, blocked: list, gate: str, base: str) -
 
 
 def run_round(root: Path, lanes: list, *, gate: str, jobs: int = 2,
-              base: str = "main") -> dict:
+              base: str = "main", rerun=None) -> dict:
     """Run the lanes, then merge the passing ones serially through the gate."""
     validate_plan(root, lanes, gate)
     preflight(root, lanes)
@@ -256,7 +300,7 @@ def run_round(root: Path, lanes: list, *, gate: str, jobs: int = 2,
             outcomes.append(outcome)
     blocked = [item for item in outcomes if item.status != "lane_passed"]
     merged = _merge_ready(root, [item for item in outcomes if item.status == "lane_passed"],
-                          blocked, gate, base)
+                          blocked, gate, base, rerun)
     receipt = {
         "schema_version": 1,
         "at": time.time(),

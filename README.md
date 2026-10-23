@@ -46,7 +46,8 @@ CLI/Web 共用有界事实投影；自定义运行目录用 `ops sources add` �
 并行方向的排队、执行和即时完成观测见 [Campaign 实时进度](docs/CAMPAIGN_LIVE_PROGRESS.md)。
 多路并发实现可用 `pi-batch lanes run --plan lanes.yaml --hours 12 --invocations N`：
 每条泳道独立 worktree/分支并并发执行，通过后在当前主分支上串行 rebase、过门禁再合并；
-窗口与调用预算首次运行时锚定，重启不延长；只有崩溃才重试，门禁失败即停。
+窗口与调用预算首次运行时锚定，重启不延长；只有崩溃才重试，门禁失败即停；
+门禁报出的失败测试会先隔离复跑，确认是环境抖动才重试一次，证据写入收据。
 见 [泳道循环](docs/LANES.md)。
 `pi-batch agents readiness [--json]` 只读报告运维声明的 agent 就绪探针（未配置/无法判定
 为 `unknown`，不等于可用）；campaign 在探针明确未就绪时拒绝开跑。见
