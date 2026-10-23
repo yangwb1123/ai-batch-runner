@@ -92,11 +92,50 @@ def test_restart_reuses_the_anchored_window_instead_of_extending_it(tmp_path):
     assert first["deadline_at"] == second["deadline_at"]
 
 
-def test_status_is_read_only(tmp_path, capsys):
+@pytest.mark.parametrize("as_json", [False, True])
+def test_status_is_read_only(tmp_path, capsys, as_json):
     root = _repo(tmp_path)
-    assert lane_cli.lanes_main(["status", "--root", str(root), "--json"]) == 0
-    assert json.loads(capsys.readouterr().out)["anchored"] is False
+    args = ["status", "--root", str(root)] + (["--json"] if as_json else [])
+    assert lane_cli.lanes_main(args) == 0
+    output = capsys.readouterr().out
+    if as_json:
+        payload = json.loads(output)
+        assert payload["anchored"] is False
+        assert payload["last_round"] is None
+    else:
+        assert "anchored: False" in output
+        assert "last_round: null" in output
     assert not lane_loop.ledger_path(root).exists()
+    assert not lane_loop.ledger_path(root).parent.exists()
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_status_includes_last_round_without_writing_ledgers(tmp_path, capsys, monkeypatch, as_json):
+    root = _repo(tmp_path)
+    lane_loop.start_window(root, hours=1, invocations=4)
+    path = lane_run._append_receipt(root, {"at": 200, "merged": ["old"], "head": "old"})
+    expected = {"at": 100, "merged": ["alpha"], "blocked": ["beta"], "head": "abc123"}
+    lane_run._append_receipt(root, dict(expected, gate="private gate", lanes=[{"lane": "alpha"}]))
+    with path.open("ab") as handle:
+        handle.write(b"not-json\n[]\nnull\n\xff\n{\"at\":")
+    ledgers = (path, lane_loop.ledger_path(root))
+    before = {item: (item.read_bytes(), item.stat().st_mtime_ns) for item in ledgers}
+    open_file = Path.open
+
+    def read_only(path, mode="r", *args, **kwargs):
+        assert mode in ("r", "rb"), "status must not open a ledger for writing"
+        return open_file(path, mode, *args, **kwargs)
+
+    args = ["status", "--root", str(root)] + (["--json"] if as_json else [])
+    with monkeypatch.context() as guard:
+        guard.setattr(Path, "open", read_only)
+        assert lane_cli.lanes_main(args) == 0
+    output = capsys.readouterr().out
+    summary = (json.loads(output)["last_round"] if as_json
+               else json.loads(output.split("last_round: ", 1)[1]))
+    assert summary == expected
+    assert {item: (item.read_bytes(), item.stat().st_mtime_ns) for item in ledgers} == before
+    assert set(path.parent.iterdir()) == set(ledgers)
 
 
 def test_a_blocked_merge_stops_with_a_nonzero_exit(tmp_path, capsys):

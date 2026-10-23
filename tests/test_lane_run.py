@@ -1,6 +1,7 @@
 """Two-lane concurrent execution with a serial, gated merge into main."""
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import textwrap
@@ -222,6 +223,97 @@ def test_gate_flake_is_retried_once_when_the_named_test_passes_in_isolation(tmp_
     assert seen == [["tests/test_x.py::test_y"]]
     assert row["merge_status"] == "merged" and row["merge_attempts"] == 2
     assert row["flake_evidence"]["isolated_rerun_passed"] is True
+
+
+@pytest.fixture
+def rounds_path(tmp_path, monkeypatch):
+    runtime = tmp_path / "runtime"
+    monkeypatch.setenv("PBATCH_DATA_DIR", str(runtime))
+    return runtime / "lanes" / "rounds.jsonl"
+
+
+@pytest.mark.parametrize("limit", [None, 0, 1, 3, 20, 40])
+def test_read_rounds_returns_bounded_receipts_newest_last(tmp_path, rounds_path, limit):
+    receipts = [{"at": 100 - index, "merged": [str(index)]} for index in range(30)]
+    rounds_path.parent.mkdir(parents=True)
+    original = "".join(json.dumps(row) + "\n" for row in receipts).encode("utf-8")
+    rounds_path.write_bytes(original)
+    modified = rounds_path.stat().st_mtime_ns
+    if limit is None:
+        actual = lane_run.read_rounds(tmp_path)
+        limit = 20
+    else:
+        actual = lane_run.read_rounds(tmp_path, limit=limit)
+    expected = receipts[-limit:] if limit else []
+    assert actual == expected
+    assert rounds_path.read_bytes() == original
+    assert rounds_path.stat().st_mtime_ns == modified
+
+
+def test_read_rounds_skips_malformed_lines_without_spending_the_limit(tmp_path, rounds_path):
+    rounds_path.parent.mkdir(parents=True)
+    original = (b'{"at": 1}\nnot-json\n\n[]\nnull\ntrue\n42\n"text"\n{broken\n\xff\n'
+                + b"[" * 2000 + b"]" * 2000 + b'\n{"at": 2}\n{"at":')
+    rounds_path.write_bytes(original)
+    assert lane_run.read_rounds(tmp_path, limit=2) == [{"at": 1}, {"at": 2}]
+    assert lane_run.read_rounds(tmp_path, limit=1) == [{"at": 2}]
+    assert rounds_path.read_bytes() == original
+
+
+def test_read_rounds_missing_does_not_create_a_ledger(tmp_path, rounds_path):
+    assert lane_run.read_rounds(tmp_path) == []
+    assert not rounds_path.parent.exists()
+
+
+@pytest.mark.parametrize("raw", [b"", b"\n", b"bad JSON\n[]\nnull\n"])
+def test_read_rounds_empty_or_malformed_ledger_returns_no_receipts(tmp_path, rounds_path, raw):
+    rounds_path.parent.mkdir(parents=True)
+    rounds_path.write_bytes(raw)
+    assert lane_run.read_rounds(tmp_path) == []
+    assert rounds_path.read_bytes() == raw
+
+
+@pytest.mark.parametrize("limit", [-1, True, 1.5, None])
+def test_read_rounds_rejects_invalid_limits_before_reading(tmp_path, rounds_path, limit):
+    with pytest.raises(ValueError, match="limit"):
+        lane_run.read_rounds(tmp_path, limit=limit)
+    assert not rounds_path.parent.exists()
+
+
+@pytest.mark.parametrize("aligned", [False, True])
+def test_read_rounds_respects_tail_line_boundaries(tmp_path, rounds_path, monkeypatch, aligned):
+    tail = b'{"at": 2}\n{"at": 3}\n'
+    prefix = b'{"at": 1}\n' if aligned else b"not-a-receipt"
+    rounds_path.parent.mkdir(parents=True)
+    rounds_path.write_bytes(prefix + tail)
+    monkeypatch.setattr(lane_run, "ROUND_READ_MAX_BYTES", len(tail))
+    expected = [{"at": 2}, {"at": 3}] if aligned else [{"at": 3}]
+    assert lane_run.read_rounds(tmp_path) == expected
+
+
+def test_read_rounds_reads_only_a_bounded_tail(tmp_path, rounds_path, monkeypatch):
+    maximum = lane_run.ROUND_READ_MAX_BYTES
+    rounds_path.parent.mkdir(parents=True)
+    rounds_path.write_bytes(b"x" * (maximum + 100) + b'\n{"at": 1}\n{"at": 2}\n')
+    open_file, reads = Path.open, []
+
+    def bounded_open(path, mode="r", *args, **kwargs):
+        assert path == rounds_path and mode == "rb"
+        handle = open_file(path, mode, *args, **kwargs)
+        read = handle.read
+
+        def bounded_read(size=-1):
+            assert 0 <= size <= maximum
+            reads.append((handle.tell(), size))
+            return read(size)
+
+        monkeypatch.setattr(handle, "read", bounded_read)
+        return handle
+
+    monkeypatch.setattr(Path, "open", bounded_open)
+    assert lane_run.read_rounds(tmp_path) == [{"at": 1}, {"at": 2}]
+    assert reads and all(offset > 0 for offset, _ in reads)
+    assert sum(size for _, size in reads) <= maximum + 1
 
 
 def test_a_flake_that_fails_in_isolation_is_not_retried(tmp_path):

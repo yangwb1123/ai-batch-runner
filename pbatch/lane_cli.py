@@ -110,6 +110,10 @@ def _classify(receipt: dict, lanes: list) -> str:
 
 def _print_status(root: Path, as_json: bool) -> int:
     value = lane_loop.status(root)
+    rounds = lane_run.read_rounds(root, limit=1)
+    value["last_round"] = ({key: rounds[-1].get(key)
+                            for key in ("at", "merged", "blocked", "head")}
+                           if rounds else None)
     if as_json:
         print(json.dumps(value, ensure_ascii=False, indent=2))
     else:
@@ -117,6 +121,7 @@ def _print_status(root: Path, as_json: bool) -> int:
               % (value["anchored"], value["remaining_seconds"], value["budget"],
                  value["consumed"], value["rounds"], value["restarts"]))
         print("stopped: %s" % (value["stopped"] or "-"))
+        print("last_round: %s" % json.dumps(value["last_round"], ensure_ascii=False))
     return 0
 
 

@@ -33,6 +33,7 @@ from .config import data_dir
 
 MAX_LANES = 8
 MAX_COMMAND_OUTPUT = 32 * 1024
+ROUND_READ_MAX_BYTES = 1024 * 1024
 LANE_TIMEOUT_DEFAULT = 3600
 GATE_FAILURE_MARKER = "gate failed"
 MAX_FLAKE_RETRIES = 1
@@ -324,6 +325,45 @@ def _append_receipt(root: Path, receipt: dict) -> Path:
         handle.write(line)
         handle.flush()
     return path
+
+
+def read_rounds(root: Path, limit: int = 20) -> list[dict]:
+    """Read up to ``limit`` valid receipts, newest last, from a bounded tail.
+
+    Only the last 1 MiB is inspected; partial leading lines and malformed or
+    non-object JSON are skipped. Missing/unreadable files yield no receipts.
+    This observation never creates, repairs or writes the ledger.
+    """
+    if type(limit) is not int or limit < 0:
+        raise ValueError("round receipt limit must be a non-negative integer")
+    if limit == 0:
+        return []
+    path = data_dir(str(root)) / "lanes" / "rounds.jsonl"
+    if path.is_symlink() or not path.is_file():
+        return []
+    try:
+        with path.open("rb") as handle:
+            start = max(0, handle.seek(0, 2) - ROUND_READ_MAX_BYTES)
+            handle.seek(max(0, start - 1))
+            aligned = not start or handle.read(1) == b"\n"
+            raw = handle.read(ROUND_READ_MAX_BYTES)
+    except OSError:
+        return []
+    if not aligned:
+        raw = raw.partition(b"\n")[2]
+    receipts = []
+    for line in reversed(raw.split(b"\n")):
+        try:
+            receipt = json.loads(line.decode("utf-8"))
+        except (ValueError, UnicodeError, RecursionError):
+            continue
+        if not isinstance(receipt, dict):
+            continue
+        receipts.append(receipt)
+        if len(receipts) == limit:
+            break
+    receipts.reverse()
+    return receipts
 
 
 def cleanup(root: Path, lanes: list) -> None:
