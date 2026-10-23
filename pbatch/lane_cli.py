@@ -67,7 +67,7 @@ def _load_plan(path: str, root: Path) -> tuple[list, str]:
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             raise ValueError("lane plan entry %d must be a mapping" % index)
-        extra = set(row) - {"id", "branch", "worktree", "command", "timeout"}
+        extra = set(row) - {"id", "branch", "worktree", "command", "timeout", "scope"}
         if extra:
             raise ValueError("lane plan entry %d has unknown keys: %s"
                              % (index, ", ".join(sorted(extra))))
@@ -80,6 +80,7 @@ def _load_plan(path: str, root: Path) -> tuple[list, str]:
             worktree=Path(str(row.get("worktree", ""))).expanduser(),
             command=tuple(command or ()),
             timeout=int(row.get("timeout", lane_run.LANE_TIMEOUT_DEFAULT)),
+            scope=tuple(row.get("scope") or ()),
         ))
     return lanes, str(gate)
 

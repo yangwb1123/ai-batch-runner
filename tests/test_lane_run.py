@@ -145,3 +145,32 @@ def test_round_receipt_is_appended_for_audit(tmp_path, monkeypatch):
     path = Path(os.environ["PBATCH_RUNTIME_HOME"]) / "projects"
     receipts = list(path.rglob("lanes/rounds.jsonl"))
     assert receipts and '"merged": ["alpha"]' in receipts[0].read_text(encoding="utf-8")
+
+
+def test_a_lane_touching_paths_outside_its_scope_is_not_merged(tmp_path):
+    root = _repo(tmp_path)
+    _script(root, "alpha", "printf 'x\\n' > outside.txt\ngit add outside.txt\n"
+                          "git -c user.email=t@t -c user.name=t commit -qm sneaky\n")
+    lane = lane_run.Lane(lane_id="alpha", branch="feat/alpha",
+                         worktree=root.parent / "wt-alpha",
+                         command=(str(root.parent / "alpha.sh"),),
+                         scope=("pbatch/",))
+    receipt = lane_run.run_round(root, [lane], gate="true")
+    assert receipt["merged"] == [] and receipt["blocked"] == ["alpha"]
+    statuses = {row["lane"]: row["status"] for row in receipt["lanes"]}
+    assert statuses["alpha"] == "lane_scope_violation"
+    tracked = subprocess.run(["git", "-C", str(root), "ls-tree", "--name-only", "HEAD"],
+                             capture_output=True, text=True).stdout.split()
+    assert "outside.txt" not in tracked
+
+
+def test_a_lane_with_a_declared_scope_can_still_merge(tmp_path):
+    root = _repo(tmp_path)
+    _script(root, "alpha", "mkdir -p pbatch\nprintf 'x\\n' > pbatch/allowed.txt\ngit add pbatch/allowed.txt\n"
+                          "git -c user.email=t@t -c user.name=t commit -qm in-scope\n")
+    lane = lane_run.Lane(lane_id="alpha", branch="feat/alpha",
+                         worktree=root.parent / "wt-alpha",
+                         command=(str(root.parent / "alpha.sh"),),
+                         scope=("pbatch/*",))
+    receipt = lane_run.run_round(root, [lane], gate="true")
+    assert receipt["merged"] == ["alpha"]

@@ -20,11 +20,15 @@ lanes:
     worktree: /var/tmp/lane-progress
     command: ["pi-batch", "/abs/task.yaml", "--model", "openai-codex/gpt-6.1-sol",
               "--thinking", "max", "--git-commit"]
+    scope: ["pbatch/progress_*.py", "tests/test_progress_*.py"]   # 允许改动的路径
     timeout: 1800
 ```
 
 - 每条泳道一个分支、一个仓库外 worktree、一条 argv 命令；命令在 worktree 内执行。
 - 泳道命令必须**自己提交**（例如 `--git-commit`）：未提交的泳道不会被合并。
+- `scope` 声明该泳道允许改动的路径（精确路径、目录前缀或 glob）。分支相对 base
+  改到范围外的文件即 `lane_scope_violation`，**不合并**并保留现场；范围守卫在
+  门禁之前执行，绿灯门禁不能拓宽声明范围。
 - 计划校验失败（重复 id/分支/worktree、worktree 在仓库内或非空、命令为空、
   未知字段、缺 gate）在创建任何 worktree 之前拒绝。
 - 主工作区必须是干净的：合并事务拒绝在脏根仓库上运行。

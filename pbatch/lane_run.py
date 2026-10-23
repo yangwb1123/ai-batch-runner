@@ -16,6 +16,7 @@ worktree is preserved for diagnosis.
 from __future__ import annotations
 
 import contextlib
+import fnmatch
 import io
 import json
 import subprocess
@@ -44,8 +45,14 @@ class Lane:
     worktree: Path
     command: tuple
     timeout: int = LANE_TIMEOUT_DEFAULT
+    scope: tuple = ()          # workspace-relative paths this lane may change
 
     def validate(self, root: Path) -> None:
+        self._validate_names()
+        self._validate_scope()
+        self._validate_worktree(root)
+
+    def _validate_names(self) -> None:
         if not self.lane_id or len(self.lane_id) > 64:
             raise LanePlanError("lane id must be 1..64 characters")
         if not self.branch or " " in self.branch or self.branch.startswith("-"):
@@ -54,6 +61,14 @@ class Lane:
             raise LanePlanError(f"lane {self.lane_id}: command must be a non-empty argv list")
         if isinstance(self.timeout, bool) or not isinstance(self.timeout, int) or self.timeout < 1:
             raise LanePlanError(f"lane {self.lane_id}: timeout must be a positive integer")
+
+    def _validate_scope(self) -> None:
+        if not isinstance(self.scope, (tuple, list)) or not all(
+                isinstance(item, str) and item and not item.startswith("/")
+                and ".." not in item.split("/") for item in self.scope):
+            raise LanePlanError(f"lane {self.lane_id}: scope must be relative workspace paths")
+
+    def _validate_worktree(self, root: Path) -> None:
         worktree = Path(self.worktree).expanduser().resolve()
         if worktree == root or root in worktree.parents:
             raise LanePlanError(f"lane {self.lane_id}: worktree must be outside the repository")
@@ -155,9 +170,72 @@ def _create_worktrees(root: Path, lanes: list) -> None:
                                 % (lane.lane_id, result.stderr.strip()[:300]))
 
 
+def _scope_allows(path: str, scope: tuple) -> bool:
+    return any(path == rule.rstrip("/") or path.startswith(rule.rstrip("/") + "/")
+               or fnmatch.fnmatchcase(path, rule) for rule in scope)
+
+
+def changed_paths(root: Path, lane: Lane) -> list:
+    """Paths the lane branch changes relative to the repository HEAD/base."""
+    result = _git(["diff", "--name-only", "HEAD...%s" % lane.branch], root)
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def scope_violations(root: Path, lane: Lane) -> list:
+    if not lane.scope:
+        return []
+    return [path for path in changed_paths(root, lane) if not _scope_allows(path, lane.scope)]
+
+
 def _remove_worktree(root: Path, lane: Lane) -> None:
     _git(["worktree", "remove", "--force", str(lane.worktree)], root)
     _git(["branch", "-D", lane.branch], root)
+
+
+def _merge_one(root: Path, item: LaneOutcome, gate: str, base: str) -> bool:
+    options = session_merge.SessionOptions(
+        session_id="lane-" + item.lane.lane_id, base=base, gate=gate)
+    captured = io.StringIO()
+    with contextlib.redirect_stdout(captured):
+        code = session_merge.merge_session_block(root, item.lane.branch,
+                                                item.lane.worktree, options)
+    item.evidence.extend(line for line in captured.getvalue().splitlines()[-4:])
+    item.merge_status = "merged" if code == 0 else "merge_blocked"
+    if code == 0:
+        item.merge_commit = _git(["rev-parse", "HEAD"], root).stdout.strip()
+        return True
+    item.status = "merge_blocked"
+    item.reason = "session merge exited %d" % code
+    return False
+
+
+def _block(item: LaneOutcome, blocked: list, status: str, reason: str) -> None:
+    item.status = status
+    item.reason = reason
+    blocked.append(item)
+
+
+def _merge_ready(root: Path, ready: list, blocked: list, gate: str, base: str) -> list:
+    merged = []
+    for item in ready:
+        violations = scope_violations(root, item.lane)
+        if violations:
+            _block(item, blocked, "lane_scope_violation",
+                   "lane changed paths outside its declared scope: "
+                   + ", ".join(violations[:10]))
+            item.evidence.extend(violations[:10])
+            continue
+        if not _clean(item.lane.worktree):
+            _block(item, blocked, "lane_uncommitted",
+                   "lane worktree still has uncommitted changes; commit inside the lane")
+            continue
+        if _merge_one(root, item, gate, base):
+            merged.append(item)
+        else:
+            blocked.append(item)
+    return merged
 
 
 def run_round(root: Path, lanes: list, *, gate: str, jobs: int = 2,
@@ -172,35 +250,15 @@ def run_round(root: Path, lanes: list, *, gate: str, jobs: int = 2,
     with ThreadPoolExecutor(max_workers=min(jobs, len(lanes))) as pool:
         for outcome in pool.map(_run_lane, lanes):
             outcomes.append(outcome)
-    merge_order = [item for item in outcomes if item.status == "lane_passed"]
     blocked = [item for item in outcomes if item.status != "lane_passed"]
-    merged = []
-    for item in merge_order:
-        if not _clean(item.lane.worktree):
-            item.status = "lane_uncommitted"
-            item.reason = "lane worktree still has uncommitted changes; commit inside the lane"
-            blocked.append(item)
-            continue
-        options = session_merge.SessionOptions(
-            session_id="lane-" + item.lane.lane_id, base=base, gate=gate)
-        captured = io.StringIO()
-        with contextlib.redirect_stdout(captured):
-            code = session_merge.merge_session_block(root, item.lane.branch,
-                                                    item.lane.worktree, options)
-        item.evidence.extend(line for line in captured.getvalue().splitlines()[-4:])
-        item.merge_status = "merged" if code == 0 else "merge_blocked"
-        if code == 0:
-            item.merge_commit = _git(["rev-parse", "HEAD"], root).stdout.strip()
-            merged.append(item)
-        else:
-            item.status = "merge_blocked"
-            item.reason = "session merge exited %d" % code
-            blocked.append(item)
+    merged = _merge_ready(root, [item for item in outcomes if item.status == "lane_passed"],
+                          blocked, gate, base)
     receipt = {
         "schema_version": 1,
         "at": time.time(),
         "base": base,
         "gate": gate[:300],
+        "scopes": {item.lane.lane_id: list(item.lane.scope) for item in outcomes},
         "lanes": [item.receipt() for item in outcomes],
         "merged": [item.lane.lane_id for item in merged],
         "blocked": [item.lane.lane_id for item in blocked],
