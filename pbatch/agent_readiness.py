@@ -30,6 +30,7 @@ import os
 import re
 import shlex
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Optional
 
@@ -143,6 +144,36 @@ def _parse_argv(value: object) -> tuple:
     if not tokens[0].strip():
         raise ValueError("readiness_cmd executable is empty")
     return tuple(tokens)
+
+
+def validate_config(section: Mapping) -> list[str]:
+    """Validate every readiness declaration in an ``agent`` mapping, without I/O.
+
+    Errors include a bounded, single-line config path, never command contents.
+    All declarations are checked, including overridden or unselected commands.
+    """
+    if not isinstance(section, Mapping):
+        return ["agent must be a mapping"]
+    errors, declarations = [], []
+    if "readiness_cmd" in section:
+        declarations.append(("agent.readiness_cmd", section["readiness_cmd"]))
+    agents = section.get("agents", {})
+    if not isinstance(agents, Mapping):
+        errors.append("agent.agents must be a mapping")
+        agents = {}
+    for name, settings in agents.items():
+        name = _clip(_single_line(name), MAX_AGENT_CHARS)
+        source = f"agent.agents.{name}"
+        if not isinstance(settings, Mapping):
+            errors.append(f"{source} must be a mapping")
+        elif "readiness_cmd" in settings:
+            declarations.append((f"{source}.readiness_cmd", settings["readiness_cmd"]))
+    for source, value in declarations:
+        try:
+            _parse_argv(value)
+        except ValueError as exc:
+            errors.append(_clip(f"{source}: {exc}", MAX_REASON_CHARS))
+    return errors
 
 
 def declared_argv(bin_name: str = "") -> tuple:

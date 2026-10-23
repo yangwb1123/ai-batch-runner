@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
+from . import agent_readiness
 from . import config
 from . import user_dirs
 
@@ -116,6 +117,9 @@ def validate_document(data: Any, source: str = "<memory>") -> dict:
             errors.append(f"{source}: section '{key}' must be a mapping")
         if key == "validators" and not isinstance(data[key], dict):
             errors.append(f"{source}: section 'validators' must be a mapping")
+    if isinstance(data.get("agent"), dict):
+        errors.extend(f"{source}: {error}"
+                      for error in agent_readiness.validate_config(data["agent"]))
     errors.extend(_pool_reference_errors(data.get("llm_pool"), source))
     return {"valid": not errors, "version": version,
             "errors": errors, "warnings": warnings}

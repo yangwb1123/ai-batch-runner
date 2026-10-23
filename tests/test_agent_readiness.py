@@ -10,11 +10,44 @@ from __future__ import annotations
 
 import json
 import sys
+from types import MappingProxyType
 
 import pytest
 
 from pbatch import agent_readiness as readiness
 from pbatch import config
+
+
+_COMMAND_CASES = [
+    pytest.param("probe --check", "", id="string"),
+    pytest.param("'probe' 'two words'", "", id="quoted-string"),
+    pytest.param(["probe", "--check"], "", id="argv"),
+    pytest.param(("probe", "two words"), "", id="argv-tuple"),
+    pytest.param("probe $HOME | cat > marker", "", id="shell-literals"),
+    pytest.param("probe".ljust(readiness.MAX_CONFIG_CHARS), "", id="max-string"),
+    pytest.param(["probe"] * readiness.MAX_TOKENS, "", id="max-tokens"),
+    pytest.param(["x" * readiness.MAX_TOKEN_CHARS], "", id="max-token"),
+    pytest.param("", "string is empty", id="empty-string"),
+    pytest.param("   ", "string is empty", id="blank-string"),
+    pytest.param([], "argv list is empty", id="empty-argv"),
+    pytest.param([""], "only non-empty strings", id="empty-token"),
+    pytest.param(["   "], "executable is empty", id="blank-executable"),
+    pytest.param(["probe", 1], "only non-empty strings", id="non-string-token"),
+    pytest.param(None, "must be a string or an argv list", id="null"),
+    pytest.param(True, "must be a string or an argv list", id="bool"),
+    pytest.param(123, "must be a string or an argv list", id="number"),
+    pytest.param({"cmd": "probe"}, "must be a string or an argv list", id="mapping"),
+    pytest.param("probe 'unclosed", "not parseable as argv", id="unclosed-quote"),
+    pytest.param("probe \\", "not parseable as argv", id="trailing-backslash"),
+    pytest.param("x" * (readiness.MAX_CONFIG_CHARS + 1),
+                 "string exceeds", id="oversized-string"),
+    pytest.param(["probe"] * (readiness.MAX_TOKENS + 1),
+                 "argv exceeds", id="too-many-tokens"),
+    pytest.param(["probe", "x" * (readiness.MAX_TOKEN_CHARS + 1)],
+                 "argv entry exceeds", id="oversized-token"),
+    pytest.param("probe bad\x00token", "contains a NUL byte", id="string-nul"),
+    pytest.param(["probe", "bad\x00token"], "contains a NUL byte", id="argv-nul"),
+]
 
 
 @pytest.fixture(autouse=True)
@@ -29,6 +62,111 @@ def _configure(monkeypatch, value, agent="probeagent"):
 
 def _python(code: str) -> list:
     return [sys.executable, "-c", code]
+
+
+def _readiness_section(value, per_agent):
+    if per_agent:
+        return {"agents": {"probeagent": {"readiness_cmd": value}}}
+    return {"readiness_cmd": value}
+
+
+@pytest.fixture
+def _no_readiness_spawn(monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail("config validation must not run probes or spawn processes")
+
+    monkeypatch.setattr(readiness, "probe", forbidden)
+    monkeypatch.setattr(readiness, "run_bounded", forbidden)
+    monkeypatch.setattr("subprocess.Popen", forbidden)
+
+
+@pytest.mark.parametrize("value,problem", _COMMAND_CASES)
+@pytest.mark.parametrize("per_agent", [False, True], ids=["global", "per-agent"])
+def test_validate_config_command_shape(value, problem, per_agent, _no_readiness_spawn):
+    errors = readiness.validate_config(_readiness_section(value, per_agent))
+    assert isinstance(errors, list)
+    if not problem:
+        assert errors == []
+        return
+    assert len(errors) == 1
+    source = "agent.agents.probeagent" if per_agent else "agent"
+    assert errors[0].startswith(f"{source}.readiness_cmd:")
+    assert problem in errors[0]
+    assert len(errors[0]) <= readiness.MAX_REASON_CHARS
+
+
+@pytest.mark.parametrize("value,problem", _COMMAND_CASES)
+@pytest.mark.parametrize("per_agent", [False, True], ids=["global", "per-agent"])
+def test_config_check_readiness_shape_without_probe(
+        tmp_path, capsys, value, problem, per_agent, _no_readiness_spawn):
+    from pbatch.config_cli import config_main
+
+    path = tmp_path / "pi-batch.yaml"
+    path.write_text(json.dumps({"config_version": 1,
+                               "agent": _readiness_section(value, per_agent)}),
+                    encoding="utf-8")
+    assert config_main(["check", "--file", str(path), "--json"]) == int(bool(problem))
+    report = json.loads(capsys.readouterr().out)
+    assert report["valid"] is (not problem)
+    assert report["validation"]["sources"]["project"]["valid"] is (not problem)
+    errors = report["validation"]["errors"]
+    if problem:
+        assert len(errors) == 1
+        source = "agent.agents.probeagent" if per_agent else "agent"
+        assert errors[0].startswith(f"project: {source}.readiness_cmd:")
+        assert problem in errors[0]
+    else:
+        assert errors == []
+
+
+def test_validate_config_checks_all_declarations_with_bounded_errors():
+    name = "bad\n\x1b" + "x" * readiness.MAX_CONFIG_CHARS
+    section = {"readiness_cmd": "", "agents": {
+        name: {"readiness_cmd": ["probe", "secret\x00value"]},
+        "valid-override": {"readiness_cmd": ["probe"]},
+        "other-invalid": {"readiness_cmd": []},
+    }}
+    errors = readiness.validate_config(section)
+    assert len(errors) == 3
+    assert any("agent.readiness_cmd:" in item for item in errors)
+    assert any("agent.agents.other-invalid.readiness_cmd:" in item for item in errors)
+    assert any("contains a NUL byte" in item for item in errors)
+    assert all(len(item) <= readiness.MAX_REASON_CHARS for item in errors)
+    assert all(item.isprintable() for item in errors)
+    assert "secret" not in " ".join(errors)
+
+
+def test_validate_config_accepts_mappings_and_absent_commands():
+    section = MappingProxyType({"agents": MappingProxyType({
+        "probeagent": MappingProxyType({"readiness_cmd": ["probe"]}),
+        "unconfigured": {},
+    })})
+    assert readiness.validate_config(section) == []
+    assert readiness.validate_config({}) == []
+    assert readiness.validate_config({"bin": "probe", "argument_flags": {}}) == []
+
+
+@pytest.mark.parametrize("section,source", [
+    ([], "agent"),
+    ({"agents": []}, "agent.agents"),
+    ({"agents": {"probeagent": None}}, "agent.agents.probeagent"),
+])
+def test_validate_config_rejects_non_mapping_sections(section, source):
+    assert readiness.validate_config(section) == [f"{source} must be a mapping"]
+
+
+def test_config_check_rejects_invalid_non_selected_agent(tmp_path, _no_readiness_spawn):
+    from pbatch.config_inspect import config_check
+
+    path = tmp_path / "pi-batch.yaml"
+    path.write_text(json.dumps({"config_version": 1, "agent": {
+        "bin": "selected", "readiness_cmd": "probe --check",
+        "agents": {"not-selected": {"readiness_cmd": []}},
+    }}), encoding="utf-8")
+    report = config_check(str(path))
+    assert report["valid"] is False
+    assert any("agent.agents.not-selected.readiness_cmd:" in item
+               for item in report["validation"]["errors"])
 
 
 def test_unconfigured_probe_is_unknown_and_spawns_nothing(monkeypatch):

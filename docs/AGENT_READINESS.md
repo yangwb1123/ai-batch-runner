@@ -26,10 +26,14 @@ agent:
   `agent.readiness_cmd`；可按可执行文件名或完整路径匹配（沿用
   `argument_flags` 的同一套 section 解析）。
 - 不配置即为 `unknown`（见第 2 节），不是 ready，也不是错误。
-- 非法配置（空字符串、空列表、非字符串元素、无法解析的引号、超长/超 token
-  上限、NUL 字节等）一律 `unknown`；不会退回其他命令、不会执行、不会当作 ready。
-  校验发生在探针解析时（`config check` 不校验该键），所以坏配置的影响是
-  “永远 unknown + warning”，而不是隐式 ready。
+- `pi-batch config check` 会校验全局及所有单 agent 的 `readiness_cmd` 形状，
+  包括被覆盖或未选中的声明；非法配置作为 validation error 报告，JSON 中
+  `valid=false`，命令非零退出。此检查只解析配置，**不启动探针、不检查命令
+  是否存在或认证是否有效**；合法形状不代表 agent 已 ready。
+- 非法配置包括空字符串/列表、非字符串元素、无法解析的引号、NUL 字节、
+  字符串超过 4096 字符、argv 超过 32 项或单项超过 256 字符。
+  探针解析仍保留同样的防御校验：非法声明一律 `unknown`，不会退回其他命令、
+  不会执行、不会当作 ready。
 - 本版本没有 timeout/cap 配置项，也没有跳过 readiness 的开关；预算内固定
   10 秒硬超时、8 KiB 输出上限。
 
@@ -75,6 +79,7 @@ agent:
 ## 4. 只读查询
 
 ```bash
+pi-batch config check --json              # 仅校验配置形状，不运行探针
 pi-batch agents readiness                 # 默认 5 个已知 agent
 pi-batch agents readiness --agent codex   # 单个
 pi-batch agents readiness --json          # 机器可读
@@ -125,7 +130,8 @@ pi-batch agents readiness --json          # 机器可读
   秘密，也可能误伤普通单词。不要把凭据主动放进探针命令参数或输出。
 - 该能力不改变 `agent_preflight_errors`（可执行文件存在性）、不改变 ledger
   记录、不提供自动登录/修复、不授权任何外部通知或发布。
-- 测试：`tests/test_agent_readiness.py`（分类矩阵、配置失败、无模型调用、
-  超时/输出上限、脱敏、JSON 形状）与 `tests/test_campaign_readiness.py`
+- 测试：`tests/test_agent_readiness.py`（分类矩阵、配置失败、`config check`
+  形状校验且零 spawn、无模型调用、超时/输出上限、脱敏、JSON 形状）与
+  `tests/test_campaign_readiness.py`
   （拒绝先于分析且零 spawn、事件记录、unknown warning、未配置兼容、
   provider/预算优先级）。静态/单元测试通过不代表真实账号或生产验收。
