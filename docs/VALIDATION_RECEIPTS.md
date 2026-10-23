@@ -47,6 +47,21 @@ pipeline stage receipts and optional decision logs. Each JSON object contains:
 | `artifact_bytes` | Observed complete regular-file size |
 | `artifact_digest`, `artifact_digest_bytes` | Full SHA-256 of at most the first 64 KiB, and the number of bytes actually hashed |
 
+Inspect these records without running validators or writing runtime files:
+
+```bash
+pi-batch validation receipts
+pi-batch validation receipts --limit 200 --json
+```
+
+`--limit` defaults to 50 and accepts only 1..200; invalid limits exit with code 2
+and a `validation receipts: ...` diagnostic on stderr. Records are returned in
+append order, newest last. `--json` prints `{"receipts": [...]}` with the fields
+above, preserving unknown values as `null`; text mode prints a count followed
+by one JSON record per line. Reads inspect at most the last 4 MiB, skip malformed,
+foreign or oversized lines, and do not create missing directories or ledgers.
+A missing or unreadable ledger yields an empty list, not a passing validation.
+
 Missing, non-regular, unreadable or detectably changing artifact identities are
 `null`, not empty success or fabricated zero. An actually empty file can have
 size zero and the SHA-256 of empty bytes. Unavailable/non-finite/backwards

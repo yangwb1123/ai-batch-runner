@@ -414,6 +414,7 @@ _SUBCOMMANDS: dict[str, str] = {
     "agents": "agent_ledger:agents_main",
     "routing-eval": "routing_eval:routing_eval_main",
     "config": "config_cli:config_main",
+    "validation": "validation_receipt_cli:main",
     "pool": "llm_pool_cli:pool_main",
     "memory": "memory:main",
     "classify": "classifier:classify_main",

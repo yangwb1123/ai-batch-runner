@@ -246,7 +246,7 @@ def _append(cwd, payload) -> bool:
 
 
 def read_receipts(cwd: str = "", limit: int = 50) -> list:
-    """Read a bounded tail, oldest first, without creating runtime directories."""
+    """Return a bounded tail of valid receipts, newest last, without any writes."""
     try:
         maximum = max(1, min(int(limit), storage.READ_MAX_RECORDS))
         path = receipts_path(cwd)
@@ -254,13 +254,18 @@ def read_receipts(cwd: str = "", limit: int = 50) -> list:
             return []
         raw = storage._tail_bytes(path, storage.RECEIPTS_MAX_BYTES)
         records = []
-        for line in raw.splitlines()[-maximum:]:
+        for line in reversed(raw.splitlines()):
+            if len(records) >= maximum:
+                break
             if len(line) > storage.RECEIPTS_MAX_LINE_BYTES:
                 continue
-            record = storage._decode(line)
+            try:
+                record = storage._decode(line)
+            except RecursionError:
+                continue
             if record is not None and record.get("kind") == "validator_invocation":
                 records.append(record)
-        return records
+        return list(reversed(records))
     except Exception as exc:
         log.debug("validation receipts: read failed (%s)", type(exc).__name__)
         return []
