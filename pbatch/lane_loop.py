@@ -281,6 +281,21 @@ def decide(root: Path, *, classification: str, invocations, now: Optional[float]
                     consumed_invocations=spent)
 
 
+def stop(root: Path, reason: str, now: Optional[float] = None) -> None:
+    """Record an operator or backlog stop once; later rounds see it and stop."""
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError("stop reason must be a non-empty string")
+    now = time.time() if now is None else float(now)
+    path = ledger_path(root)
+    records = _read(path)
+    if not records or records[0].get("kind") != WINDOW_STARTED:
+        raise LaneLedgerError("no anchored window; refusing to record a stop")
+    if _stopped(records) is not None:
+        return
+    _append(path, {"schema_version": SCHEMA_VERSION, "kind": LOOP_STOPPED,
+                   "at": now, "reason": reason.strip()[:300]})
+
+
 def status(root: Path, now: Optional[float] = None) -> dict:
     """Read-only summary for a supervisor or an operator dashboard."""
     now = time.time() if now is None else float(now)

@@ -122,3 +122,24 @@ def test_ledger_lines_are_bounded_and_readable(tmp_path):
     assert len(lines) == 2
     assert all(len(line.encode("utf-8")) <= lane_loop.LEDGER_MAX_LINE_BYTES for line in lines)
     assert all(json.loads(line)["schema_version"] == lane_loop.SCHEMA_VERSION for line in lines)
+
+
+def test_operator_stop_is_recorded_once_and_is_terminal(tmp_path):
+    lane_loop.start_window(tmp_path, hours=12, invocations=10, now=1000.0)
+    lane_loop.stop(tmp_path, "backlog exhausted", now=1100.0)
+    lane_loop.stop(tmp_path, "second stop", now=1200.0)
+    assert lane_loop.status(tmp_path)["stopped"] == "backlog exhausted"
+    decision = lane_loop.decide(tmp_path, classification=lane_loop.COMPLETED,
+                                invocations=0, now=1300.0)
+    assert decision.action == lane_loop.STOP
+
+
+def test_stop_without_a_window_is_refused(tmp_path):
+    with pytest.raises(lane_loop.LaneLedgerError):
+        lane_loop.stop(tmp_path, "no window")
+
+
+def test_stop_requires_a_reason(tmp_path):
+    lane_loop.start_window(tmp_path, hours=1, invocations=1, now=1000.0)
+    with pytest.raises(ValueError):
+        lane_loop.stop(tmp_path, "")
