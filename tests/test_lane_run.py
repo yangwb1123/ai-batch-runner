@@ -174,3 +174,15 @@ def test_a_lane_with_a_declared_scope_can_still_merge(tmp_path):
                          scope=("pbatch/*",))
     receipt = lane_run.run_round(root, [lane], gate="true")
     assert receipt["merged"] == ["alpha"]
+
+
+def test_a_blocked_gate_records_its_output_tail_in_the_receipt(tmp_path):
+    root = _repo(tmp_path)
+    _commit_script(root, "alpha", "alpha.txt", "alpha")
+    lane = lane_run.Lane(lane_id="alpha", branch="feat/alpha",
+                         worktree=root.parent / "wt-alpha",
+                         command=(str(root.parent / "alpha.sh"),))
+    receipt = lane_run.run_round(root, [lane], gate="echo synthetic-gate-failure >&2; exit 1")
+    row = receipt["lanes"][0]
+    assert row["merge_status"] == "merge_blocked"
+    assert "synthetic-gate-failure" in row["merge_tail"]

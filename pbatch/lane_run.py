@@ -86,12 +86,14 @@ class LaneOutcome:
     merge_status: str = ""
     merge_commit: str = ""
     evidence: list = field(default_factory=list)
+    merge_tail: str = ""
 
     def receipt(self) -> dict:
         return {"lane": self.lane.lane_id, "branch": self.lane.branch,
                 "status": self.status, "reason": self.reason[:500],
                 "exit_code": self.exit_code, "elapsed_seconds": self.elapsed_seconds,
-                "merge_status": self.merge_status, "merge_commit": self.merge_commit}
+                "merge_status": self.merge_status, "merge_commit": self.merge_commit,
+                "merge_tail": self.merge_tail[-800:]}
 
 
 def validate_plan(root: Path, lanes: list, gate: str) -> None:
@@ -201,7 +203,9 @@ def _merge_one(root: Path, item: LaneOutcome, gate: str, base: str) -> bool:
     with contextlib.redirect_stdout(captured):
         code = session_merge.merge_session_block(root, item.lane.branch,
                                                 item.lane.worktree, options)
-    item.evidence.extend(line for line in captured.getvalue().splitlines()[-4:])
+    output = captured.getvalue()
+    item.evidence.extend(line for line in output.splitlines()[-4:])
+    item.merge_tail = output.strip()[-800:]
     item.merge_status = "merged" if code == 0 else "merge_blocked"
     if code == 0:
         item.merge_commit = _git(["rev-parse", "HEAD"], root).stdout.strip()
