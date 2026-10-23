@@ -280,6 +280,18 @@ def _doctor_checks() -> list:
     return checks
 
 
+def _print_doctor_readiness() -> None:
+    """Show informational readiness without adding exit-code checks."""
+    from . import agent_readiness
+    from .agent_ledger import DEFAULT_AGENTS
+
+    for agent in DEFAULT_AGENTS:
+        result = agent_readiness.probe(agent)
+        reason = (f" — {agent_readiness.redact(result.reason)}"
+                  if result.status != agent_readiness.READY else "")
+        print(f"  [INFO] agent readiness {agent}: {result.status}{reason}")
+
+
 def doctor_main(argv: Optional[list] = None) -> int:
     """`pi-batch doctor [--json]`：环境诊断（安装/目录/配置/agent/密钥/锁）。"""
     parser = argparse.ArgumentParser(
@@ -295,5 +307,7 @@ def doctor_main(argv: Optional[list] = None) -> int:
     else:
         for name, ok, detail in checks:
             print(f"  [{'OK' if ok else 'WARN'}] {name:<18} {detail}")
+            if name == f"agent 二进制 {config.AGENT_BIN}":
+                _print_doctor_readiness()
     failed = [n for n, ok, _ in checks if not ok]
     raise SystemExit(1 if failed else 0)

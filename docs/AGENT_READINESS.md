@@ -90,6 +90,14 @@ pi-batch agents readiness --json          # 机器可读
 - 既有 `pi-batch agents list` 的 row 字典和表格列**保持不变**；
   readiness 是独立的子命令，不是 health 行的扩列。
 
+## doctor 输出
+
+`pi-batch doctor` 的文本输出在 agent 二进制检查后，逐行展示默认 5 个 agent
+（pi、codex、claude、gemini、opencode）的 `ready` / `not_ready` / `unknown` 状态。
+非 `ready` 时附带脱敏后的原因；未配置探针显示 `unknown`。这些 `[INFO]` 行仅供
+参考，不改变既有检查及退出码：readiness 问题本身不会使 doctor 失败。
+`doctor --json` 保持原有输出，不运行 readiness 探针。
+
 ## 5. Campaign 准入
 
 `campaign` 在模块分析、模型调用和 pipeline spawn **之前**检查解析后的
