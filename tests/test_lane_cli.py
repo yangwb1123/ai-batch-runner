@@ -178,3 +178,14 @@ def test_a_failed_lane_still_consumes_the_invocation_budget(tmp_path, capsys):
     status = lane_loop.status(root)
     assert status["consumed"] == 1, "a lane that ran and failed still spent budget"
     assert status["stopped"].startswith("round gate_failed")
+
+
+def test_resume_lifts_only_a_resumable_stop(tmp_path, capsys):
+    root = _repo(tmp_path)
+    lane_loop.start_window(root, hours=1, invocations=2, now=1000.0)
+    lane_loop.stop(root, "backlog exhausted", now=1100.0)
+    assert lane_cli.lanes_main(["resume", "--root", str(root), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["resumed"] == "backlog exhausted"
+    lane_loop.stop(root, "deadline reached", now=1200.0)
+    assert lane_cli.lanes_main(["resume", "--root", str(root)]) == 2
+    assert "not resumable" in capsys.readouterr().out

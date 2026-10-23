@@ -55,6 +55,12 @@ WINDOW_STARTED = "lane_window_started"
 ROUND_FINISHED = "lane_round_finished"
 RESTART_SCHEDULED = "lane_restart_scheduled"
 LOOP_STOPPED = "lane_loop_stopped"
+LOOP_RESUMED = "lane_loop_resumed"
+
+#: Stops an operator may lift without starting a new window. Safety stops
+#: (gate failure, budget, deadline, restart exhaustion) are deliberately absent:
+#: resuming those would hide the reason they happened.
+RESUMABLE_STOPS = ("backlog exhausted", "operator pause")
 
 
 class LaneLedgerError(ValueError):
@@ -204,6 +210,8 @@ def consumed_invocations(records: list) -> int:
 
 def _stopped(records: list) -> Optional[str]:
     for record in reversed(records):
+        if record.get("kind") == LOOP_RESUMED:
+            return None
         if record.get("kind") == LOOP_STOPPED:
             return str(record.get("reason", "stopped"))
         if record.get("kind") == WINDOW_STARTED:
@@ -294,6 +302,27 @@ def stop(root: Path, reason: str, now: Optional[float] = None) -> None:
         return
     _append(path, {"schema_version": SCHEMA_VERSION, "kind": LOOP_STOPPED,
                    "at": now, "reason": reason.strip()[:300]})
+
+
+def resume(root: Path, now: Optional[float] = None) -> str:
+    """Lift a resumable stop (drained backlog / operator pause) only.
+
+    Returns the lifted reason. Safety stops raise: a gate failure, budget stop,
+    deadline or restart exhaustion must not be cleared in place.
+    """
+    now = time.time() if now is None else float(now)
+    path = ledger_path(root)
+    records = _read(path)
+    if not records or records[0].get("kind") != WINDOW_STARTED:
+        raise LaneLedgerError("no anchored window")
+    reason = _stopped(records)
+    if reason is None:
+        raise LaneLedgerError("the loop is not stopped")
+    if not any(reason.startswith(prefix) for prefix in RESUMABLE_STOPS):
+        raise LaneLedgerError("stop is not resumable: " + reason)
+    _append(path, {"schema_version": SCHEMA_VERSION, "kind": LOOP_RESUMED,
+                   "at": now, "reason": reason})
+    return reason
 
 
 def status(root: Path, now: Optional[float] = None) -> dict:

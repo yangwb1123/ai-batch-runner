@@ -31,6 +31,9 @@ def _parser() -> argparse.ArgumentParser:
     status = commands.add_parser("status", help="只读：锚定窗口、轮次与停止原因")
     status.add_argument("--root", default=".", help="仓库根（默认当前目录）")
     status.add_argument("--json", action="store_true")
+    resume = commands.add_parser("resume", help="解除可恢复停止（backlog 耗尽/操作者暂停）")
+    resume.add_argument("--root", default=".", help="仓库根（默认当前目录）")
+    resume.add_argument("--json", action="store_true")
     run = commands.add_parser("run", help="执行一轮（或按窗口循环）泳道")
     run.add_argument("--plan", required=True, help="lane 计划 JSON/YAML")
     run.add_argument("--root", default=".", help="仓库根（默认当前目录）")
@@ -174,6 +177,14 @@ def run_main(argv: Optional[list] = None) -> int:
     root = Path(args.root).expanduser().resolve()
     if args.command == "status":
         return _print_status(root, args.json)
+    if args.command == "resume":
+        try:
+            lifted = lane_loop.resume(root)
+        except (lane_loop.LaneLedgerError, OSError, ValueError) as exc:
+            print("lanes: %s" % exc)
+            return 2
+        print(json.dumps({"resumed": lifted}) if args.json else "resumed: %s" % lifted)
+        return 0
     try:
         lanes, gate, window = _resolved(args, root)
     except (OSError, ValueError) as exc:

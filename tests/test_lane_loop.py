@@ -143,3 +143,29 @@ def test_stop_requires_a_reason(tmp_path):
     lane_loop.start_window(tmp_path, hours=1, invocations=1, now=1000.0)
     with pytest.raises(ValueError):
         lane_loop.stop(tmp_path, "")
+
+
+def test_a_drained_backlog_stop_can_be_resumed_inside_the_same_window(tmp_path):
+    lane_loop.start_window(tmp_path, hours=12, invocations=10, now=1000.0)
+    lane_loop.stop(tmp_path, "backlog exhausted after 3 round(s)", now=1100.0)
+    assert lane_loop.status(tmp_path)["stopped"].startswith("backlog exhausted")
+    assert lane_loop.resume(tmp_path, now=1200.0).startswith("backlog exhausted")
+    assert lane_loop.status(tmp_path)["stopped"] is None
+    assert lane_loop.status(tmp_path)["deadline_at"] == 1000.0 + 12 * 3600
+
+
+@pytest.mark.parametrize("reason", ["round gate_failed: retrying hides it",
+                                     "deadline reached", "invocation budget reached",
+                                     "restart budget exhausted after 3 crash restarts"])
+def test_safety_stops_cannot_be_cleared_in_place(tmp_path, reason):
+    lane_loop.start_window(tmp_path, hours=1, invocations=1, now=1000.0)
+    lane_loop.stop(tmp_path, reason, now=1100.0)
+    with pytest.raises(lane_loop.LaneLedgerError, match="not resumable"):
+        lane_loop.resume(tmp_path, now=1200.0)
+    assert lane_loop.status(tmp_path)["stopped"] == reason
+
+
+def test_resume_without_a_stop_is_refused(tmp_path):
+    lane_loop.start_window(tmp_path, hours=1, invocations=1, now=1000.0)
+    with pytest.raises(lane_loop.LaneLedgerError, match="not stopped"):
+        lane_loop.resume(tmp_path)
