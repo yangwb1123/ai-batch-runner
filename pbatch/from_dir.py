@@ -14,7 +14,7 @@ from .runner import log
 def _stage_from_dir_aggregate(
     stage: Stage, files: list, reuse: bool, model_override: str,
     timeout_override: int, validate_cmd: str, reuse_legacy: bool,
-    fingerprint_mode: bool,
+    fingerprint_mode: bool, cancel_event=None,
 ) -> tuple[list[Task], list[str]]:
     """P1（使用反馈）：from_dir + aggregate 合并为单任务（有界读取 + 总
     预算 INPUT_MAX_BYTES；超限截断保留完整路径供按需读取）。"""
@@ -49,7 +49,8 @@ def _stage_from_dir_aggregate(
     fp = _expected_fp(task.prompt, str(out_path), validate_cmd, task.model,
                       task.provider, fingerprint_mode, task.workdir(),
                       task.effective_agent())
-    if reuse and reuse_decision(str(out_path), validate_cmd, str(dir_path.resolve()), reuse_legacy, fp):
+    if reuse and reuse_decision(str(out_path), validate_cmd, str(dir_path.resolve()),
+                                reuse_legacy, fp, cancel_event):
         log.info("REUSE: %s (reused+validated)", out_path.name)
         return [], [str(out_path)]
     log.info("Loaded %d files -> 1 aggregate task from %s", len(files), stage.from_dir)

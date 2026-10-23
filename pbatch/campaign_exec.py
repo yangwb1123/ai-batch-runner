@@ -13,10 +13,12 @@ import time
 from pathlib import Path
 
 from . import config, metering
+from .agent_readiness import NOT_READY, UNKNOWN, probe as probe_readiness
 from .campaign_analysis import build_analysis_task, discover_modules, select_directions
 from .campaign_analysis_phase import (_analyze_modules, _pending_analysis_modules,
                                       _reuse_enabled)
-from .campaign_budget import context_settings
+from .campaign_budget import BUDGET_BLOCKED_REASON, context_settings, gate as budget_gate
+from .campaign_dispatch import publish_outcome, scheduling
 from .campaign_models import CampaignSettings, Direction, safe_nonnegative_int
 from .campaign_exec_planning import (
     _available_invocations, _build_campaign_plan, _print_plan,
@@ -107,6 +109,9 @@ def run_campaign(context: CampaignContext) -> int:
     pause = _provider_admission_pause(context)
     if pause is not None:
         return pause
+    pause = _readiness_admission_pause(context)
+    if pause is not None:
+        return pause
     _preflight_validators(context)
     _event(context, "__campaign__", "__plan__", "", "CAMPAIGN_PLAN", "",
            [], reason=plan.reason, extra={"strategy": plan.mapping()})
@@ -142,6 +147,31 @@ def _provider_admission_pause(context: CampaignContext) -> int | None:
                   context.settings.name)
     log.error("CAMPAIGN paused before analysis: %s", reason)
     return 1
+
+
+def _readiness_admission_pause(context: CampaignContext) -> int | None:
+    """Refuse a campaign whose declared agent probe reports not_ready.
+
+    Readiness is an operator-declared local probe; unconfigured or unmeasurable
+    probes are ``unknown`` and can only warn -- they never authorize spend by
+    pretending to be ready.  A ``not_ready`` result stops the campaign before
+    module analysis, model calls or pipeline spawns.
+    """
+    agent = str(getattr(context.args, "agent_bin", "") or "").strip()
+    result = probe_readiness(agent, cwd=str(context.root))
+    if result.status == NOT_READY:
+        reason = str(f"agent readiness not_ready for {agent or '<empty>'}: "
+                     f"{result.reason}")[:300]
+        _event(context, "__readiness__", "__readiness__", "",
+               "AGENT_NOT_READY", "", result.evidence(), reason=reason)
+        write_summary(context.store, context.settings.summary_path(context.root),
+                      context.settings.name)
+        log.error("CAMPAIGN refused before analysis: %s", reason)
+        return 1
+    if result.status == UNKNOWN:
+        log.warning("CAMPAIGN readiness unknown for %s: %s; proceeding without "
+                    "a readiness gate", agent or "<empty>", result.reason)
+    return None
 
 
 def _analysis_budget_stop(context: CampaignContext) -> int:
@@ -265,27 +295,89 @@ def _admission_outcome(item, status, reason, evidence=()):
                            [str(analysis), *evidence])
 
 
+class _BatchProgress:
+    """Coordinator-only observations, separate from terminal accounting/merges."""
+
+    def __init__(self, context, items, queued_at):
+        self.context, self.queued_at = context, queued_at
+        self.items, self.priors, self.timings = {}, {}, {}
+        for direction, analysis, fingerprint in items:
+            key = direction.direction_id
+            self.items[key] = (analysis, fingerprint)
+            previous = context.store.latest_event(direction.module, key)
+            self.priors[key] = {
+                "prior_failure_fingerprint": previous.get("prior_failure_fingerprint",
+                                                         previous.get("failure_fingerprint", "")),
+                "prior_failure_count": previous.get("prior_failure_count",
+                                                   previous.get("same_failure_count", 0))}
+            self.started(direction, scheduling(queued_at), status="QUEUED")
+
+    def started(self, direction, timing, status="RUNNING"):
+        key = direction.direction_id
+        analysis, fingerprint = self.items[key]
+        self.timings[key] = timing
+        _direction_event(self.context, direction, status, fingerprint, analysis,
+                         extra={**self.priors[key], "scheduling": timing})
+
+    def completed(self, outcome):
+        direction, key = outcome.direction, outcome.direction.direction_id
+        self.timings[key] = outcome.scheduling
+        _event(self.context, direction.module, key, direction.title,
+               "EXECUTION_COMPLETED", self.items[key][1], outcome.evidence,
+               outcome.reason, extra={**self.priors[key], "scheduling": outcome.scheduling,
+                   "execution_status": outcome.status, "branch": outcome.branch,
+                   "commit": outcome.commit, "recovery_status": outcome.recovery_status,
+                   "recovery_reason": outcome.recovery_reason,
+                   "recovery_evidence": outcome.recovery_evidence})
+        if outcome.status != PipelineStatus.PASSED:
+            record_campaign_outcomes(self.context, [outcome],
+                                     {key: self.items[key][1]}, self.event)
+
+    def event(self, context, module, direction_id, direction, status, fingerprint,
+              evidence, reason="", elapsed=0, extra=None):
+        _event(context, module, direction_id, direction, status, fingerprint,
+               evidence, reason, elapsed,
+               {**(extra or {}), "scheduling": self.timings.get(direction_id)})
+
+
 def _execute_pipeline_batch(context, items, concurrency):
-    for direction, analysis, fingerprint in items:
-        _direction_event(context, direction, "RUNNING", fingerprint, analysis)
     started = time.monotonic()
     settings = context_settings(context)
+    progress = _BatchProgress(context, items, started)
     if context.settings.pipeline_concurrency > 1:
         raw = [(direction, analysis) for direction, analysis, _ in items]
         outcomes = run_directions_isolated(
-            context.root, settings, raw, concurrency, _agent_args(context.args))
+            context.root, settings, raw, concurrency, _agent_args(context.args),
+            on_start=progress.started, on_outcome=progress.completed, queued_at=started)
     else:
-        outcomes = [_run_direction_safe(context, direction, analysis)
-                    for direction, analysis, _ in items]
+        outcomes = _execute_serial_batch(context, items, settings, progress)
     fingerprints = {direction.direction_id: fingerprint
                     for direction, _analysis, fingerprint in items}
-    record_campaign_outcomes(context, outcomes, fingerprints, _event)
+    pending = [outcome for outcome in outcomes if outcome.status == PipelineStatus.PASSED]
+    record_campaign_outcomes(context, pending, fingerprints, progress.event)
     context.round_progress = sum(
         outcome.status == PipelineStatus.PASSED for outcome in outcomes)
     context.recovery_blocked = any(
         getattr(outcome, "recovery_status", "") in {"BLOCKED", "PRESERVED"}
         for outcome in outcomes)
     return outcomes, time.monotonic() - started
+
+
+def _execute_serial_batch(context, items, settings, progress):
+    outcomes = []
+    should_run = budget_gate(settings, context.root)
+    for direction, analysis, _ in items:
+        started = None
+        if should_run():
+            started = time.monotonic()
+            progress.started(direction, scheduling(progress.queued_at, started))
+            outcome = _run_direction_safe(context, direction, analysis)
+        else:
+            outcome = PipelineOutcome(direction, PipelineStatus.BUDGET_BLOCKED,
+                                      BUDGET_BLOCKED_REASON, 0, [str(analysis)])
+        timing = scheduling(progress.queued_at, started, time.monotonic())
+        outcomes.append(publish_outcome(outcome, timing, progress.completed))
+    return outcomes
 
 
 def _record_round_metrics(context, outcomes, elapsed, concurrency):

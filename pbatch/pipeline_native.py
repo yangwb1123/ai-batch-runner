@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .execution_trace import flush_attempt_facts
+from .runner_cancel import (cancel_requested as _cancel_requested,
+                            compose_cancel as _compose_cancel)
 from .task_lifecycle import close_scope, notify, open_scope
 from .tui_native import (
     NativePipelineApprovalChannel, NativePipelineObserver,
@@ -30,9 +32,9 @@ def execute_stage_tasks(stage: Any, tasks: list, reused_outputs: list,
                         retries: int, retry_delay: float, backoff: float,
                         session_state: Optional[set], observer: Optional[NativePipelineObserver],
                         run_or: RunOr, run_parallel: RunParallel,
-                        run_serial: RunSerial) -> tuple[list, list]:
+                        run_serial: RunSerial, cancel_event=None) -> tuple[list, list]:
     """Execute one stage and optionally publish task/validator facts."""
-    cancel_event = _cancel_event(observer)
+    cancel_event = _compose_cancel(cancel_event, _cancel_event(observer))
     task_ids = _start_tasks(observer, stage, tasks, stage_validate)
     _register_task_controls(observer, task_ids, tasks)
     result_callback = _task_control_callback(observer, task_ids)
@@ -149,7 +151,8 @@ def run_pipeline_observed(pipeline: Any, model_override: str = "",
                           approval_file: str = "", original_prompt: str = "",
                           retries: int = 0, retry_delay: float = 10.0,
                           backoff: float = 2.0, event_sink=None,
-                          approval_channel: Optional[NativePipelineApprovalChannel] = None):
+                          approval_channel: Optional[NativePipelineApprovalChannel] = None,
+                          cancel_event=None):
     """Run the existing pipeline with an opt-in native observation sink."""
     from . import pipeline as implementation
 
@@ -170,15 +173,17 @@ def run_pipeline_observed(pipeline: Any, model_override: str = "",
             stage_outputs, failed_stages, all_results, session_state,
             model_override, timeout_override, session_mode, session_name,
             validate_cmd, reuse_legacy, fingerprint_mode, approval_file,
-            original_prompt, decision_log, retries, retry_delay, backoff, facts)
-        cancelled = _control_cancelled(observer)
+            original_prompt, decision_log, retries, retry_delay, backoff, facts,
+            cancel_event)
+        cancelled = _control_cancelled(observer) or _cancel_requested(cancel_event)
         if not failed_stages and not cancelled and (pipeline.archive_dir or archive_dir):
             implementation._archive_pipeline_results(
                 pipeline, all_results, archive_dir, session_name)
         finished = True
         return all_results, failed_stages
     finally:
-        cancelled = cancelled or _control_cancelled(observer)
+        cancelled = (cancelled or _control_cancelled(observer)
+                     or _cancel_requested(cancel_event))
         if facts:
             flush_attempt_facts()
         close_scope(facts, fact_token, finished, failed_stages, cancelled)
@@ -196,7 +201,7 @@ def _log_and_run_stages(implementation: Any, pipeline: Any, dry_run: bool,
                         reuse_legacy: bool, fingerprint_mode: bool,
                         approval_file: str, original_prompt: str,
                         decision_log: str, retries: int, retry_delay: float,
-                        backoff: float, facts=None) -> None:
+                        backoff: float, facts=None, cancel_event=None) -> None:
     implementation._log_pipeline_start(pipeline, reuse)
     if observed:
         observer.start(pipeline.name, len(pipeline.stages))
@@ -204,7 +209,7 @@ def _log_and_run_stages(implementation: Any, pipeline: Any, dry_run: bool,
             pipeline, validate_cmd=validate_cmd, retries=retries,
             timeout_override=timeout_override))
     for index, stage in enumerate(pipeline.stages, 1):
-        if _control_cancelled(observer):
+        if _control_cancelled(observer) or _cancel_requested(cancel_event):
             break
         if dry_run:
             from .from_dir import _describe_stage
@@ -216,9 +221,9 @@ def _log_and_run_stages(implementation: Any, pipeline: Any, dry_run: bool,
             timeout_override, session_mode, session_name, validate_cmd,
             reuse_legacy, fingerprint_mode, approval_file, original_prompt,
             decision_log or pipeline.decision_log, retries, retry_delay,
-            backoff, session_state)
+            backoff, session_state, cancel_event)
         all_results.extend(results)
-        cancelled = _control_cancelled(observer)
+        cancelled = _control_cancelled(observer) or _cancel_requested(cancel_event)
         _stage_completed(facts, observer, stage.name, index, len(pipeline.stages),
                          not stop and not cancelled, results, cancelled)
         if stop or cancelled:

@@ -7,7 +7,7 @@ import threading
 import time
 
 from .runner_cancel import cancel_requested
-from .process_exec import StreamStatus
+from .process_exec import StreamStatus, exited_unreaped
 
 
 def drain_process(proc, prefix, start, timeout, cap, emit,
@@ -31,7 +31,7 @@ def drain_process(proc, prefix, start, timeout, cap, emit,
     try:
         tout.start()
         terr.start()
-        while tout.is_alive() or terr.is_alive() or proc.poll() is None:
+        while tout.is_alive() or terr.is_alive() or not exited_unreaped(proc):
             if cancel_requested(cancel_event):
                 raise cancelled_type(stdout_lines, stderr_lines, (tout, terr))
             if (stdout_overflow[0] or stderr_overflow[0]

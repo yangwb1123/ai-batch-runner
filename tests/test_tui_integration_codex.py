@@ -11,6 +11,7 @@ Skipped when codex is not installed (CI without it); slow by nature.
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import time
@@ -19,6 +20,7 @@ from pathlib import Path
 import pytest
 from textual.widgets import Input, Markdown
 
+from pbatch.memory_records import redact
 from pbatch.tui import PiBatchTUI, TuiOptions
 from pbatch.tui_backend import TUIBackend
 from pbatch import config
@@ -46,6 +48,18 @@ async def _wait_until(predicate, pilot, timeout: float = 180.0) -> None:
             raise AssertionError("condition not reached within "
                                  f"{timeout:.0f}s")
         await pilot.pause(0.25)
+
+
+def _assert_codex_succeeded(backend: TUIBackend) -> None:
+    snapshot = backend.snapshot()
+    result = snapshot.get("last_result") or {}
+    # A dict assertion is truncated by pytest, hiding auth/provider failures.
+    if snapshot["status"] != "succeeded":
+        raise AssertionError(json.dumps({
+            "status": snapshot["status"],
+            "returncode": result.get("returncode"),
+            "reason": redact(str(result.get("reason") or ""))[:1024],
+        }))
 
 
 def _git_repo(tmp_path: Path) -> Path:
@@ -80,7 +94,7 @@ def test_tui_core_loop_with_real_codex_two_turns(tmp_path: Path):
                               "Reply with exactly: GOT_IT")
             await pilot.press("enter")
             await _wait_until(lambda: not app._busy, pilot)
-            assert backend.snapshot()["status"] == "succeeded", backend.snapshot()
+            _assert_codex_succeeded(backend)
             source = app.query_one("#conversation", Markdown).source
             assert "GOT_IT" in app._runtime_view.assistant_text, source[-400:]
             # structured path engaged: the immutable runtime snapshot holds
@@ -91,8 +105,7 @@ def test_tui_core_loop_with_real_codex_two_turns(tmp_path: Path):
                        for kind in ("command", "file", "usage")), \
                 f"no structured timeline cards from the codex run: {timeline_kinds}"
             # status must be Ready (succeeded) after the turn
-            snapshot = backend.snapshot()
-            assert snapshot["status"] == "succeeded", snapshot
+            _assert_codex_succeeded(backend)
 
             # ── turn 2: continuation must remember the marker ───────────
             composer = app.query_one("#composer", Input)
@@ -100,6 +113,7 @@ def test_tui_core_loop_with_real_codex_two_turns(tmp_path: Path):
                              "Reply with it."
             await pilot.press("enter")
             await _wait_until(lambda: not app._busy, pilot)
+            _assert_codex_succeeded(backend)
             source2 = app.query_one("#conversation", Markdown).source
             assert "KAPPA_7" in app._runtime_view.assistant_text, \
                 f"turn2 recall failed; source={source2[-400:]}"
@@ -123,8 +137,10 @@ def test_tui_timeline_view_is_toggleable_with_real_codex(tmp_path: Path):
             composer.value = "List the files in this repo and reply: LISTED"
             await pilot.press("enter")
             await _wait_until(lambda: not app._busy, pilot)
+            _assert_codex_succeeded(backend)
             source = app.query_one("#conversation", Markdown).source
             assert "LISTED" in source, source[-300:]
+            assert "LISTED" in app._runtime_view.assistant_text, source[-300:]
             # /timeline visible source contains the timeline section
             await pilot.press("ctrl+t")
             await pilot.pause(0.3)

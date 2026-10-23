@@ -9,5 +9,6 @@ recursive-include product-specs *.md *.yaml
 recursive-include evolution-specs *.md *.yaml
 recursive-include ui-specs *.md *.yaml *.json
 recursive-include backend-specs *.md *.yaml
+recursive-include pbatch/pwa_assets *.webmanifest *.js *.png
 include docs/ENGINEERING_PHILOSOPHY.md docs/MIGRATION_ENGINE.md docs/PROJECT_STUDIO.md docs/CAMPAIGN_SELF_REPAIR.md
 include docs/LLM_ACCOUNT_POOL.md docs/MODEL_DELEGATION.md

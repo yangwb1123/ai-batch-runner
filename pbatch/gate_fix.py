@@ -127,7 +127,8 @@ def _normalize_fix_report(result: TaskResult) -> None:
 
 def run_gate_fix(stage: Stage, gate_outputs: list, fix_round: int,
                  validate_cmd: str, session_name: str, *,
-                 model_override: str = "", timeout_override: int = 0) -> tuple[TaskResult, str]:
+                 model_override: str = "", timeout_override: int = 0,
+                 cancel_event=None) -> tuple[TaskResult, str]:
     """One gate-fix iteration: remediation task -> validate -> report path.
     The report is folded into the gate re-execution as extra evidence."""
     reason = gate_fail_reason(gate_outputs) or "(no reason extracted)"
@@ -148,14 +149,18 @@ def run_gate_fix(stage: Stage, gate_outputs: list, fix_round: int,
     log.info("GATE-FIX round %d for stage '%s': %s", fix_round, stage.name, report)
     from .memory import record_task
     from .runner import _save_validated, run_task
-    result = run_task(task, session_name=session_name)
+    result = run_task(task, session_name=session_name, cancel_event=cancel_event)
     _normalize_fix_report(result)
     if not result.success:
         log.error("GATE-FIX round %d failed: %s", fix_round, result.reason)
-    elif not _save_validated(task, result, fix_validate):
-        result.success = False
-        result.reason = (f"validation failed (exit={result.validation_exit})"
-                         if result.validation_exit else "validation failed")
-        log.error("GATE-FIX round %d: output not saved (validation failed)", fix_round)
+    else:
+        saved = (_save_validated(task, result, fix_validate) if cancel_event is None
+                 else _save_validated(task, result, fix_validate, cancel_event))
+        if not saved:
+            result.success = False
+            result.reason = (f"validation failed (exit={result.validation_exit})"
+                             if result.validation_exit else "validation failed")
+            log.error("GATE-FIX round %d: output not saved (validation failed)",
+                      fix_round)
     record_task(result)
     return result, str(report)

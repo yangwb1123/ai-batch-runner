@@ -9,6 +9,7 @@ import hashlib
 import os
 import sys
 from pathlib import Path
+from time import monotonic
 from typing import Optional
 
 from . import config
@@ -27,6 +28,7 @@ from .pipeline import (_append_decision_log, _archive_outputs, load_pipeline,
 from .parallel_plan import OutputCollisionError
 from .runner import (_json_status, judge_verdict, kill_active_procs,
                      print_summary, run_parallel, run_serial, run_validation)
+from .runner_summary import summary_wall
 from .cmd_expand import expand_cmd
 from .execution_ids import new_run_id
 from .text_io import read_stream_bounded, read_yaml_bounded
@@ -269,6 +271,7 @@ def _run_pipeline_round(args, pipeline: Pipeline, session_name: str, cli_validat
     if args.dry_run:
         run_pipeline(pipeline, model_override=args.model, dry_run=True, reuse=reuse_outputs)
         return False, set()
+    execution_started = monotonic()
     all_results, failed_stages = run_pipeline(pipeline, model_override=args.model, reuse=reuse_outputs, timeout_override=timeout_override,
                                               session_mode=args.session_mode, session_name=session_name, validate_cmd=cli_validate,
                                               decision_log=args.decision_log, archive_dir=args.archive_dir,
@@ -279,7 +282,8 @@ def _run_pipeline_round(args, pipeline: Pipeline, session_name: str, cli_validat
                                               retries=getattr(args, "retries", 0),
                                               retry_delay=getattr(args, "retry_delay", 10.0),
                                               backoff=getattr(args, "retry_backoff", 2.0))
-    print_summary(all_results)
+    with summary_wall(monotonic() - execution_started, "pipeline"):
+        print_summary(all_results)
     if failed_stages:
         failed_keys = {task_key(r.task) for r in all_results if not r.success}
         for s in failed_stages:
@@ -534,6 +538,7 @@ def _print_dry_run(tasks: list, mode: str) -> None:
 def _execute_batch(tasks: list, args, session_name: str, cli_validate: str) -> tuple[list, bool]:
     """Run the single-batch tasks (serial with retries, or parallel) and
     print the summary. Returns (results, round_failed)."""
+    execution_started = monotonic()
     if args.mode == "serial":
         serial = _entrypoint_override("run_serial", run_serial)
         results = serial(
@@ -558,5 +563,6 @@ def _execute_batch(tasks: list, args, session_name: str, cli_validate: str) -> t
         except OutputCollisionError as exc:
             log.error("PARALLEL REJECTED before agent spawn:\n%s", exc)
             raise SystemExit(2) from exc
-    _entrypoint_override("print_summary", print_summary)(results)
+    with summary_wall(monotonic() - execution_started, "batch"):
+        _entrypoint_override("print_summary", print_summary)(results)
     return results, any(not r.success for r in results)  # noqa: E501 行数预算内

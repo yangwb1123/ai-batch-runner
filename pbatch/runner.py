@@ -14,7 +14,9 @@ import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Optional
-from .validation_batch import run_file_validators
+from .validation_batch import run_file_validators  # historical monkeypatch seam
+from .validation_receipts import (command_identity, observe_validation,
+                                  reject_missing_artifact, run_recorded_validators)
 from . import config
 from .config import _resolve_validator_specs, _resolve_validators, _session_flags, log
 from .cmd_expand import embedded_checker_argv, expand_cmd
@@ -43,8 +45,7 @@ from .metering import budget_try_consume, record_event
 from .memory import record_task
 from .reuse import capture_worktree_state, preserve_failed_worktree
 from .runner_session import (bind_spawned_session as _bind_spawned_session,
-                             _capture_codex_thread,
-                             _memory_invocation,
+                             _capture_codex_thread, _memory_invocation,
                              rotation_flags as _rotation_flags,
                              unexpected_result as _unexpected_result)
 from .triage import clear_marker, is_retryable, task_key, write_marker
@@ -64,6 +65,7 @@ from .runner_cancel import (
     wait_for_cancel as _wait_for_cancel_impl,
 )
 from .runner_parallel import run_parallel as _run_parallel_impl
+from .runner_summary import print_summary  # historical public re-export
 from .runner_process import drain_process as _drain_process_impl
 # registry of live agent subprocesses (parallel mode: a budget cap must be
 # able to kill in-flight agents so the executor shutdown is prompt)
@@ -89,13 +91,11 @@ def _unregister_proc(proc: subprocess.Popen) -> None:
         _ACTIVE_PROCS.discard(proc)
     forget_process(proc)
 def proc_snapshot() -> tuple[subprocess.Popen, ...]:
-    with _ACTIVE_LOCK:
-        return tuple(_ACTIVE_PROCS)
+    with _ACTIVE_LOCK: return tuple(_ACTIVE_PROCS)
 def kill_active_procs() -> None:
     """Kill every currently-running agent process group (T8 parallel cap:
     in-flight agents must not keep the runner waiting after the cap)."""
-    with _ACTIVE_LOCK:
-        procs = list(_ACTIVE_PROCS)
+    with _ACTIVE_LOCK: procs = list(_ACTIVE_PROCS)
     for proc in procs:
         _kill_group(proc)
 def _read_stream(stream, prefix: str, collector: list, cap: int = 0,
@@ -155,11 +155,10 @@ def _prompt_brief(task: Task, cmd: list) -> str:
     elided = "..." if len(brief) == 80 else ""
     return f"{cmd[0]} {flags} {brief}{elided}"
 def _kill_group(proc: Optional[subprocess.Popen]) -> None:
-    """Kill the whole child process group, tolerating an already-dead
-    process, then reap the direct child before returning."""
+    """Kill the whole child process group; return observed termination."""
     if proc is None:
-        return
-    _kill_command_group(proc)
+        return True
+    return _kill_command_group(proc)
 def kill_proc_group(proc: subprocess.Popen) -> None:
     _kill_group(proc)
 def _spawn_agent(cmd: list, workdir: str, env: dict, admit=None, task=None,
@@ -245,7 +244,7 @@ def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = F
         annotate_result(invocation, trace_task_id, stage_id, attempt)
         return invocation
     cmd, workdir, session_id, effective_name = invocation
-    start, proc, completed, stdout_lines = time.monotonic(), None, False, []
+    start, proc, stdout_lines = time.monotonic(), None, []
     prefix, env, key, usage_before = _prepare_task_run(task, cmd, task_index, total, parallel, workdir, effective_name, session_id, trace_task_id, attempt)
     try:
         if (cooldown := _pb_cooldown(task)) is not None:
@@ -264,7 +263,6 @@ def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = F
         stdout_lines, stderr_lines, overflow = _stream_task(
             proc, prefix, start, task.timeout, stdout_streamed,
             stdout_target, stderr_target, stream_requested, cancel_event)
-        completed = True
         result = (_overflow_result(task, proc, stdout_lines, stderr_lines, start)
                   if overflow[0] else _result_from_proc(
                       task, proc, stdout_lines, stderr_lines,
@@ -278,9 +276,15 @@ def run_task(task: Task, task_index: int = 0, total: int = 0, parallel: bool = F
             exc, task, proc, start, session_flags, stdout_lines, session_id,
             effective_name, workdir, usage_before, trace_task_id, attempt)
     finally:
-        if proc is not None and not completed: _kill_group(proc)
-        if proc is not None: _unregister_proc(proc)
+        _finish_proc_ownership(proc)
         clear_marker(key, workdir)
+def _finish_proc_ownership(proc) -> None:
+    if proc is None: return
+    observed = proc.returncode is not None
+    if not observed: observed = _kill_group(proc) is not False
+    if observed: _unregister_proc(proc)
+
+
 def _task_exception_result(exc, task, proc, start, session_flags,
                            stdout_lines, session_id, effective_name, workdir,
                            usage_before, trace_task_id, attempt):
@@ -468,13 +472,11 @@ def _apply_gate_commands(tmp: Path, task: Task, commands: list,
     (fail closed on missing/bare verdict). Repo-scoped validators are
     deferred to the stage/batch end (N2) and skipped here."""
     workdir = task.workdir()
-    run_one = (run_validation if cancel_event is None else
-               lambda command, cwd: run_validation(
-                   command, cwd, cancel_event=cancel_event))
-    validations = run_file_validators(
+    validations = run_recorded_validators(
         commands, workdir, tmp, expand_command_placeholders,
-        run_one, log, "VALIDATE",
-    )
+        run_validation, log, "VALIDATE", task=task, result=result,
+        cancel_event=cancel_event, runner=run_file_validators)
+
     for spec, cmd, v in validations:
         result.validation_ok = v.ok
         result.validation_exit = v.exit_code
@@ -540,8 +542,7 @@ def _save_validated(task: Task, result: TaskResult, validate_cmd: str,
     (AND semantics), then the file is atomically renamed into place; a
     failing gate deletes the temp file and leaves no artifact. {output}
     points at the temp file so gates can inspect the generated content.
-    validate_cmd is a comma-separated list of registry names or raw shell
-    commands (see _resolve_validators). Returns True when saved."""
+    validate_cmd accepts registry names or raw commands; empty disables it."""
     if not result.success or _cancel_requested(cancel_event):
         return False
     commands = _resolve_validator_specs(validate_cmd)
@@ -550,9 +551,7 @@ def _save_validated(task: Task, result: TaskResult, validate_cmd: str,
         return True
     out_path = task.output_path()
     if out_path is None:
-        # no file target: nothing to validate against, print as usual
-        save_result(task, result)
-        return True
+        return reject_missing_artifact(result)
     # T0.1 (round-4 finding H1): the symlink probe must guard the validator
     # path too — _save_validated is used whenever any validator is
     # configured (the recommended config), and without the probe a planted
@@ -643,7 +642,11 @@ def _retry_task_with_feedback(task: Task, result: TaskResult) -> Task:
     )
     return replace(task, prompt=task.prompt + feedback)
 
-def revalidate_existing(path: Path, validate_cmd: Optional[str], workdir: str = "") -> bool:
+class RevalidationCancelled(RuntimeError):
+    """Campaign cancellation refuses reuse without deleting the artifact."""
+
+
+def revalidate_existing(path: Path, validate_cmd: Optional[str], workdir: str = "", cancel_event=None) -> bool:
     """Re-run the effective validators against an already-written artifact
     (the reuse path: a previously generated output is promoted only while it
     still passes every gate). Missing or empty artifacts fail closed; no
@@ -651,40 +654,37 @@ def revalidate_existing(path: Path, validate_cmd: Optional[str], workdir: str = 
     passes all gates."""
     if not path.is_file():
         return False
-    # T0.1 (full-SDLC pipeline): a symlink artifact must never be validated
-    # through (the gate could execute against the victim) — fail closed.
+    # T0.1: a symlink must never be validated through — fail closed.
     if path.is_symlink():
         log.warning("REVALIDATE: %s is a symlink; failing closed", path)
         return False
     try:
-        empty = path.stat().st_size == 0
+        if path.stat().st_size == 0: return False
     except OSError:
         return False  # vanished between is_file and stat: fail closed
-    if empty:
-        return False
+    if _cancel_requested(cancel_event):
+        raise RevalidationCancelled("revalidation cancelled by campaign cutoff")
     commands = _resolve_validator_specs(validate_cmd)
     if not commands:
         return True
+    if _cancel_requested(cancel_event):
+        raise RevalidationCancelled("revalidation cancelled before validators")
     wd = workdir or os.getcwd()
-    validations = run_file_validators(
+    validations = run_recorded_validators(
         commands, wd, path, expand_command_placeholders,
-        run_validation, log, "REVALIDATE",
-    )
+        run_validation, log, "REVALIDATE", scope="reuse",
+        cancel_event=cancel_event, runner=run_file_validators)
     for spec, cmd, validation in validations:
-        if not _revalidation_passed(spec, path, cmd, validation):
-            return False
+        if not _revalidation_passed(spec, path, cmd, validation): return False
     log.info("REVALIDATED %s", path)
     return True
 
 def _revalidate_one(spec, path: Path, wd: str) -> bool:
-    """Re-run a single validator spec against an existing artifact. T12a:
-    the JSON status protocol applies on the reuse path too — an exit-0
-    validator reporting {"status":"fail"} must not promote the artifact
-    when the fresh-save path would reject it (round-4 finding M3/P2-4).
-    H line: judge validators apply the same fail-closed verdict protocol."""
+    """T12a/H: one validator spec re-run with the same fail-closed JSON/judge protocol."""
     cmd = expand_cmd(spec.cmd, path, wd, config.TOOL_ROOT)
     log.info("REVALIDATE: %s", cmd)
-    v = run_validation(cmd, wd)
+    v = observe_validation(run_validation, cmd, wd, path, scope="reuse",
+                           command_hash=command_identity(spec.cmd))
     return _revalidation_passed(spec, path, cmd, v)
 
 
@@ -848,8 +848,9 @@ def _run_with_gate(task: Task, validate_cmd: str, index: int, total: int,
                                           cancel_event))
         if not result.success:
             result.reason = ("cancelled" if _cancel_requested(cancel_event)
-                             else f"validation failed (exit={result.validation_exit})"
-                             if result.validation_exit else "validation failed")
+                             else result.reason or (
+                                 f"validation failed (exit={result.validation_exit})"
+                                 if result.validation_exit else "validation failed"))
     annotate_result(result, trace_task_id,
                     str(task.memory.get("stage", "")), attempt)
     record_validation_event(result, task)
@@ -968,33 +969,3 @@ def run_parallel(tasks: list[Task], workers: int = 0, validate_cmd: str = "",
         min_interval, waves, cancel_event, _run_retried,
         _wait_for_cancel, kill_active_procs, _cancelled_result,
         _BUDGET_MESSAGE, result_callback, admit=admit)
-def print_summary(results: list[TaskResult]) -> None:
-    """Print an execution summary table."""
-    total = len(results)
-    succeeded = sum(1 for r in results if r.success)
-    failed = total - succeeded
-    total_elapsed = sum(r.elapsed for r in results)
-    wall_time = max((r.elapsed for r in results), default=0)
-
-    print("=" * 56)
-    print("  pi-batch execution report")
-    print("=" * 56)
-    print("  total:     %d" % total)
-    print("  succeeded: %d" % succeeded)
-    print("  failed:    %d" % failed)
-    print("  CPU time:  %.1fs" % total_elapsed)
-    print("  wall time: %.1fs" % wall_time)
-    if total:
-        rate = 100.0 * succeeded / total
-        print("  成功率:    %.0f%%" % rate)
-    if failed:
-        print("  下一步:    重试用 --retries；被拒产物在用户级 runtime/rejected/ 可诊断")
-    elif succeeded:
-        print("  全部通过 ✓ — 可 --git-commit 落库或继续下一轮")
-    print()
-    for r in results:
-        icon = "PASS" if r.success else "FAIL"
-        brief = r.task.prompt[:60].replace("\n", " ")
-        sig = f"  [val exit={r.validation_exit}]" if (not r.success and r.validation_exit) else ""
-        print("  %s  [%6.1fs]%s %s..." % (icon, r.elapsed, sig, brief))
-    print("=" * 56)

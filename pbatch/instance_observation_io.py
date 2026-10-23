@@ -17,6 +17,7 @@ MAX_BYTES = 1024 * 1024
 MAX_LINE_BYTES = 256 * 1024
 MAX_RECORDS = 512
 MAX_DIRECTORY_ENTRIES = 800
+MAX_JSON_DEPTH = 64
 
 
 def _identity(info) -> tuple:
@@ -74,11 +75,36 @@ def _object(pairs):
     return result
 
 
+def too_deep(text: str, maximum: int = MAX_JSON_DEPTH) -> bool:
+    """Reject nesting before the C decoder can materialize it."""
+    depth, in_string, escaped = 0, False, False
+    for character in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+        elif character == '"':
+            in_string = True
+        elif character in "[{":
+            depth += 1
+            if depth > maximum:
+                return True
+        elif character in "]}":
+            depth -= 1
+    return False
+
+
 def _decode(line: bytes) -> dict | None:
     if len(line) > MAX_LINE_BYTES:
         return None
     try:
-        value = json.loads(line.decode("utf-8"), object_pairs_hook=_object,
+        text = line.decode("utf-8")
+        if too_deep(text):
+            return None
+        value = json.loads(text, object_pairs_hook=_object,
                            parse_constant=_constant, parse_float=_finite_float)
         return value if isinstance(value, dict) else None
     except (ValueError, UnicodeError, RecursionError):

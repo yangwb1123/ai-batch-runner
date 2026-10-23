@@ -19,6 +19,23 @@ _PATTERNS = ("artifacts/**/*.md", "archive/*/*.md",
              "artifacts/**/*.txt", "archive/*/*.txt")
 
 
+def artifact_evidence(pipeline_path: Path, results: list) -> list[str]:
+    """Return existing output paths, following successful campaign archives."""
+    evidence = [str(pipeline_path)]
+    archive_root = pipeline_path.parent / "archive"
+    for result in results:
+        if not result.success or not result.task.output:
+            continue
+        output = result.task.output_path()
+        if output.exists():
+            evidence.append(str(output))
+            continue
+        archived = sorted(archive_root.glob(f"*/{output.name}"))
+        if archived:
+            evidence.append(str(archived[-1]))
+    return evidence
+
+
 def isolated_run_evidence(pipeline_path: Path, limit: int = MAX_EVIDENCE) -> list[str]:
     """Return the isolated child's deliverable artifacts, bounded and ordered.
 

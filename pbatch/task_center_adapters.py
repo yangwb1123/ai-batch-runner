@@ -13,7 +13,8 @@ from .task_usage_merge import merge_usage
 _EVENTS = {"task_finish": "succeeded", "task_fail": "failed",
            "task_start": "running", "task_validation_pass": "succeeded",
            "task_validation_fail": "failed"}
-_DIRECTION_STATES = {"SELECTED", "RUNNING", "PASSED", "PIPELINE_FAILED", "GATE_REJECTED",
+_DIRECTION_STATES = {"SELECTED", "QUEUED", "RUNNING", "EXECUTION_COMPLETED",
+                     "PASSED", "PIPELINE_FAILED", "GATE_REJECTED",
                      "VALIDATION_FAILED", "MERGE_BLOCKED", "MERGED", "BUDGET_BLOCKED",
                      "PROVIDER_BREAKER_PAUSED", "RECOVERY_BLOCKED"}
 
@@ -97,6 +98,17 @@ def _paths(value: object) -> list[str]:
     return [item[:2048] for item in value[:16] if isinstance(item, str) and item]
 
 
+def _scheduling(row: dict) -> dict | None:
+    value = row.get("scheduling")
+    if not isinstance(value, dict):
+        return None
+    status = value.get("execution_status")
+    return {"queue_wait_seconds": number(value.get("queue_wait_seconds")),
+            "execution_wall_seconds": number(value.get("execution_wall_seconds")),
+            "execution_status": status if isinstance(status, str)
+                and status in _DIRECTION_STATES else None}
+
+
 def _direction(row: dict, source: dict) -> dict | None:
     direction = _text(row, "direction_id")
     status = _text(row, "status", 80)
@@ -109,8 +121,10 @@ def _direction(row: dict, source: dict) -> dict | None:
             "stage": _text(row, "stage"), "phase": "pipeline", "status": status,
             "ts": timestamp(row.get("updated_at") or row.get("ts")),
             "started_at": timestamp(row.get("updated_at")) if status == "RUNNING" else None,
-            "elapsed": number(row.get("elapsed")) if status not in {"RUNNING", "SELECTED"}
-                       else None,
+            "elapsed": number(row.get("elapsed")) if status not in {
+                "RUNNING", "SELECTED", "QUEUED", "EXECUTION_COMPLETED"} else None,
+            "scheduling": _scheduling(row),
+            "execution_status": _text(row, "execution_status", 80),
             "attempt": _text(row, "round_id") + ":" + _text(row, "run_id"),
             "agent": "", "provider": _text(row, "provider"), "model": _text(row, "model"),
             "thinking": "", "usage": None, "outputs": [], "output_tracking": False,

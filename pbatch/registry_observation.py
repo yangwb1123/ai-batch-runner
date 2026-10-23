@@ -12,7 +12,7 @@ import stat
 from pathlib import Path
 
 from .instance_observation_io import (_constant, _finite_float, _identity,
-                                      _object, _owned_regular)
+                                      _object, _owned_regular, too_deep)
 from .task_center_io import _open_regular, checked_path
 
 MAX_BYTES = 16 * 1024
@@ -41,7 +41,10 @@ def read_record(path: Path) -> dict:
     if len(raw) > MAX_BYTES:
         raise ValueError("registry record byte budget exhausted")
     try:
-        value = json.loads(raw.decode("utf-8"), object_pairs_hook=_object,
+        text = raw.decode("utf-8")
+        if too_deep(text):
+            raise ValueError("registry metadata nesting is too deep")
+        value = json.loads(text, object_pairs_hook=_object,
                            parse_constant=_constant, parse_float=_finite_float)
         # UTF-8 source bytes alone do not reject JSON-escaped lone surrogates.
         # Validate keys and nested values too, without logging any private field.

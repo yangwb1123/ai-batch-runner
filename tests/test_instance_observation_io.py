@@ -119,6 +119,16 @@ def test_bad_utf8_ambiguous_nonfinite_or_recursive_records_are_gaps(tmp_path, pa
     assert info["malformed"] >= 1
 
 
+def test_json_nesting_limit_counts_containers_outside_strings():
+    allowed = ('{"x":' + "[" * (io.MAX_JSON_DEPTH - 1)
+               + "]" * (io.MAX_JSON_DEPTH - 1) + "}")
+    rejected = ('{"x":' + "[" * io.MAX_JSON_DEPTH
+                + "]" * io.MAX_JSON_DEPTH + "}")
+    assert io.too_deep(allowed) is False
+    assert io.too_deep(rejected) is True
+    assert io.too_deep('{"x":"' + "[" * 1000 + '"}') is False
+
+
 def test_overlong_line_is_not_given_to_json_decoder(tmp_path, monkeypatch):
     path = tmp_path / "ledger"
     path.write_bytes(b'{"private":"' + b"X" * io.MAX_LINE_BYTES + b'"}\n')

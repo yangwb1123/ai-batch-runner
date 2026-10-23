@@ -554,7 +554,8 @@ def _run_role_task(item, validate_cmd: str, session_name: str, reuse: bool,
                          task.exclude_tools, task.no_tools)
                 if fingerprint_mode else None)
     if reuse and reuse_decision(
-            output, validate_cmd, task.workdir(), reuse_legacy, expected):
+            output, validate_cmd, task.workdir(), reuse_legacy, expected,
+            cancel_event):
         result = TaskResult(task=task, success=True, returncode=0, reason="reused")
         record_task(result)
         return role, result

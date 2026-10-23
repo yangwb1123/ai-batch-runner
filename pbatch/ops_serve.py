@@ -23,6 +23,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from . import config
 from . import ops as ops_mod
+from . import ops_pwa
 from .mobile_control import (
     MobileSessionManager,
     historical_detail,
@@ -154,6 +155,16 @@ class OpsHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
+        has_suffix = "?" in self.path or "#" in self.path
+        public = ops_pwa.public_get(parsed.path, has_suffix, self.global_tasks)
+        if public is not None:
+            kind, route = public
+            if kind == "asset":
+                if not ops_pwa.send_asset(self, route):
+                    _error(self, "not found: " + route, 404)
+            else:
+                self._serve_page()
+            return
         if not _check_token(self, self.token, query):
             _error(self, "unauthorized", 401)
             return
@@ -334,19 +345,7 @@ class OpsHandler(BaseHTTPRequestHandler):
                 "</head>",
                 "<script>setInterval(()=>location.reload(),30000)</script></head>",
                 1)
-        body = live.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header(
-            "Content-Security-Policy",
-            "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-            "connect-src 'self'")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        ops_pwa.send_html(self, live, ops_pwa.csp(self.global_tasks))
 
 
 def _serve_parser() -> argparse.ArgumentParser:

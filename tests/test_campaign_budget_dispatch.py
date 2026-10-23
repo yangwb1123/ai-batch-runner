@@ -90,7 +90,7 @@ def test_sequential_batch_checks_cutoff_between_directions(monkeypatch, tmp_path
                         lambda *a: tmp_path / "pipeline.yaml")
     ran = []
 
-    def execute(path, model, provider, timeout, reuse, direction):
+    def execute(path, model, provider, timeout, reuse, direction, cancel_event=None):
         ran.append(direction.title)
         clock.epoch = CUTOFF
         return PipelineStatus.PASSED, "checks passed", [str(path)]
@@ -99,9 +99,11 @@ def test_sequential_batch_checks_cutoff_between_directions(monkeypatch, tmp_path
     outcomes, _elapsed = campaign_exec._execute_pipeline_batch(context, _items(tmp_path), 1)
 
     assert ran == ["first"]
-    assert [item.status for item in outcomes] == [
-        PipelineStatus.PASSED, PipelineStatus.BUDGET_BLOCKED]
-    assert context.round_progress == 1
+    # Batch 4: a serial direction whose pipeline crosses the cutoff cannot
+    # publish PASS; the late completion is a preserved budget stop.
+    assert [item.status for item in outcomes] == [PipelineStatus.BUDGET_BLOCKED] * 2
+    assert outcomes[0].recovery_status == "PRESERVED"
+    assert context.round_progress == 0
 
 
 def test_expired_isolated_batch_creates_no_worktree(monkeypatch, tmp_path):

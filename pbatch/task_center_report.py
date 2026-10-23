@@ -1,8 +1,10 @@
 """Responsive global task view. Data is fetched as JSON, never embedded as HTML."""
 from __future__ import annotations
 
+from . import pwa_shell
 from .task_center_intent_report import INTENT_SCRIPT
 from .task_center_attention_report import ATTENTION_SCRIPT
+from .task_center_mobile import MOBILE_MARKUP, MOBILE_SCRIPT, MOBILE_STYLE
 
 
 _PAGE = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
@@ -18,18 +20,28 @@ pre{background:#f5f5f5;padding:1rem;white-space:pre-wrap;overflow-wrap:anywhere}
 .intent-hint{border-bottom:1px solid #ddd;padding:.5rem} #intent-detail p{white-space:pre-wrap;overflow-wrap:anywhere}
 summary{cursor:pointer;padding:.5rem} #intents td{overflow-wrap:anywhere}
 @media(max-width:600px){body{margin:.5rem}td,th{min-width:6rem}}
+__MOBILE_STYLE__
 </style></head><body>
 <h1>全局任务中心 · 只读</h1>
 <p class="note">当前显示账本事实，不将模型自述当成验收。不启动 Agent，不删除现场，不上报数据。</p>
+<section id="connection-panel" class="connect">
+<p id="connection" role="status" aria-live="polite">未连接：需要访问令牌。</p>
+<form id="token-form" autocomplete="off">
+<label>访问令牌 <input id="token-input" type="password" autocomplete="off" spellcheck="false"></label>
+<button id="connect" type="submit">连接</button>
+</form>
+</section>
 <label>项目 <select id="source"><option value="">所有已接入项目</option></select></label>
-<button id="refresh">刷新</button><span id="summary"></span>
+<button id="refresh">刷新</button><span id="task-count">等待新的任务快照</span>
+<details id="snapshot-metadata"><summary>窗口统计与证据口径</summary><span id="summary"></span></details>
 <p id="error" role="status"></p>
+__MOBILE_VIEW__
 <h2>需关注事实（不是干预授权）</h2>
 <p class="note">仅来自已接入的有界记录；不是实时预检、根因或必做操作。静默不算故障，未知不是零；未连接通知/执行器。</p>
 <p id="attention-summary" role="status">等待新快照。</p>
 <div class="table-wrap"><table><thead><tr><th>项目 / 来源</th><th>完整记录引用</th>
 <th>观察事实</th><th>详情</th></tr></thead><tbody id="attention"></tbody></table></div>
-<div class="table-wrap"><table><thead><tr><th>项目 / 类型</th><th>任务</th>
+<div class="table-wrap desktop-tasks"><table><thead><tr><th>项目 / 类型</th><th>任务</th>
 <th>最近状态 / 步骤</th><th>时长</th><th>模型配置</th><th>Token / 费用</th>
 <th>产物 / 验收</th><th>详情</th></tr></thead><tbody id="tasks"></tbody></table></div>
 <h2>明确登记的目标与验收记录</h2>
@@ -61,15 +73,50 @@ summary{cursor:pointer;padding:.5rem} #intents td{overflow-wrap:anywhere}
 <pre id="detail">选择任务、目标或历史查看公开的只读投影。</pre>
 <p class="note">每 5 秒读取有界窗口，无模型调用；历史耗时先验不是实时 ETA。修复、清场与上传未启用。</p>
 <script>
-const token=new URLSearchParams(location.search).get('token')||'';
+const $=(id)=>document.getElementById(id)||null;
+let token=(new URLSearchParams(location.search).get('token')||'').trim();
+if(token&&typeof history!=='undefined'&&history&&history.replaceState){
+  try{const cleaned=new URL(location.href);cleaned.searchParams.delete('token');
+    history.replaceState(null,'',cleaned.pathname+cleaned.search+cleaned.hash);}catch(ignore){}
+}
 const source=document.getElementById('source');
 const tbody=document.getElementById('tasks');
 const detail=document.getElementById('detail');
 let selected='',selectedGoal='',selectedIntent='',selectedRepair='',selectedResource='',selectedFeedback='',busy=false,requestVersion=0,pending=null;
+let connected=!!token,probePending=!token,authBlocked=false,polling=false,pollTimer=null,lastSuccess='';
 const shown=(v)=>v===null||v===undefined?'未追踪':String(v);
+const recorded=(v)=>v===null||v===undefined||v===''?'未追踪':String(v);
+const seconds=(v)=>v===null||v===undefined?'未追踪':String(v)+' 秒';
+function modelConfiguration(task){
+  const rows=Array.isArray(task.llm)?task.llm:[];
+  if(!rows.length)return '模型配置 未追踪；thinking 未追踪（不推断请求配置）';
+  return rows.map(item=>{
+    const thinking=item&&item.thinking;
+    const value=thinking===null||thinking===undefined||thinking===''?
+      '未追踪（不推断请求配置）':
+      thinking+'（记录的请求配置，非 provider 确认的强度或时长）';
+    return (item&&item.provider||'?')+'/'+(item&&item.model||'?')+'；thinking '+value;
+  }).join('；');
+}
+function viewHook(kind,payload){
+  if(typeof window==='undefined'||!window||typeof window.pbatchMobileView!=='function')return;
+  window.pbatchMobileView(kind,payload||{});
+}
+function setConnection(text){const node=$('connection');if(node)node.textContent=text;}
+function showTokenForm(show){const form=$('token-form');if(form)form.hidden=!show;}
+function noteSuccess(){lastSuccess=new Date().toISOString();
+  setConnection('已连接；最近成功刷新 '+lastSuccess+'；每 5 秒自动刷新。');showTokenForm(false);}
+function noteStale(reason){setConnection('连接中断：'+reason+'；最近成功刷新 '+(lastSuccess||'无')+
+  '；当前数据不可用（不是零或空成功）。');}
+function noteDenied(reason){setConnection('认证失败：'+reason+
+  '；数据已清除，自动刷新已停止，请输入访问令牌重新连接。');showTokenForm(true);}
+function stopPolling(){polling=false;if(pollTimer!==null&&typeof clearInterval==='function')clearInterval(pollTimer);pollTimer=null;}
+function startPolling(){if(polling)return;polling=true;pollTimer=setInterval(refresh,5000);}
 async function getJson(path,signal){
   const response=await fetch(path,{headers:token?{'Authorization':'Bearer '+token}:{},cache:'no-store',signal});
-  const value=await response.json();
+  if(response.status===401||response.status===403){const denied=new Error('HTTP '+response.status);denied.auth=true;throw denied;}
+  let value;
+  try{value=await response.json();}catch(ignore){throw new Error('响应不是有效 JSON');}
   if(!response.ok)throw new Error(value.error||('HTTP '+response.status));
   return value;
 }
@@ -88,15 +135,20 @@ function renderTask(task){
   if(task.analysis.flags.length||task.status.toLowerCase().includes('fail'))tr.className='bad';
   cell(tr,task.project+' / '+task.kind);
   cell(tr,task.title||task.local_task_id);
+  const execution=(task.scheduling||{}).execution_status;
   cell(tr,task.status+' / '+(task.flow.last_observed_stage||task.phase)+
-    '; 声明下一步 '+shown(task.flow.next_stage)+' ('+task.flow.next_status+')');
+    '; 声明下一步 '+shown(task.flow.next_stage)+' ('+task.flow.next_status+')'+
+    (typeof execution==='string'?'；执行结果 '+execution+'（非合并/验收）':'')+
+    '；合并记录 '+recorded(task.delivery.merge_status));
   const priorInterval=(task.forecast||{}).prior_remaining_interval_seconds;
   cell(tr,shown(task.time.elapsed_wall_seconds)+' 秒；剩余 '+shown(task.time.remaining_seconds)+
     '; 历史耗时先验 '+shown(task.forecast.duration_range_seconds)+' (非实时 ETA)'+
     '；'+(Array.isArray(priorInterval)?'先验剩余区间 '+priorInterval.join('–')+
       ' 秒（非实时 ETA；remaining/eta 为 null）':
-      '先验剩余区间 未追踪（'+shown((task.forecast||{}).prior_remaining_basis)+'）'));
-  cell(tr,task.llm.map(m=>(m.provider||'?')+'/'+(m.model||'?')).join(', ')||'未追踪');
+      '先验剩余区间 未追踪（'+shown((task.forecast||{}).prior_remaining_basis)+'）')+
+    '；调度排队 '+seconds((task.scheduling||{}).queue_wait_seconds)+
+    '；调度执行 '+seconds((task.scheduling||{}).execution_wall_seconds));
+  cell(tr,modelConfiguration(task));
   cell(tr,resources(task.consumption||task));
   cell(tr,shown(task.delivery.present_files)+'/'+shown(task.delivery.declared_files)+
     ' 文件存在；目标记录 '+(task.goal_links.map(g=>g.acceptance).join(', ')||'未追踪'));
@@ -169,11 +221,20 @@ __ATTENTION_VIEW_SCRIPT__
 function clearIntentPanel(){
   const pane=document.getElementById('intent-detail');pane.replaceChildren();pane.hidden=true;
 }
+function showTaskDetail(taskId,task){
+  selectedGoal='';selectedIntent='';selectedRepair='';selectedResource='';selectedFeedback='';selectedAttention='';
+  selected=taskId;clearIntentPanel();
+  detail.textContent=task?JSON.stringify(task,null,2):'该任务不在本次窗口中；不代表已完成或已删除。';
+}
+if(typeof window!=='undefined'&&window){window.pbatchTaskCenter={showTaskDetail:showTaskDetail};}
 function clearView(note){
   ['tasks','goals','intents','repairs','resources','feedback','activity'].forEach(id=>document.getElementById(id).replaceChildren());
   clearIntentPanel();clearAttention();detail.textContent=note;
+  viewHook('clear',{note:note});
 }
 async function refresh(force=false){
+  if(authBlocked||(!connected&&!probePending))return;
+  probePending=false;
   if(busy&&!force)return;
   const version=++requestVersion,chosen=source.value;
   clearView('正在读取有界快照；不展示旧的缓存记录。');
@@ -182,6 +243,8 @@ async function refresh(force=false){
   if(selectedAttention)detail.textContent='正在核对关注事实；不展示旧引用。';
   if(pending)pending.abort();
   const controller=new AbortController();pending=controller;busy=true;
+  let timedOut=false;
+  const timer=typeof setTimeout==='function'?setTimeout(()=>{timedOut=true;controller.abort();},15000):null;
   if(selectedFeedback)detail.textContent='正在核对反馈草案；不展示旧的缓存记录。';
   if(selectedResource)detail.textContent='正在核对保留计划；不展示旧的缓存记录。';
   if(selectedIntent)detail.textContent='正在重新核对历史授权；不展示旧的缓存线索。';
@@ -208,6 +271,8 @@ async function refresh(force=false){
       cell(tr,p.workspace);cell(tr,p.pid+' / '+p.presence);
       cell(tr,p.registered_status+' / 心跳距今 '+shown(p.heartbeat_age_seconds)+' 秒');
       activity.appendChild(tr);});
+    viewHook('tasks',{tasks:view.tasks.map(item=>({task:item,
+      resources:resources(item.consumption||item)})),generatedAt:view.generated_at});
     const task=view.tasks.find(t=>t.task_id===selected);
     if(selected)detail.textContent=task?JSON.stringify(task,null,2):'该任务不在本次窗口中；不代表已完成或已删除。';
     if(selectedGoal){const goal=view.goals.find(g=>g.goal_id===selectedGoal);
@@ -232,21 +297,70 @@ async function refresh(force=false){
       .map(c=>s.name+'/'+c.feed+': 数据不可读、损坏或窗口不完整'));
     document.getElementById('error').textContent=[...view.diagnostics,
       ...view.activity.diagnostics,...problems].join('；');
+    connected=true;authBlocked=false;noteSuccess();
   }catch(error){
+    if(timer!==null&&typeof clearTimeout==='function')clearTimeout(timer);
     if(version!==requestVersion)return;
+    if(error&&error.auth){
+      authBlocked=true;connected=false;token='';stopPolling();requestVersion++;
+      if(pending)pending.abort();pending=null;busy=false;
+      clearView('认证失败，数据已清除；自动刷新已停止，请输入访问令牌重新连接。');
+      document.getElementById('summary').textContent='未连接：需要访问令牌';
+      document.getElementById('error').textContent='认证失败: '+(error.message||'unauthorized');
+      noteDenied(error.message||'unauthorized');
+      return;
+    }
     clearView('数据当前不可用，不能确认任务状态或历史授权。');
     document.getElementById('summary').textContent='数据不可用';
-    document.getElementById('error').textContent='刷新失败: '+error.message;
-  }finally{if(version===requestVersion){busy=false;pending=null;}}
+    document.getElementById('error').textContent='刷新失败: '+(timedOut?'请求超时（15 秒）':error.message);
+    noteStale(timedOut?'请求超时':'网络、服务或视图错误');
+  }finally{
+    if(timer!==null&&typeof clearTimeout==='function')clearTimeout(timer);
+    if(version===requestVersion){busy=false;pending=null;}
+  }
 }
-document.getElementById('refresh').addEventListener('click',()=>refresh(true));
-source.addEventListener('change',()=>{selected='';selectedGoal='';selectedIntent='';selectedRepair='';selectedResource='';selectedFeedback='';selectedAttention='';
+const refreshButton=document.getElementById('refresh');
+if(refreshButton)refreshButton.addEventListener('click',()=>{
+  if(!connected||authBlocked){showTokenForm(true);setConnection('未连接：请先输入访问令牌。');return;}
+  refresh(true);
+});
+source.addEventListener('change',()=>{
+  if(!connected||authBlocked)return;
+  selected='';selectedGoal='';selectedIntent='';selectedRepair='';selectedResource='';selectedFeedback='';selectedAttention='';
   clearView('正在读取所选来源，旧项目的记录和线索已移除。');
   document.getElementById('summary').textContent='等待所选来源的新快照';
   document.getElementById('error').textContent='';refresh(true);});
-refresh();setInterval(refresh,5000);
+function connect(){
+  const input=$('token-input');
+  const value=input?String(input.value||'').trim():'';
+  if(!value){setConnection('未连接：请输入访问令牌。');showTokenForm(true);return;}
+  if(input)input.value='';
+  token=value;connected=true;authBlocked=false;requestVersion++;
+  if(pending)pending.abort();pending=null;busy=false;
+  clearView('正在验证访问令牌；旧数据已移除。');
+  document.getElementById('summary').textContent='等待连接后的新快照';
+  document.getElementById('error').textContent='';
+  setConnection('正在连接…');
+  startPolling();refresh(true);
+}
+const tokenForm=$('token-form');
+if(tokenForm)tokenForm.addEventListener('submit',(event)=>{
+  if(event&&event.preventDefault)event.preventDefault();connect();});
+if(document.addEventListener)document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='visible'&&connected&&!authBlocked)refresh(true);});
+if(token){showTokenForm(false);setConnection('已连接：使用内存中的访问令牌；每 5 秒自动刷新。');}
+else{showTokenForm(true);setConnection('未连接：需要访问令牌；正在核对服务端认证要求。');}
+startPolling();refresh();
 </script></body></html>"""
 
 
 def page_html() -> str:
-    return _PAGE.replace("__INTENT_VIEW_SCRIPT__", INTENT_SCRIPT).replace("__ATTENTION_VIEW_SCRIPT__", ATTENTION_SCRIPT)
+    html = _PAGE.replace("__MOBILE_STYLE__", MOBILE_STYLE).replace(
+        "__MOBILE_VIEW__", MOBILE_MARKUP).replace(
+        "__INTENT_VIEW_SCRIPT__", INTENT_SCRIPT).replace(
+        "__ATTENTION_VIEW_SCRIPT__", ATTENTION_SCRIPT)
+    html = html.replace("</head>", pwa_shell.page_head() + "</head>", 1)
+    return html.replace(
+        "</body>",
+        "<script>" + MOBILE_SCRIPT + "</script><script>" +
+        pwa_shell.page_script() + "</script></body>", 1)

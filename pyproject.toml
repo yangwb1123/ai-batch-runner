@@ -63,7 +63,19 @@ include = ["pbatch*"]
 # files; see tests/test_packaging.py (loader-audit invariant). Keyed to the
 # import name `pbatch`, not the distribution name.
 [tool.setuptools.package-data]
-pbatch = ["README.md", "role_keywords.yaml", "task_keywords.yaml"]
+# `pwa_assets/` holds the static PWA shell served by pbatch/pwa_shell.py
+# (manifest, service worker, icons; see docs/PWA_SHELL.md). Named explicitly
+# like the files above: an explicit list is the shipping contract, and the
+# packaging regression (tests/test_packaging.py) rejects globs here.
+pbatch = [
+    "README.md",
+    "role_keywords.yaml",
+    "task_keywords.yaml",
+    "pwa_assets/manifest.webmanifest",
+    "pwa_assets/sw.js",
+    "pwa_assets/icon-192.png",
+    "pwa_assets/icon-512.png",
+]
 
 # Runtime assets required by an installation outside the source checkout:
 # {tool_root} validators, rule registries, default pipelines, role prompts,

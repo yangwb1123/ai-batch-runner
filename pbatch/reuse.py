@@ -165,7 +165,8 @@ def artifact_is_stale(output_path: str, workdir: str = "") -> bool:
 
 def reuse_decision(output_path: str, validate_cmd: Optional[str],
                    workdir: str = "", legacy: bool = False,
-                   expected_fp: Optional[str] = None) -> bool:
+                   expected_fp: Optional[str] = None,
+                   cancel_event=None) -> bool:
     """Reuse only a nonempty, regular, fresh, fingerprint-matching artifact
     that passes its effective validator. ``legacy`` is existence-only."""
     path = _resolved_output(output_path, workdir)
@@ -197,7 +198,7 @@ def reuse_decision(output_path: str, validate_cmd: Optional[str],
     # Lazy import avoids a module cycle: runner uses the worktree evidence
     # helpers below, while revalidation remains owned by runner.
     from .runner import revalidate_existing
-    if revalidate_existing(path, validate_cmd, wd):
+    if revalidate_existing(path, validate_cmd, wd, cancel_event):
         log.info("REUSED+VALIDATED: %s", path)
         return True
     log.warning("REUSE: deleting stale artifact %s", path)

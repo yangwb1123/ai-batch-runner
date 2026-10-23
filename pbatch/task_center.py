@@ -135,13 +135,15 @@ def _task(source: dict, rows: list[dict], partial: bool, now: float, priors: dic
     outputs = list(dict.fromkeys(path for row in rows for path in row["outputs"]))[:16]
     artifacts = [_artifact(path, source) for path in outputs]
     failures = len({(row["attempt"], row["stage"]) for row in rows
-                    if row["status"].lower() in {"failed", "rejected", "pipeline_failed",
+                    if (row.get("execution_status") or row["status"]).lower() in {
+                        "failed", "rejected", "pipeline_failed",
                         "gate_rejected", "validation_failed"}})
     return {
         "task_id": "tc-" + last["key"], "source_id": source["source_id"],
         "project": source["name"], "kind": last["kind"], "title": last["title"],
         "run_id": last["run_id"], "local_task_id": last["local_task_id"],
         "status": last["status"], "phase": last["phase"],
+        "scheduling": last.get("scheduling"),
         "goal": {"statement": last["title"], "origin": "recorded_task_brief",
                  "acceptance": "untracked", "inferred_goal": None},
         "time": time_metrics(rows, now), "flow": (plan_flow(last["checkpoint"])

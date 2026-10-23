@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Optional
 
 from . import config
+from .agent_readiness import add_readiness_parser, readiness_main
 from .config import log
 
 
@@ -28,6 +29,7 @@ LEDGER_KEEP_LINES = 1000
 QUERY_MAX_RECORDS = 1000
 OUTPUT_PATH_MAX_CHARS = 512
 DEFAULT_AGENTS = ("pi", "codex", "claude", "gemini", "opencode")
+_THINKING_LEVELS = frozenset({"off", "minimal", "low", "medium", "high", "xhigh", "max"})
 
 
 @dataclass(frozen=True)
@@ -112,6 +114,13 @@ def _route_fields(source: str, tier: str, requested_tier: str,
     }
 
 
+def _thinking_fields(value: object) -> dict:
+    """Bound requested configuration, never provider-confirmed reasoning."""
+    if not isinstance(value, str) or len(value) > 32 or value not in _THINKING_LEVELS:
+        return {}
+    return {"thinking": value, "thinking_origin": "requested_configuration"}
+
+
 def _phase_value(value: object) -> str:
     return (value if isinstance(value, str)
             and value in {"execution", "validation"} else "execution")
@@ -124,7 +133,7 @@ def _entry(*, agent: str, provider: str, run_id: str, session_id: str,
            role: str = "", task_id: str = "", phase: str = "execution",
            task_fingerprint: str = "", route_source: str = "",
            route_tier: str = "", route_requested_tier: str = "",
-           route_downgraded=None,
+           route_downgraded=None, thinking=None,
            route_profile_mode=None, usage: Optional[dict] = None,
            ts=None, parent_run_id="", parent_source_id="") -> dict:
     return {
@@ -142,6 +151,7 @@ def _entry(*, agent: str, provider: str, run_id: str, session_id: str,
         "exit_code": int(exit_code or 0),
         "attempt": max(0, int(attempt or 0)),
         "model": _brief(model, 256),
+        **_thinking_fields(thinking),
         "stage": _brief(stage, 128),
         "role": _brief(role, 128),
         "task_id": _brief(task_id, 128),
@@ -215,7 +225,7 @@ def record(data_dir, *, agent, provider="", run_id="", session_id="",
            exit_code=0, attempt=0, model="", stage="", role="", task_id="",
            phase="execution", task_fingerprint="", route_source="",
            route_tier="", route_requested_tier="", route_downgraded=None,
-           route_profile_mode=None,
+           route_profile_mode=None, thinking=None,
            usage=None, ts=None, parent_run_id="", parent_source_id="") -> bool:
     """Append one atomic JSON line; operational failures only warn."""
     try:
@@ -228,7 +238,7 @@ def record(data_dir, *, agent, provider="", run_id="", session_id="",
             task_fingerprint=task_fingerprint, route_source=route_source,
             route_tier=route_tier, route_requested_tier=route_requested_tier,
             route_downgraded=route_downgraded,
-            route_profile_mode=route_profile_mode, usage=usage, ts=ts,
+            route_profile_mode=route_profile_mode, thinking=thinking, usage=usage, ts=ts,
             parent_run_id=parent_run_id, parent_source_id=parent_source_id)
         encoded = (json.dumps(entry, ensure_ascii=False, separators=(",", ":")) +
                    "\n").encode("utf-8")
@@ -408,6 +418,7 @@ def record_result(result, task, workdir: str, *, phase: str = "execution") -> bo
         elapsed_ms=round(result.elapsed * 1000), exit_code=result.returncode,
         attempt=int(getattr(result, "attempt", 0) or 0), model=task.model,
         stage=stage, role=role,
+        thinking=config.AGENT_THINKING_OVERRIDE or task.thinking,
         task_id=str(getattr(result, "task_id", "") or ""), phase=phase,
         task_fingerprint=_task_fingerprint(task, workdir, stage, role),
         route_source=str(task.memory.get("model_route_source", "")),
@@ -436,6 +447,7 @@ def _parser() -> argparse.ArgumentParser:
     sessions.add_argument("--agent", default="")
     sessions.add_argument("--limit", type=_positive_limit, default=50)
     sessions.add_argument("--json", action="store_true")
+    add_readiness_parser(commands)
     return parser
 
 
@@ -468,8 +480,10 @@ def _print_sessions(rows: list[dict]) -> None:
 
 
 def agents_main(argv: Optional[list[str]] = None) -> int:
-    """Entry point for ``pi-batch agents list|sessions``."""
+    """Entry point for ``pi-batch agents list|sessions|readiness``."""
     args = _parser().parse_args(argv)
+    if args.command == "readiness":
+        return readiness_main(args)
     root = config.data_dir(os.getcwd())
     if args.command == "list":
         rows = agents_health(root, DEFAULT_AGENTS)

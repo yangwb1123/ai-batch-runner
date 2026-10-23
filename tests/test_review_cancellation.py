@@ -15,6 +15,15 @@ from pbatch import review
 from pbatch.tui import PiBatchTUI, TuiOptions
 
 
+def _child_inactive(pid):
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except (FileNotFoundError, ProcessLookupError):
+        # /proc entries can disappear even after open succeeds (ESRCH on read).
+        return True
+    return stat.rsplit(")", 1)[1].split()[0] == "Z"
+
+
 def _sleeping_process(cwd):
     return subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(30)"], cwd=cwd,
@@ -93,12 +102,9 @@ def test_cancel_kills_review_descendant_without_touching_other_process(tmp_path,
         assert not worker.is_alive() and processes[0].poll() is not None
         child = int(pid_path.read_text())
         deadline = time.monotonic() + 2
-        while Path(f"/proc/{child}/stat").exists() and time.monotonic() < deadline:
-            if Path(f"/proc/{child}/stat").read_text().split()[2] == "Z":
-                break
+        while not _child_inactive(child) and time.monotonic() < deadline:
             time.sleep(0.01)
-        if Path(f"/proc/{child}/stat").exists():
-            assert Path(f"/proc/{child}/stat").read_text().split()[2] == "Z"
+        assert _child_inactive(child)
         assert unrelated.poll() is None
         assert outcomes[0].cancelled
     finally:
@@ -140,9 +146,7 @@ def test_cancel_during_pipe_drain_reaps_child_after_review_leader_exit(tmp_path,
         worker.join(2)
         assert not worker.is_alive() and outcomes[0][1].cancelled
         child = int(child_path.read_text())
-        stat = Path(f"/proc/{child}/stat")
-        if stat.exists():
-            assert stat.read_text().split()[2] == "Z"
+        assert _child_inactive(child)
     finally:
         cancelled.set()
         for process in processes:

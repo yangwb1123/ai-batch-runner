@@ -15,6 +15,7 @@ from pathlib import Path
 from .config import (_resolve_validator_specs, log, validator_applies)
 from .cmd_expand import expand_cmd
 from .runner import _json_status, judge_verdict, run_argv, run_validation
+from .runner_cancel import cancel_requested as _cancel_requested
 
 
 def _operational_path(path: str) -> bool:
@@ -272,7 +273,8 @@ def commit_stage_outputs(stage, outputs: list, dirty_baseline=None) -> bool:
 
 
 def run_stage_repo_validators(stage, results: list, outputs: list,
-                              effective_validate=None) -> tuple[bool, str]:
+                              effective_validate=None,
+                              cancel_event=None) -> tuple[bool, str]:
     """N2 (round-5 finding): run repo-scoped validators once at stage end.
     Specs are collected from the stage's validate_cmd plus every task's
     per-task validate field (deduplicated); a failure fails the stage
@@ -289,6 +291,8 @@ def run_stage_repo_validators(stage, results: list, outputs: list,
     wd = stage.cwd or os.getcwd()
     output_dir = str(Path(outputs[0]).parent) if outputs else wd
     for spec in specs:
+        if _cancel_requested(cancel_event):
+            return False, "cancelled before repo validator dispatch"
         cmd = expand_cmd(spec.cmd, output_dir, wd)
         ok, detail = _run_stage_repo_spec(spec, cmd, wd, stage.name)
         if not ok:

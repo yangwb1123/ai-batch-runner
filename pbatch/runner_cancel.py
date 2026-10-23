@@ -30,6 +30,53 @@ def cancel_requested(cancel_event: Any) -> bool:
         return False
 
 
+class CombinedCancel:
+    """OR of two cancellation sources, preserving task-scoped routing.
+
+    A campaign cutoff event and a native approval channel must both be able
+    to stop work: preferring one silently would let the other's accepted
+    cancellation request leave an in-flight task running.
+    """
+
+    def __init__(self, events: list):
+        self._events = [event for event in events if event is not None]
+
+    def is_set(self) -> bool:
+        return any(cancel_requested(event) for event in self._events)
+
+    def wait(self, timeout: Optional[float] = None) -> bool:
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        while True:
+            if self.is_set():
+                return True
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                time.sleep(min(0.05, remaining))
+            else:
+                time.sleep(0.05)
+
+    def for_task(self, task: Any) -> Any:
+        return CombinedCancel([task_cancel_event(event, task) for event in self._events])
+
+    def set(self) -> None:
+        for event in self._events:
+            setter = getattr(event, "set", None)
+            if callable(setter):
+                setter()
+
+
+def compose_cancel(*events: Any) -> Any:
+    """Combine cancellation sources without dropping per-task routing."""
+    present = [event for event in events if event is not None]
+    if not present:
+        return None
+    if len(present) == 1:
+        return present[0]
+    return CombinedCancel(present)
+
+
 def task_cancel_event(cancel_event: Any, task: Any) -> Any:
     """Resolve an optional task-scoped event without changing old callers."""
     resolver = getattr(cancel_event, "for_task", None)

@@ -176,14 +176,19 @@ async def _wait_until(predicate, pilot, attempts: int = 300) -> None:
     raise AssertionError("condition did not become true")
 
 
+def _picker_mounted(app) -> bool:
+    # push_screen changes the stack before Compose/Mount finish.
+    return (isinstance(app.screen, TUIRuntimeSettingPickerScreen)
+            and app.screen.is_mounted)
+
+
 async def _open_completion(app, pilot, value: str, *, key: str = "tab"):
     composer = app.query_one("#composer", Input)
     composer.value = value
     composer.cursor_position = len(value)
     await pilot.pause()
     await pilot.press(key)
-    await _wait_until(
-        lambda: isinstance(app.screen, TUIRuntimeSettingPickerScreen), pilot)
+    await _wait_until(lambda: _picker_mounted(app), pilot)
     screen = app.screen
     assert screen.completion_only is True
     return composer, screen
@@ -240,9 +245,7 @@ def test_old_global_scope_completion_remains_read_only(
             composer.cursor_position = len(value)
             await pilot.pause()
             await pilot.press("tab")
-            await _wait_until(
-                lambda: isinstance(
-                    app.screen, TUIRuntimeSettingPickerScreen), pilot)
+            await _wait_until(lambda: _picker_mounted(app), pilot)
             assert app.screen.completion_only is True
             await pilot.press("enter")
             await _wait_until(lambda: composer.value == expected, pilot)
@@ -261,9 +264,7 @@ def test_typing_exact_parameter_context_opens_completion_automatically(
         app = _app(tmp_path, adapter)
         async with app.run_test(size=(100, 30)) as pilot:
             await pilot.press("/", "m", "o", "d", "e", "l", "space")
-            await _wait_until(
-                lambda: isinstance(
-                    app.screen, TUIRuntimeSettingPickerScreen), pilot)
+            await _wait_until(lambda: _picker_mounted(app), pilot)
             assert app.screen.completion_only is True
             assert len(adapter.model_reads) == 1
             assert adapter.state_reads == []
@@ -339,11 +340,59 @@ def test_fast_query_changes_coalesce_behind_one_snapshot(tmp_path):
             assert len(adapter.model_reads) == 1
 
             adapter.model_gate.set()
-            await _wait_until(
-                lambda: isinstance(
-                    app.screen, TUIRuntimeSettingPickerScreen), pilot)
+            await _wait_until(lambda: _picker_mounted(app), pilot)
             assert app.screen._query_text == "next"
             assert len(adapter.model_reads) == 1
+
+    _run(scenario())
+
+
+@pytest.mark.parametrize("stale_value", (
+    "/model a", "/thinking high", "/status", "",
+))
+def test_stale_composer_change_preserves_open_completion(tmp_path, stale_value):
+    async def scenario():
+        adapter = _CompletionAdapter()
+        app = _app(tmp_path, adapter)
+        async with app.run_test(size=(100, 30)) as pilot:
+            composer, screen = await _open_completion(app, pilot, "/model next")
+            generation = app._runtime_completion_generation
+            choices = app._runtime_completion_choices
+
+            composer.on_input_changed(Input.Changed(composer, stale_value))
+            await pilot.pause()
+
+            assert app.screen is screen
+            assert app._runtime_completion_screen is screen
+            assert app._runtime_completion_generation == generation
+            assert app._runtime_completion_choices is choices
+            assert screen._query_text == "next"
+            assert len(adapter.model_reads) == 1
+            assert adapter.model_writes == adapter.thinking_writes == []
+            assert app._backend.turn_calls == []
+
+    _run(scenario())
+
+
+@pytest.mark.parametrize("value", (
+    "/model current", "/thinking high", "/status", "",
+))
+def test_current_composer_change_still_invalidates_open_completion(tmp_path, value):
+    async def scenario():
+        adapter = _CompletionAdapter()
+        app = _app(tmp_path, adapter)
+        async with app.run_test(size=(100, 30)) as pilot:
+            composer, screen = await _open_completion(app, pilot, "/model next")
+            composer.value = value
+            composer.cursor_position = len(value)
+            await pilot.pause()
+
+            assert app.screen is not screen
+            assert app._runtime_completion_screen is None
+            assert app._runtime_completion_choices is None
+            assert len(adapter.model_reads) == 1
+            assert adapter.level_reads == []
+            assert adapter.model_writes == adapter.thinking_writes == []
 
     _run(scenario())
 

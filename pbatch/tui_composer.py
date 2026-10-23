@@ -91,7 +91,8 @@ class SlashComposer(Input):
             self._request_dynamic_completion("typing")
 
     def on_input_changed(self, event: Input.Changed) -> None:
-        if event.input is self:
+        # Queued older values must not invalidate the current picker/snapshot.
+        if event.input is self and event.value == self.value:
             self._call_dynamic_completion(event.value, "context")
 
     def _accept_slash_completion(self) -> bool:

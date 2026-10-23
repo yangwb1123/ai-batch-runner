@@ -40,6 +40,22 @@ pi-batch ops serve --control --token-file ~/.config/pbatch/ops-token
 CLI/Web 共用有界事实投影；自定义运行目录用 `ops sources add` 登记一次。
 成本缺失、目标验收与下一步预测不会伪装成零或成功；本批默认不执行修复、清理或上报。
 使用与后续批次见 [全局任务中心](docs/TASK_CENTER.md)。
+全局看板可直接打开 `/`，在页面输入私有令牌，不必把令牌放进 URL；令牌只保留在页面内存中。
+静态页面、manifest、service worker 和图标不含任务数据，数据 API 仍逐次鉴权。
+手机/PWA 接入、HTTPS 要求和验收边界见 [Web/mobile 自用指南](docs/WEB_MOBILE_DOGFOOD.md)；
+并行方向的排队、执行和即时完成观测见 [Campaign 实时进度](docs/CAMPAIGN_LIVE_PROGRESS.md)。
+多路并发实现可用 `pi-batch lanes run --plan lanes.yaml --hours 12 --invocations N`：
+每条泳道独立 worktree/分支并并发执行，通过后在当前主分支上串行 rebase、过门禁再合并；
+窗口与调用预算首次运行时锚定，重启不延长；只有崩溃才重试，门禁失败即停。
+见 [泳道循环](docs/LANES.md)。
+`pi-batch agents readiness [--json]` 只读报告运维声明的 agent 就绪探针（未配置/无法判定
+为 `unknown`，不等于可用）；campaign 在探针明确未就绪时拒绝开跑。见
+[Agent 就绪探针](docs/AGENT_READINESS.md)。
+每个验证器实际调用都会写有界收据；配置了验证器却没有产物目标现在会失败关闭，
+不再静默跳过，见 [验证收据](docs/VALIDATION_RECEIPTS.md)。
+≤600px 时任务卡片优先，完整窗口统计可展开；新执行账本记录请求的 thinking 配置，
+累计任务墙钟、实测执行墙钟与未知 CPU 时间分开，见 [执行指标口径](docs/EXECUTION_METRICS.md)。
+这些能力不代表七天无人值守、原生手机 App、发布或生产验收已经通过。
 
 跨设备、跨实例会话使用 `pi-batch fleet`：启动 Agent Hub 与各实例的出站 Gateway，
 通过 CLI、`fleet tui` 或 Flutter Console 查看授权会话、发送 prompt、接收事件和取消 turn。

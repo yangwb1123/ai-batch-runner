@@ -92,6 +92,14 @@ revalidates completed stage tasks and `aggregate: true` merges upstream outputs.
 
 ## Engineering gates on generated results
 
+A task with configured validators must declare an artifact `output` target. Without one the
+run now fails closed instead of printing the answer and claiming success; an explicit
+`validate: ""` still disables the inherited gate on purpose. Each validator invocation
+also appends a bounded receipt under the private runtime (command hash, exit code,
+timed-out flag, measured duration, artifact digest/size, scope). Receipts are observations,
+not authorization: `ok` is the process result, not the full artifact/Gate verdict. See
+[validation receipts](VALIDATION_RECEIPTS.md).
+
 Generated artifacts are only committed after the project's engineering
 checks pass. Validators are declared once in `pi-batch.yaml`, like
 `engineering.yaml` declares the gates for `cli.py`, and referenced by name:
@@ -335,9 +343,13 @@ reset it. The analysis phase shares the same coordinator clock/latch: modules
 not yet dispatched are recorded as `BUDGET_BLOCKED`, each call's timeout is
 capped by the remaining window, retry sleeps cannot continue past the cutoff,
 and a mid-analysis stop returns terminal exit 3 without selection. Serial
-in-tree implementation still has only its existing task timeouts plus the
-shared admission checks. See
-[analysis-phase budget and limits](CAMPAIGN_ANALYSIS_DEADLINE.md) and
+in-tree implementation (`--parallel-pipelines` unset) also runs under the
+shared cutoff: an owned guard sets a cancel event into the pipeline stages,
+meta roles and gate-fix rounds, kills this process's registered agent
+children at expiry, and maps a late completion to
+`BUDGET_BLOCKED`/`PRESERVED` without recovery or PASS publication. See
+[analysis-phase budget and limits](CAMPAIGN_ANALYSIS_DEADLINE.md),
+[serial in-tree cutoff](CAMPAIGN_SERIAL_DEADLINE.md) and
 [isolated-attempt deadlines and limits](CAMPAIGN_ISOLATED_DEADLINE.md).
 
 Pi session files remain append-only and untouched. Metering caches each file's

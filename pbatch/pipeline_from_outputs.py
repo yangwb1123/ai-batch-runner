@@ -53,7 +53,8 @@ def _stage_from_outputs_tasks(stage: Stage, stage_outputs: dict, reuse: bool, mo
                               validate_cmd: str = "", reuse_legacy: bool = False,
                               fingerprint_mode: bool = False,
                               original_prompt: str = "",
-                              extra_evidence: Optional[list[str]] = None) -> tuple[list[Task], list[str]]:
+                              extra_evidence: Optional[list[str]] = None,
+                              cancel_event=None) -> tuple[list[Task], list[str]]:
     """Tasks fed by upstream artifacts (aggregate merges them; extra_evidence
     appends gate-fix reports)."""
     names, prev_outputs, missing = _collect_upstream(stage.from_outputs, stage_outputs)
@@ -66,10 +67,11 @@ def _stage_from_outputs_tasks(stage: Stage, stage_outputs: dict, reuse: bool, mo
     if stage.aggregate:
         return _aggregate_tasks(stage, prev_outputs, model_override, timeout_override, reuse,
                                 validate_cmd, reuse_legacy, fingerprint_mode, original_prompt,
-                                verified_note=verified)
+                                verified_note=verified, cancel_event=cancel_event)
     tasks, reused = _fanned_output_tasks(
         stage, prev_outputs, verified, model_override, timeout_override,
-        validate_cmd, reuse_legacy, fingerprint_mode, original_prompt, reuse)
+        validate_cmd, reuse_legacy, fingerprint_mode, original_prompt, reuse,
+        cancel_event)
     log.info("Loaded %d tasks from %d outputs of stage(s) '%s'",
              len(tasks), len(prev_outputs), ", ".join(names))
     return tasks, reused
@@ -79,7 +81,7 @@ def _fanned_output_tasks(stage: Stage, prev_outputs: list, verified: str,
                          model_override: str, timeout_override: int,
                          validate_cmd: str, reuse_legacy: bool,
                          fingerprint_mode: bool, original_prompt: str,
-                         reuse: bool) -> tuple[list[Task], list[str]]:
+                         reuse: bool, cancel_event=None) -> tuple[list[Task], list[str]]:
     """One task set per upstream artifact, each optionally reuse-checked."""
     tasks: list[Task] = []
     reused: list[str] = []
@@ -113,7 +115,8 @@ def _fanned_output_tasks(stage: Stage, prev_outputs: list, verified: str,
                               task.effective_agent(), task.thinking, task.tools,
                               task.exclude_tools, task.no_tools)
             if _maybe_reuse_task(stage, task, out_resolved, output_path,
-                                 effective_validate, reuse_legacy, fp, reuse, reused):
+                                 effective_validate, reuse_legacy, fp, reuse, reused,
+                                 cancel_event):
                 continue
             tasks.append(task)
     return tasks, reused
@@ -123,7 +126,8 @@ def _aggregate_tasks(stage: Stage, prev_outputs: list, model_override: str = "",
                      validate_cmd: str = "", reuse_legacy: bool = False,
                      fingerprint_mode: bool = False,
                      original_prompt: str = "",
-                     verified_note: str = "") -> tuple[list[Task], list[str]]:
+                     verified_note: str = "",
+                     cancel_event=None) -> tuple[list[Task], list[str]]:
     """Combine every upstream artifact into one prompt per task template so
     downstream roles see all evidence (input_stem becomes 'combined') instead
     of fanning each artifact into an independent task.
@@ -158,7 +162,8 @@ def _aggregate_tasks(stage: Stage, prev_outputs: list, model_override: str = "",
                           task.effective_agent(), task.thinking, task.tools,
                           task.exclude_tools, task.no_tools)
         if _maybe_reuse_task(stage, task, out_resolved, output_path,
-                              effective_validate, reuse_legacy, fp, reuse, reused):
+                              effective_validate, reuse_legacy, fp, reuse, reused,
+                              cancel_event):
             continue
         tasks.append(task)
     return tasks, reused

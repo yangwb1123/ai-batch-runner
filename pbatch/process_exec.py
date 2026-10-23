@@ -15,6 +15,7 @@ import signal
 import subprocess
 import threading
 import time
+import weakref
 from typing import NamedTuple
 
 from .process_shutdown import (
@@ -123,8 +124,64 @@ def validate_timeout(timeout: float, label: str) -> None:
         raise ValueError(f"{label} timeout must be finite and non-negative")
 
 
-def _kill_group(proc: subprocess.Popen) -> None:
-    """Kill the POSIX command group; otherwise kill/reap only the direct child."""
+_KILL_LOCK = threading.RLock()  # shared with the campaign guard's owned kill
+_CLEANED = weakref.WeakSet()  # handles whose signal+reap already completed
+
+
+def kill_owned_process(proc: subprocess.Popen) -> bool:
+    """First-time cleanup under the shared kill lock.
+
+    Returns True only when termination was observed. A handle whose cleanup
+    already completed is never signalled again (its numeric PGID may have
+    been recycled); an unobserved handle is not marked cleaned so later
+    polls retry while ownership is retained.
+    """
+    with _KILL_LOCK:
+        if proc in _CLEANED:
+            return True
+        observed = _kill_group_locked(proc)
+        if observed:
+            _CLEANED.add(proc)
+        return observed
+
+
+def cleanup_completed(proc) -> bool:
+    """True when this handle's first signal+reap already ran."""
+    return proc in _CLEANED
+
+
+def exited_unreaped(proc) -> bool:
+    """Observe child exit without reaping it, keeping the PID owned for cleanup.
+
+    The first group signal must happen while the leader's numeric PGID cannot
+    be recycled. Platforms without waitid/WNOWAIT fall back to a reaping poll
+    (documented residual limit).
+    """
+    with _KILL_LOCK:
+        if proc.returncode is not None:
+            return True
+        waitid = getattr(os, "waitid", None)
+        flags = getattr(os, "WNOWAIT", 0)
+        if waitid is None or not flags:
+            return proc.poll() is not None
+        try:
+            return waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOHANG | flags) is not None
+        except (ChildProcessError, OSError):
+            return proc.returncode is not None
+
+
+def _kill_group(proc: subprocess.Popen) -> bool:
+    """Kill the POSIX command group; returns whether termination was observed."""
+    with _KILL_LOCK:
+        if proc in _CLEANED:
+            return True  # the guard (or an earlier path) already cleaned this handle
+        observed = _kill_group_locked(proc)
+        if observed:
+            _CLEANED.add(proc)
+        return observed
+
+
+def _kill_group_locked(proc: subprocess.Popen) -> bool:
     try:
         killpg = getattr(os, "killpg", None)
         if killpg is None:
@@ -140,6 +197,7 @@ def _kill_group(proc: subprocess.Popen) -> None:
         proc.wait(timeout=1)
     except (subprocess.TimeoutExpired, ChildProcessError):
         pass
+    return getattr(proc, "returncode", None) is not None
 
 
 def read_chunks(stream, errors="replace"):
@@ -192,7 +250,7 @@ def _drain_process(proc: subprocess.Popen, start: float, timeout: float,
     try:
         for thread in threads:
             thread.start()
-        while any(thread.is_alive() for thread in threads) or proc.poll() is None:
+        while any(thread.is_alive() for thread in threads) or not exited_unreaped(proc):
             if _cancel_requested(cancel_event):
                 raise _CancelledDrain(stdout, stderr, threads)
             if any(value[0] or value.error for value in overflow):

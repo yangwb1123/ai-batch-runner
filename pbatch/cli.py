@@ -483,6 +483,7 @@ _SUBCOMMANDS: dict[str, str] = {
     "evolution": "evolution:evolution_main",
     "isolate": "isolate:isolate_main",
     "collab": "collab:collab_main",
+    "lanes": "lane_cli:lanes_main",
 }
 
 

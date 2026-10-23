@@ -25,11 +25,16 @@ pi-batch ops sources remove src-...             # 仅移除登记，不删除任
 
 # 浏览器与手机使用同一 JSON 投影。复用已配置的私有 token 文件。
 pi-batch ops serve --global --token-file ~/.config/pbatch/ops-token
-# 打开 http://127.0.0.1:8731/?token=<token>；页面每 5 秒刷新数据，不调用模型。
+# 打开 http://127.0.0.1:8731/，在页面输入令牌；每 5 秒刷新数据，不调用模型。
+# 令牌仅留在当前页面内存；重新打开需再次输入。旧 ?token= 链接兼容，但不推荐。
 ```
 
 `--workspace` 只声明相对产物的定位/读取边界，不授予执行或清理权限。
 `--global` 必须带 token，不能与 `--control` 组合。非 loopback 监听仍要求 TLS。
+全局 `/` 是不含任务数据的公开静态壳；仅另开放 manifest、service worker 和两张图标的精确路径。
+所有 `/api/*` 仍逐次鉴权，工作空间模式的 `/` 也仍需鉴权；不存在公开目录浏览。
+认证失败会清除页面数据并停止轮询，只有显式重新连接才继续；网络失败显示不可用而不是零。
+手机安装/PWA、HTTPS 与真实设备限制见 [Web/mobile 自用指南](WEB_MOBILE_DOGFOOD.md)。
 已有 `ops serve` 的工作空间模式、历史会话和控制 API 保持原作用域；默认不会扩大成全局。
 远端优先通过 SSH/VPN 使用，不直接暴露 Runner。当前不是多租户 Hub 的授权聚合入口。
 
@@ -39,7 +44,9 @@ pi-batch ops serve --global --token-file ~/.config/pbatch/ops-token
 - Campaign 按来源 + campaign/module/direction 身份展示历史与最近状态。
 - 执行、验证、重试分别可追溯；metering 与 agent ledger 同一尝试去重。
 - LLM 配置、调用结束后的输入/输出/缓存 token 与费用，带完整/部分/不可用标记。
-- 显式开始事件或报告耗时可定位观察窗口中的时长；排队时间、ETA 暂不猜测。
+- 显式开始事件或报告耗时可定位观察窗口中的时长；没有测量依据时，不猜排队时间或 ETA。
+- 新 Campaign 方向通过 `task.scheduling` 展示实测排队/执行区间，未知为 null；完成事件无需等最慢方向。
+  执行结果与合并/验收分开，细节与批量准备/合并限制见 [Campaign 实时进度](CAMPAIGN_LIVE_PROGRESS.md)。
 - 声明产物的存在性和字节数，只检查明确登记的 workspace/runtime 边界，不读取正文。
 - 分支/commit/合并记录与目标验收分开；存在文件、执行成功不等于成果已验收。
 - 独立显示本机已有进程注册表的 PID 存在性与心跳，不把活动当作有效进展。

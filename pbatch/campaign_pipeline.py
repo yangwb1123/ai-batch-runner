@@ -5,22 +5,23 @@ from pbatch.pipeline_status import PipelineStatus
 
 import json
 import os
-import sys
 import tempfile
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .campaign_artifacts import artifact_evidence as _artifact_evidence
 from .campaign_artifacts import isolated_run_evidence
-from .campaign_budget import (BUDGET_BLOCKED_REASON, execution_settings,
+from .campaign_budget import (BUDGET_BLOCKED_REASON, CampaignDeadlineExpired,
+                              CampaignGuardFailed, execution_settings,
                               gate as budget_gate, with_frozen_deadline)
 from .campaign_deadline import check_deadline
+from .campaign_dispatch import publish_outcome, run_dispatch, scheduling
+from .campaign_serial import execute_serial_supervised, published_outcome
 from .campaign_isolated_outcome import (IsolatedAttempt, check_publication,
                                          preparation_outcome, stopped_outcome)
 from .campaign_gate_feedback import (
     inject_prior_gate_feedback as _inject_prior_gate_feedback,
-    prior_gate_feedback as _prior_gate_feedback,
 )
 from .campaign_models import CampaignSettings, Direction, safe_slug
 from .campaign_state import (digest, file_digest, git_worktree_evidence,
@@ -30,17 +31,12 @@ from .campaign_recovery import (RECOVERY_BLOCKED, RECOVERY_DISABLED,
                                 has_failed_attempt, recover_worktree,
                                 recovery_attempt_count,
                                 write_wreckage_report)
-from .campaign_worktree import (_git_failure,
-                                _sync_worktree_baseline,
-                                _validate_existing_worktree,
-                                ensure_worktree as _ensure_worktree,
+from .campaign_worktree import (ensure_worktree as _ensure_worktree,
                                 finalize_worktree as _finalize_worktree,
-                                git_ok as _git_ok, git_path as _git_path,
                                 git_text as _git_text,
-                                isolated_status as _isolated_status,
-                                run_git as _run_git)
-from . import config, metering
-from .config import log, yaml
+                                isolated_status as _isolated_status)
+from . import config
+from .config import yaml
 from .pipeline import load_pipeline, run_pipeline
 from .text_io import read_text_bounded
 from .campaign_process import (kill_isolated_pipelines,
@@ -71,6 +67,7 @@ class PipelineOutcome:
     recovery_reason: str = ""
     recovery_evidence: list[str] = field(default_factory=list)
     no_progress_seconds: float = 0.0
+    scheduling: dict | None = None
 
 
 def direction_fingerprint(root: Path, settings: CampaignSettings, direction: Direction,
@@ -254,53 +251,68 @@ def run_direction(root: Path, settings: CampaignSettings, direction: Direction,
         return PipelineOutcome(direction, PipelineStatus.BUDGET_BLOCKED,
                                BUDGET_BLOCKED_REASON, 0, [str(analysis_path)])
     start = time.monotonic()
-    baseline = _git_text(root, ["rev-parse", "HEAD"])
-    branch = _git_text(root, ["branch", "--show-current"])
-    start_state = git_worktree_evidence(
-        root, excludes=(settings.output_dir,))
-    start_clean = bool(baseline and start_state["clean_commit"] == baseline)
-    if baseline and not start_clean:
-        return _dirty_worktree_outcome(direction, analysis_path, baseline, start_state)
-    recovery_root = config.data_dir(str(root)) / "campaign-recovery"
-    run_dir = settings.path(root, settings.output_dir) / "runs" / direction.direction_id
-    recovery_mode = settings.recovery_enabled and has_failed_attempt(run_dir)
-    attempts = recovery_attempt_count(root, recovery_root, direction.direction_id)
-    if recovery_mode and attempts > settings.recovery_max_attempts:
-        return _recovery_budget_outcome(
-            direction, analysis_path, baseline,
-            f"self-repair attempt budget exhausted ({attempts})")
-    pipeline_path = materialize_pipeline(
-        root, settings, direction, analysis_path, recovery_mode)
-    status, reason, evidence = _execute_direction_pipeline(
-        pipeline_path, model, provider, timeout, reuse, direction)
-    recovery = _recover_direction(
-        root, settings, direction, baseline, branch, start_clean,
-        pipeline_path, status, reason, evidence)
-    if recovery.status in (RECOVERY_BLOCKED, RECOVERY_PRESERVED):
-        reason = f"{reason}; automatic retry blocked: {recovery.reason}"
-    repository = git_worktree_evidence(
-        root, excludes=(settings.output_dir,))
-    return PipelineOutcome(
-        direction, status, reason, time.monotonic() - start, evidence,
-        commit=repository["head_commit"], baseline_commit=baseline,
-        clean_commit=repository["clean_commit"],
-        dirty_evidence=repository["dirty_evidence"],
-        dirty_digest=repository["dirty_digest"],
-        recovery_status=recovery.status,
-        recovery_reason=recovery.reason,
-        recovery_evidence=recovery.evidence)
+    baseline = branch = ""
+    start_clean = False
+    try:
+        baseline = _git_text(root, ["rev-parse", "HEAD"])
+        branch = _git_text(root, ["branch", "--show-current"])
+        start_state = git_worktree_evidence(root, excludes=(settings.output_dir,))
+        start_clean = bool(baseline and start_state["clean_commit"] == baseline)
+        if baseline and not start_clean:
+            _pre_return(settings, direction, root)
+            return _dirty_worktree_outcome(direction, analysis_path, baseline, start_state)
+        recovery_root = config.data_dir(str(root)) / "campaign-recovery"
+        run_dir = settings.path(root, settings.output_dir) / "runs" / direction.direction_id
+        recovery_mode = settings.recovery_enabled and has_failed_attempt(run_dir)
+        attempts = recovery_attempt_count(root, recovery_root, direction.direction_id)
+        if recovery_mode and attempts > settings.recovery_max_attempts:
+            _pre_return(settings, direction, root)
+            return _recovery_budget_outcome(
+                direction, analysis_path, baseline,
+                f"self-repair attempt budget exhausted ({attempts})")
+        pipeline_path = materialize_pipeline(root, settings, direction, analysis_path, recovery_mode)
+        logfile = pipeline_path.parent / "campaign.log"
+        status, reason, evidence = execute_serial_supervised(
+            settings, direction, root, pipeline_path, logfile, model, provider,
+            timeout, reuse, _execute_direction_pipeline)
+        check_deadline(settings, direction, root, pipeline_path, logfile, phase="before_recovery")
+        recovery = _recover_direction(root, settings, direction, baseline, branch, start_clean,
+                                      pipeline_path, status, reason, evidence)
+        if recovery.status in (RECOVERY_BLOCKED, RECOVERY_PRESERVED):
+            reason = f"{reason}; automatic retry blocked: {recovery.reason}"
+        return published_outcome(PipelineOutcome, settings, direction, root,
+                                 pipeline_path, logfile, branch, baseline, start,
+                                 status, reason, evidence, recovery,
+                                 git_worktree_evidence)
+    except (CampaignDeadlineExpired, CampaignGuardFailed) as exc:
+        return stopped_outcome(PipelineOutcome, exc, direction, root, branch, baseline,
+                               start, git_worktree_evidence,
+                               getattr(settings, "_execution_deadline", None))
+    except Exception as exc:
+        deadline = getattr(settings, "_execution_deadline", None)
+        if deadline is None or not deadline.expired(time.monotonic()): raise
+        return stopped_outcome(PipelineOutcome, exc, direction, root, branch, baseline,
+                               start, git_worktree_evidence, deadline)
+
+
+def _pre_return(settings, direction, root) -> None:
+    """A pre-execution refusal still observes a cutoff crossed during its I/O."""
+    check_deadline(settings, direction, root, root, root / "campaign.log",
+                   phase="pre_return")
 
 
 def _execute_direction_pipeline(pipeline_path: Path, model: str,
                                 provider: str, timeout: int, reuse: bool,
-                                direction: Direction) -> tuple[str, str, list[str]]:
+                                direction: Direction,
+                                cancel_event=None) -> tuple[str, str, list[str]]:
     pipeline = load_pipeline(str(pipeline_path))
     for stage in pipeline.stages:
         if provider:
             stage.provider = provider
     results, failed = run_pipeline(
         pipeline, model_override=model, reuse=reuse, timeout_override=timeout,
-        session_name=f"campaign-{direction.direction_id}", fingerprint_mode=reuse)
+        session_name=f"campaign-{direction.direction_id}", fingerprint_mode=reuse,
+        cancel_event=cancel_event)
     status, reason = classify_pipeline(results, failed, pipeline)
     return status, reason, _artifact_evidence(pipeline_path, results)
 
@@ -344,55 +356,45 @@ def _recovery_budget_outcome(direction: Direction, analysis: Path,
         recovery_status=RECOVERY_BLOCKED, recovery_reason=reason)
 
 
-def _artifact_evidence(pipeline_path: Path, results: list) -> list[str]:
-    """Return existing output paths, following successful campaign archives."""
-    evidence = [str(pipeline_path)]
-    archive_root = pipeline_path.parent / "archive"
-    for result in results:
-        if not result.success or not result.task.output:
-            continue
-        output = result.task.output_path()
-        if output.exists():
-            evidence.append(str(output))
-            continue
-        archived = sorted(archive_root.glob(f"*/{output.name}"))
-        if archived:
-            evidence.append(str(archived[-1]))
-    return evidence
-
 
 def run_directions_isolated(root: Path, settings: CampaignSettings,
                             items: list[tuple[Direction, Path]], jobs: int,
-                            agent_args: list[str]) -> list[PipelineOutcome]:
+                            agent_args: list[str], *, on_start=None,
+                            on_outcome=None, queued_at=None) -> list[PipelineOutcome]:
+    queued_at = time.monotonic() if queued_at is None else queued_at
     settings = with_frozen_deadline(settings, root)
     should_run = budget_gate(settings, root)
-    outcomes = []
-    prepared = []
+    outcomes, prepared = [], []
     for direction, analysis in items:
         if not should_run():
-            outcomes.append(PipelineOutcome(direction, PipelineStatus.BUDGET_BLOCKED,
-                                            BUDGET_BLOCKED_REASON, 0, [str(analysis)]))
+            outcome = PipelineOutcome(direction, PipelineStatus.BUDGET_BLOCKED,
+                                      BUDGET_BLOCKED_REASON, 0, [str(analysis)])
+            outcomes.append(publish_outcome(outcome, scheduling(queued_at), on_outcome))
             continue
         try:
             prepared_at = time.monotonic()
             worktree, branch, baseline = _ensure_worktree(root, settings, direction)
             prepared.append((direction, analysis, worktree, branch, baseline))
         except Exception as exc:
-            outcomes.append(preparation_outcome(PipelineOutcome, exc, direction, analysis,
-                                                settings, root, prepared_at))
-    with ThreadPoolExecutor(max_workers=jobs) as pool:
-        futures = [pool.submit(_safe_worktree_run, settings, direction, analysis,
-                               worktree, branch, baseline, agent_args,
-                               should_run)
-                   for direction, analysis, worktree, branch, baseline in prepared]
-        for future in as_completed(futures):
-            outcomes.append(future.result())
-    return outcomes
+            outcome = preparation_outcome(PipelineOutcome, exc, direction, analysis,
+                                          settings, root, prepared_at)
+            outcomes.append(publish_outcome(outcome, scheduling(queued_at), on_outcome))
+    dispatched = run_dispatch(
+        prepared, jobs,
+        lambda item, signal, allowed: _safe_worktree_run(
+            settings, *item, agent_args, allowed, signal),
+        should_run,
+        lambda item: PipelineOutcome(item[0], PipelineStatus.BUDGET_BLOCKED,
+                                     BUDGET_BLOCKED_REASON, 0, [str(item[1])],
+                                     branch=item[3], baseline_commit=item[4]),
+        queued_at=queued_at, on_start=on_start, on_outcome=on_outcome)
+    return outcomes + dispatched
 
 
 def _safe_worktree_run(settings: CampaignSettings, direction: Direction,
                        analysis_path: Path, worktree: Path, branch: str,
-                       baseline: str, agent_args: list[str], should_run=None) -> PipelineOutcome:
+                       baseline: str, agent_args: list[str], should_run=None,
+                       on_start=None) -> PipelineOutcome:
     started = time.monotonic()
     try:
         settings = execution_settings(settings, started)
@@ -400,6 +402,8 @@ def _safe_worktree_run(settings: CampaignSettings, direction: Direction,
             return PipelineOutcome(direction, PipelineStatus.BUDGET_BLOCKED,
                                    BUDGET_BLOCKED_REASON, 0, [str(analysis_path)],
                                    branch=branch, baseline_commit=baseline)
+        if on_start is not None:
+            on_start(time.monotonic())
         outcome = _run_in_worktree(
             settings, direction, analysis_path, worktree, branch, baseline, agent_args)
         check_publication(outcome, getattr(settings, "_execution_deadline", None), worktree)
