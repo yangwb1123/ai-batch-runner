@@ -269,6 +269,10 @@ def _merge_ready(root: Path, ready: list, blocked: list, gate: str, base: str,
                  rerun=None) -> list:
     merged = []
     for item in ready:
+        if not _clean(root):
+            _block(item, blocked, "merge_blocked",
+                   "repository root is dirty before this merge; refusing to merge on it")
+            continue
         violations = scope_violations(root, item.lane)
         if violations:
             _block(item, blocked, "lane_scope_violation",

@@ -328,3 +328,49 @@ def test_a_flake_that_fails_in_isolation_is_not_retried(tmp_path):
     row = receipt["lanes"][0]
     assert row["merge_status"] == "merge_blocked" and row["merge_attempts"] == 1
     assert row["flake_evidence"]["isolated_rerun_passed"] is False
+
+
+def test_a_conflicting_merge_never_leaves_the_root_repository_conflicted(tmp_path):
+    from pbatch import session_merge
+
+    root = _repo(tmp_path)
+    run = lambda *a: subprocess.run(["git", "-C", str(root), *a], check=True,
+                                    capture_output=True, text=True)
+    (root / "shared.txt").write_text("base\n", encoding="utf-8")
+    run("add", "shared.txt"); run("commit", "-qm", "shared base")
+    run("checkout", "-q", "-b", "feat/conflict")
+    (root / "shared.txt").write_text("lane side\n", encoding="utf-8")
+    run("commit", "-qam", "lane side")
+    run("checkout", "-q", "main")
+    (root / "shared.txt").write_text("main side\n", encoding="utf-8")
+    run("commit", "-qam", "main side")
+
+    merged, detail = session_merge._merge_session(root, "feat/conflict", False)
+
+    assert merged is False
+    assert "conflict" in detail.lower() or detail == ""
+    status = subprocess.run(["git", "-C", str(root), "status", "--porcelain"],
+                            capture_output=True, text=True).stdout
+    assert status.strip() == "", "the root repository must be restored after a blocked merge"
+    assert subprocess.run(["git", "-C", str(root), "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+                          capture_output=True).returncode != 0
+    assert (root / "shared.txt").read_text(encoding="utf-8") == "main side\n"
+
+
+def test_a_dirty_root_blocks_the_merge_instead_of_merging_on_it(tmp_path):
+    root = _repo(tmp_path)
+    _commit_script(root, "alpha", "alpha.txt", "alpha")
+    lane = lane_run.Lane(lane_id="alpha", branch="feat/alpha",
+                         worktree=root.parent / "wt-alpha",
+                         command=(str(root.parent / "alpha.sh"),))
+    original = lane_run._merge_ready
+    def dirty_then_merge(rt, ready, blocked, gate, base, rerun=None):
+        (rt / "base.txt").write_text("dirty before merge\n", encoding="utf-8")
+        return original(rt, ready, blocked, gate, base, rerun)
+    lane_run._merge_ready = dirty_then_merge
+    try:
+        receipt = lane_run.run_round(root, [lane], gate="true")
+    finally:
+        lane_run._merge_ready = original
+    assert receipt["blocked"] == ["alpha"]
+    assert "dirty" in receipt["lanes"][0]["reason"]

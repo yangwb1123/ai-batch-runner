@@ -170,16 +170,36 @@ def _commits_ahead(root: Path, base_ref: str, branch: str) -> int:
         return 0
 
 
+def _abort_partial_merge(root: Path) -> None:
+    """Return the root repository to its pre-merge state after a failed merge.
+
+    A failed `--no-ff` merge leaves MERGE_HEAD and conflict markers in the
+    working tree; a failed `--squash` merge leaves the result staged. Both make
+    every later preflight refuse ("repository root is dirty"), and a conflicted
+    tree even breaks imports for the next round. The merge preflight verified a
+    clean root before merging, so returning to HEAD restores exactly the
+    pre-merge state. The session branch and worktree stay untouched: that is
+    where the failed work is preserved.
+    """
+    aborted = _git(["merge", "--abort"], root)
+    if aborted.returncode != 0:
+        _git(["reset", "--hard", "HEAD"], root)
+
+
 def _merge_session(root: Path, branch: str, squash: bool) -> tuple:
     """把 session 分支并入主分支：--no-ff（保留提交）或 --squash（单提交）。"""
     if squash:
         proc = _git(["merge", "--squash", branch], root)
         if proc.returncode != 0:
-            return False, proc.stderr.strip()
+            _abort_partial_merge(root)
+            return False, (proc.stdout + proc.stderr).strip()
         commit = _git(["commit", "-qm", f"session: {branch} (squashed)"], root)
         return (commit.returncode == 0, commit.stderr.strip())
     proc = _git(["merge", "--no-ff", branch, "-m", f"merge: session {branch}"], root)
-    return (proc.returncode == 0, proc.stderr.strip())
+    if proc.returncode != 0:
+        _abort_partial_merge(root)
+        return False, (proc.stdout + proc.stderr).strip()
+    return True, ""
 
 
 def _cleanup_session(root: Path, branch: str, workdir: Path) -> None:
