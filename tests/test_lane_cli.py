@@ -168,7 +168,8 @@ def test_invalid_plans_fail_closed_without_touching_the_repository(tmp_path, pla
     assert "lanes:" in capsys.readouterr().out
 
 
-def test_a_failed_lane_still_consumes_the_invocation_budget(tmp_path, capsys):
+def test_a_lane_that_never_produced_work_is_retried_not_stopped(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(lane_cli.time, "sleep", lambda _seconds: None)
     root = _repo(tmp_path)
     lane = _lane(root, "a")
     lane["command"] = ["/bin/sh", "-c", "exit 7"]
@@ -177,7 +178,9 @@ def test_a_failed_lane_still_consumes_the_invocation_budget(tmp_path, capsys):
                          "--hours", "1", "--invocations", "2", "--json"])
     status = lane_loop.status(root)
     assert status["consumed"] == 1, "a lane that ran and failed still spent budget"
-    assert status["stopped"].startswith("round gate_failed")
+    assert status["stopped"] is None
+    assert status["restarts"] == 1, "a dead lane is a liveness failure, so it is retried"
+    assert "restart" in capsys.readouterr().out
 
 
 def test_resume_lifts_only_a_resumable_stop(tmp_path, capsys):
@@ -194,3 +197,22 @@ def test_resume_lifts_only_a_resumable_stop(tmp_path, capsys):
 @pytest.fixture(autouse=True)
 def _isolated_runtime(tmp_path, monkeypatch):
     monkeypatch.setenv("PBATCH_RUNTIME_HOME", str(tmp_path / "runtime"))
+
+
+def _receipt(**overrides):
+    base = {"merged": [], "blocked": [], "lanes": []}
+    base.update(overrides)
+    return base
+
+
+def test_round_classification_separates_liveness_from_gate_failures():
+    lanes = [object(), object()]
+    assert lane_cli._classify(_receipt(merged=["a", "b"]), lanes) == lane_loop.COMPLETED
+    dead = _receipt(blocked=["a", "b"],
+                    lanes=[{"status": "lane_failed"}, {"status": "lane_timeout"}])
+    assert lane_cli._classify(dead, lanes) == lane_loop.CRASHED
+    gated = _receipt(blocked=["a"], lanes=[{"status": "merge_blocked"}])
+    assert lane_cli._classify(gated, lanes) == lane_loop.GATE_FAILED
+    mixed = _receipt(blocked=["a", "b"],
+                     lanes=[{"status": "lane_failed"}, {"status": "merge_blocked"}])
+    assert lane_cli._classify(mixed, lanes) == lane_loop.GATE_FAILED

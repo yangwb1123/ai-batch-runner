@@ -102,10 +102,20 @@ def _window_for(args) -> lane_loop.Window:
 
 
 def _classify(receipt: dict, lanes: list) -> str:
+    """Separate "work was never produced" from "work failed a gate".
+
+    A lane whose command died (provider/network/timeout) produced nothing to
+    judge, so the round is a liveness failure and may be retried with backoff.
+    A lane that produced commits and then failed its scope or gate is
+    deterministic: retrying it only hides the failure.
+    """
     merged = set(receipt.get("merged") or [])
     blocked = set(receipt.get("blocked") or [])
     if len(merged) == len(lanes) and not blocked:
         return lane_loop.COMPLETED
+    statuses = {row.get("status") for row in receipt.get("lanes") or []}
+    if statuses and statuses <= {"lane_failed", "lane_timeout"}:
+        return lane_loop.CRASHED
     if blocked:
         return lane_loop.GATE_FAILED
     return lane_loop.BLOCKED
