@@ -169,3 +169,8 @@ def test_resume_without_a_stop_is_refused(tmp_path):
     lane_loop.start_window(tmp_path, hours=1, invocations=1, now=1000.0)
     with pytest.raises(lane_loop.LaneLedgerError, match="not stopped"):
         lane_loop.resume(tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_runtime(tmp_path, monkeypatch):
+    monkeypatch.setenv("PBATCH_RUNTIME_HOME", str(tmp_path / "runtime"))

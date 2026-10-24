@@ -189,3 +189,8 @@ def test_resume_lifts_only_a_resumable_stop(tmp_path, capsys):
     lane_loop.stop(root, "deadline reached", now=1200.0)
     assert lane_cli.lanes_main(["resume", "--root", str(root)]) == 2
     assert "not resumable" in capsys.readouterr().out
+
+
+@pytest.fixture(autouse=True)
+def _isolated_runtime(tmp_path, monkeypatch):
+    monkeypatch.setenv("PBATCH_RUNTIME_HOME", str(tmp_path / "runtime"))

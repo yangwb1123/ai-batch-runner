@@ -174,13 +174,28 @@ def _run_lane(lane: Lane) -> LaneOutcome:
                        evidence=[line for line in tail.strip().splitlines()[-3:]])
 
 
-def _create_worktrees(root: Path, lanes: list) -> None:
+def _create_worktrees(root: Path, lanes: list, round_base: str = "") -> None:
+    """Create each worktree from the round base and verify it landed there.
+
+    A worktree that silently starts from some other commit would later look like
+    a stale branch (or replay merged history), so the created HEAD is checked
+    against the recorded base and a mismatch fails closed.
+    """
     for lane in lanes:
         lane.worktree.parent.mkdir(parents=True, exist_ok=True)
         result = _git(["worktree", "add", str(lane.worktree), "-b", lane.branch, "HEAD"], root)
         if result.returncode != 0:
             raise LanePlanError("worktree add failed for %s: %s"
                                 % (lane.lane_id, result.stderr.strip()[:300]))
+        if not round_base:
+            continue
+        head = _git(["rev-parse", "HEAD"], lane.worktree).stdout.strip()
+        if head != round_base:
+            _git(["worktree", "remove", "--force", str(lane.worktree)], root)
+            _git(["branch", "-D", lane.branch], root)
+            raise LanePlanError(
+                "lane %s started from %s instead of the round base %s"
+                % (lane.lane_id, head[:8] or "unknown", round_base[:8]))
 
 
 def _scope_allows(path: str, scope: tuple) -> bool:
@@ -323,7 +338,7 @@ def run_round(root: Path, lanes: list, *, gate: str, jobs: int = 2,
     if isinstance(jobs, bool) or not isinstance(jobs, int) or jobs < 1:
         raise LanePlanError("jobs must be a positive integer")
     round_base = _git(["rev-parse", base], root).stdout.strip()
-    _create_worktrees(root, lanes)
+    _create_worktrees(root, lanes, round_base)
     outcomes = []
     with ThreadPoolExecutor(max_workers=min(jobs, len(lanes))) as pool:
         for outcome in pool.map(_run_lane, lanes):

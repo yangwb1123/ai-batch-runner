@@ -16,6 +16,12 @@ pytestmark = pytest.mark.skipif(subprocess.run(["git", "--version"],
                                 reason="git required")
 
 
+@pytest.fixture(autouse=True)
+def _isolated_runtime(tmp_path, monkeypatch):
+    """Round receipts are written under data_dir; never into the operator runtime."""
+    monkeypatch.setenv("PBATCH_RUNTIME_HOME", str(tmp_path / "runtime"))
+
+
 def _repo(tmp_path: Path) -> Path:
     root = tmp_path / "repo"
     root.mkdir()
