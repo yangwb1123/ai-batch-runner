@@ -364,9 +364,9 @@ def test_a_dirty_root_blocks_the_merge_instead_of_merging_on_it(tmp_path):
                          worktree=root.parent / "wt-alpha",
                          command=(str(root.parent / "alpha.sh"),))
     original = lane_run._merge_ready
-    def dirty_then_merge(rt, ready, blocked, gate, base, rerun=None):
+    def dirty_then_merge(rt, ready, blocked, gate, base, rerun=None, round_base=""):
         (rt / "base.txt").write_text("dirty before merge\n", encoding="utf-8")
-        return original(rt, ready, blocked, gate, base, rerun)
+        return original(rt, ready, blocked, gate, base, rerun, round_base)
     lane_run._merge_ready = dirty_then_merge
     try:
         receipt = lane_run.run_round(root, [lane], gate="true")
@@ -374,3 +374,24 @@ def test_a_dirty_root_blocks_the_merge_instead_of_merging_on_it(tmp_path):
         lane_run._merge_ready = original
     assert receipt["blocked"] == ["alpha"]
     assert "dirty" in receipt["lanes"][0]["reason"]
+
+
+def test_a_lane_derived_from_an_older_base_is_refused(tmp_path):
+    root = _repo(tmp_path)
+    run = lambda *a: subprocess.run(["git", "-C", str(root), *a], check=True,
+                                    capture_output=True, text=True)
+    round_base = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                                capture_output=True, text=True).stdout.strip()
+    lane = lane_run.Lane(lane_id="stale", branch="feat/stale",
+                         worktree=root.parent / "wt-stale", command=("true",))
+    lane.worktree.parent.mkdir(parents=True, exist_ok=True)
+    run("worktree", "add", "-q", str(lane.worktree), "-b", lane.branch, "HEAD")
+    (lane.worktree / "stale.txt").write_text("stale\n", encoding="utf-8")
+    run("-C", str(lane.worktree), "add", "stale.txt")
+    run("-C", str(lane.worktree), "commit", "-qm", "stale lane")
+
+    assert lane_run.stale_base(root, lane, "main", round_base) == ""
+    older = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD~0"],
+                           capture_output=True, text=True).stdout.strip()
+    reason = lane_run.stale_base(root, lane, "main", "0" * 40)
+    assert reason.startswith("lane branch is stale")

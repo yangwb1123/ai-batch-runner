@@ -196,6 +196,26 @@ def changed_paths(root: Path, lane: Lane) -> list:
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
+def stale_base(root: Path, lane: Lane, base: str, round_base: str) -> str:
+    """Return a reason when the lane branch was not created from the current base.
+
+    A branch carrying commits that main already merged (same messages, different
+    hashes) makes the rebase replay them and conflicts on unrelated lines. The
+    merge therefore requires the branch to be a direct descendant of the current
+    base head.
+    """
+    ancestor = _git(["rev-parse", "--verify", "--quiet", lane.branch], root)
+    if ancestor.returncode != 0:
+        return "lane branch is missing"
+    if not round_base:
+        return ""
+    merge_base = _git(["merge-base", base, lane.branch], root).stdout.strip()
+    if merge_base != round_base:
+        return ("lane branch is stale: derived from %s, but this round started at %s"
+                % (merge_base[:8] or "unknown", round_base[:8]))
+    return ""
+
+
 def scope_violations(root: Path, lane: Lane) -> list:
     if not lane.scope:
         return []
@@ -266,9 +286,13 @@ def _block(item: LaneOutcome, blocked: list, status: str, reason: str) -> None:
 
 
 def _merge_ready(root: Path, ready: list, blocked: list, gate: str, base: str,
-                 rerun=None) -> list:
+                 rerun=None, round_base: str = "") -> list:
     merged = []
     for item in ready:
+        stale = stale_base(root, item.lane, base, round_base)
+        if stale:
+            _block(item, blocked, "lane_stale_base", stale)
+            continue
         if not _clean(root):
             _block(item, blocked, "merge_blocked",
                    "repository root is dirty before this merge; refusing to merge on it")
@@ -298,6 +322,7 @@ def run_round(root: Path, lanes: list, *, gate: str, jobs: int = 2,
     preflight(root, lanes)
     if isinstance(jobs, bool) or not isinstance(jobs, int) or jobs < 1:
         raise LanePlanError("jobs must be a positive integer")
+    round_base = _git(["rev-parse", base], root).stdout.strip()
     _create_worktrees(root, lanes)
     outcomes = []
     with ThreadPoolExecutor(max_workers=min(jobs, len(lanes))) as pool:
@@ -305,7 +330,7 @@ def run_round(root: Path, lanes: list, *, gate: str, jobs: int = 2,
             outcomes.append(outcome)
     blocked = [item for item in outcomes if item.status != "lane_passed"]
     merged = _merge_ready(root, [item for item in outcomes if item.status == "lane_passed"],
-                          blocked, gate, base, rerun)
+                          blocked, gate, base, rerun, round_base)
     receipt = {
         "schema_version": 1,
         "at": time.time(),
