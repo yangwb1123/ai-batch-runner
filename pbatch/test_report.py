@@ -61,7 +61,7 @@ def classify_tests(tests_dir: Path = TESTS_DIR) -> dict:
 def test_report_main(argv: Optional[list] = None) -> int:
     """`pi-batch test-report [--json]`：测试分类统计。"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py test-report",
+        prog="abr test-report",
         description="测试分类报告（Unit/Contract/Property/Scenario/Chaos）")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)

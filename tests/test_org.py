@@ -167,6 +167,10 @@ def test_check_exists_pi_batch_subcommand():
     commands = org._known_commands()
     assert org._check_exists("pi-batch impact --task", commands) is True
     assert org._check_exists("pi-batch no-such-cmd", commands) is False
+    assert org._check_exists("abr impact --task", commands) is True
+    assert org._check_exists("abr no-such-cmd", commands) is False
+    assert org._normalize_check_argv(["abr", "impact"]) == org._normalize_check_argv(
+        ["pi-batch", "impact"])
     assert org._check_exists("scripts/check-ui-spec.py --dir", commands) is True
     assert org._check_exists("pytest tests/", commands) is True
 

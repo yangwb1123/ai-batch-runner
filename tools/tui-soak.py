@@ -3,7 +3,7 @@
 
 The provider is deterministic local Pi RPC simulation, with no model or user
 credentials. This produces measured evidence, not a 7x24 or live-provider claim.
-Example: python tools/tui-soak.py dist/pi-batch-linux-x86_64 --cycles 10
+Example: python tools/tui-soak.py dist/abr-linux-x86_64 --cycles 10
 Duration mode: --cycles 0 --duration 3600 (finishes its current cycle).
 """
 

@@ -252,7 +252,7 @@ def analyze_file(path: str) -> dict:
 def refactor_main(argv: Optional[list] = None) -> int:
     """`pi-batch refactor --file PATH [--json]`：God File 重构分析。"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py refactor",
+        prog="abr refactor",
         description="God File 重构分析器：度量→职责→模式→迁移计划")
     parser.add_argument("--file", required=True, help="待分析文件")
     parser.add_argument("--json", action="store_true")

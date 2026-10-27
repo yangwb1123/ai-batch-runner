@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed release metadata checks for ai-batch-runner."""
+"""Fail-closed release metadata checks for abr."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-EXPECTED_DISTRIBUTION = "ai-batch-runner"
+EXPECTED_DISTRIBUTION = "abr"
 EXPECTED_ENTRY_POINT = "pbatch.cli:main"
 STABLE_VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 UNCLEARED_LICENSE = "must be re-checked for compatibility before further distribution"
@@ -59,10 +59,10 @@ def release_errors(tag: str = "", root: Path = ROOT) -> list[str]:
         )
     if STABLE_VERSION.fullmatch(version) is None:
         errors.append(f"project version must be stable X.Y.Z, got {version!r}")
-    entry_point = _table_value(pyproject, "project.scripts", "pi-batch")
+    entry_point = _table_value(pyproject, "project.scripts", "abr")
     if entry_point != EXPECTED_ENTRY_POINT:
         errors.append(
-            "console entry point pi-batch must target "
+            "console entry point abr must target "
             f"{EXPECTED_ENTRY_POINT!r}, got {entry_point!r}"
         )
     if f"## [{version}]" not in changelog:
@@ -89,7 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     version = _project_value(
         (ROOT / "pyproject.toml").read_text(encoding="utf-8"), "version"
     )
-    print(f"release-check: PASS: {EXPECTED_DISTRIBUTION} {version} -> pi-batch")
+    print(f"release-check: PASS: {EXPECTED_DISTRIBUTION} {version} -> abr")
     return 0
 
 

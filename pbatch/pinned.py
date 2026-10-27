@@ -91,7 +91,7 @@ def summary_valid(cached_fingerprint: str, cwd: str = "",
 def pinned_main(argv: Optional[list] = None) -> int:
     """`pi-batch pinned [--json] [--fingerprint CACHED]`。"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py pinned",
+        prog="abr pinned",
         description="Pinned context: 不可压缩上下文 + 摘要失效检测")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--fingerprint", default="",

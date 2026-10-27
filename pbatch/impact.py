@@ -141,7 +141,7 @@ def change_impact(task: str, code_dir: str = "") -> dict:
 def impact_main(argv: Optional[list] = None) -> int:
     """`pi-batch impact --task TEXT [--code DIR] [--json]`。"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py impact",
+        prog="abr impact",
         description="Change Impact Analyzer：执行前的影响分析（增量工作流）")
     parser.add_argument("--task", required=True, help="需求文本")
     parser.add_argument("--code", default="",

@@ -253,7 +253,7 @@ def test_agents_overlay_filters_and_refreshes_shared_ledger(tmp_path, monkeypatc
                 "#agent-runs-heading", Static).content)
             assert "Agents (1/3)" in heading
             assert app.query_one("#conversation", Markdown).source.startswith(
-                "# pi-batch")
+                "# abr")
 
     _run(scenario())
 

@@ -1,7 +1,11 @@
-# 发布 `pi-batch`
+# 发布 `abr`
 
-产品有两个稳定名称：PyPI distribution 是 `ai-batch-runner`，用户安装后执行的
-命令是 `pi-batch`。版本唯一事实源是 `pyproject.toml`。
+PyPI distribution 和用户安装后执行的主命令均为 `abr`。
+`pi-batch` 保留为兼容别名；Python 包 `pbatch`、`pi-batch.py`、`pi-batch.yaml`、
+`PBATCH_*`、`share/ai-batch-runner` 资产布局与用户数据路径不迁移。
+GitHub 仓库仍为 `yangwb1123/ai-batch-runner`。版本唯一事实源是 `pyproject.toml`。
+发布前须确认 PyPI 的 `abr` 项目名可用或已归发布者所有；本地改名不代表已取得名称。
+从旧发行包迁移时，在新的 pipx 环境安装 `abr`，不要在同一环境叠装两份共享路径的包。
 
 ## 最小 Linux 发行范围
 
@@ -36,7 +40,7 @@ CHANGELOG，并把签名版本标签指向可从 `main` 到达的提交。在 Ac
 ## 一次性设置
 
 1. 在 PyPI 创建 pending Trusted Publisher：
-   - PyPI project：`ai-batch-runner`
+   - PyPI project：`abr`
    - GitHub owner：`yangwb1123`
    - Repository：`ai-batch-runner`
    - Workflow：`release.yml`
@@ -68,14 +72,14 @@ Trusted Publishing 使用 GitHub OIDC 短期凭证，不在仓库或 GitHub Secr
    python -m build
    python -m twine check dist/*
    # `binary` extra provides PyInstaller
-   python tools/build-binary.py --output dist --name pi-batch-linux-x86_64
-   python tools/smoke-binary.py dist/pi-batch-linux-x86_64
+   python tools/build-binary.py --output dist --name abr-linux-x86_64
+   python tools/smoke-binary.py dist/abr-linux-x86_64
    ```
 
 3. 合并到 `main` 后创建并推送签名标签：
 
    ```bash
-   git tag -s vX.Y.Z -m "pi-batch X.Y.Z"
+   git tag -s vX.Y.Z -m "abr X.Y.Z"
    git push github vX.Y.Z
    ```
 
@@ -83,7 +87,7 @@ Trusted Publishing 使用 GitHub OIDC 短期凭证，不在仓库或 GitHub Secr
    再重新执行完整门禁、构建 wheel/sdist、在隔离虚拟环境中安装冒烟测试，然后构建
    Linux/macOS Intel/macOS ARM/Windows 二进制并分别冒烟测试。全部二进制验证通过后，工作流停在 `pypi`
    Environment 等待批准；批准后上传 PyPI，并把同一批二进制及 `SHA256SUMS` 上传到 GitHub Release。
-   二进制只包含 `pi-batch` 编排器和规范资产；`pi`、Codex、Claude 等 provider CLI 仍
+   二进制只包含 `abr` 编排器和规范资产；`pi`、Codex、Claude 等 provider CLI 仍
    由用户单独安装并配置。
 5. 运行态隔离：默认发行包/CLI 将 session、memory、被拒诊断、campaign 报告、日志和
    实例锁写入 `~/.abr/projects/<workspace-id>/`，不会在被操作仓库创建
@@ -94,10 +98,10 @@ Trusted Publishing 使用 GitHub OIDC 短期凭证，不在仓库或 GitHub Secr
 从公共索引验证：
 
    ```bash
-   pipx install ai-batch-runner==X.Y.Z
-   pi-batch --version
-   pi-batch doctor
-   pi-batch tui
+   pipx install abr==X.Y.Z
+   abr --version
+   abr doctor
+   abr tui
    ```
 
 PyPI 文件不可覆盖。错误版本应在 PyPI yank，并立即发布修复版本；不要删除标签后
@@ -115,10 +119,10 @@ PyPI 文件不可覆盖。错误版本应在 PyPI yank，并立即发布修复�
 
 | 二进制 | GitHub runner | Python 架构 |
 |---|---|---|
-| `pi-batch-linux-x86_64` | `ubuntu-22.04` | x64 |
-| `pi-batch-macos-x86_64` | `macos-15-intel` | x64 |
-| `pi-batch-macos-arm64` | `macos-15` | arm64 |
-| `pi-batch-windows-x86_64.exe` | `windows-2022` | x64 |
+| `abr-linux-x86_64` | `ubuntu-22.04` | x64 |
+| `abr-macos-x86_64` | `macos-15-intel` | x64 |
+| `abr-macos-arm64` | `macos-15` | arm64 |
+| `abr-windows-x86_64.exe` | `windows-2022` | x64 |
 
 标签与架构依据 [GitHub 官方 runner 支持表](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
 核对（2026-09-22）。旧 `macos-13` 已退役，`macos-14` 正在弃用并计划于
@@ -131,12 +135,12 @@ PyPI 文件不可覆盖。错误版本应在 PyPI yank，并立即发布修复�
 及活动 provider 的 SIGTERM/SIGHUP 退出验收、持久化 UNKNOWN 恢复检查，
 以及批处理 SIGTERM/SIGINT 的子进程回收与实例锁交接。
 构建、验证及各 job 均有超时。成功与失败都会尝试保留 14 天的
-`pi-batch-verification-<platform>` 工件，包含平台与源码提交、步骤结局、文件锁与构建日志、
+`abr-verification-<platform>` 工件，包含平台与源码提交、步骤结局、文件锁与构建日志、
 `smoke.json`、`smoke.log`，以及 Linux 的 `soak/`、`signals/`、`recovery/` 和
 `batch-signals/` 证据。未启动的步骤在结局中显示
 `skipped`，不会伪装成通过；job 被强制终止或 runner 丢失时可能无法上传诊断。
 
-只有全部必要检查通过的平台才上传 `pi-batch-binary-<platform>` 工件。正式发布仅
+只有全部必要检查通过的平台才上传 `abr-binary-<platform>` 工件。正式发布仅
 下载这个名称前缀，工件包含二进制及其构建清单、LICENSE；失败诊断不会混入
 Release 资产。Windows smoke 明确
 记录 POSIX PTY 跳过，不能据此声称 Windows TUI 交互或整个进程树回收已经验收。
@@ -146,12 +150,12 @@ Windows job 也用于暴露实际移植缺口；其失败会阻止发布，不�
 
 ## 二进制安装与移动端
 
-从 GitHub Release 下载与系统匹配的 `pi-batch-<platform>-<arch>` 后即可运行：
+从 GitHub Release 下载与系统匹配的 `abr-<platform>-<arch>` 后即可运行：
 
 ```bash
-chmod +x pi-batch-linux-x86_64
-./pi-batch-linux-x86_64 --version
-./pi-batch-linux-x86_64 ops serve --help
+chmod +x abr-linux-x86_64
+./abr-linux-x86_64 --version
+./abr-linux-x86_64 ops serve --help
 ```
 
 二进制不是 provider 的替代品；执行真实任务前仍需安装 `pi`/Codex 等 agent。升级时
@@ -160,13 +164,13 @@ chmod +x pi-batch-linux-x86_64
 未使用的默认 agent。默认回退及 gate-fix 会使用的程序仍须可用。
 使用 `--validate gofmt` 时需要目标环境安装 `gofmt`；缺少工具、工具执行失败或
 存在未格式化文件都会拒绝产物落盘。
-Codex 不在 PATH 中时，可用 `pi-batch tui --runtime app-server --agent-bin
+Codex 不在 PATH 中时，可用 `abr tui --runtime app-server --agent-bin
 "/absolute/path/codex"` 指定安装位置；路径作为单个参数传给子进程，支持空格。
 
 在没有项目 `pi-batch.yaml` 的目录启动时，包内配置属于默认层，用户
 `settings.yaml` 中的 provider/agent 设置可以覆盖它。优先级为 CLI 参数、项目配置、
 用户配置、打包默认。现存配置读取或 YAML 解析失败会拒绝普通执行；使用
-`pi-batch config check --json` 或 `pi-batch doctor --json` 查看文件位置和诊断，
+`abr config check --json` 或 `abr doctor --json` 查看文件位置和诊断，
 错误信息不展开可能含凭据的 YAML 正文。
 
 配置只接受普通文件（含指向普通文件的符号链接）；FIFO 等特殊文件及打开时被替换
@@ -180,7 +184,7 @@ Codex 不在 PATH 中时，可用 `pi-batch tui --runtime app-server --agent-bin
 
 本机可从当前源码构建，无需先发布标签：安装 `.[binary]` 后运行
 `python tools/build-binary.py --output dist`，再执行
-`python tools/smoke-binary.py dist/pi-batch`（Windows 使用 `dist/pi-batch.exe`）。
+`python tools/smoke-binary.py dist/abr`（Windows 使用 `dist/abr.exe`）。
 需要机器可读证据时添加 `--report dist/binary-smoke.json`；报告包含实际通过、跳过和
 失败项目以及二进制摘要，验证失败也会写报告并返回非零退出码。
 从目标项目目录运行该文件即可进入 TUI；构建结果只适用于构建平台，Linux 系统库
@@ -197,10 +201,10 @@ Codex 不在 PATH 中时，可用 `pi-batch tui --runtime app-server --agent-bin
 构建目录中的 `.build.lock` 文件保留用于维持锁身份，不属于发布资产。
 
 ```bash
-python tools/build-binary.py --output dist/linux-candidate --name pi-batch-linux-x86_64
+python tools/build-binary.py --output dist/linux-candidate --name abr-linux-x86_64
 python tools/binary_manifest.py verify \
-  --manifest dist/linux-candidate/pi-batch-linux-x86_64.manifest.json --source-root .
-python tools/smoke-binary.py dist/linux-candidate/pi-batch-linux-x86_64 \
+  --manifest dist/linux-candidate/abr-linux-x86_64.manifest.json --source-root .
+python tools/smoke-binary.py dist/linux-candidate/abr-linux-x86_64 \
   --report dist/linux-candidate/smoke.json
 ```
 
@@ -239,8 +243,8 @@ stdin prompt 与任务文件受 `input.max_bytes`（默认 2 MiB）约束，按 
 Linux 可继续执行同一个 TUI 进程的故障恢复验收：
 
 ```bash
-python tools/tui-soak.py dist/pi-batch-linux-x86_64 --cycles 3
-python tools/tui-soak.py dist/pi-batch-linux-x86_64 --cycles 0 --duration 3600
+python tools/tui-soak.py dist/abr-linux-x86_64 --cycles 3
+python tools/tui-soak.py dist/abr-linux-x86_64 --cycles 0 --duration 3600
 ```
 
 脚本通过真实 PTY 操作二进制，循环发送成功、失败、超时与取消任务，并通过
@@ -256,7 +260,7 @@ POSIX TUI 收到 SIGTERM/SIGHUP 时执行取消与正常清理，退出码为 `1
 可用本地模拟 provider 验证活动任务期间的信号退出、日志收尾与进程清理：
 
 ```bash
-python tools/smoke-tui-signals.py --binary dist/pi-batch-linux-x86_64
+python tools/smoke-tui-signals.py --binary dist/abr-linux-x86_64
 ```
 
 已持久化 UNKNOWN 的会话重启后保持只读；QUEUED/RUNNING/INTERRUPTING 等未确认
@@ -265,7 +269,7 @@ python tools/smoke-tui-signals.py --binary dist/pi-batch-linux-x86_64
 已确认 SUCCEEDED 续接和原日志不变；它不代表实际 SIGKILL 注入：
 
 ```bash
-python tools/smoke-tui-recovery.py --binary dist/pi-batch-linux-x86_64 \
+python tools/smoke-tui-recovery.py --binary dist/abr-linux-x86_64 \
   --output-dir validation/recovery
 ```
 
@@ -274,7 +278,7 @@ python tools/smoke-tui-recovery.py --binary dist/pi-batch-linux-x86_64 \
 临时产物清理，以及同工作区立即重启；不调用模型：
 
 ```bash
-python tools/smoke-batch-signals.py --binary dist/pi-batch-linux-x86_64 \
+python tools/smoke-batch-signals.py --binary dist/abr-linux-x86_64 \
   --output-dir validation/batch-signals
 ```
 
@@ -283,10 +287,10 @@ python tools/smoke-batch-signals.py --binary dist/pi-batch-linux-x86_64 \
 配置，不改登录凭据。输出目录必须是新目录：
 
 ```bash
-python tools/smoke-provider.py dist/linux-candidate/pi-batch-linux-x86_64 \
+python tools/smoke-provider.py dist/linux-candidate/abr-linux-x86_64 \
   --runtime codex-app-server --allow-model-calls --turn-timeout 120 \
   --output dist/linux-candidate/provider-codex
-python tools/smoke-provider.py dist/linux-candidate/pi-batch-linux-x86_64 \
+python tools/smoke-provider.py dist/linux-candidate/abr-linux-x86_64 \
   --runtime pi-rpc --allow-model-calls --turn-timeout 120 \
   --output dist/linux-candidate/provider-pi
 ```
@@ -300,14 +304,14 @@ python tools/smoke-provider.py dist/linux-candidate/pi-batch-linux-x86_64 \
 在运行 agent 的机器上启动手机浏览器控制台。默认只读、只监听本机：
 
 ```bash
-pi-batch ops serve --port 8731 --token-file ~/.config/pbatch/ops-token
+abr ops serve --port 8731 --token-file ~/.config/pbatch/ops-token
 ```
 
 浏览器打开 `http://127.0.0.1:8731/?token=...` 可查看 runs、日志和本地会话历史。
 要从手机发送指令，必须显式开启服务端托管会话：
 
 ```bash
-pi-batch ops serve --control --token-file ~/.config/pbatch/ops-token \
+abr ops serve --control --token-file ~/.config/pbatch/ops-token \
   --agent pi --runtime auto
 ```
 
@@ -316,7 +320,7 @@ pi-batch ops serve --control --token-file ~/.config/pbatch/ops-token \
 provider thread。跨局域网监听必须同时配置 token 和 TLS 证书：
 
 ```bash
-pi-batch ops serve --host 0.0.0.0 --control \
+abr ops serve --host 0.0.0.0 --control \
   --token-file ~/.config/pbatch/ops-token \
   --tls-cert server.crt --tls-key server.key
 ```

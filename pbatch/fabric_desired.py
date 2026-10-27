@@ -53,7 +53,7 @@ def load_desired_specs(path: str) -> list:
 def desired_main(argv: Optional[list] = None) -> int:
     """`pi-batch devices desired apply|status --file desired.yaml`。"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py desired",
+        prog="abr desired",
         description="Desired-State Controller：声明期望 → 观察 → 纠偏")
     parser.add_argument("command", choices=("apply", "status"))
     parser.add_argument("--file", required=True, help="desired 状态文件")

@@ -50,11 +50,11 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
 def _release_fixture(root: Path, license_text: str) -> None:
     (root / "pyproject.toml").write_text(
         """[project]
-name = "ai-batch-runner"
+name = "abr"
 version = "1.2.3"
 
 [project.scripts]
-pi-batch = "pbatch.cli:main"
+abr = "pbatch.cli:main"
 """,
         encoding="utf-8",
     )
@@ -68,7 +68,7 @@ def test_release_metadata_is_consistent() -> None:
     version = _version()
     result = _run()
     assert result.returncode == 0, result.stderr
-    assert f"ai-batch-runner {version} -> pi-batch" in result.stdout
+    assert f"abr {version} -> abr" in result.stdout
 
 
 def test_tagged_release_fails_closed_for_unresolved_license(tmp_path: Path) -> None:
@@ -100,15 +100,15 @@ def test_release_check_does_not_accept_entry_point_text_in_a_comment(
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(
         pyproject.read_text(encoding="utf-8").replace(
-            'pi-batch = "pbatch.cli:main"',
-            '# pi-batch = "pbatch.cli:main"\nwrong = "pbatch.cli:main"',
+            'abr = "pbatch.cli:main"',
+            '# abr = "pbatch.cli:main"\nwrong = "pbatch.cli:main"',
         ),
         encoding="utf-8",
     )
 
     errors = RELEASE_ERRORS("v1.2.3", tmp_path)
 
-    assert any("console entry point pi-batch" in error for error in errors)
+    assert any("console entry point abr" in error for error in errors)
 
 
 def test_binary_builder_contains_platform_assets_without_source_checkout_at_runtime() -> None:
@@ -132,13 +132,13 @@ def test_binary_builder_embeds_utf8_for_redirected_multilingual_output(tmp_path,
             return original_run(command, **kwargs)
         commands.append(command)
         output = Path(command[command.index("--distpath") + 1])
-        (output / "pi-batch.exe").write_bytes(b"frozen executable")
+        (output / "abr.exe").write_bytes(b"frozen executable")
     monkeypatch.setattr(BINARY_MODULE["platform"], "system", lambda: "Windows")
     monkeypatch.setattr(BINARY_MODULE["subprocess"], "run", build_stub)
     executable = BINARY_MODULE["build"](tmp_path)
     command = commands[0]
     assert command[command.index("--python-option") + 1] == "X utf8=1"
-    assert executable.name == "pi-batch.exe"
+    assert executable.name == "abr.exe"
 
 
 def test_release_workflow_builds_and_publishes_platform_binaries() -> None:
@@ -149,7 +149,7 @@ def test_release_workflow_builds_and_publishes_platform_binaries() -> None:
     assert "uses: ./.github/workflows/binary-verify.yml" in workflow
     assert "gh release create" in workflow
     assert "--clobber" not in workflow
-    assert "sha256sum pi-batch-* > SHA256SUMS" in workflow
+    assert "sha256sum abr-* > SHA256SUMS" in workflow
     binary = (ROOT / ".github/workflows/binary-verify.yml").read_text(encoding="utf-8")
     assert '.[binary]' in binary
     for target in ("linux-x86_64", "macos-x86_64", "macos-arm64", "windows-x86_64"):
@@ -161,6 +161,8 @@ def test_release_workflow_uses_oidc_and_a_protected_environment() -> None:
         encoding="utf-8")
     assert "tags:" in workflow and "v[0-9]+.[0-9]+.[0-9]+" in workflow
     assert "environment:" in workflow and "name: pypi" in workflow
+    assert "https://pypi.org/p/abr" in workflow
+    assert "/bin/abr --version" in workflow
     assert "id-token: write" in workflow
     assert "password:" not in workflow and "api-token" not in workflow
     assert 'git merge-base --is-ancestor "${GITHUB_SHA}" origin/main' in workflow
@@ -181,6 +183,14 @@ def test_release_workflow_pins_every_action_to_a_commit() -> None:
         assert match is not None, f"action is not pinned to a full SHA: {raw}"
         uses.append(match.groups())
     assert {action: (sha, version) for action, sha, version in uses} == ACTION_PINS
+
+
+def test_legacy_entry_point_alone_cannot_satisfy_release_contract(tmp_path):
+    _release_fixture(tmp_path, "Verified redistribution terms.\n")
+    path = tmp_path / "pyproject.toml"
+    path.write_text(path.read_text().replace('abr = "pbatch.cli:main"',
+                                            'pi-batch = "pbatch.cli:main"'))
+    assert any("console entry point abr" in error for error in RELEASE_ERRORS(root=tmp_path))
 
 
 def test_release_checker_is_not_runtime_package_data() -> None:

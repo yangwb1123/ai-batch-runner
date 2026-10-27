@@ -446,7 +446,7 @@ def _sleep(seconds: float, stop_event: Optional[threading.Event]) -> None:
 
 
 def runner_main(argv: Optional[list] = None) -> int:
-    parser = argparse.ArgumentParser(prog="pi-batch.py runner",
+    parser = argparse.ArgumentParser(prog="abr runner",
                                      description="设备 Runner（D3，出站连接）")
     parser.add_argument("--control", required=True,
                         help="控制平面地址 host:port")

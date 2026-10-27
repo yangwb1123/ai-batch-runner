@@ -500,7 +500,7 @@ class TUIFollowUpMixin:
             composer.placeholder = (
                 f"Queue follow-up ({count})… use /steer TEXT when supported")
         else:
-            composer.placeholder = "Ask pi-batch…"
+            composer.placeholder = "Ask abr…"
 
     def _follow_up_status_lines(self) -> list[str]:
         items = self._follow_up_queue.items

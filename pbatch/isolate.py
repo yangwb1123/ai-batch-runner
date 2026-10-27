@@ -178,7 +178,7 @@ def _report_task_failure(workdir: Path, exit_code: int) -> None:
     kind = "locked" if exit_code == _LOCK_EXIT else "failed"
     print(f"\n[isolate] TASK {kind.upper()} (exit={exit_code}) — "
           f"worktree left in place for diagnosis:")
-    print(f"  cd {workdir} && pi-batch ... --reuse   # 续跑")
+    print(f"  cd {workdir} && abr ... --reuse   # 续跑")
     print(f"  git -C {workdir} status                 # 现场")
 
 
@@ -395,8 +395,8 @@ def _finish_session(root: Path, branch: str, workdir: Path, sess: str,
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py isolate",
-        description="Run pi-batch in an isolated git worktree (one SSH "
+        prog="abr isolate",
+        description="Run abr in an isolated git worktree (one SSH "
                     "session = one worktree; --auto-merge validates then "
                     "merges back to the main branch).")
     parser.add_argument("-b", "--branch", required=True,
@@ -437,13 +437,13 @@ def _parser() -> argparse.ArgumentParser:
                              "another session holds the main-repository lock; "
                              ">0 polls until free or the budget expires")
     parser.add_argument("task_args", nargs=argparse.REMAINDER,
-                        help="args after '--' passed to pi-batch unchanged")
+                        help="args after '--' passed to abr unchanged")
     return parser
 
 
 def sessions_main(argv: list) -> int:
     """`pi-batch isolate sessions`：session 状态账本（新→旧）。"""
-    parser = argparse.ArgumentParser(prog="pi-batch.py isolate sessions")
+    parser = argparse.ArgumentParser(prog="abr isolate sessions")
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -470,8 +470,8 @@ def isolate_main(argv: list) -> None:
     parser = _parser()
     args = parser.parse_args(argv)
     if not args.task_args or args.task_args[0] != "--":
-        parser.error("usage: pi-batch isolate -b <branch> [--dir DIR] -- "
-                     "<pi-batch args...>")
+        parser.error("usage: abr isolate -b <branch> [--dir DIR] -- "
+                     "<abr args...>")
     task_args = args.task_args[1:]
     cwd = Path.cwd().resolve()
     root = _repo_root(cwd)

@@ -1,4 +1,4 @@
-# ai-batch-runner
+# abr
 
 An interactive terminal workbench and governed batch/pipeline runtime for **any CLI-based
 coding agent** — local-first and not tied to one vendor. Point it at `pi`,
@@ -9,17 +9,22 @@ or configure `agent.argument_flags` for another argv contract. The built-in adap
 
 ## 快速开始（产品 CLI）
 
+PyPI 发行名和主命令统一为 **`abr`**。旧命令 `pi-batch` 保留为兼容别名，
+本文及历史文档中的旧命令仍可使用。Python 包 `pbatch`、源码入口 `pi-batch.py`、
+项目配置 `pi-batch.yaml`、`PBATCH_*` 环境变量和已有用户数据目录保持不变；
+GitHub 仓库地址也不因发行改名而改变。
+
 首次公开发行仍受许可证确认门禁阻断；当前请在源码 checkout 根目录安装：
 
 ```bash
 pipx install .                     # 推荐：隔离安装当前源码
-# 首次公开发行后：pipx install ai-batch-runner
-pi-batch                  # 默认产品入口：交互式 TUI（真实终端）
-pi-batch doctor           # 环境诊断：安装/目录/配置/agent/密钥/锁
-pi-batch init             # 创建用户级工作目录骨架
-pi-batch version          # 版本 + 环境
-pi-batch -p "写一个订单接口，含支付审批，生产，go" --classify   # 一句话 → 全流程
-pi-batch completion bash >> ~/.bashrc    # shell 补全（zsh 同理）
+# 首次公开发行后：pipx install abr
+abr                      # 默认产品入口：交互式 TUI（真实终端）
+abr doctor               # 环境诊断：安装/目录/配置/agent/密钥/锁
+abr init                 # 创建用户级工作目录骨架
+abr version              # 版本 + 环境
+abr -p "写一个订单接口，含支付审批，生产，go" --classify   # 一句话 → 全流程
+abr completion bash >> ~/.bashrc    # shell 补全（zsh 同理）
 ```
 
 从源码开发安装使用 `pip install -e ".[dev]"`。维护者发布流程见 [`docs/RELEASING.md`](docs/RELEASING.md)。GitHub Release 会同时提供
@@ -67,6 +72,9 @@ NVIDIA 物理 GPU 支持按卡数和每卡空闲显存选机、分配展示与�
 支持 Snaplink JWT 和实例授权；本地试用、API 契约及生态接入边界见
 [`docs/AGENT_HUB.md`](docs/AGENT_HUB.md)。Aero ID 成员门禁、IM 通知、Audit 入账回执与
 `fleet integrations` 运维入口见 [生态集成](docs/agent-hub/ECOSYSTEM.md)。
+可选 `web` extra 与 Hub `web` 配置使用官方 Snaplink Python SDK 提供浏览器登录，
+首个切片仅查看授权实例/会话，不开放网页执行；配置、安全边界与部署验收见
+[SDK Web 登录](docs/agent-hub/WEB_LOGIN.md)。
 
 构建 wheel 安装时会同时携带规则注册表、验证脚本、默认流水线、角色模板和
 评估集；`pi-batch health --json` 会检查分发资产是否完整。
@@ -304,19 +312,21 @@ python pi-batch.py tasks.yaml --agent-bin codex  --mode serial
 ```bash
 # Install as a global CLI command (like pi/codex), then use it anywhere:
 pipx install .             # from the current source checkout
-# After the first public release: pipx install ai-batch-runner
-pi-batch                    # interactive TUI on a real terminal
-pi-batch tui                # explicit TUI entry
-pi-batch -p "analyze this project" -o output.md
+# After the first public release: pipx install abr
+abr                        # interactive TUI on a real terminal
+abr tui                    # explicit TUI entry
+abr -p "analyze this project" -o output.md
 python -m pbatch ...        # same entry, no install needed
 python pi-batch.py ...      # zero-install fallback from the repo root
 
 # Canonical earendil-works/pi namespace (arguments are forwarded verbatim)
-pi-batch pi                         # official Pi interactive mode
-pi-batch pi --print "summarize this repo" # official Pi one-shot text mode
-pi-batch pi --mode json "review"    # official Pi JSON event stream
-pi-batch pi --mode rpc              # official Pi LF-delimited JSONL RPC
-pi-batch pi -c                      # official Pi session continuation
+abr pi                             # official Pi interactive mode
+abr pi --print "summarize this repo" # official Pi one-shot text mode
+abr pi --mode json "review"         # official Pi JSON event stream
+abr pi --mode rpc                   # official Pi LF-delimited JSONL RPC
+abr pi -c                          # official Pi session continuation
+
+# Legacy pi-batch examples below remain supported by the compatibility alias.
 
 # Task type classifier: decide BEFORE execution whether a task is frontend UI
 pi-batch classify "用 Flutter 实现 ERP 排程列表页"

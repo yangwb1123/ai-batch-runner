@@ -148,7 +148,7 @@ def test_binary_checks_have_deadlines_and_do_not_hide_command_failures() -> None
     assert steps["soak"]["if"] == "matrix.asset == 'linux-x86_64'"
     assert "--output validation/soak" in steps["soak"]["run"]
     assert steps["signals"]["if"] == "matrix.asset == 'linux-x86_64'"
-    assert "tools/smoke-tui-signals.py --binary dist/pi-batch-linux-x86_64" in steps["signals"]["run"]
+    assert "tools/smoke-tui-signals.py --binary dist/abr-linux-x86_64" in steps["signals"]["run"]
     assert "--output-dir validation/signals" in steps["signals"]["run"]
     assert '"signals"' in outcomes["run"]
 
@@ -159,7 +159,7 @@ def test_linux_recovery_and_batch_shutdown_are_required_binary_checks():
     for name, tool in (("recovery", "smoke-tui-recovery.py"),
                        ("batch-signals", "smoke-batch-signals.py")):
         assert steps[name]["if"] == "matrix.asset == 'linux-x86_64'"
-        assert f"tools/{tool} --binary dist/pi-batch-linux-x86_64" in steps[name]["run"]
+        assert f"tools/{tool} --binary dist/abr-linux-x86_64" in steps[name]["run"]
         assert f"--output-dir validation/{name}" in steps[name]["run"]
         assert f'"{name}"' in outcomes["run"]
 
@@ -175,7 +175,7 @@ def test_failed_verification_evidence_cannot_become_a_release_asset() -> None:
     download = jobs["release-assets"]["steps"][0]["with"]
     assert fnmatch.fnmatchcase(binary["with"]["name"], download["pattern"])
     assert not fnmatch.fnmatchcase(evidence["with"]["name"], download["pattern"])
-    executable = "dist/pi-batch-${{ matrix.asset }}${{ matrix.extension }}"
+    executable = "dist/abr-${{ matrix.asset }}${{ matrix.extension }}"
     assert binary["with"]["path"].splitlines() == [
         executable, f"{executable}.manifest.json", f"{executable}.LICENSE"]
 

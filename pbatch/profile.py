@@ -466,7 +466,7 @@ def format_profile(report: dict) -> str:
 def profile_main(argv: Optional[list] = None) -> int:
     """`pi-batch profile "<requirement>" [--json]`：多维画像独立命令。"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py profile",
+        prog="abr profile",
         description="多维任务画像（向量/自主性/L0-L3 路由/裁量包络/假设）")
     parser.add_argument("task", nargs="*", default=[])
     parser.add_argument("--file", default="")

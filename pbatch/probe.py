@@ -125,7 +125,7 @@ def probe_main(argv: Optional[list] = None) -> int:
     """`pi-batch probe "任务" [--code DIR] [--budget-tokens N]
     [--budget-minutes N] [--json]`。"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py probe",
+        prog="abr probe",
         description="Dry-run 标准探测：确定性 ProbeReport（区间估计+置信度）")
     parser.add_argument("text", help="任务描述")
     parser.add_argument("--code", default="", help="代码目录（现有证据）")

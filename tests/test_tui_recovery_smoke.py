@@ -68,7 +68,7 @@ def _run(tmp_path, frames):
 
 
 def test_resume_notice_does_not_allow_erasing_before_rejected_draft_is_painted(tmp_path):
-    empty = _frame("Ask pi-batch…")
+    empty = _frame("Ask abr…")
     resume = "/resume saved-unknown"
     # One frame per acknowledgement the runner now waits for: the typed echo
     # before Enter, then the draft the read-only resume notice restores after
@@ -87,7 +87,7 @@ def test_resume_notice_does_not_allow_erasing_before_rejected_draft_is_painted(t
 
 
 def test_clear_acknowledgement_requires_composer_to_still_be_empty(tmp_path):
-    empty = _frame("Ask pi-batch…")
+    empty = _frame("Ask abr…")
     run = _run(tmp_path, [empty, _echo("/new")])
     run.terminal.composer.feed(_frame(DRAFT))
     run.retained_input = True
@@ -97,7 +97,7 @@ def test_clear_acknowledgement_requires_composer_to_still_be_empty(tmp_path):
 
 
 def test_provider_prompt_while_waiting_for_retained_draft_still_fails(tmp_path):
-    empty = _frame("Ask pi-batch…")
+    empty = _frame("Ask abr…")
     resume = "/resume saved-unknown"
     # The last frame clears the composer: the rejected draft has not been
     # restored yet, so the runner is still waiting when the prompt appears.

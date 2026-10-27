@@ -130,7 +130,7 @@ def test_linux_release_keeps_license_gate_and_pins_build_and_publish_source():
     assert checkout["with"]["ref"] == "${{ needs.validate.outputs.source_sha }}"
     assert checkout["with"]["persist-credentials"] is False
     download = _step("publish", "Download this run")
-    assert download["with"] == {"name": "pi-batch-binary-linux-x86_64", "path": "dist/"}
+    assert download["with"] == {"name": "abr-binary-linux-x86_64", "path": "dist/"}
     verify = _step("publish", "Verify exact source")["run"]
     assert "tools/binary_manifest.py verify" in verify and "--source-root ." in verify
     assert 'test "$(git rev-parse HEAD)" = "$SOURCE_SHA"' in verify
@@ -143,7 +143,7 @@ def test_linux_release_keeps_license_gate_and_pins_build_and_publish_source():
 def test_publish_provenance_requires_exact_clean_source(tmp_path, commit, dirty, allowed):
     directory = tmp_path / "dist"
     directory.mkdir()
-    (directory / "pi-batch-linux-x86_64.manifest.json").write_text(json.dumps({
+    (directory / "abr-linux-x86_64.manifest.json").write_text(json.dumps({
         "source": {"git": {"commit": commit, "dirty": dirty}}}))
     script = _step("publish", "Verify exact source")["run"]
     verifier = script.split("python - <<'PY'\n", 1)[1].split("\nPY", 1)[0]
@@ -171,9 +171,9 @@ def test_publish_rechecks_remote_tag_before_any_github_write(release_source, tmp
     command = json.loads(record.read_text())
     assert command[:3] == ["release", "create", TAG]
     assert command[command.index("--target") + 1] == commit
-    assert command[3:7] == ["dist/pi-batch-linux-x86_64",
-                            "dist/pi-batch-linux-x86_64.manifest.json",
-                            "dist/pi-batch-linux-x86_64.LICENSE", "dist/SHA256SUMS"]
+    assert command[3:7] == ["dist/abr-linux-x86_64",
+                            "dist/abr-linux-x86_64.manifest.json",
+                            "dist/abr-linux-x86_64.LICENSE", "dist/SHA256SUMS"]
     assert "--verify-tag" in command and "--clobber" not in command
 
 
@@ -191,8 +191,8 @@ def test_release_entries_never_overwrite_an_existing_version(release_source, tmp
 def test_full_release_checksums_use_downloaded_asset_basenames(tmp_path):
     directory = tmp_path / "dist"
     directory.mkdir()
-    assets = ["pi-batch-linux-x86_64", "pi-batch-linux-x86_64.manifest.json",
-              "pi-batch-linux-x86_64.LICENSE"]
+    assets = ["abr-linux-x86_64", "abr-linux-x86_64.manifest.json",
+              "abr-linux-x86_64.LICENSE"]
     for name in assets:
         (directory / name).write_bytes(b"verified artifact")
     step = _workflow("release.yml")["jobs"]["release-assets"]["steps"][-1]

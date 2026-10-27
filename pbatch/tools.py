@@ -87,7 +87,7 @@ def list_subcommands() -> list:
 def tools_main(argv: Optional[list] = None) -> int:
     """`pi-batch tools [--json] [--check]`。"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py tools",
+        prog="abr tools",
         description="Command index & dispatch integrity check")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--check", action="store_true",
@@ -114,7 +114,7 @@ def tools_main(argv: Optional[list] = None) -> int:
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
-        lines = ["# pi-batch 子命令索引", ""]
+        lines = ["# abr 子命令索引", ""]
         lines.append(f"{'COMMAND':<12} DESCRIPTION")
         for name, info in report.items():
             lines.append(f"{name:<12} {info['description'] or info['target']}")

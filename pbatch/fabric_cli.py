@@ -258,7 +258,7 @@ def _add_desired_parser(sub) -> None:
 def _build_devices_parser() -> argparse.ArgumentParser:
     """devices 子命令参数（运维只读层 + 执行/调度层）。"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py devices",
+        prog="abr devices",
         description="设备感知执行织网（INVENTORY/OBSERVE/EXECUTE 模式）")
     sub = parser.add_subparsers(dest="command", required=True)
 

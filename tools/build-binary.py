@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build one self-contained ``pi-batch`` executable with PyInstaller.
+"""Build one self-contained ``abr`` executable with PyInstaller.
 
 The binary contains the orchestrator and its read-only rule assets; provider
 CLIs (pi/codex/claude/...) remain explicitly external runtime dependencies.
@@ -45,7 +45,7 @@ def _add_data_args(root: Path, snapshot: dict | None = None) -> list[str]:
     return values
 
 
-def build(output: Path, root: Path = ROOT, artifact_name: str = "pi-batch") -> Path:
+def build(output: Path, root: Path = ROOT, artifact_name: str = "abr") -> Path:
     """Build and return the exact executable path without mutating source files."""
     if (not artifact_name or artifact_name in {".", ".."}
             or Path(artifact_name).name != artifact_name):
@@ -118,7 +118,7 @@ def _build_command(root: Path, output: Path, artifact_name: str, snapshot: dict)
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path("dist"))
-    parser.add_argument("--name", default="pi-batch")
+    parser.add_argument("--name", default="abr")
     args = parser.parse_args(argv)
     try:
         executable = build(args.output, artifact_name=args.name)

@@ -179,7 +179,7 @@ __all__ = ["aggregate_risk", "complexity_score", "confidence_score",
 def formulas_main(argv: list | None = None) -> int:
     """`pi-batch formulas <metric>` — expose the deterministic score API."""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py formulas",
+        prog="abr formulas",
         description="AADM deterministic uncertainty/risk/complexity/confidence formulas")
     sub = parser.add_subparsers(dest="metric", required=True)
 

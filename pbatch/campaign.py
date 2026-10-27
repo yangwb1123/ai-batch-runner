@@ -29,7 +29,7 @@ class CampaignContext:
 
 def build_campaign_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py campaign",
+        prog="abr campaign",
         description="Discover repository modules and run evidence-backed SDLC campaigns")
     parser.add_argument("--config", default="examples/repository-campaign.yaml")
     parser.add_argument("--modules", default="", help="comma-separated module directories")

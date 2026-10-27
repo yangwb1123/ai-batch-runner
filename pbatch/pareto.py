@@ -141,7 +141,7 @@ def _greedy_core(candidates: list, constraints: list) -> list:
 def pareto_main(argv: Optional[list] = None) -> int:
     """`pi-batch pareto --input FILE [--json]`：前沿 + Utility 选择 + MUC。"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py pareto",
+        prog="abr pareto",
         description="Pareto frontier + utility selection + MUC (AADM §15)")
     parser.add_argument("--input", required=True,
                         help="JSON: {objectives, minimize, weights, "

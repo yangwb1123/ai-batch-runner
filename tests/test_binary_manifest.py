@@ -103,7 +103,7 @@ def test_build_drift_removes_old_success_evidence_and_never_publishes_new_manife
         source, tmp_path, monkeypatch, change):
     output = tmp_path / "candidate"
     output.mkdir()
-    old_manifest = output / "pi-batch.manifest.json"
+    old_manifest = output / "abr.manifest.json"
     old_manifest.write_text('{"old_success":true}')
     original = (source / "pbatch/__init__.py").read_bytes()
     def change_input(staged, output):
@@ -264,7 +264,7 @@ def test_successful_compiler_without_output_cannot_bind_existing_binary(
     assert MANIFEST.git_record(source, MANIFEST.source_snapshot(source))["dirty"] is False
     output = tmp_path / "candidate"
     output.mkdir()
-    binary = output / "pi-batch"
+    binary = output / "abr"
     binary.write_bytes(b"old binary from an unrelated source")
     manifest, _ = MANIFEST.sidecars(binary)
     manifest.write_text('{"old_success":true}')
@@ -275,7 +275,7 @@ def test_successful_compiler_without_output_cannot_bind_existing_binary(
     assert not manifest.exists()
 
 
-def _run_build(errors, output, source, name="pi-batch"):
+def _run_build(errors, output, source, name="abr"):
     try:
         BUILDER["build"](output, source, name)
     except BaseException as exc:
@@ -293,7 +293,7 @@ def test_same_artifact_concurrent_build_is_refused_before_wrong_source_can_publi
     errors, calls = [], []
     def pause_after_compile(staged, output):
         calls.append(staged)
-        (output / "pi-batch").write_bytes((staged / "pbatch/__init__.py").read_bytes())
+        (output / "abr").write_bytes((staged / "pbatch/__init__.py").read_bytes())
         entered.set()
         assert release.wait(5)
     _fake_builder(monkeypatch, pause_after_compile)
@@ -308,7 +308,7 @@ def test_same_artifact_concurrent_build_is_refused_before_wrong_source_can_publi
         release.set()
         worker.join(5)
     assert not worker.is_alive() and errors == [] and len(calls) == 1
-    binary = output / "pi-batch"
+    binary = output / "abr"
     assert binary.read_bytes() == (source / "pbatch/__init__.py").read_bytes()
     evidence = json.loads(MANIFEST.sidecars(binary)[0].read_text())
     assert evidence["source"]["git"]["dirty"] is False
@@ -319,14 +319,14 @@ def test_same_artifact_concurrent_build_is_refused_before_wrong_source_can_publi
 def test_busy_cli_keeps_existing_evidence_and_stable_lock(source, tmp_path, capsys):
     output = tmp_path / "candidate"
     output.mkdir()
-    binary = output / "pi-batch"
+    binary = output / "abr"
     manifest, _ = MANIFEST.sidecars(binary)
     manifest.write_bytes(b"active builder evidence")
     with MANIFEST.output_lock(binary):
         assert BUILDER["main"](["--output", str(output)]) == 5
         assert manifest.read_bytes() == b"active builder evidence"
     assert "already in progress" in capsys.readouterr().err
-    lock = output / ".pi-batch.build.lock"
+    lock = output / ".abr.build.lock"
     identity = lock.stat().st_ino
     with MANIFEST.output_lock(binary):
         assert lock.stat().st_ino == identity
@@ -396,7 +396,7 @@ def test_git_becoming_dirty_during_build_cannot_keep_clean_manifest(source, tmp_
     output = tmp_path / "candidate"
     with pytest.raises(RuntimeError, match="source inputs changed"):
         BUILDER["build"](output, source)
-    assert not (output / "pi-batch.manifest.json").exists()
+    assert not (output / "abr.manifest.json").exists()
 
 
 def test_atomic_file_replacement_while_hashing_is_detected(tmp_path, monkeypatch):

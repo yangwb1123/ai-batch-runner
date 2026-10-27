@@ -52,12 +52,12 @@ jobs:
 
       - name: Smoke-test the installed wheel
         run: |
-          python -m venv /tmp/pi-batch-release-smoke
-          /tmp/pi-batch-release-smoke/bin/python -m pip install dist/*.whl
+          python -m venv /tmp/abr-release-smoke
+          /tmp/abr-release-smoke/bin/python -m pip install dist/*.whl
           cd /tmp
-          /tmp/pi-batch-release-smoke/bin/pi-batch --version
-          /tmp/pi-batch-release-smoke/bin/pi-batch version --json
-          /tmp/pi-batch-release-smoke/bin/pi-batch tui --help
+          /tmp/abr-release-smoke/bin/abr --version
+          /tmp/abr-release-smoke/bin/abr version --json
+          /tmp/abr-release-smoke/bin/abr tui --help
 
       - name: Store verified distributions
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
@@ -79,7 +79,7 @@ jobs:
     timeout-minutes: 10
     environment:
       name: pypi
-      url: https://pypi.org/p/ai-batch-runner
+      url: https://pypi.org/p/abr
     permissions:
       id-token: write
     steps:
@@ -103,7 +103,7 @@ jobs:
       - name: Download verified binaries
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
-          pattern: pi-batch-binary-*
+          pattern: abr-binary-*
           path: dist/
           merge-multiple: true
 
@@ -113,6 +113,6 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           cd dist
-          sha256sum pi-batch-* > SHA256SUMS
-          gh release create "${GITHUB_REF_NAME}" pi-batch-* SHA256SUMS \
+          sha256sum abr-* > SHA256SUMS
+          gh release create "${GITHUB_REF_NAME}" abr-* SHA256SUMS \
             --verify-tag --target "${GITHUB_SHA}" --generate-notes

@@ -110,7 +110,7 @@ def budget_status(allowance: float, path: Optional[Path] = None) -> dict:
 def recovery_main(argv: Optional[list] = None) -> int:
     """`pi-batch recovery --rollback-cost N --forward-cost N [--residual-risk R]`。"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py recovery",
+        prog="abr recovery",
         description="Rollback vs forward-fix decision (AADM-G §35.4)")
     parser.add_argument("--rollback-cost", type=float, required=True)
     parser.add_argument("--forward-cost", type=float, required=True)
@@ -127,7 +127,7 @@ def recovery_main(argv: Optional[list] = None) -> int:
 def budget_main(argv: Optional[list] = None) -> int:
     """`pi-batch budget consume|report`：错误预算账本（§35.5）。"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py budget",
+        prog="abr budget",
         description="Governance error budget (AADM-G §35.5)")
     sub = parser.add_subparsers(dest="command", required=True)
     p_consume = sub.add_parser("consume", help="记录一次治理预算消耗")

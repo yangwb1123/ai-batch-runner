@@ -91,7 +91,7 @@ def _check_registries_cli() -> None:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py rules",
+        prog="abr rules",
         description="Match domain spec rules and reconcile an independent "
                     "LLM selection (two-sided check).")
     parser.add_argument("task", nargs="*", default=[], help="task prompt text")

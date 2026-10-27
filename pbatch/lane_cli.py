@@ -25,7 +25,7 @@ from . import lane_loop, lane_run, session_merge
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="pi-batch lanes",
+    parser = argparse.ArgumentParser(prog="abr lanes",
                                      description="并发隔离泳道 + 串行门禁合并 + 监督窗口")
     commands = parser.add_subparsers(dest="command", required=True)
     status = commands.add_parser("status", help="只读：锚定窗口、轮次与停止原因")

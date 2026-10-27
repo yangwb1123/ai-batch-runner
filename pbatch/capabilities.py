@@ -138,7 +138,7 @@ def build_registry() -> list:
         registry.append({
             "id": name,
             "domain": manual[0] if manual[0] in CAPABILITY_DOMAINS else "ops",
-            "entry": f"pi-batch {name}",
+            "entry": f"abr {name}",
             "owner": {"module": module, "target": target},
             "input": manual[2], "output": manual[3],
             "risk": manual[1],
@@ -210,7 +210,7 @@ def registry_check(registry: Optional[list] = None) -> dict:
 
 def _build_capabilities_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py capabilities",
+        prog="abr capabilities",
         description="Capability Registry：命令驱动 → 能力驱动")
     parser.add_argument("command", nargs="?", default="list",
                         choices=("list", "get", "check", "trust", "authorize"))

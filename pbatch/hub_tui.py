@@ -23,7 +23,7 @@ _ALL_INSTANCES = "\x1fhub-all-instances"
 class HubTUI(App[None]):
     """Read and control remote sessions; history remains read-only."""
 
-    TITLE = "pi-batch fleet"
+    TITLE = "abr fleet"
     SUB_TITLE = "Agent Session Hub"
     CSS = """
     #content { height: 1fr; }

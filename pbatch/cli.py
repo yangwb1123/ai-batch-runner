@@ -36,12 +36,12 @@ from .version import VERSION
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="pi-batch",
-        description="pi-batch -- interactive AI workbench and governed batch/pipeline executor",
+        prog="abr",
+        description="abr -- interactive AI workbench and governed batch/pipeline executor",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=_parser_epilog(),
     )
-    p.add_argument("--version", action="version", version=f"pi-batch {VERSION}")
+    p.add_argument("--version", action="version", version=f"abr {VERSION}")
     _add_source_args(p)
     _add_runtime_args(p)
     _add_batch_args(p)
@@ -318,7 +318,7 @@ def main() -> None:
 
 def _record_fatal_exit(exc: BaseException, args) -> None:
     """崩溃原因落盘（--reuse 续跑可诊断上次进程为何消失）。"""
-    log.error("FATAL: pi-batch crashed (%s: %s)", type(exc).__name__, exc)
+    log.error("FATAL: abr crashed (%s: %s)", type(exc).__name__, exc)
     try:
         state = (Path(args.log_file).with_suffix(".exit.json")
                  if getattr(args, "log_file", "") else

@@ -403,7 +403,7 @@ def _execute_rounds(args, state_file: Path, first_round: int) -> dict:
 def _build_parser():
     import argparse
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py advance",
+        prog="abr advance",
         description="Self-driving iteration engine: scan every spec dimension, "
                     "group into batches, optionally repair one batch per round.")
     parser.add_argument("--dir", default=".", help="target project directory")

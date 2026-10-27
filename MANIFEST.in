@@ -12,3 +12,4 @@ recursive-include backend-specs *.md *.yaml
 recursive-include pbatch/pwa_assets *.webmanifest *.js *.png
 include docs/ENGINEERING_PHILOSOPHY.md docs/MIGRATION_ENGINE.md docs/PROJECT_STUDIO.md docs/CAMPAIGN_SELF_REPAIR.md
 include docs/LLM_ACCOUNT_POOL.md docs/MODEL_DELEGATION.md
+include docs/agent-hub/WEB_LOGIN.md

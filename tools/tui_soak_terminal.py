@@ -71,7 +71,7 @@ class ComposerObservation:
 
     def _observe_marker(self) -> None:
         line = "".join(self.cells)
-        for marker, phase in (("Queue follow-up", "busy"), ("Ask pi-batch…", "ready")):
+        for marker, phase in (("Queue follow-up", "busy"), ("Ask abr…", "ready")):
             start = line.find(marker)
             if start >= 0 and self.column == start + len(marker):
                 self.revision += 1

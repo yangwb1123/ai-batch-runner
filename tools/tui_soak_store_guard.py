@@ -1,8 +1,9 @@
 """Linux fixture-only coordination, separate from SQLite record-lock descriptors.
 
 Cooperating fixture writers and the harness serialize connections on their
-owned scratch directory. Keep the original three-second contention budget;
-noncooperating clients still rely on SQLite's remaining busy wait and refuse.
+owned scratch directory. Writers offer pollers an unlocked admission window;
+this consumes, rather than extends, the original three-second contention budget.
+Noncooperating clients still rely on SQLite's remaining busy wait and refuse.
 This does not change Agent, real-provider, task, acceptance or lease deadlines.
 """
 from contextlib import closing, contextmanager
@@ -42,11 +43,20 @@ def _lock(descriptor, deadline):
 
 
 @contextmanager
-def connection(path: Path, timeout: float):
+def connection(path: Path, timeout: float, *, writer: bool = False):
     if (isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or
             not math.isfinite(timeout) or timeout <= 0):
         raise ValueError("provider evidence guard timeout must be finite and positive")
+    if not isinstance(writer, bool):
+        raise ValueError("provider evidence writer policy must be boolean")
     deadline = time.monotonic() + timeout
+    if writer:
+        # A burst writer otherwise closes/reopens and reclaims the guard before
+        # sleeping pollers get a turn. Offer one maximum poll interval BEFORE
+        # opening/locking anything, including on the first append. Not FIFO.
+        time.sleep(min(0.011, timeout))
+        if time.monotonic() >= deadline:
+            raise sqlite3.OperationalError("provider evidence guard wait budget exhausted")
     descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         _directory(descriptor, path.parent)

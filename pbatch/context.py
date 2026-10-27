@@ -235,7 +235,7 @@ def context_main(argv: list) -> int:
     """`pi-batch context "<task>" [--paths P1,P2] [--json]`."""
     import argparse
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py context",
+        prog="abr context",
         description="Route the project documents a task needs (Context "
                     "Engineering; docs/agent-context/context-map.yaml).")
     parser.add_argument("task", nargs="*", default=[""], help="task prompt text")

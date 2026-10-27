@@ -128,7 +128,7 @@ def is_fresh(confidence: float, threshold: float = 0.5) -> bool:
 def temporal_main(argv: Optional[list] = None) -> int:
     """`pi-batch temporal decay --validity X --confidence N --age-hours H`。"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py temporal",
+        prog="abr temporal",
         description="Temporal validity & evidence decay (AADM-G §8)")
     parser.add_argument("--validity", default="volatile",
                         choices=FRESHNESS_CLASSES)

@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ai-batch-runner"
+name = "abr"
 version = "0.3.0"
 description = "Interactive TUI and governed batch/pipeline runtime for CLI coding agents"
 readme = "README.md"
@@ -22,7 +22,7 @@ classifiers = [
 ]
 dependencies = [
     "PyYAML>=6.0",  # required by --pipeline / tasks.yaml modes (also used by checks/)
-    "textual>=8.2,<9",  # interactive terminal UI (pi-batch / pi-batch tui)
+    "textual>=8.2,<9",  # interactive terminal UI (abr / abr tui)
 ]
 
 [project.optional-dependencies]
@@ -31,18 +31,24 @@ dev = [
     "pytest-cov>=5.0",  # make coverage
     "wheel>=0.42",      # packaging regression gate must not silently skip
     "PyJWT[crypto]>=2.10,<3", # Agent Hub signed-token contract tests
+    "snaplink-sso==0.3.0", # real hosted-login SDK contract tests
 ]
 hub = [
     "PyJWT[crypto]>=2.10,<3", # optional Snaplink JWKS authentication
+]
+web = [
+    "PyJWT[crypto]>=2.10,<3",
+    "snaplink-sso==0.3.0", # optional SDK-backed browser login; no vendored OAuth
 ]
 binary = [
     "pyinstaller>=6.0", # optional single-file release executable builder
 ]
 
 # Install as a first-class CLI like pi/codex: `pip install .` then run
-# `pi-batch ...` anywhere; each project keeps its own pi-batch.yaml.
+# `abr ...` anywhere; each project keeps its own pi-batch.yaml.
 [project.scripts]
-pi-batch = "pbatch.cli:main"
+abr = "pbatch.cli:main"
+pi-batch = "pbatch.cli:main"  # compatibility alias for existing scripts
 
 [project.urls]
 Homepage = "https://github.com/yangwb1123/ai-batch-runner"
@@ -61,7 +67,7 @@ include = ["pbatch*"]
 # pbatch/classifier.py (task_keywords.yaml). Explicit list on purpose:
 # a glob would silently ship (or, on a wrong key, silently miss) future
 # files; see tests/test_packaging.py (loader-audit invariant). Keyed to the
-# import name `pbatch`, not the distribution name.
+# import name `pbatch`, not the distribution name `abr`.
 [tool.setuptools.package-data]
 # `pwa_assets/` holds the static PWA shell served by pbatch/pwa_shell.py
 # (manifest, service worker, icons; see docs/PWA_SHELL.md). Named explicitly
@@ -82,11 +88,13 @@ pbatch = [
 # evals and governance specs. Declared as glob patterns mirrored by
 # MANIFEST.in so sdist and wheel carry the same surface; a deliberately
 # added directory must enter both.
+# Keep the asset layout stable; distribution metadata and the public CLI use abr.
 [tool.setuptools.data-files]
 "share/ai-batch-runner" = ["pi-batch.py", "pi-batch.yaml", "quality.py"]
 "share/ai-batch-runner/scripts" = ["scripts/*.py", "scripts/*.sh"]
 "share/ai-batch-runner/evals" = ["evals/*.yaml"]
 "share/ai-batch-runner/examples" = ["examples/*.yaml", "examples/*.md", "examples/*.json"]
+"share/ai-batch-runner/docs/agent-hub" = ["docs/agent-hub/WEB_LOGIN.md"]
 "share/ai-batch-runner/examples/sdlc-inputs" = ["examples/sdlc-inputs/*.md"]
 "share/ai-batch-runner/examples/schemas" = ["examples/schemas/*.json"]
 "share/ai-batch-runner/agent-engineering" = ["agent-engineering/*.yaml"]

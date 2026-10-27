@@ -136,7 +136,7 @@ def load_hypotheses(path: Optional[Path] = None) -> dict:
 def causality_main(argv: Optional[list] = None) -> int:
     """`pi-batch causal new|evidence|status`。"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py causal",
+        prog="abr causal",
         description="Causal hypothesis lifecycle (AADM-G §6)")
     sub = parser.add_subparsers(dest="command", required=True)
 

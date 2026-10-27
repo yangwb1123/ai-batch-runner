@@ -174,21 +174,21 @@ jobs:
         timeout-minutes: 15
         run: |
           set -o pipefail
-          python tools/build-binary.py --output dist --name "pi-batch-${BINARY_ASSET}" 2>&1 | tee validation/build.log
+          python tools/build-binary.py --output dist --name "abr-${BINARY_ASSET}" 2>&1 | tee validation/build.log
 
       - name: Smoke-test executable
         id: smoke
         timeout-minutes: 10
         run: |
           set -o pipefail
-          python tools/smoke-binary.py "dist/pi-batch-${BINARY_ASSET}${{ matrix.extension }}" --report validation/smoke.json 2>&1 | tee validation/smoke.log
+          python tools/smoke-binary.py "dist/abr-${BINARY_ASSET}${{ matrix.extension }}" --report validation/smoke.json 2>&1 | tee validation/smoke.log
 
       - name: Verify executable provenance
         id: manifest
         timeout-minutes: 2
         run: |
           set -o pipefail
-          python tools/binary_manifest.py verify --manifest "dist/pi-batch-${BINARY_ASSET}${{ matrix.extension }}.manifest.json" --source-root . 2>&1 | tee validation/manifest.log
+          python tools/binary_manifest.py verify --manifest "dist/abr-${BINARY_ASSET}${{ matrix.extension }}.manifest.json" --source-root . 2>&1 | tee validation/manifest.log
 
       - name: Verify Linux TUI repeated fault recovery
         id: soak
@@ -196,7 +196,7 @@ jobs:
         timeout-minutes: 5
         run: |
           set -o pipefail
-          python tools/tui-soak.py dist/pi-batch-linux-x86_64 --cycles 3 --output validation/soak 2>&1 | tee validation/soak.log
+          python tools/tui-soak.py dist/abr-linux-x86_64 --cycles 3 --output validation/soak 2>&1 | tee validation/soak.log
 
       - name: Verify Linux TUI signal shutdown
         id: signals
@@ -204,7 +204,7 @@ jobs:
         timeout-minutes: 2
         run: |
           set -o pipefail
-          python tools/smoke-tui-signals.py --binary dist/pi-batch-linux-x86_64 --output-dir validation/signals 2>&1 | tee validation/signals.log
+          python tools/smoke-tui-signals.py --binary dist/abr-linux-x86_64 --output-dir validation/signals 2>&1 | tee validation/signals.log
 
       - name: Verify Linux persisted TUI recovery
         id: recovery
@@ -212,7 +212,7 @@ jobs:
         timeout-minutes: 3
         run: |
           set -o pipefail
-          python tools/smoke-tui-recovery.py --binary dist/pi-batch-linux-x86_64 --output-dir validation/recovery 2>&1 | tee validation/recovery.log
+          python tools/smoke-tui-recovery.py --binary dist/abr-linux-x86_64 --output-dir validation/recovery 2>&1 | tee validation/recovery.log
 
       - name: Verify Linux batch signal cleanup and lock handoff
         id: batch-signals
@@ -220,7 +220,7 @@ jobs:
         timeout-minutes: 2
         run: |
           set -o pipefail
-          python tools/smoke-batch-signals.py --binary dist/pi-batch-linux-x86_64 --output-dir validation/batch-signals 2>&1 | tee validation/batch-signals.log
+          python tools/smoke-batch-signals.py --binary dist/abr-linux-x86_64 --output-dir validation/batch-signals 2>&1 | tee validation/batch-signals.log
 
       - name: Record verification outcomes
         if: always()
@@ -245,7 +245,7 @@ jobs:
         timeout-minutes: 3
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
-          name: pi-batch-verification-${{ matrix.asset }}
+          name: abr-verification-${{ matrix.asset }}
           path: validation/
           if-no-files-found: error
           retention-days: 14
@@ -254,10 +254,10 @@ jobs:
         timeout-minutes: 3
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
-          name: pi-batch-binary-${{ matrix.asset }}
+          name: abr-binary-${{ matrix.asset }}
           path: |
-            dist/pi-batch-${{ matrix.asset }}${{ matrix.extension }}
-            dist/pi-batch-${{ matrix.asset }}${{ matrix.extension }}.manifest.json
-            dist/pi-batch-${{ matrix.asset }}${{ matrix.extension }}.LICENSE
+            dist/abr-${{ matrix.asset }}${{ matrix.extension }}
+            dist/abr-${{ matrix.asset }}${{ matrix.extension }}.manifest.json
+            dist/abr-${{ matrix.asset }}${{ matrix.extension }}.LICENSE
           if-no-files-found: error
           retention-days: 14

@@ -350,7 +350,7 @@ class OpsHandler(BaseHTTPRequestHandler):
 
 def _serve_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="pi-batch ops serve",
+        prog="abr ops serve",
         description="手机/浏览器查看会话；--control 显式开启受保护指令入口")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8731)

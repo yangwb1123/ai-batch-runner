@@ -71,7 +71,7 @@ def diversity_main(argv: Optional[list] = None) -> int:
     """`pi-batch diversity --json '[...]'`：评估多 Agent 独立性。"""
     import argparse
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py diversity",
+        prog="abr diversity",
         description="Multi-agent independence score (AADM-G §12)")
     parser.add_argument(
         "agents_json",

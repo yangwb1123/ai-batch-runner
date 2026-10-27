@@ -15,6 +15,9 @@ P3 增加 Aero ID 成员资格门禁、Aero IM 状态通知、Audit 账本回执
 CLI/TUI 用户可通过 Snaplink 设备授权登录并共享私有短期会话，使用方式见
 [USER_AUTH.md](agent-hub/USER_AUTH.md)；Gateway 自动续签见
 [MACHINE_AUTH.md](agent-hub/MACHINE_AUTH.md)。
+可选的 Hub 同源 Web 首页使用官方 Snaplink Python SDK 托管登录，当前仅提供
+实例/会话只读窗口；Cookie 不授权原 Bearer API，配置与边界见
+[WEB_LOGIN.md](agent-hub/WEB_LOGIN.md)。
 CLI/TUI/Console 可关闭空闲会话并在确认后释放容量，保留只读历史，见
 [SESSION_CLOSE.md](agent-hub/SESSION_CLOSE.md)。
 CLI/TUI/Console 也可选择在线实例按需新建会话：请求先持久化，Gateway 在固定

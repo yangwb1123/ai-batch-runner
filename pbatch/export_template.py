@@ -134,7 +134,7 @@ def export_template(specs: list[Path], checkers: list[Path],
 
 
 def export_main(argv: list | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="pi-batch.py export-template",
+    parser = argparse.ArgumentParser(prog="abr export-template",
                                      description=__doc__)
     parser.add_argument("--all", action="store_true",
                         help="export every spec asset (ui/backend/docs)")

@@ -25,7 +25,7 @@ def _source_version() -> str:
 
 def _package_version() -> str:
     try:
-        return metadata_version("ai-batch-runner")
+        return metadata_version("abr")
     except PackageNotFoundError:
         return ""
 

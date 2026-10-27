@@ -12,7 +12,7 @@ from .hub_client import HubError
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(prog="pi-batch fleet auth")
+    parser = argparse.ArgumentParser(prog="abr fleet auth")
     actions = parser.add_subparsers(dest="action", required=True)
     for name in ("login", "status", "logout"):
         action = actions.add_parser(name)

@@ -1,4 +1,4 @@
-"""Locate project-local and installed ai-batch-runner assets."""
+"""Locate abr assets, retaining the historical share/ai-batch-runner layout."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ def _distribution_asset_root() -> Optional[Path]:
     if (adjacent / "pi-batch.yaml").is_file():
         return adjacent
     try:
-        dist = distribution("ai-batch-runner")
+        dist = distribution("abr")
         files = dist.files or ()
     except PackageNotFoundError:
         return None

@@ -27,7 +27,7 @@ Text without a leading `/` is sent to the agent.
 """
 
 WELCOME = """\
-# pi-batch
+# abr
 
 Describe the work you want to run. Use `/help` for commands or **Ctrl+P** for
 the command palette. Type a slash-command prefix and press **Tab** to complete.

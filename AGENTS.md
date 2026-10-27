@@ -1,12 +1,12 @@
-# ai-batch-runner — Agent 执行契约
+# abr — Agent 执行契约
 
 本文件规定在本仓库工作的边界、实现导航和交付要求，不是命令百科。
 安装与用法见 [README.md](README.md)；参数以 CLI `--help`、配置及回归测试为准。
 
 ## 1. 产品定位与取舍
 
-`ai-batch-runner` 是面向 CLI coding agent 的本地优先交互工作台与受治理执行内核。
-发行包名为 `ai-batch-runner`，命令为 `pi-batch`；支持 Pi、Claude、Codex、Gemini、
+`abr` 是面向 CLI coding agent 的本地优先交互工作台与受治理执行内核。
+发行包名和主命令均为 `abr`（`pi-batch` 为兼容别名）；支持 Pi、Claude、Codex、Gemini、
 OpenCode 等适配器，不绑定单一模型供应商。
 
 核心闭环：**明确目标 → 选择最小流程 → 隔离执行 → 验证裁决 → 交付证据 → 知识回流**。
@@ -93,9 +93,10 @@ CLI/TUI/Web 是入口或投影，不应各自发明执行、授权、完成判�
 
 - 本仓库根目录就是 standalone 工具内容；路径不带 `ai-dev/` 前缀，上游
   `make ai-dev-test` 在这里对应 `make ci`。`pi-batch.py` 是薄入口，实现在 `pbatch/`；
-  `pi-batch`、`python -m pbatch`、`python pi-batch.py` 使用同一入口。
+  `abr`、兼容别名 `pi-batch`、`python -m pbatch`、`python pi-batch.py` 使用同一入口。
+  改名不迁移 `pbatch` 包、`pi-batch.yaml`、`PBATCH_*`、分发资产或已有用户数据路径。
 - 默认无参数且 stdin/stdout 均为 TTY 才进入 TUI；脚本、stdin 和 `--json` 不输出全屏控制序列。
-  `pi-batch pi ...` 是 Pi 原样 CLI 转发，不等于本产品托管的 Pi RPC/TUI，也不附加 runner 门禁。
+  `abr pi ...` 是 Pi 原样 CLI 转发，不等于本产品托管的 Pi RPC/TUI，也不附加 runner 门禁。
 - 配置优先级：CLI/runtime override > 项目 `pi-batch.yaml` > 用户 settings > 内置默认。
   配置版本、合并来源及脱敏值用 `config check` / `config explain` 核对，不能凭示例推断。
 - 默认项目运行态在 `~/.abr/projects/<workspace-id>/`；`PBATCH_RUNTIME_HOME` 改运行根，

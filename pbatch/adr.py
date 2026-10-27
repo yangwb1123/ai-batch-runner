@@ -192,7 +192,7 @@ def _cmd_get(args) -> None:
 def adr_main(argv: Optional[list] = None) -> int:
     """`pi-batch adr new|list|get|find|supersede`。"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py adr",
+        prog="abr adr",
         description="Architecture Decision Records：决策记忆库")
     sub = parser.add_subparsers(dest="command", required=True)
 

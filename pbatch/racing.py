@@ -112,7 +112,7 @@ def load_race_input(path: str) -> tuple:
 def race_main(argv: Optional[list] = None) -> int:
     """`pi-batch race --input FILE [--json]`：分阶段竞跑淘汰。"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py race",
+        prog="abr race",
         description="Staged multi-path racing (successive halving)")
     parser.add_argument("--input", required=True,
                         help="JSON: {candidates: {id: desc}, stages: "

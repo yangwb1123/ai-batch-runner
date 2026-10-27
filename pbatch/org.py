@@ -109,7 +109,7 @@ def _known_commands(org_dir: Optional[Path] = None) -> set:
         for directory in ("scripts", "pbatch"):
             for path in (root / directory).glob("*.py"):
                 commands.add(f"{directory}/{path.name}")
-    commands.update({"pi-batch", "pytest", "python", "bash", "go", "make",
+    commands.update({"abr", "pi-batch", "pytest", "python", "bash", "go", "make",
                      "git"})
     return commands
 
@@ -121,7 +121,7 @@ def _check_exists(check: str, commands: set,
     if not parts:
         return False
     first = parts[0]
-    if first == "pi-batch":
+    if first in {"abr", "pi-batch"}:
         return len(parts) > 1 and parts[1] in commands
     if first in commands:
         return True
@@ -291,13 +291,13 @@ def _render_check_argv(check, params: dict) -> tuple[Optional[list], str]:
 
 
 def _normalize_check_argv(argv: list) -> list:
-    """Apply the repository's script and ``pi-batch`` executable aliases."""
+    """Apply script aliases and both the canonical abr and legacy CLI names."""
     if argv[0].startswith("scripts/"):
         script = _existing_resource(argv[0])
         if script is not None:
             argv[0] = str(script)
         argv = script_argv(argv[0], *argv[1:])
-    if argv[0] == "pi-batch":
+    if argv[0] in {"abr", "pi-batch"}:
         argv = cli_argv(*argv[1:])
     return argv
 
@@ -390,7 +390,7 @@ def _cmd_gate(args) -> None:
 def _build_parser():
     """org 子命令参数：check/show/prompt/gate/flow。"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py org",
+        prog="abr org",
         description="Agent 工程组织规范：17 节点岗位说明书")
     sub = parser.add_subparsers(dest="command", required=True)
     p_check = sub.add_parser("check", help="校验规范完整性")

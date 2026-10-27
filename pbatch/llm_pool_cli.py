@@ -19,7 +19,7 @@ from .llm_pool_store import PoolStore, PoolStoreError
 
 def _parser():
     parser = argparse.ArgumentParser(
-        prog="pi-batch pool", description="Go 账号池、配额冷却和本地模型网关")
+        prog="abr pool", description="Go 账号池、配额冷却和本地模型网关")
     parser.add_argument("--config", default="", help="账号池 YAML（默认用户级 llm-pool.yaml）")
     commands = parser.add_subparsers(dest="command", required=True)
     check = commands.add_parser("check", help="校验配置；不调用模型、不创建运行状态")

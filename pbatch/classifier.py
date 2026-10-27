@@ -404,7 +404,7 @@ def classify_main(argv: list) -> None:
     — print the classification and routing decision without executing."""
     import argparse
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py classify",
+        prog="abr classify",
         description="Classify frontend, backend, or generic tasks and show pipeline routing.")
     parser.add_argument("source", nargs="?", help="prompt text, or a YAML/JSON/txt task file path")
     parser.add_argument("-p", "--prompt", help="inline prompt")

@@ -1,4 +1,4 @@
-"""`python -m pbatch` — same entry point as the installed `pi-batch` command
+"""`python -m pbatch` — same entry point as the installed `abr` command
 and the repo-root `pi-batch.py` shim."""
 
 from .cli import main

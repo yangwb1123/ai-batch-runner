@@ -57,7 +57,7 @@ class AgentResult:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py collab",
+        prog="abr collab",
         description="Run protected agents concurrently in module worktrees "
                     "from a dirty source baseline")
     parser.add_argument("--plan", required=True,

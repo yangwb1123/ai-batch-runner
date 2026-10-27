@@ -1,4 +1,4 @@
-# pbatch — pi-batch 核心包
+# pbatch — abr 核心包
 
 > 知识维护（maintenance-intelligence 06）：模块现状 + 决策记录，新人可接手。
 
@@ -28,7 +28,7 @@
 | `ratelimit.py` | F 线 provider 令牌桶限速 + jitter 重试 |
 | `context.py` | 上下文路由：glob + 关键词加载项目文档 |
 | `eval.py` | 规则系统回归套件 |
-| `selfcheck.py` | `pi-batch check` 自检（quality + schema + eval） |
+| `selfcheck.py` | `abr check` 自检（quality + schema + eval） |
 | `memory*.py` / `index_io.py` | 渐进式 message memory：有界索引、按需 recent/find/read |
 | `campaign*.py` | 项目级模块发现、方向选择、worktree 隔离流水线 |
 | `ops.py` / `ops_serve.py` / `mobile_control.py` | 有界运行监控、响应式手机会话查看、token/TLS 保护的服务端控制会话与异步 prompt |
@@ -49,7 +49,7 @@
 ## 常用命令
 
 ```bash
-python -m pbatch --help          # 入口（pip install . 后 pi-batch 同）
+python -m pbatch --help          # 入口（pip install . 后 abr 同）
 python -m pbatch check           # 自检
 python -m pbatch eval            # 回归
 python -m pbatch classify "订单审批流" --json   # 含 system_type

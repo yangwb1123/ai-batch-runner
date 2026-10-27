@@ -14,7 +14,7 @@ from .task_center_terminal_view import validate_options
 
 
 def _parser():
-    parser = argparse.ArgumentParser(prog="pi-batch fleet tasks", description=__doc__)
+    parser = argparse.ArgumentParser(prog="abr fleet tasks", description=__doc__)
     parser.add_argument("--hub", default="", help="Hub origin (or PBATCH_HUB_URL)")
     parser.add_argument("--timeout", type=float, default=5.0)
     parser.add_argument("--source", default="", help="complete source ID from this authorized Hub window")

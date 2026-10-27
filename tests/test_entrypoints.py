@@ -1,4 +1,4 @@
-"""Smoke tests for the CLI entry points: the installed `pi-batch` console
+"""Smoke tests for CLI entry points, including the legacy `pi-batch` console
 script (pyproject [project.scripts]) and `python -m pbatch` (__main__.py).
 The repo-root pi-batch.py shim remains the zero-install fallback."""
 
@@ -28,7 +28,7 @@ def test_python_m_pbatch_version_uses_runtime_source():
     result = _run([sys.executable, "-m", "pbatch", "--version"])
     assert result.returncode == 0
     from pbatch.version import VERSION
-    assert result.stdout.strip() == f"pi-batch {VERSION}"
+    assert result.stdout.strip() == f"abr {VERSION}"
 
 
 def test_python_m_pbatch_classify_subcommand():
@@ -70,7 +70,7 @@ def test_python_m_pbatch_product_json():
 def test_installed_console_script():
     result = _run(["pi-batch", "--help"])
     assert result.returncode == 0
-    assert "usage: pi-batch" in result.stdout
+    assert "usage: abr" in result.stdout
     result = _run(["pi-batch", "classify", "做一个 ERP 排程页面"])
     assert result.returncode == 0
     assert "frontend_ui" in result.stdout

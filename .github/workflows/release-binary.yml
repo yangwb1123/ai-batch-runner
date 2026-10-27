@@ -109,7 +109,7 @@ jobs:
         timeout-minutes: 2
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
-          name: pi-batch-binary-linux-x86_64
+          name: abr-binary-linux-x86_64
           path: dist/
 
       - name: Verify exact source, binary and license before publication
@@ -117,17 +117,17 @@ jobs:
         run: |
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
           python tools/check-release.py --tag "$RELEASE_TAG"
-          python tools/binary_manifest.py verify --manifest dist/pi-batch-linux-x86_64.manifest.json --source-root .
+          python tools/binary_manifest.py verify --manifest dist/abr-linux-x86_64.manifest.json --source-root .
           python - <<'PY'
           import json, os
           from pathlib import Path
-          manifest = json.loads(Path("dist/pi-batch-linux-x86_64.manifest.json").read_text())
+          manifest = json.loads(Path("dist/abr-linux-x86_64.manifest.json").read_text())
           source = manifest["source"]["git"]
           if source["commit"] != os.environ["SOURCE_SHA"] or source["dirty"] is not False:
               raise SystemExit("binary must come from the exact clean release commit")
           PY
           cd dist
-          sha256sum pi-batch-linux-x86_64 pi-batch-linux-x86_64.manifest.json pi-batch-linux-x86_64.LICENSE > SHA256SUMS
+          sha256sum abr-linux-x86_64 abr-linux-x86_64.manifest.json abr-linux-x86_64.LICENSE > SHA256SUMS
 
       - name: Recheck remote tag and create release without overwriting assets
         timeout-minutes: 2
@@ -139,9 +139,9 @@ jobs:
           test "$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")" = "$SOURCE_SHA"
           git merge-base --is-ancestor "$SOURCE_SHA" origin/main
           gh release create "$RELEASE_TAG" \
-            dist/pi-batch-linux-x86_64 \
-            dist/pi-batch-linux-x86_64.manifest.json \
-            dist/pi-batch-linux-x86_64.LICENSE dist/SHA256SUMS \
+            dist/abr-linux-x86_64 \
+            dist/abr-linux-x86_64.manifest.json \
+            dist/abr-linux-x86_64.LICENSE dist/SHA256SUMS \
             --verify-tag --target "$SOURCE_SHA" \
-            --title "pi-batch $RELEASE_TAG (Linux x86_64)" \
+            --title "abr $RELEASE_TAG (Linux x86_64)" \
             --notes "Linux x86_64 binary built and verified from commit $SOURCE_SHA. Provider CLIs and project build tools remain external dependencies. See the attached manifest, license and SHA256SUMS."

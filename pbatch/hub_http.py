@@ -148,6 +148,9 @@ class HubHandler(BaseHTTPRequestHandler):
         from .hub_store import HubStoreError
         from .hub_compute_placement import is_path as placement_path
         try:
+            from .hub_web_http import handle
+            if handle(self, method):
+                return
             self._origin()
             parsed = urlsplit(self.path)
             query = _query(parsed.query, strict=placement_path(parsed.path))
@@ -192,6 +195,10 @@ class HubHandler(BaseHTTPRequestHandler):
         self._request("POST")
 
     def do_PUT(self):
+        from .hub_web_http import owns
+        if self.server.web is not None and owns(self.path):
+            self._request(self.command)
+            return
         from .hub_session_close_api import is_route
         from .hub_compute_placement import is_route as placement_route
         from .hub_task_center_api import is_route as observer_route
@@ -209,6 +216,10 @@ class HubHandler(BaseHTTPRequestHandler):
     do_PATCH = do_DELETE = do_HEAD = do_PUT
 
     def do_OPTIONS(self):
+        from .hub_web_http import owns
+        if self.server.web is not None and owns(self.path):
+            self._request("OPTIONS")
+            return
         try:
             self._origin()
             self.send_response(204)
@@ -227,7 +238,7 @@ class HubHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, address, store, auth: HubAuth, *, allowed_origins=(), tls_context=None,
-                 compute=None, integrations=None, identity=None):
+                 compute=None, integrations=None, identity=None, web=None):
         host, _port = address
         if auth.mode == "development" and not _loopback(host):
             raise ValueError("development authentication requires a literal loopback listener")
@@ -236,6 +247,9 @@ class HubHTTPServer(ThreadingHTTPServer):
         self.service = HubService(store, compute, integrations=integrations, identity=identity)
         self.auth = auth
         self.allowed_origins = frozenset(allowed_origins)
+        if web is not None and (web.auth is not auth or web.origin not in self.allowed_origins):
+            raise ValueError("browser facade must share Hub auth and its allowed origin")
+        self.web = web
         self._slots = threading.BoundedSemaphore(32)
         super().__init__(address, HubHandler)
         if tls_context is not None:
@@ -262,6 +276,11 @@ class HubHTTPServer(ThreadingHTTPServer):
         # Exceptions must not expose prompts, auth headers or database paths.
         self.shutdown_request(request)
 
+    def server_close(self):
+        if self.web is not None:
+            self.web.close()
+        super().server_close()
+
 
 def _settings(filename: str) -> dict:
     import yaml
@@ -276,7 +295,7 @@ def _settings(filename: str) -> dict:
     value = yaml.safe_load(raw)
     if not isinstance(value, dict) or not isinstance(value.get("auth"), dict):
         raise ValueError("Hub config requires auth settings")
-    if set(value) - {"auth", "allowed_origins", "compute", "integrations", "identity"}:
+    if set(value) - {"auth", "allowed_origins", "compute", "integrations", "identity", "web"}:
         raise ValueError("unknown Hub config setting")
     origins = value.get("allowed_origins", [])
     if not isinstance(origins, list) or any(not isinstance(item, str) for item in origins):
@@ -302,7 +321,7 @@ def _tls(args):
 
 def hub_serve_main(argv=None) -> int:
     from . import config
-    parser = argparse.ArgumentParser(prog="pi-batch fleet serve", description=__doc__)
+    parser = argparse.ArgumentParser(prog="abr fleet serve", description=__doc__)
     parser.add_argument("--config", required=True, help="Hub identity/resource grant YAML")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8788)
@@ -332,6 +351,8 @@ def _run_server(args, path, settings, auth, tls_context) -> None:
     from .hub_compute import HubCompute
     from .hub_identity import IdentityGate
     from .hub_integrations import HubIntegrations
+    from .hub_web import HubWeb
+    web = HubWeb(settings, auth) if "web" in settings else None
     store = HubStore(path)
     compute = integrations = None
     try:
@@ -342,7 +363,7 @@ def _run_server(args, path, settings, auth, tls_context) -> None:
         integrations.start()
         with HubHTTPServer((args.host, args.port), store, auth, tls_context=tls_context,
                            allowed_origins=settings.get("allowed_origins", []), compute=compute,
-                           integrations=integrations, identity=identity) as server:
+                           integrations=integrations, identity=identity, web=web) as server:
             scheme = "https" if tls_context else "http"
             print(f"Agent Hub listening on {scheme}://{args.host}:{args.port}", flush=True)
             try:

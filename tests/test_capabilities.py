@@ -27,7 +27,7 @@ def test_registry_domains_valid():
     for capability in capabilities.build_registry():
         assert capability["domain"] in capabilities.CAPABILITY_DOMAINS
         assert capability["risk"] in ("low", "medium", "high")
-        assert capability["entry"].startswith("pi-batch ")
+        assert capability["entry"].startswith("abr ")
 
 
 def test_product_capability_is_registered_as_low_risk_planning():

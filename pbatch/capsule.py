@@ -96,7 +96,7 @@ def replay_main(argv: Optional[list] = None) -> int:
     输出"版本差异 + 回归结果"（模型升级/规则变更评估的输入）。"""
     import subprocess
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py replay",
+        prog="abr replay",
         description="Decision replay: capsule 版本对比 + eval 回归")
     parser.add_argument("--capsule", required=True, help="历史胶囊 JSON")
     parser.add_argument("--json", action="store_true")
@@ -139,7 +139,7 @@ def replay_main(argv: Optional[list] = None) -> int:
 def capsule_main(argv: Optional[list] = None) -> int:
     """`pi-batch capsule --prompt TEXT --out FILE [--json]`。"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py capsule",
+        prog="abr capsule",
         description="Capture a replayable decision capsule (AADM-G §22)")
     parser.add_argument("--prompt", default="", help="任务 prompt 文本")
     parser.add_argument("--out", default="", help="写出 JSON 文件")

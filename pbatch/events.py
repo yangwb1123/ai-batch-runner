@@ -52,7 +52,7 @@ def read_events(state_dir: str = "", limit: int = 50) -> list:
 def events_main(argv: Optional[list] = None) -> int:
     """`pi-batch events recent [--state-dir DIR] [--limit N] [--json]`。"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py events",
+        prog="abr events",
         description="Interaction event ledger (AADM §4.1, 不可变追加式)")
     parser.add_argument("command", nargs="?", default="recent",
                         choices=("recent",),

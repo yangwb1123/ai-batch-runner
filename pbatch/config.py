@@ -193,7 +193,7 @@ def _startup_config() -> tuple[dict, tuple[str, ...]]:
     if errors and sys.argv[1:2] not in (["config"], ["doctor"]):
         for error in errors:
             print(f"Configuration error: {error}", file=sys.stderr)
-        print("Run 'pi-batch config check' or 'pi-batch doctor' for diagnostics.",
+        print("Run 'abr config check' or 'abr doctor' for diagnostics.",
               file=sys.stderr)
         raise SystemExit(2)
     return merged, tuple(errors)

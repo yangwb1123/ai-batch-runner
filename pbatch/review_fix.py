@@ -37,7 +37,7 @@ def _positive_timeout(value: str) -> float:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="pi-batch review-fix",
+        prog="abr review-fix",
         description="Review a scope and serially fix its structured findings.")
     scope = parser.add_mutually_exclusive_group()
     scope.add_argument("--uncommitted", action="store_true")

@@ -405,7 +405,7 @@ def reflect_main(argv: Optional[list] = None) -> int:
     """`pi-batch reflect [mode] --task TEXT [--code DIR] [--evidence TEXT]
     [--json] [--save]`。"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py reflect",
+        prog="abr reflect",
         description="Reflection Engine：对决策链做二阶审视（Critic Layer）")
     parser.add_argument("mode", nargs="?", default="full",
                         choices=("quick", "assumption", "architecture",

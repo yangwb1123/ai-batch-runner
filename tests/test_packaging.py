@@ -73,6 +73,7 @@ EXPECTED_RUNTIME_ASSETS = (
     "evolution-specs/rules.yaml", "examples/frontend-implementation-pipeline.yaml",
     "examples/agent-hub-gateway-oauth.json",
     "examples/agent-hub-user-auth.json",
+    "examples/agent-hub-web.yaml", "docs/agent-hub/WEB_LOGIN.md",
     "examples/sdlc-inputs/oidc-logout-frontchannel.md",
     "prompts/architect.md", "agent-engineering/requirement.yaml",
 )
@@ -94,10 +95,27 @@ _BUILD_WHEEL_SCRIPT = (
     "print(build_meta.build_wheel(sys.argv[1]))"
 )
 _INSTALLED_RUNTIME_PROBE = r"""
+from importlib.metadata import distribution
 from pathlib import Path
+import os
 import subprocess
 
 from pbatch import assets, config, health
+from pbatch.version import VERSION
+
+dist = distribution("abr")
+assert dist.metadata["Name"] == "abr"
+assert VERSION == dist.version
+entries = {item.name: item.value for item in dist.entry_points if item.group == "console_scripts"}
+assert entries["abr"] == entries["pi-batch"] == "pbatch.cli:main"
+scripts = Path(assets.__file__).resolve().parents[1] / ("Scripts" if os.name == "nt" else "bin")
+for command in ("abr", "pi-batch"):
+    executable = scripts / (command + (".exe" if os.name == "nt" else ""))
+    result = subprocess.run([str(executable), "--version"], capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == f"abr {dist.version}"
+    result = subprocess.run([str(executable), "tui", "--help"], capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0 and "usage: abr tui" in result.stdout, result.stderr
 from pbatch.cmd_expand import expand_cmd
 
 asset_root = Path(assets.TOOL_ROOT)
@@ -427,7 +445,8 @@ def test_wheel_ships_data_files(tmp_path: Path) -> None:
         "  residual_risks: []\n  assumptions: []\n```\n",
         encoding="utf-8",
     )
-    probe_env = {**__import__("os").environ, "PYTHONPATH": str(target)}
+    probe_env = {**__import__("os").environ, "PYTHONPATH": str(target),
+                 "PBATCH_HOME": str(tmp_path / "home")}
     probe_env.pop("PBATCH_TOOL_ROOT", None)
     probe_env.pop("PBATCH_SCRIPT_DIR", None)
     probe = subprocess.run(

@@ -407,7 +407,7 @@ gates: []
 
 
 def studio_main(argv: Optional[list] = None) -> int:
-    parser = argparse.ArgumentParser(prog="pi-batch.py studio", description="Project Studio artifact DAG validation and rehearsal")
+    parser = argparse.ArgumentParser(prog="abr studio", description="Project Studio artifact DAG validation and rehearsal")
     sub = parser.add_subparsers(dest="command", required=True)
     init = sub.add_parser("init", help="write a starter studio/v1 contract")
     init.add_argument("--out", required=True)

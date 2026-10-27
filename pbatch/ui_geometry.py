@@ -21,7 +21,7 @@ from .launcher import script_argv
 
 def ui_geometry_main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
-        prog="pi-batch ui-geometry",
+        prog="abr ui-geometry",
         description="UI 几何构图门禁（ui-specs/geometry.md）",
     )
     ap.add_argument("artifact", nargs="?", help="单文件（.tsx/.css/.vue/.dart）")

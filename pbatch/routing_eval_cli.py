@@ -50,7 +50,7 @@ def _validate_pair_args(parser: argparse.ArgumentParser, args) -> None:
 
 def routing_eval_main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="pi-batch routing-eval",
+        prog="abr routing-eval",
         description="Compare observed routing cost, latency, outcomes, and retries")
     parser.add_argument("--limit", type=_positive_limit, default=_MAX_LIMIT)
     parser.add_argument("--since", type=_since_value, default=None,

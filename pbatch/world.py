@@ -555,7 +555,7 @@ def _status_command(args) -> None:
 def world_main(argv: Optional[list] = None) -> int:
     """`pi-batch world bind|drift|status|reconcile`。"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py world",
+        prog="abr world",
         description="World state plane: versioned snapshot + drift")
     sub = parser.add_subparsers(dest="command", required=True)
 

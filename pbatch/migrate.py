@@ -73,7 +73,7 @@ def _print_report(report: dict, as_json: bool) -> None:
 
 
 def migrate_main(argv: Optional[list] = None) -> int:
-    parser = argparse.ArgumentParser(prog="pi-batch.py migrate", description="Source-first compare/plan/rehearse/upgrade")
+    parser = argparse.ArgumentParser(prog="abr migrate", description="Source-first compare/plan/rehearse/upgrade")
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("compare", "plan", "rehearse"):
         child = sub.add_parser(name, help=f"{name} without code mutation")

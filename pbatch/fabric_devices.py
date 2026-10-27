@@ -95,7 +95,7 @@ def keymigrate_main(argv: Optional[list] = None) -> int:
     from .fabric_devices import DEVICE_STATE_DIR as _OLD
     from . import user_dirs
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py devices keymigrate",
+        prog="abr devices keymigrate",
         description="把旧项目内设备密钥迁移到用户级目录")
     parser.add_argument("--from", dest="src", default=str(
         Path(DEVICE_STATE_DIR) / "keys"))

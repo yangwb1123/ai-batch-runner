@@ -381,7 +381,7 @@ def _print_graph_ops(args) -> None:
 def graph_main(argv: Optional[list] = None) -> int:
     """`pi-batch graph validate|deps|cycles|summary --input FILE`。"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py graph",
+        prog="abr graph",
         description="Typed property hypergraph (AADM §5)")
     sub = parser.add_subparsers(dest="command", required=True)
     for name, help_text in (

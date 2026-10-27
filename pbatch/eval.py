@@ -377,7 +377,7 @@ def eval_main(argv: list) -> None:
     regression suite."""
     import argparse
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py eval",
+        prog="abr eval",
         description="Run the rule-system regression suite (evals/*.yaml).")
     parser.add_argument("--filter", default="", help="run only this case id")
     parser.add_argument(

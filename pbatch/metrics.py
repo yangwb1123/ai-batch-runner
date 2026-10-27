@@ -209,7 +209,7 @@ def metrics_report() -> dict:
 def metrics_main(argv: Optional[list] = None) -> int:
     """`pi-batch metrics [--json]`：五类运营指标。"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py metrics",
+        prog="abr metrics",
         description="Operational metrics dashboard (AADM-G §32)")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)

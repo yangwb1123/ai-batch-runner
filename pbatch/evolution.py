@@ -703,7 +703,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py evolution",
+        prog="abr evolution",
         description="Evolution patterns: route battle-tested laws by project "
                     "shape, read/override the project constitution.")
     sub = parser.add_subparsers(dest="command")

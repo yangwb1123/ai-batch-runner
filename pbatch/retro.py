@@ -193,7 +193,7 @@ def _reflection_actions() -> list:
                 "type": "repeat_finding", "finding": ftype, "count": count,
                 "action": f"发现 '{ftype}' 重复 {count} 次——learn draft 后"
                           " shadow 验证并 promote",
-                "learn_command": ("pi-batch learn draft "
+                "learn_command": ("abr learn draft "
                                  f"'{{ftype}} 重复出现' --category backend "
                                  f"--rule-id REFLECT-{ftype.upper()[:20]}")})
     if not actions and total:
@@ -247,13 +247,13 @@ def _scan_all(targets: list) -> tuple:
 
 
 def retro_main(argv: list | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="pi-batch.py retro", description=__doc__)
+    parser = argparse.ArgumentParser(prog="abr retro", description=__doc__)
     parser.add_argument("targets", nargs="+", help="log files or directories")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--top-evidence", type=int, default=6,
                         help="max evidence lines per category (default: 6)")
     parser.add_argument("--failures-only", action="store_true",
-                        help="only failure categories (feed to pi-batch learn)")
+                        help="only failure categories (feed to abr learn)")
     parser.add_argument("--actions", action="store_true",
                         help="自动生成改进动作（learn draft/配置修复建议）")
     args = parser.parse_args(argv)

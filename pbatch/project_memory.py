@@ -149,7 +149,7 @@ def _add_memory_dir(parser: argparse.ArgumentParser) -> None:
 
 def _project_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py project",
+        prog="abr project",
         description="Project Memory：软件系统状态记忆（工程知识循环）")
     sub = parser.add_subparsers(dest="command", required=True)
     p_init = sub.add_parser("init", help="初始化记忆骨架（不覆盖已有）")

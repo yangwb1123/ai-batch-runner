@@ -116,7 +116,7 @@ def test_release_workflow_invokes_isolated_smoke():
     assert "uses: ./.github/workflows/binary-verify.yml" in release
     workflow = (ROOT / ".github/workflows/binary-verify.yml").read_text(encoding="utf-8")
     assert "python tools/smoke-binary.py" in workflow
-    assert "dist/pi-batch-${{ matrix.asset }}${{ matrix.extension }}" in workflow
+    assert "dist/abr-${{ matrix.asset }}${{ matrix.extension }}" in workflow
 
 
 @pytest.mark.parametrize("timeout", ["0", "-1", "nan", "inf"])

@@ -9,7 +9,7 @@ from . import memory
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="pi-batch.py memory")
+    parser = argparse.ArgumentParser(prog="abr memory")
     parser.add_argument("--index", default="", help="memory index override")
     subs = parser.add_subparsers(dest="command", required=True)
     recent_parser = subs.add_parser("recent")

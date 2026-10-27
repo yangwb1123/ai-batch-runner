@@ -523,7 +523,7 @@ def test_version_and_init_cli(capsys, tmp_path, monkeypatch):
         product_cli.version_main(["--json"])
     assert exc.value.code == 0
     report = json.loads(capsys.readouterr().out)
-    assert report["product"] == "pi-batch"
+    assert report["product"] == "abr"
     assert report["version"]
     with _pytest.raises(SystemExit) as exc:
         product_cli.init_main(["--json"])
@@ -563,7 +563,7 @@ def test_completion_script_lists_commands():
     """completion：注册表驱动，命令清单非空。"""
     from pbatch import product_cli
     bash = product_cli._completion_script("bash")
-    assert "pi-batch" in bash and "compgen" in bash
+    assert "complete -F _abr_complete abr pi-batch" in bash and "compgen" in bash
     zsh = product_cli._completion_script("zsh")
     assert "compdef" in zsh
     for cmd in ("campaign", "org", "assess"):

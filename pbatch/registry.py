@@ -306,8 +306,8 @@ def ps_main(argv: list) -> None:
     """`pi-batch ps [--json] [--prune]`: bounded registered metadata, not live inventory."""
     import argparse
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py ps",
-        description="Observe bounded registered pi-batch metadata, not a live process inventory.")
+        prog="abr ps",
+        description="Observe bounded registered abr metadata, not a live process inventory.")
     parser.add_argument("--json", action="store_true", help="emit JSON")
     parser.add_argument("--prune", action="store_true",
                         help="remove dead-pid registry entries first")

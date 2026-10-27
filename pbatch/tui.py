@@ -1,4 +1,4 @@
-"""Product terminal UI for interactive pi-batch sessions."""
+"""Product terminal UI for interactive abr sessions."""
 from __future__ import annotations
 
 import os
@@ -68,8 +68,8 @@ class PiBatchTUI(TUIRuntimeLifecycleMixin, TUISettingsMixin, TUISessionMixin, TU
                  TUIInspectorMixin,
                  TUIProductMixin, TUIReviewMixin, TUIWorkspaceMixin,
                  TUIProjectionMixin, App[None]):
-    """Textual application presenting one interactive pi-batch session."""
-    TITLE = "pi-batch"
+    """Textual application presenting one interactive abr session."""
+    TITLE = "abr"
     SUB_TITLE = "agent orchestration"
     COMMAND_PALETTE_BINDING = "ctrl+p"
     BINDINGS = [
@@ -179,7 +179,7 @@ class PiBatchTUI(TUIRuntimeLifecycleMixin, TUISettingsMixin, TUISessionMixin, TU
                 yield Markdown("", id="timeline", open_links=False)
             yield Static("Starting…", id="status-panel", markup=False)
         yield SlashComposer(
-            placeholder="Ask pi-batch…", id="composer",
+            placeholder="Ask abr…", id="composer",
             dynamic_complete=self._runtime_completion_input)
         yield Footer()
     def on_mount(self) -> None:
@@ -953,7 +953,7 @@ def tui_main(
     args = parser.parse_args(argv)
     options = _options_from_args(parser, args)
     if not _interactive_terminal():
-        print("pi-batch tui requires interactive stdin and stdout terminals", file=sys.stderr)
+        print("abr tui requires interactive stdin and stdout terminals", file=sys.stderr)
         return 2
     app = PiBatchTUI(
         options, backend=backend, backend_factory=backend_factory,

@@ -100,6 +100,19 @@ Linux fixture guard 的争用等待在 10/11ms 两个间隔间交替，首个仍
 轮询别名机制，不证明机器上历次超时的唯一根因，也不是 FIFO、实时或公平性保证。
 只调整合成 fixture；PoolStore/account/Agent/provider 等待和执行策略不采用此漂移。
 
+周期漂移仍不能阻止 burst writer 在关闭 SQLite/释放 guard 后立即重新抢锁。
+受控的 50 次连续写入样本中，单次提交约 0.11 秒以内，读者仍出现原 3 秒等待耗尽；
+这是短事务重复抢占的证据，不是所有历史 CI 超时的唯一归因。合成 fixture 的 append
+现在在打开目录/抢锁前让行 11ms（一个最大轮询周期，首次 append 也适用），让已有
+poller 获得竞争机会；读者和 schema 初始化不额外等待。让行计入同一个原 3 秒预算，
+超时或被调度延迟耗尽预算时不打开目录/SQLite，剩余时间才交给 SQLite busy wait。
+不改变 journal/synchronous、每条事务、close-before-unlock、字节/行数或导出裁决。
+`tests/test_tui_soak_writer_handoff.py` 用固定时钟验证让行期间本写入者未占锁、等待者
+可先读旧批次、预算耗尽/坏策略在 I/O 前拒绝、永久持锁仍失败，以及写入/读取策略分离。
+原多进程 160 条完整性、SIGKILL 和锁预算断言不变。代价是每次合成 append 增加最多
+11ms 的主动让行（调度停顿另计），不保证 FIFO/实时或锁永不超时，不用于真实 Agent、
+账号池或 Hub 的执行/授权策略；仍需独立报告完整门禁结果。
+
 Fixture JSONL 导出现在由 `tools/tui_soak_export.py` 检查完整写入，初次独占创建为
 0600，后续只追加仍与已记录 dev/inode/uid/类型/单链接/大小/mtime/ctime 一致的文件。
 既存导出不自动接管（含空库/新 reader），目录在 reader 创建时绑定并在实际打开/

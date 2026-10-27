@@ -300,7 +300,7 @@ def _read_json(path: str) -> dict:
 def transaction_main(argv: Optional[list] = None) -> int:
     """`pi-batch transaction --input FILE [--action validate|authorize|verify|rollback]`."""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py transaction",
+        prog="abr transaction",
         description="Decision Transaction contract and guard/budget gates")
     parser.add_argument("--input", required=True, help="transaction JSON file")
     parser.add_argument("--action", choices=("validate", "authorize", "verify",

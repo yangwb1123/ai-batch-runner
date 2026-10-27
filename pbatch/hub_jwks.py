@@ -38,7 +38,7 @@ class SnaplinkVerifier:
         try:
             import jwt
         except ImportError as exc:
-            raise ValueError('JWT mode requires pip install "ai-batch-runner[hub]"') from exc
+            raise ValueError('JWT mode requires pip install "abr[hub]"') from exc
         self._jwt = jwt
         self.issuer = _https_url(settings.get("issuer", ""), "issuer")
         self.jwks_url = _https_url(settings.get("jwks_url", ""), "jwks_url")

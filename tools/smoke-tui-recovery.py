@@ -22,7 +22,7 @@ from tui_soak_support import SoakFailure, Terminal, executable_evidence, prepare
 
 STATES = ("QUEUED", "RUNNING", "INTERRUPTING", "UNKNOWN", "SUCCEEDED")
 DRAFT = "THIS_UNKNOWN_TURN_MUST_NOT_EXECUTE"
-PLACEHOLDER = "Ask pi-batch…"
+PLACEHOLDER = "Ask abr…"
 BUSY_PLACEHOLDER = "Queue follow-up"
 # Whitespace plus the Unicode block-element range the composer cursor is drawn
 # from. None of it is operator input.

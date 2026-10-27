@@ -41,7 +41,7 @@ def hub_main(argv: Optional[list[str]] = None) -> int:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="pi-batch fleet",
+    parser = argparse.ArgumentParser(prog="abr fleet",
                                      description="Remote Agent sessions and Hub Gateway")
     actions = parser.add_subparsers(dest="action", required=True)
     for name in ("instances", "sessions", "show", "send", "events", "cancel",
@@ -96,7 +96,7 @@ def _help_for(name: str) -> str:
         "auth": "sign in, inspect, or clear a private Hub user session",
         "integrations": "inspect lifecycle deliveries and retry failures",
         "compute": "discover devices and dispatch computations",
-        "instances": "list connected pi-batch instances",
+        "instances": "list connected abr instances",
         "sessions": "list sessions across instances",
         "tasks": "read authenticated Hub task/attention facts; no execution controls",
         "session-create": "request a fresh session on one remote instance",

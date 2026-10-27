@@ -116,7 +116,7 @@ def check_main(argv: list) -> None:
     """`pi-batch check [--skip-eval] [--steps a,b]`：全面自检。"""
     import argparse
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py check",
+        prog="abr check",
         description="One-command self-check: quality + registry + org + "
                     "capabilities + graph + tools + eval.")
     parser.add_argument("--skip-eval", action="store_true",

@@ -133,7 +133,7 @@ def load_from_log(path: Optional[Path] = None) -> TruthStore:
 def truth_main(argv: Optional[list] = None) -> int:
     """`pi-batch truth claim|invalidate|status`（追加式日志，可回放）。"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py truth",
+        prog="abr truth",
         description="Truth maintenance: premise invalidation cascade")
     sub = parser.add_subparsers(dest="command", required=True)
 

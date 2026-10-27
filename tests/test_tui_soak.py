@@ -161,15 +161,15 @@ def test_executable_report_binds_the_tested_bytes(tmp_path):
 
 def test_composer_requires_fresh_busy_to_ready_and_handles_fragmented_ansi():
     view = SUPPORT.ComposerObservation()
-    view.feed("\x1b[35;5HAsk pi-batch…".encode())
+    view.feed("\x1b[35;5HAsk abr…".encode())
     previous = view.revision
     assert not view.ready_after(previous)
-    view.feed("\x1b[1;5HQueue follow-up\x1b[35;5HAsk pi-batch…".encode())
+    view.feed("\x1b[1;5HQueue follow-up\x1b[35;5HAsk abr…".encode())
     assert not view.ready_after(previous)  # Wrong row and an old ready repaint.
     for byte in b"\x1b[35;5HQueue \x1b[31mfollow-up":
         view.feed(bytes([byte]))
     assert view.phase == "busy" and not view.ready_after(previous)
-    for byte in "\x1b[35;5H\x1b[7mA\x1b[0msk pi-batch…".encode():
+    for byte in "\x1b[35;5H\x1b[7mA\x1b[0msk abr…".encode():
         view.feed(bytes([byte]))
     assert view.ready_after(previous)
 

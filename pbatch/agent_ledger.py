@@ -439,7 +439,7 @@ def _positive_limit(value: str) -> int:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="pi-batch agents")
+    parser = argparse.ArgumentParser(prog="abr agents")
     commands = parser.add_subparsers(dest="command", required=True)
     listing = commands.add_parser("list", help="show configured agent adapters")
     listing.add_argument("--json", action="store_true")

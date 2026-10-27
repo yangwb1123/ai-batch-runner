@@ -46,7 +46,7 @@ def run_n_versions(argv: list, n: int = 3, cwd: str = "",
 def nversion_main(argv: Optional[list] = None) -> int:
     """`pi-batch nversion --n 3 [--json] -- CMD ARG...`。"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py nversion",
+        prog="abr nversion",
         description="N-version execution with consensus check")
     parser.add_argument("--n", type=int, default=3)
     parser.add_argument("--cwd", default="")

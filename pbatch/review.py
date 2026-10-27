@@ -126,7 +126,7 @@ def _positive_timeout(value: str) -> float:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="pi-batch review",
+        prog="abr review",
         description="Run a headless, read-only Codex review and emit structured findings.",
     )
     scope = parser.add_mutually_exclusive_group()

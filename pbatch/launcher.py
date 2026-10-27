@@ -70,7 +70,7 @@ def dispatch_bundled_script(argv: list[str]) -> bool:
             raise ValueError("missing bundled script identifier")
         script, _ = _bundled_script(argv[1])
     except ValueError as exc:
-        print(f"pi-batch: {exc}", file=sys.stderr)
+        print(f"abr: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
     old_argv, old_path = sys.argv[:], sys.path[:]
     try:

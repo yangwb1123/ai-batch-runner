@@ -11,7 +11,7 @@ from .config_inspect import config_check, explain
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py config",
+        prog="abr config",
         description="检查配置版本、来源、合并结果和运行时解析值（只读）",
     )
     subparsers = parser.add_subparsers(dest="action")

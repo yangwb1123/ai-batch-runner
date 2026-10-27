@@ -9,7 +9,7 @@ from .hub_client import HubClient, HubError
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="pi-batch fleet integrations", description=__doc__)
+    parser = argparse.ArgumentParser(prog="abr fleet integrations", description=__doc__)
     parser.add_argument("--hub", default="")
     sub = parser.add_subparsers(dest="command", required=True)
     listing = sub.add_parser("deliveries")

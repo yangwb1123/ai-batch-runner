@@ -21,7 +21,7 @@ QUERY_LIMIT = 1000
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="pi-batch handoff",
+        prog="abr handoff",
         description="Run a task with bounded evidence from a recorded agent run.",
     )
     parser.add_argument("task", nargs="+", metavar="TASK",

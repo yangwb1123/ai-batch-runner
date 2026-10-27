@@ -12,7 +12,7 @@ from .hub_compute_client import ComputeClient
 
 
 def parser():
-    root = argparse.ArgumentParser(prog="pi-batch fleet compute")
+    root = argparse.ArgumentParser(prog="abr fleet compute")
     root.add_argument("--hub", default="")
     root.add_argument("--via", default="", help="private active-turn capability file")
     actions = root.add_subparsers(dest="operation", required=True)

@@ -350,7 +350,7 @@ def _serve_argv(args) -> list[str]:
 def _build_parser() -> argparse.ArgumentParser:
     """Subcommand surface, split out to keep ops_main within budget."""
     parser = argparse.ArgumentParser(
-        prog="pi-batch ops", description="运营控制台：任务/日志/message 可视化")
+        prog="abr ops", description="运营控制台：任务/日志/message 可视化")
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("overview", help="账本统计")
     p.add_argument("--json", action="store_true")

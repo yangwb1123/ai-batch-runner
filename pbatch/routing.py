@@ -249,7 +249,7 @@ def _cli_route_plan(desc: str, workload: int, daily_budget: int,
 def route_main(argv: Optional[list[str]] = None) -> int:
     """pi-batch route "任务描述" [--json] [--workload N] [--daily-budget N]"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch route",
+        prog="abr route",
         description="难度感知模型路由：画像 → 难度档 → 推荐 model（预算感知降级）")
     parser.add_argument("task", nargs="+", help="任务描述")
     parser.add_argument("--json", action="store_true")

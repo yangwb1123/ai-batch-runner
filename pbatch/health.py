@@ -240,7 +240,7 @@ def _render(report: dict) -> str:
 
 
 def health_main(argv: list | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="pi-batch.py health", description=__doc__)
+    parser = argparse.ArgumentParser(prog="abr health", description=__doc__)
     parser.add_argument("--json", action="store_true", help="machine-readable report")
     parser.add_argument("--dir", default="", help="project root (default: tool root)")
     args = parser.parse_args(argv)

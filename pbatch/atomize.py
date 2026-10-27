@@ -217,7 +217,7 @@ def atoms_to_graph(atoms: list) -> dict:
 def atomize_main(argv: Optional[list] = None) -> int:
     """`pi-batch atomize "<text>" [--json] [--graph FILE]`。"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py atomize",
+        prog="abr atomize",
         description="Prompt atomization (AADM §2): 先原子化，不能直接转代码")
     parser.add_argument("text", nargs="*", default=[])
     parser.add_argument("--file", default="")

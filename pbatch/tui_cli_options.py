@@ -12,8 +12,8 @@ from .tui_shell import TuiOptions
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="pi-batch tui",
-        description="Interactive Textual UI for pi-batch agent sessions.",
+        prog="abr tui",
+        description="Interactive Textual UI for abr agent sessions.",
     )
     parser.add_argument("--agent-bin", default="", help="agent CLI binary")
     parser.add_argument("--model", default="", help="model override")

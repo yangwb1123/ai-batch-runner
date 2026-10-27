@@ -21,7 +21,7 @@ def append_provider_event(path: Path, value: dict) -> None:
     raw = (json.dumps(value) + "\n").encode("utf-8")
     if len(raw) > MAX_BYTES:
         raise ValueError("oversized provider evidence record")
-    with connection(database_path(path), LOCK_TIMEOUT) as store:
+    with connection(database_path(path), LOCK_TIMEOUT, writer=True) as store:
         store.execute("BEGIN IMMEDIATE")
         store.execute(SCHEMA)
         store.execute("INSERT INTO events (payload) VALUES (?)", (raw,))

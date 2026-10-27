@@ -1,0 +1,30 @@
+# SDK-backed browser login, read-only first slice. No client/user is provisioned.
+# Register abr-web as a tenant-bound public client with S256 PKCE and exact
+# callback https://abr.ywbsd.site/auth/callback. See docs/agent-hub/WEB_LOGIN.md.
+auth:
+  mode: jwt
+  issuer: https://sso.ywbsd.site
+  jwks_url: https://sso.ywbsd.site/.well-known/jwks.json
+  audience: https://abr.ywbsd.site/api/v1/agent
+  algorithms: [EdDSA, RS256, ES256]
+  grants:
+    - tenant_id: REPLACE_TENANT
+      subject: REPLACE_WEB_PAIRWISE_SUBJECT
+      client_id: abr-web
+      kind: user
+      instances: [abr-local]
+      scopes: [agent.instances:read, agent.sessions:read]
+    - tenant_id: REPLACE_TENANT
+      subject: abr-local-gateway
+      client_id: abr-local-gateway
+      kind: gateway
+      instances: [abr-local]
+      scopes: [agent.gateway:connect]
+allowed_origins:
+  - https://abr.ywbsd.site
+web:
+  public_origin: https://abr.ywbsd.site
+  client_id: abr-web
+  tenant_id: REPLACE_TENANT
+identity: []
+integrations: []  # No audit delivery is claimed until explicitly configured/verified.

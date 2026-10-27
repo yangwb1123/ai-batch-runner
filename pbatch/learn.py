@@ -367,7 +367,7 @@ def _build_learn_parser():
     """learn 子命令参数：draft / exception / shadow / promote。"""
     import argparse
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py learn",
+        prog="abr learn",
         description="Evolution Engineering: failure -> draft -> approval -> "
                     "registry; soft-rule exceptions; shadow-mode evaluation.")
     sub = parser.add_subparsers(dest="command")
@@ -464,7 +464,7 @@ def _cmd_promote(args) -> None:
         raise SystemExit(2)
     log.info("rule %s promoted → %s（草案存档 %s）",
              args.rule_id, registry_path, moved)
-    log.info("运行 pi-batch rules --check 验证注册表 schema")
+    log.info("运行 abr rules --check 验证注册表 schema")
     print(registry_path)
 
 

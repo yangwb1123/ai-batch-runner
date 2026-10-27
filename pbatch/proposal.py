@@ -108,7 +108,7 @@ def proposal_main(argv: Optional[list] = None) -> int:
     """`pi-batch proposal --input FILE [--json]`：提案冲突检测 + 合并 +
     收益公式。"""
     parser = argparse.ArgumentParser(
-        prog="pi-batch.py proposal",
+        prog="abr proposal",
         description="Multi-agent proposals & combination benefit (AADM §25)")
     parser.add_argument("--input", required=True,
                         help="JSON: {proposals: [{agent_id, findings, "

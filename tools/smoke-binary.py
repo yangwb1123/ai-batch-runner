@@ -331,7 +331,7 @@ def _drive_terminal(process: subprocess.Popen, terminal: int, timeout: float) ->
             output.extend(chunk)
             if len(output) > OUTPUT_LIMIT:
                 raise SmokeFailure("tui: terminal output limit exceeded")
-        if not quit_sent and b"Quit" in output and b"pi-batch" in output:
+        if not quit_sent and b"Quit" in output and b"abr" in output:
             os.write(terminal, b"\x11")
             quit_sent = True
     if process.poll() is None:

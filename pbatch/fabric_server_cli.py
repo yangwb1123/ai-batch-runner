@@ -59,7 +59,7 @@ def _serve_blocking(args) -> None:
 
 
 def serve_main(argv: Optional[list] = None) -> int:
-    parser = argparse.ArgumentParser(prog="pi-batch.py serve",
+    parser = argparse.ArgumentParser(prog="abr serve",
                                      description="设备控制平面（D3）")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--host", default="127.0.0.1")
@@ -117,7 +117,7 @@ def _parse_quota_map(raw: str, option: str) -> dict:
 
 def approve_main(argv: Optional[list] = None) -> int:
     """人工审批待接入设备：把注册记录提升为 approved（只追加）。"""
-    parser = argparse.ArgumentParser(prog="pi-batch.py approve",
+    parser = argparse.ArgumentParser(prog="abr approve",
                                      description="批准设备 Runner 接入")
     parser.add_argument("name", help="待批准的设备名（runners 中列出）")
     parser.add_argument("--state-dir", default="")
@@ -147,7 +147,7 @@ def approve_main(argv: Optional[list] = None) -> int:
 
 def runners_main(argv: Optional[list] = None) -> int:
     """列出已注册设备 Runner（读取 runners.jsonl，只读）。"""
-    parser = argparse.ArgumentParser(prog="pi-batch.py runners",
+    parser = argparse.ArgumentParser(prog="abr runners",
                                      description="已注册设备 Runner 清单")
     parser.add_argument("--state-dir", default="")
     parser.add_argument("--json", action="store_true")

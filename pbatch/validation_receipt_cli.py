@@ -8,7 +8,7 @@ from .validation_receipts import read_receipts
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(prog="pi-batch validation", description=__doc__)
+    parser = argparse.ArgumentParser(prog="abr validation", description=__doc__)
     commands = parser.add_subparsers(dest="action", required=True)
     command = commands.add_parser("receipts", help="inspect recent validator receipts")
     command.add_argument("--limit", type=int, default=50, metavar="N",

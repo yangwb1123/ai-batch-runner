@@ -66,7 +66,7 @@ def print_summary(results: list[TaskResult], wall_seconds: Optional[float] = Non
     succeeded = sum(1 for result in results if result.success)
     failed = total - succeeded
     print("=" * 56)
-    print("  pi-batch execution report")
+    print("  abr execution report")
     print("=" * 56)
     print("  total:     %d" % total)
     print("  succeeded: %d" % succeeded)
