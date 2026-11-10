@@ -294,7 +294,14 @@ class TUIBackend:
         if sink is None:
             return None
 
-        def deliver(event: RuntimeEvent) -> None:
+        def deliver(event: RuntimeEvent) -> Optional[bool]:
+            with self._state_lock:
+                current = self._runtime_event_sink
+            if current is None:
+                return False
+            admitted = current(event)
+            if admitted is False:
+                return False
             context.update({
                 "workspace_id": event.workspace_id,
                 "session_id": event.session_id,
@@ -302,10 +309,7 @@ class TUIBackend:
                 "turn_id": event.turn_id,
                 "actor_id": event.actor_id,
             })
-            with self._state_lock:
-                current = self._runtime_event_sink
-            if current is not None:
-                current(event)
+            return admitted
         return deliver
 
     def _publish_workspace_snapshot(

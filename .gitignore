@@ -13,6 +13,13 @@ logs/
 .pi-batch.lock
 .pi-batch.lock.*
 
+# Bun/Svelte frontend: local Iris source link and disposable tooling only.
+node_modules/
+/web/.iris
+/web/.build-lock/
+/web/test-results/
+/web/playwright-report/
+
 # 编译产物 / 临时工作区
 .tmp-im/
 .tmp/

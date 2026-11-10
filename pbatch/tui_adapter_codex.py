@@ -18,6 +18,7 @@ from .tui_codex_support import (
     _bounded_changes,
     _bounded_list,
     _default_spawn,
+    _diagnostic_text,
     _id,
     _now,
     _number,
@@ -110,7 +111,7 @@ class CodexExecAdapter:
         self._lock, self._publish_lock, self._closed = threading.RLock(), threading.RLock(), False
         self._lifecycle_lock = threading.RLock()
         self._starting = False
-        self._turn_header_admitted = False
+        self._turn_header_admitted = self._turn_queued = False
         self._initialized = self._session_announced = False
         self._overflow_reported = self._terminal = self._interrupt_requested = False
         self._session_ready = threading.Event()
@@ -217,7 +218,7 @@ class CodexExecAdapter:
                 raise RuntimeError("a codex exec turn is already running")
             self._active, self._process = handle, process
             self._terminal = self._interrupt_requested = self._overflow_reported = False
-            self._turn_header_admitted = False
+            self._turn_header_admitted = self._turn_queued = False
             self._usage, self._protocol_errors, self._started_monotonic = {}, 0, time.monotonic()
             self._threads = self._start_workers(handle, process)
 
@@ -313,8 +314,9 @@ class CodexExecAdapter:
             if not raw or raw == _IGNORED_STDERR:
                 continue
             self._session_ready.wait(0.05)
-            self._ensure_session_event(handle)
-            self._start_provider_turn(handle)
+            # stderr is diagnostic, not a provider lifecycle acknowledgement.
+            # Keep the header window open and do not journal an empty identity.
+            self._queue_provider_turn(handle)
             self._publish(handle, "runtime.warning",
                           {"stream": "stderr", **_text("text", raw)})
     def _is_current(self, handle: TurnHandle) -> bool:
@@ -327,6 +329,9 @@ class CodexExecAdapter:
         if not self._is_current(handle):
             return
         provider_type = str(value.get("type", ""))
+        if provider_type == "error":
+            self._provider_diagnostic(handle, value.get("message"))
+            return
         if provider_type == "thread.started":
             provider_id = str(value.get("thread_id", "") or "")
             with self._lock:
@@ -361,6 +366,27 @@ class CodexExecAdapter:
                 self._unknown(handle, provider_type, raw)
         if "usage" in value:
             self._emit_usage(handle, value.get("usage"))
+    def _provider_diagnostic(self, handle: TurnHandle, message: Any) -> None:
+        with self._publish_lock:
+            if not self._is_current(handle) or self._is_terminal(handle):
+                return
+            self._queue_provider_turn(handle)
+            self._publish(handle, "runtime.warning", {
+                "stream": "stdout", "category": "provider_diagnostic", "provider_type": "error",
+                **_diagnostic_text(message)})
+
+    def _queue_provider_turn(self, handle: TurnHandle) -> None:
+        """Register local intent once, without asserting provider start."""
+        with self._publish_lock:
+            with self._lock:
+                if (self._turn_queued or self._terminal or self._closed
+                        or handle is not self._active or handle.done
+                        or handle.state != TurnState.QUEUED):
+                    return
+                self._turn_queued = True
+            self._publish(handle, "turn.queued", {
+                "turn_id": handle.turn_id, "state": TurnState.QUEUED})
+
     def _start_provider_turn(self, handle: TurnHandle) -> None:
         with self._publish_lock:
             with self._lock:
@@ -368,8 +394,7 @@ class CodexExecAdapter:
                         or self._closed or handle.done
                         or handle.state != TurnState.QUEUED):
                     return
-            self._publish(handle, "turn.queued", {
-                "turn_id": handle.turn_id, "state": TurnState.QUEUED})
+            self._queue_provider_turn(handle)
             with self._lock:
                 if self._terminal or handle.state != TurnState.QUEUED:
                     return

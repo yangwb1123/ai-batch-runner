@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 from .hub_client import HubClient, HubError
 from .hub_gateway import HubGateway, HubGatewayConfig
+from .hub_gateway_config import normalize_config
 
 
 def hub_main(argv: Optional[list[str]] = None) -> int:
@@ -155,12 +156,18 @@ def _configure_agent(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--provider", default="")
     parser.add_argument("--runtime", default="auto",
                         choices=("auto", "pi", "pi-rpc", "codex", "codex-exec", "legacy"))
-    parser.add_argument("--sessions", type=int, default=1,
-                        help="initial sessions (0 through --max-sessions)")
-    parser.add_argument("--max-sessions", type=int, default=8,
-                        help="total initial and requested sessions (1 through 8)")
+    parser.add_argument("--observe-only", action="store_true",
+                        help="register and heartbeat only; no Agent, commands or project file reads")
+    parser.add_argument("--sessions", type=int, default=None,
+                        help="initial sessions (default 1; observation requires 0)")
+    parser.add_argument("--max-sessions", type=int, default=None,
+                        help="total sessions (default 8; observation requires 0)")
     parser.add_argument("--compute-tools", action="store_true",
                         help="provide active-turn compute tools to the local Agent")
+    parser.add_argument("--publish-command-output", action="store_true",
+                        help="publish bounded redacted command snapshots to authorized session readers")
+    parser.add_argument("--share-file", action="append", default=[], metavar="EXACT_RELATIVE_PATH",
+                        help="share an explicit file inspection snapshot after successful turns (repeat, max 8)")
     parser.add_argument("--heartbeat-interval", type=float, default=15.0)
     parser.add_argument("--poll-interval", type=float, default=1.0)
     parser.add_argument("--timeout", type=float, default=5.0,
@@ -273,10 +280,15 @@ def _run_gateway(args) -> int:
         hub_url=args.hub, cwd=args.cwd, state_dir=args.state_dir,
         instance_id=args.instance_id, name=args.name, project_id=args.project_id,
         agent=args.agent, model=args.model, provider=args.provider,
-        runtime=args.runtime, sessions=args.sessions, max_sessions=args.max_sessions,
-        compute_tools=args.compute_tools,
+        runtime=args.runtime,
+        sessions=args.sessions if args.sessions is not None else (0 if args.observe_only else 1),
+        max_sessions=args.max_sessions if args.max_sessions is not None else (0 if args.observe_only else 8),
+        compute_tools=args.compute_tools, observe_only=args.observe_only,
+        publish_command_output=args.publish_command_output,
+        share_files=tuple(args.share_file),
         heartbeat_interval=args.heartbeat_interval,
         poll_interval=args.poll_interval)
+    options = normalize_config(options)  # reject invalid modes before reading machine credentials
     gateway = HubGateway(options, client=HubClient.from_env(
         args.hub, timeout=min(args.timeout, 10.0), oauth_config=args.oauth_config))
     print(f"Gateway {gateway.instance_id} registered (generation {gateway.generation})")

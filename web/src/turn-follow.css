@@ -1,0 +1,6 @@
+.turn-view-mode { padding: 16px 24px; border-block-end: 1px solid var(--iris-border); background: var(--iris-surface); font-size: 12px; overflow-wrap: anywhere; }
+.turn-view-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.turn-view-heading > strong { color: var(--iris-foreground); font-weight: 600; }
+.turn-view-mode p { color: var(--iris-muted); line-height: 1.7; margin: 8px 0 0; }
+.turn-view-mode .turn-view-update { color: var(--iris-foreground); }
+@media (max-width: 600px) { .turn-view-mode { padding: 16px; } }

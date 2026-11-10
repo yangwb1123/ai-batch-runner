@@ -113,7 +113,7 @@ class FakeRuntime:
         self.seq += 1
         event = RuntimeEvent(
             event_id=f"evt_{self.seq}", seq=self.seq,
-            occurred_at="2026-01-01T00:00:00Z", workspace_id="ws",
+            occurred_at="2026-01-01T00:00:00Z", workspace_id=self.session.workspace_id,
             session_id=identities.get("session_id", handle.session_id),
             run_id=identities.get("run_id", handle.run_id),
             turn_id=identities.get("turn_id", handle.turn_id),

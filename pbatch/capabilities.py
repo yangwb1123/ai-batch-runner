@@ -42,7 +42,7 @@ MANUAL = {
     "pi": ("execution", "medium", "Pi CLI 参数/终端输入",
            "官方 Pi TUI、文本、JSONL、RPC 或包管理结果"),
     "tui": ("execution", "medium", "交互任务/项目上下文", "agent 回复/工作区变更/会话"),
-    "fleet": ("execution", "medium", "Hub 连接/实例/会话/prompt", "跨实例会话控制与事件"),
+    "fleet": ("execution", "medium", "Hub 配置/连接/实例/会话/prompt", "离线预检、只读观察与跨实例会话控制"),
     "pool": ("execution", "medium", "账号池配置/模型请求", "配额路由/本地网关/脱敏状态"),
     "graph": ("reasoning", "low", "graph.json|源代码目录", "结构违规/依赖环/统计"),
     "profile": ("reasoning", "low", "需求文本", "12 维画像/模式/包络"),

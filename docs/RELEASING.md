@@ -1,11 +1,12 @@
 # 发布 `abr`
 
-PyPI distribution 和用户安装后执行的主命令均为 `abr`。
+PyPI distribution 为 `ai-batch-runner`，用户安装后执行的主命令为 `abr`。
 `pi-batch` 保留为兼容别名；Python 包 `pbatch`、`pi-batch.py`、`pi-batch.yaml`、
 `PBATCH_*`、`share/ai-batch-runner` 资产布局与用户数据路径不迁移。
 GitHub 仓库仍为 `yangwb1123/ai-batch-runner`。版本唯一事实源是 `pyproject.toml`。
-发布前须确认 PyPI 的 `abr` 项目名可用或已归发布者所有；本地改名不代表已取得名称。
-从旧发行包迁移时，在新的 pipx 环境安装 `abr`，不要在同一环境叠装两份共享路径的包。
+发布前须确认 PyPI 的 `ai-batch-runner` 项目名可用或已归发布者所有；本地改名不代表已取得名称。
+从本项目的旧发行包迁移时，先核对安装来源，再在新的 pipx 环境安装 `ai-batch-runner`；
+不要在同一环境叠装两份共享路径的包，也不要把公共 PyPI 上的其他同名项目当作本项目迁移。
 
 ## 最小 Linux 发行范围
 
@@ -40,7 +41,7 @@ CHANGELOG，并把签名版本标签指向可从 `main` 到达的提交。在 Ac
 ## 一次性设置
 
 1. 在 PyPI 创建 pending Trusted Publisher：
-   - PyPI project：`abr`
+   - PyPI project：`ai-batch-runner`
    - GitHub owner：`yangwb1123`
    - Repository：`ai-batch-runner`
    - Workflow：`release.yml`
@@ -98,7 +99,7 @@ Trusted Publishing 使用 GitHub OIDC 短期凭证，不在仓库或 GitHub Secr
 从公共索引验证：
 
    ```bash
-   pipx install abr==X.Y.Z
+   pipx install ai-batch-runner==X.Y.Z
    abr --version
    abr doctor
    abr tui
@@ -223,6 +224,13 @@ python tools/smoke-binary.py dist/linux-candidate/abr-linux-x86_64 \
 health 探测、模拟 provider、schema 拒绝零产物及流水线；另外验证 Git worktree
 子调用和 POSIX 终端的启动/退出。Windows 明确跳过 POSIX PTY。模拟 provider 的
 验收不替代真实模型接入、目标平台兼容性和长期运行验收。
+
+正规wheel安装及冻结二进制中的 `abr health` 默认报告 `scope: installation`；
+也可显式执行 `abr health --installation --json`。该诊断检查核心模块、命令入口、
+包内资源与固定验证器探针，失败、超时、空扫描及无效协议均不能算健康。
+安装包不携带源码测试时，不再把测试数量0误判为安装损坏，也不伪造测试通过或项目健康分数。
+源码/editable运行保留原项目诊断，`--dir`始终选择项目范围并保留必要测试证据要求。
+安装报告明确列出未执行的工程测试、项目质量和可选集成；安装健康不能替代本节完整发布门禁。
 
 普通任务验收使用默认实例锁；额外启动同一二进制的并发进程，验证同输出与同会话
 冲突返回 5、`ps --json` 不伤害活跃持锁进程、`--wait-lock` 在释放前保持排队，

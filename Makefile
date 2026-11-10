@@ -46,8 +46,21 @@ eval: ## Rule-system regression suite (evals/, pi-batch eval).
 coverage: ## Coverage report for tests/ + checks/. Requires pytest-cov.
 	python -m pytest --cov=checks --cov=cli --cov-report=term-missing tests/ checks/
 
+# -- browser frontend --------------------------------------------------
+web-assets-check: ## Offline packaged frontend integrity + source-drift check (no Bun).
+	python tools/check-web-build.py
+
+web-check: ## Rebuild with pinned Bun/Iris; reject stale shipping bytes without repairing them.
+	cd web && bun run check && bun test tests && bun run build:check
+	python tools/check-web-build.py
+
+web-browser: ## Real local Chrome + synthetic issuer; not live SSO acceptance.
+	python -m pytest tests/browser_hub_web.py tests/browser_hub_web_ui.py tests/browser_hub_web_control.py tests/browser_hub_web_results.py tests/browser_hub_web_catalog.py tests/browser_hub_web_files.py tests/browser_hub_web_diff.py tests/browser_hub_web_history.py tests/browser_hub_web_review.py tests/browser_hub_web_drafts.py tests/browser_hub_web_follow.py tests/browser_hub_web_recap.py tests/browser_hub_web_drain.py tests/browser_hub_web_report.py tests/browser_hub_web_find.py tests/browser_hub_web_prompt_reuse.py
+
+web-ci: ci web-check web-browser ## Complete repository and Web candidate gates; no deployment.
+
 # -- aggregate ---------------------------------------------------------
-ci: release-check check self-test test eval quality org ## Full CI: release metadata + gates + tests + eval + org specs.
+ci: release-check web-assets-check check self-test test eval quality org ## Full CI: release metadata + assets + gates + tests + eval + org specs.
 
 org: ## Engineering-org spec integrity (17 node specs + capability registry + graph).
 	python pi-batch.py org check
@@ -55,4 +68,4 @@ org: ## Engineering-org spec integrity (17 node specs + capability registry + gr
 	python pi-batch.py graph extract --input pbatch
 
 .PHONY: help check check-filesize check-complexity check-root check-style release-check \
-        self-test quality harness test eval coverage org ci
+        self-test quality harness test eval coverage org ci web-assets-check web-check web-browser web-ci

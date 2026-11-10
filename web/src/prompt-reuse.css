@@ -1,0 +1,11 @@
+.prompt-reuse { margin-block-start: 16px; }
+.prompt-reuse .secondary-copy { margin-block: 8px; overflow-wrap: anywhere; }
+.prompt-reuse-preview { margin-block-start: 16px; padding: 16px; border: 1px solid var(--iris-border); border-radius: 8px; background: var(--iris-background); min-inline-size: 0; }
+.prompt-reuse-preview h4 { margin: 0; font-size: 13px; }
+.prompt-reuse-preview label { display: grid; gap: 8px; margin-block-start: 12px; font-size: 12px; font-weight: 600; }
+.prompt-reuse-preview textarea { inline-size: 100%; min-inline-size: 0; max-inline-size: 100%; box-sizing: border-box; resize: vertical; padding: 12px; border: 1px solid var(--iris-border); border-radius: 6px; background: var(--iris-background); color: var(--iris-foreground); font: 12px/1.8 ui-monospace, monospace; overflow-wrap: anywhere; }
+.prompt-reuse-preview textarea:focus-visible { outline: 2px solid var(--iris-primary); outline-offset: 2px; }
+.prompt-reuse-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+@media (max-width: 600px) {
+  .prompt-reuse-preview { padding: 12px; }
+}

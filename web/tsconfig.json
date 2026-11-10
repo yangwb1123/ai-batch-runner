@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "allowJs": true,
+    "checkJs": false,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["bun", "svelte", "vite/client"],
+    "paths": {
+      "@iris-ui-kit/svelte/*": ["./.iris/packages/svelte/src/*"],
+      "@iris-ui-kit/svelte": ["./.iris/packages/svelte/src/index.ts"],
+      "@iris-ui-kit/core/*": ["./.iris/packages/core/src/*"],
+      "@iris-ui-kit/core": ["./.iris/packages/core/src/index.ts"],
+      "@iris-ui-kit/theme": ["./.iris/packages/theme/src/index.ts"],
+      "@iris-ui-kit/tokens": ["./.iris/packages/tokens/src/index.ts"],
+      "@iris-ui-kit/icons": ["./.iris/packages/icons/src/index.ts"],
+      "@iris-ui-kit/skins": ["./.iris/packages/skins/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*.ts", "src/**/*.svelte", "tests/**/*.ts", "scripts/**/*.ts", "vite.config.ts"]
+}

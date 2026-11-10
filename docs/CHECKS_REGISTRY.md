@@ -22,6 +22,8 @@
 | G4 style | `make check-style` | 行宽 100（警告） | 行尾空白、tab 缩进、缺末尾换行、非 utf-8 为硬失败 |
 | G5 quality | `make quality` | 函数 50 行 / 圈复杂度 15 / 文件 1000 行 / 重复函数体 | 参考版自带扫描器 `quality.py`（纯 stdlib），经 `pi-batch.yaml` 注册为 `validators.pyquality` |
 | R0 release metadata | `make release-check` | 名称/稳定版本/Changelog/入口一致 | 普通 CI 只验证分发契约；标签发布另以 `--tag vX.Y.Z` 校验标签并在许可证未决时 fail closed |
+| W0 Web assets | `make web-assets-check`（含在`make ci`） | 源码/工具链/编译资产摘要一致 | 标准库漂移检查，不替代重建或实网验收 |
+| W1 Web candidate | `make web-check web-browser` | 精确重建、Svelte/Bun/真实本地Chrome | 固定Bun/Iris；合成issuer；两条发行工作流强制复用，不部署 |
 | H0 self-test | `make self-test` | — | 门禁自身单测（56 例，unittest 零依赖） |
 | T0 regression | `make test` | — | 引擎、规则系统/评估器/检查器与 Campaign 回归套件（pytest，需 dev extras） |
 | E0 eval | `make eval` | 53 项 | classify/rules/assess/product/workflow/evolution 行为回归 |
@@ -42,6 +44,11 @@ UI/前后端质量、设计智能、业务闭环检查器只提前剪枝**已有
 `tests/test_checker_traversal.py` 对照旧准入谓词检查文件集合，并验证被排除目录
 不被打开、目录符号链接不递归、显式 skip/大小写/文件链接语义保持。
 
+关键字段审计对Python赋值做有界语义核对：只将确定来自`pathlib.Path`、唯一绑定且仅用于
+`read_text/read_bytes`的模块级路径变量识别为非数值读取。分析限1MiB源码、20,000个AST节点
+和16层路径表达式；语法无效、来源未知、重绑定、属性写入及其他库存/金额修改仍按原规则报告。
+这不排除`dist`或整份文件，旧证据无需移动；同一文件中的真实数值变更仍接受审计。
+
 Fabric 调度回归的等待条件要求真实审批账本命中和首个 Runner 心跳，而非把
 已出现但无 `approved` 字段的注册记录当成授权；审批写入暂停点验证这一区别。
 MCP 深度压力测试保留 2000/200000 层输入，但按当前解释器实际能否解码区分
@@ -50,6 +57,71 @@ Invalid Request / Parse error，另固定覆盖可解码的非请求与解码器
 
 这些是遍历与默认测试输入的修复，不是旧 CI 超时的完整根因证明；全量 CI
 是否通过必须以完整 `make ci` 结果为准，不能以局部提速或栈转储后的活动代替。
+
+### Web任务控制
+
+`tests/test_hub_web_control*.py`验证显式开关、精确principal授权、租户只读策略不能扩展到任务
+内容/控制、独立写/取消scope、实例过滤、同源Origin/登录context、幂等、严格JSON/头预算及
+上传期间退出。原Bearer API、只读默认与Gateway执行规则不变。
+`web/tests/tasks.test.ts`验证未知结果不自动重放、冻结key/内容、账号切换和有界生命周期。
+`make web-browser`包含`tests/browser_hub_web_control.py`：桌面/手机真实Chrome通过真实
+Hub/Gateway/AgentSession完成创建、指令、事件、取消/关闭；身份和provider是测试替身，
+不声称真实账号、项目接入或生产验收。配置和使用见[WEB_TASKS.md](agent-hub/WEB_TASKS.md)。
+
+### Hub 只读接入与离线预检
+
+`tests/test_hub_config_check.py`在禁止网络、数据库及监听的fixture中验证真正的启动配置
+验证器；`--check-config --json`只报告本地声明，外部验收固定为not_executed。坏YAML、
+重复/merge键、循环/深度预算、auth/grant未知字段、FIFO/链接、损坏Web资产和本地sink
+凭据均失败关闭。其它配置文档的默认merge兼容不变，正常Hub启动也先验证再创建存储。
+
+`tests/test_hub_gateway_observation.py`验证显式零会话观察模式、固定Hub/项目/工作区/实例
+绑定、拒绝复用执行态、没有Provider/命令轮询/事件重放，以及先目录锁后SQLite的单写者边界。
+`tests/test_hub_observation_http.py`使用真实本地HTTP/JWT/SQLite，验证实例可见、零会话
+容量拒绝创建、其他账号拒绝、在线所有权与换代fencing；仅身份是合成fixture，不代表真实
+Snaplink、生产Gateway、审计或浏览器实网验收。原执行型Gateway回归和权限断言保留。
+
+### Hub 停止与存储所有权
+
+`tests/test_hub_lifecycle.py`以真实HTTP/SQLite验证请求drain与数据库关闭期间的单写者边界：
+保留32并发上限、只中断自己的socket、共享截止时间、事务尚可提交且不能提前释放锁。
+`tests/test_hub_server_signals.py`验证信号handler恢复、失败关闭与启动/清理顺序；POSIX用例
+真实启动CLI子进程、发送SIGTERM/SIGINT并重启，核对持久请求幂等且未自动执行。两条真实
+信号用例仅在POSIX运行，其它用例不做平台推断；本机Linux完整门禁不会跳过它们。
+
+失败收尾不等于回滚，响应丢失后的请求结果仍需核对。详见
+[Hub 生命周期](agent-hub/LIFECYCLE.md)；不是生产supervisor、远端Gateway或存储恢复批准。
+`tests/test_hub_start_ack_lifecycle.py`用真实HTTP/Gateway和受控ack窗口证明`turn.running`
+可以先于provider启动；任务浏览器fixture在原五秒窗口同时等待provider-start标记，保留
+原prompt/取消/关闭断言，不以受理状态代替真实进展，也不增加等待或重试预算。
+
+### Hub 存储启动准入
+
+`tests/test_hub_store_admission.py`与`tests/test_hub_store_paths.py`先复现再验证：未知版本
+和无效数据库不被先改写/收紧权限，核心DDL/版本同事务回滚，竞争写者不创建库或chmod，
+原生锁异常不泄漏自有fd。文件族拒绝链接/FIFO/目录/foreign uid/公开sidecar，父目录
+别名共享永久锁，危险祖先在创建子目录前拒绝；运行路径消失不会重建空库，打开期间的
+替换连接在PRAGMA前关闭。`mode=ro`版本探针用自有子进程留下的真实已提交WAL验证，
+不直接复制活动WAL或只看主文件头。保留版本0/1兼容、既有5秒SQLite busy边界和关闭
+期间的所有权；没有新增备份/恢复命令、自动重试或现场变更。POSIX文件能力不足时
+拒绝启动，Linux回归及stat替身不证明Windows或生产恢复验收。
+
+### TUI review 测试生命周期
+
+`tests/test_tui_review.py`的本地事件循环fixture使用`asyncio.run`等待自有任务取消、
+异步生成器及executor清理；回归显式检查清理完成，不忽略Textual的unraisable警告。
+`-W error::pytest.PytestUnraisableExceptionWarning`可严格复核整份review测试。
+这不代表其它UI生命周期、真实Provider退出或跨平台清理已额外验收。
+
+### Git worktree 创建事务回归
+
+2026-11-02完整CI失败的私有合成fixture账本保留了`worktree add`读取另一个创建者未完成
+`commondir`的错误，不是笼统的flaky推断。`tests/test_worktree_creation.py`控制该窗口，
+并验证共享common-dir锁、失败不重试/不清理、链接拒绝、截止后不调用Git及预算不重置。
+`isolate`与Campaign复用`worktree_creation.add_worktree`，仅串行共享Git元数据创建，
+不串行Agent执行；30秒覆盖common-dir探测、锁等待与一次Git命令，输出各有8192/65536字节界限。
+协作guard永久保留，关闭描述符释放OS锁；不破Git锁、不改变实例锁/merge授权，不保证其它
+Git客户端参与，也不声称此修复解释整套CI的耗时。完整门禁仍须独立执行和报告。
 
 ### SQLite 并发与私有状态回归
 
@@ -221,6 +293,17 @@ revision 栅栏精确通知，`reidentify/close` 使旧通知失效。
 runtime fencing/呈现提案，不证明真实 Codex、历史 journal 故障或平台验收根因。
 这些受控用例无真实 provider；完整 CI 仍保留原真实 provider 测试，不以局部通过
 代替完整 CI、集成源码或发布验收。
+
+### Codex JSONL 诊断与公开 backend 回执
+
+`tests/test_tui_codex_diagnostic_events.py` 用自有合成进程/JSONL 流覆盖 error-first
+顺序、normal/resume/fork 身份与 journal 恢复、诊断字段限界/脱敏、队列压力、
+旧轮和终态隔离、无终态失败，以及连续诊断不延长 deadline、不触发重试。
+`tests/test_tui_tracked_admission.py` 从公开 `TUIBackend.run_turn_structured()`
+验证必需折叠 False 不被跟踪包装器吞掉；拒绝/异常不更新 workspace 上下文，
+撤下原本必需的 sink 不变成自动准入。原本 headless 与 legacy None 语义保留。
+这些测试不是外部 provider 或网络验收；真实 Codex 测试、150 秒预算和完整
+1800 秒 CI 窗口不变，先前超时的根因不能从合成诊断推断。
 
 ### Agent 结构化产物门禁
 

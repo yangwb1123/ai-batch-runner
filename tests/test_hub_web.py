@@ -190,7 +190,7 @@ def test_web_requires_jwt_exact_origin_and_real_sdk(web_env, monkeypatch):
         HubWeb(settings, auth)
     settings["auth"]["mode"] = "jwt"
     monkeypatch.setitem(sys.modules, "snaplink_sso", None)
-    with pytest.raises(ValueError, match=r"abr\[web\]"):
+    with pytest.raises(ValueError, match=r"ai-batch-runner\[web\]"):
         HubWeb(settings, auth)
 
 
@@ -210,9 +210,9 @@ def test_logout_during_verification_cannot_restore_local_session(web_env, monkey
     session = logged_in(web)
     authenticate = auth.authenticate
 
-    def clear_then_verify(header):
+    def clear_then_verify(header, **options):
         web.clear(session)
-        return authenticate(header)
+        return authenticate(header, **options)
 
     monkeypatch.setattr(auth, "authenticate", clear_then_verify)
     with pytest.raises(HubAccessError, match="ended"):

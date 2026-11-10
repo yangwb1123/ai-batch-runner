@@ -11,6 +11,9 @@ WORKSPACE_HTTP_BYTES = 576 * 1024
 
 
 def request_limit(path):
+    if path.split("?", 1)[0] in {"/gateway/file-snapshots", "/api/v1/agent/gateway/file-snapshots"}:
+        from .hub_file_snapshot_models import MAX_WIRE_BYTES
+        return MAX_WIRE_BYTES
     parts = path.split("?", 1)[0].strip("/").split("/")
     if parts[:3] == ["api", "v1", "agent"]:
         parts = parts[3:]

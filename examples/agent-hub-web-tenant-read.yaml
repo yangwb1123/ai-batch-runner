@@ -1,0 +1,23 @@
+# Explicit opt-in: all signed users of one tenant may view the listed instances.
+# No workspace/Gateway registration, administrator grant or machine secret.
+# Dedicated public client: authorization_code only, PKCE S256, exact callback.
+# This policy is Web-only; the original bearer API still needs exact grants.
+auth:
+  mode: jwt
+  issuer: https://sso.ywbsd.site
+  jwks_url: https://sso.ywbsd.site/.well-known/jwks.json
+  audience: https://abr.ywbsd.site/api/v1/agent
+  algorithms: [EdDSA, RS256, ES256]
+  grants: []
+  web_read_grants:
+    - tenant_id: REPLACE_TENANT
+      client_id: abr-web
+      instances: [abr-local]
+allowed_origins:
+  - https://abr.ywbsd.site
+web:
+  public_origin: https://abr.ywbsd.site
+  client_id: abr-web
+  tenant_id: REPLACE_TENANT
+identity: []
+integrations: []

@@ -160,6 +160,9 @@ def _json_object(output: str, label: str) -> dict:
 def check_health(output: str) -> None:
     """Do not confuse absent source tests or a lower score with missing assets."""
     report = _json_object(output, "health")
+    if "schema_version" in report or report.get("scope") == "installation":
+        _check_installation_health(report)
+        return
     assets = report.get("assets", {})
     if not isinstance(assets, dict) or assets.get("healthy") is not True or assets.get("missing") != []:
         raise SmokeFailure("health: bundled assets missing or unknown")
@@ -172,6 +175,42 @@ def check_health(output: str) -> None:
                if type(value) is not int or value < 0]
     if unknown:
         raise SmokeFailure("health: unknown checker results: " + ", ".join(unknown))
+
+
+
+def _check_installation_health(report: dict) -> None:
+    """A scoped install PASS must contain every required availability probe."""
+    if (report.get("schema_version") != "abr.installation-health.v1"
+            or report.get("scope") != "installation" or report.get("healthy") is not True
+            or "tests" in report or "score" in report):
+        raise SmokeFailure("health: invalid installation scope or outcome")
+    assets, checks = report.get("assets"), report.get("checks")
+    if (not isinstance(assets, dict) or assets.get("healthy") is not True
+            or assets.get("missing") != [] or type(assets.get("required")) is not int
+            or assets["required"] < 9):
+        raise SmokeFailure("health: required installation assets missing or unknown")
+    names = {"runtime", "distributed_assets", "designintelligence_selfcheck",
+             "knowledge_selfcheck", "backendquality_fixture"}
+    if (not isinstance(checks, dict) or set(checks) != names
+            or any(not isinstance(row, dict) or row.get("result") != "passed"
+                   for row in checks.values())):
+        raise SmokeFailure("health: required installation probes missing or failed")
+    runtime, backend = checks["runtime"], checks["backendquality_fixture"]
+    if (runtime.get("modules") != ["pbatch.cli", "pbatch.models", "pbatch.runner", "pbatch.pipeline", "pbatch.tui"]
+            or type(runtime.get("package_assets")) is not int or runtime["package_assets"] != 13
+            or type(backend.get("files_scanned")) is not int or backend["files_scanned"] != 2
+            or type(backend.get("rejected_violations")) is not int or backend["rejected_violations"] != 1):
+        raise SmokeFailure("health: installation probe evidence incomplete")
+    omitted = report.get("not_executed")
+    expected = {"project_tests", "project_quality", "provider_execution",
+                "optional_hub_authentication", "release_acceptance"}
+    if (not isinstance(omitted, list) or len(omitted) != len(expected)
+            or any(not isinstance(row, dict) or row.get("result") != "not_executed"
+                   or not isinstance(row.get("check"), str)
+                   or not isinstance(row.get("reason"), str) or not row["reason"].strip()
+                   for row in omitted)
+            or {row.get("check") for row in omitted} != expected):
+        raise SmokeFailure("health: installation limitations missing")
 
 
 def prepare_fake_agent(workspace: Path, config_output: str) -> None:

@@ -153,11 +153,39 @@ class _AppServerReviewRuntime:
 
 
 def _run(coro):
-    loop = asyncio.new_event_loop()
-    try:
-        loop.run_until_complete(coro)
-    finally:
-        loop.close()
+    # The fixture owns its loop: drain cancellation, async generators and executor before close.
+    asyncio.run(coro)
+
+
+def test_run_drains_owned_tasks_and_async_generators():
+    drained = set()
+    generators = []
+
+    async def generator():
+        try:
+            yield 1
+        finally:
+            await asyncio.sleep(0)
+            drained.add('generator')
+
+    async def worker(started):
+        try:
+            started.set()
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0)
+            drained.add('task')
+
+    async def scenario():
+        started = asyncio.Event()
+        asyncio.create_task(worker(started))
+        await started.wait()
+        item = generator()
+        generators.append(item)
+        assert await item.__anext__() == 1
+
+    _run(scenario())
+    assert drained == {'task', 'generator'}
 
 
 def test_review_scope_parser_is_explicit_and_bounded():

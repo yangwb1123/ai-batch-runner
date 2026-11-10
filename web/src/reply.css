@@ -1,0 +1,19 @@
+/* Limited reply formatting uses escaped nodes and the existing Iris theme. */
+.reply-toolbar { flex-wrap: wrap; gap: 8px; }
+.reply-actions, .reply-code-heading { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.reply-actions { margin-inline-start: auto; }
+.reply-preview { min-inline-size: 0; line-height: 1.9; overflow-wrap: anywhere; }
+.reply-heading { margin: 20px 0 12px; font-size: 20px; font-weight: 600; line-height: 1.6; }
+.reply-heading:first-child, .reply-paragraph:first-child { margin-block-start: 0; }
+.reply-paragraph, .reply-quote { white-space: pre-wrap; margin: 12px 0; }
+.reply-quote { border-inline-start: 3px solid var(--iris-border); padding-inline-start: 16px; color: var(--iris-muted); }
+.reply-list { list-style: none; margin: 12px 0; padding-inline-start: 8px; }
+.reply-list li { display: flex; align-items: baseline; gap: 8px; white-space: pre-wrap; }
+.reply-list li > span:last-child { min-inline-size: 0; }
+.reply-marker { flex-shrink: 0; min-inline-size: 16px; color: var(--iris-muted); }
+.reply-code { min-inline-size: 0; margin: 16px 0; border: 1px solid var(--iris-border); border-radius: 8px; overflow: hidden; }
+.reply-code-heading { justify-content: space-between; padding: 8px 12px; background: var(--iris-surface); border-block-end: 1px solid var(--iris-border); color: var(--iris-muted); font-size: 12px; }
+.task-conversation .reply-code pre { padding: 16px; overflow: auto; white-space: pre; overflow-wrap: normal; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.8; }
+.reply-code > .secondary-copy { padding-inline: 16px; }
+.task-conversation .reply-original { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 600px) { .reply-heading { font-size: 16px; } .task-conversation .reply-code pre { padding: 12px; } }

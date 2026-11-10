@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/yangwb1123/iris-ui-kit.git",
+  "revision": "16862132864ff3b802d1dbf5626733b8aab0b301",
+  "packages": ["svelte", "core", "theme", "tokens", "icons", "skins"],
+  "license": "MIT"
+}

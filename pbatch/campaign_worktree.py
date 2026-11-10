@@ -8,6 +8,7 @@ from pathlib import Path
 from .campaign_models import CampaignSettings, Direction, safe_slug
 from .campaign_state import git_worktree_evidence
 from .pipeline_status import PipelineStatus
+from .worktree_creation import add_worktree
 
 
 def isolated_status(returncode: int, logfile: Path) -> str:
@@ -77,13 +78,8 @@ def ensure_worktree(root: Path, settings: CampaignSettings,
         return worktree, branch, baseline
     worktree.parent.mkdir(parents=True, exist_ok=True)
     exists = bool(git_text(root, ["show-ref", "--verify", f"refs/heads/{branch}"]))
-    args = ["worktree", "add", str(worktree), branch] if exists else [
-        "worktree", "add", "-b", branch, str(worktree), "HEAD"]
-    try:
-        proc = subprocess.run(["git", "-C", str(root), *args], capture_output=True,
-                              text=True, timeout=30, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError(f"git worktree add failed: {exc}") from exc
+    args = [str(worktree), branch] if exists else ["-b", branch, str(worktree), "HEAD"]
+    proc = add_worktree(root, args)
     if proc.returncode != 0:
         raise RuntimeError(f"git worktree add failed: {proc.stderr.strip()}")
     _validate_existing_worktree(root, worktree, branch)

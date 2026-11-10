@@ -63,6 +63,9 @@ capture 成功返回后，按原绝对 deadline 接受完成/失败/中断。重
 False 的非终态不进入 Structured TaskResult 正文、stderr 或 message-item 投影，
 未准入终态阻断完成。旧 void sink 的 None 与无 sink 回调路径保留，不重新定义
 其他历史返回值；presentation RuntimeError 丢失显示不抹去已经折叠的 provider 事实。
+`TUIBackend` 的跟踪包装器原样返回折叠回执，只有已准入事件可以更新后续
+workspace.snapshot 的身份上下文；拒绝或异常不能先写入上下文。执行中撤下原本
+必需的 sink 会拒绝后续事件，不自动变成 headless/void 准入；最初无 sink 的路径不变。
 
 呈现（presentation）与折叠（folding）分离：worker 折叠后只登记最新的不可变快照，
 同一时刻最多一条 `RuntimeSnapshotReady` 通知，UI 走到该通知时按精确
@@ -80,7 +83,16 @@ worker 部分启动失败保留原错误，只 join 已启动线程并回收本�
 
 轮次身份以精确 `TurnHandle` 对象为栅栏：陈旧 reader 不能改写 provider/resume 身份、
 usage、artifact 或向当前轮次注入事件；`thread.started` 只在该轮次仍为 QUEUED 且未
-登记过时被接受，终态后的迟到 header 不改变后续 resume 目标。中断请求先要求精确
+登记过时被接受，终态后的迟到 header 不改变后续 resume 目标。先到的 stderr 仅登记
+一次本地 QUEUED 并保留有界诊断，不冒充 provider started，也不抢先发布缺失 provider
+身份的 session.created；合法 header 仍可被捕获并写入 journal，随后按原栅栏拒绝
+重复/迟到 header。顶层 JSONL `type: error` 同样只映射为 `runtime.warning`
+（`category=provider_diagnostic`），不消耗 header 窗口；通过必需折叠后才进入诊断
+投影和 TaskResult.stderr，不作为 assistant 正文、usage 或终态。只接收非空 UTF-8
+字符串 message：超过 48 KiB 整条省略并标记截断；控制字符、URL 和已知凭据格式
+先清理/脱敏，不存原始 error 对象或额外字段。这不是任意正文的完整秘密检测，
+也不改变其他 stderr/未知项的契约。诊断正文不授予成功/授权，不延长期限、不重试；
+明确 turn.failed、无终态退出与超时仍失败。中断请求先要求精确
 匹配当前轮次，允许省略字段的当前轮简写，但显式 session/run/actor/workspace 字段
 必须匹配字符串；在 header/start 交接后再次核对同一 handle 与进程，否则以
 `codex exec interrupt target changed before admission` 拒绝，不停止替换后的进程、

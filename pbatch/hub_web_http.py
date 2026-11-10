@@ -7,6 +7,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from .hub_errors import HubAccessError
 from .hub_web import PENDING_TTL, SESSION_TTL
+from . import hub_web_control
 
 COOKIE = "__Host-abr_session"
 _READS = {"/web/api/instances": "/api/v1/agent/instances",
@@ -32,7 +33,7 @@ def _cookie(headers):
     return matches[0] if matches else ""
 
 
-def _headers(handler, web, method):
+def _headers(handler, web, method, *, json_body=False):
     if handler.headers.get_all("Host", []) != [web.host]:
         raise HubAccessError("forbidden_host", "browser Host does not match public origin")
     if handler.headers.get_all("Authorization", []):
@@ -43,7 +44,7 @@ def _headers(handler, web, method):
     if method == "POST" and origins != [web.origin]:
         raise HubAccessError("forbidden_origin", "same-origin POST required")
     lengths = handler.headers.get_all("Content-Length", [])
-    if handler.headers.get("Transfer-Encoding") or lengths not in ([], ["0"]):
+    if handler.headers.get_all("Transfer-Encoding", []) or (not json_body and lengths not in ([], ["0"])):
         handler.close_connection = True
         raise ValueError("browser routes accept no request body")
 
@@ -79,6 +80,18 @@ def _page(handler):
     handler.wfile.write(body)
 
 
+def _asset(handler, name):
+    from .hub_web_assets import asset
+    body, content_type = asset(name)
+    handler.send_response(200)
+    for name, value in {"Content-Type": content_type, "Content-Length": str(len(body)),
+                        "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+                        "X-Content-Type-Options": "nosniff"}.items():
+        handler.send_header(name, value)
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
 def _read(handler, web, path, query, key):
     allowed = {"after", "limit"} | ({"instance_id"} if path.endswith("sessions") else set())
     limit = query.get("limit", "100")
@@ -99,9 +112,12 @@ def handle(handler, method):
     parsed = urlsplit(handler.path)
     if parsed.scheme or parsed.netloc or parsed.fragment or "\\" in handler.path:
         raise ValueError("browser URL must be origin-relative")
-    _headers(handler, web, method)
-    query, key = _query(parsed.query), _cookie(handler.headers)
     path = parsed.path
+    control_methods = hub_web_control.route_methods(path)
+    if method == "POST":
+        handler.close_connection = True  # Reject unread bodies without reusing this connection.
+    _headers(handler, web, method, json_body=method == "POST" and "POST" in control_methods)
+    query, key = _query(parsed.query), _cookie(handler.headers)
     if path == "/auth/callback":
         if method != "GET":
             raise HubAccessError("method_not_allowed", "callback requires GET", 405)
@@ -112,6 +128,8 @@ def handle(handler, method):
         if method != "GET":
             raise HubAccessError("method_not_allowed", "browser data is read-only", 405)
         _read(handler, web, path, query, key)
+    elif control_methods:
+        hub_web_control.handle(handler, web, method, path, query, key)
     else:
         _navigation(handler, web, method, path, query, key)
     return True
@@ -120,7 +138,11 @@ def handle(handler, method):
 def _navigation(handler, web, method, path, query, key):
     if query:
         raise ValueError("browser navigation does not accept query parameters")
-    if path == "/" and method == "GET":
+    if path in {"/web/assets/app.js", "/web/assets/app.css"}:
+        if method != "GET":
+            raise HubAccessError("method_not_allowed", "frontend assets require GET", 405)
+        _asset(handler, path.rsplit("/", 1)[1])
+    elif path == "/" and method == "GET":
         _page(handler)
     elif path == "/auth/login" and method == "POST":
         pending, url = web.begin(key)

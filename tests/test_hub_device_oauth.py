@@ -392,7 +392,7 @@ def test_all_current_agent_user_scopes_are_allowed(endpoint, tmp_path):
     assert USER_SCOPES == {"agent.instances:read", "agent.sessions:read", "agent.sessions:write",
                            "agent.turns:cancel", "agent.devices:read", "agent.tasks:read",
                            "agent.tasks:write", "agent.tasks:cancel",
-                           "agent.integrations:read", "agent.integrations:retry"}
+                           "agent.integrations:read", "agent.integrations:retry", "agent.artifacts:read"}
     value = load_user_config(endpoint.profile(tmp_path, scopes=sorted(USER_SCOPES | {"openid"})))
     assert value["scopes"] == sorted(USER_SCOPES | {"openid"})
 

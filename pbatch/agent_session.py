@@ -14,7 +14,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Optional, Union
 
@@ -47,7 +47,17 @@ from .tui_runtime import (
 TERMINAL_EVENT_KINDS = frozenset({
     "turn.completed", "turn.failed", "turn.interrupted",
 })
+STREAM_EVENT_LIMIT = 256
+STREAM_EVENT_BYTES = 1024 * 1024
 EventListener = Callable[[RuntimeEvent], None]
+
+
+class InvalidRuntimeTurnIdentity(TypeError):
+    """A provider may have started, but returned no valid owned turn scope."""
+
+
+class OwnedRuntimeCleanupFailed(RuntimeError):
+    """The unusable session is closed to new operations; process stop is unknown."""
 
 
 @dataclass(frozen=True)
@@ -125,17 +135,32 @@ class _TurnTracker:
     completed_text: str = ""
     completed_seen: bool = False
     delta_text: str = ""
+    streaming: bool = False
+    discarded: bool = False
+    queued_bytes: int = 0
+    event_sizes: deque[int] = field(default_factory=deque)
 
-    def consume(self, event: RuntimeEvent) -> None:
-        self.events.append(event)
-        text = str(event.payload.get("text", "") or "")
-        if event.kind == "message.completed":
-            self.completed_text = text
-            self.completed_seen = True
-        elif event.kind == "message.delta":
-            self.delta_text += text
+    def consume(self, event: RuntimeEvent, size: int = 0) -> None:
+        if not self.discarded:
+            self.events.append(event)
+            if self.streaming:
+                self.event_sizes.append(size)
+                self.queued_bytes += size
+        if not self.streaming:
+            text = str(event.payload.get("text", "") or "")
+            if event.kind == "message.completed":
+                self.completed_text = text
+                self.completed_seen = True
+            elif event.kind == "message.delta":
+                self.delta_text += text
         if event.kind in TERMINAL_EVENT_KINDS:
             self.terminal = event
+
+    def discard_stream(self) -> None:
+        self.discarded = True
+        self.events.clear()
+        self.event_sizes.clear()
+        self.queued_bytes = 0
 
     @property
     def text(self) -> str:
@@ -258,33 +283,57 @@ class AgentSession:
     def prompt_events(self, text: str, *,
                       timeout: Optional[float] = None) -> Iterator[RuntimeEvent]:
         """Start a turn and yield only events carrying its exact identity."""
-        tracker = self._submit_prompt(text, "")
+        tracker = self._submit_prompt(text, "", streaming=True)
         if isinstance(tracker, QueueReceipt):  # defensive; behavior is empty
             raise RuntimeError("prompt_events cannot represent a queued message")
-        yield from self._iterate_tracker(tracker, timeout)
+        try:
+            yield from self._iterate_tracker(tracker, timeout)
+        finally:
+            # Stopping observation releases queued evidence, not execution
+            # ownership. The pump still observes the real provider terminal.
+            with self._condition:
+                tracker.discard_stream()
+                self._condition.notify_all()
 
     def _submit_prompt(self, text: str,
-                       behavior: str) -> Union[_TurnTracker, QueueReceipt]:
+                       behavior: str, *, streaming: bool = False) -> Union[_TurnTracker, QueueReceipt]:
         prompt = _checked_text(text, "prompt")
         normalized = _normalize_behavior(behavior)
-        with self._operation_lock, self._condition:
-            self._ensure_open()
-            self._raise_stream_failure()
-            if self._compaction is not None and not self._compaction.done:
-                raise RuntimeError("agent session compaction is still running")
-            if self._active is not None:
-                if not normalized:
-                    raise RuntimeError(
-                        "agent is already processing; specify streaming_behavior")
-                return self._queue_locked(prompt, normalized)
-            request = StartTurnRequest(
-                prompt=prompt, session_id=self._session.session_id)
-            handle = self._runtime.start_turn(request)
-            if not isinstance(handle, TurnHandle):
-                raise TypeError("runtime.start_turn() must return TurnHandle")
-            tracker = _TurnTracker(handle=handle, events=deque())
-            self._active = tracker
-            return tracker
+        with self._operation_lock:
+            try:
+                with self._condition:
+                    self._ensure_open()
+                    self._raise_stream_failure()
+                    if self._compaction is not None and not self._compaction.done:
+                        raise RuntimeError("agent session compaction is still running")
+                    if self._active is not None:
+                        if not normalized:
+                            raise RuntimeError(
+                                "agent is already processing; specify streaming_behavior")
+                        return self._queue_locked(prompt, normalized)
+                    request = StartTurnRequest(prompt=prompt, session_id=self._session.session_id)
+                    handle = _checked_turn_handle(self._runtime.start_turn(request), self._session.session_id)
+                    tracker = _TurnTracker(handle=handle, events=deque(), streaming=streaming)
+                    self._active = tracker
+                    return tracker
+            except InvalidRuntimeTurnIdentity as exc:
+                self._reject_turn_start(exc)
+                raise
+
+    def _reject_turn_start(self, error: InvalidRuntimeTurnIdentity) -> None:
+        with self._condition:
+            self._stream_error = error
+        # close() marks this interface closed under its condition, then releases
+        # that lock before owning runtime cleanup and the pump join.
+        try:
+            self.close()
+        except Exception as exc:
+            failure = OwnedRuntimeCleanupFailed(
+                "invalid runtime turn identity; owned runtime cleanup failed "
+                f"({type(exc).__name__}); execution outcome unknown")
+            with self._condition:
+                self._stream_error = failure
+            raise failure from exc
 
     def _queue_locked(self, text: str, behavior: str) -> QueueReceipt:
         tracker = self._active
@@ -515,7 +564,13 @@ class AgentSession:
                 if remaining is not None and remaining <= 0:
                     raise TimeoutError("timed out waiting for terminal runtime event")
                 self._condition.wait(remaining)
-            return tracker.events.popleft()
+            if tracker.streaming and deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("timed out waiting for terminal runtime event")
+            event = tracker.events.popleft()
+            if tracker.streaming:
+                tracker.queued_bytes -= tracker.event_sizes.popleft()
+                self._condition.notify_all()
+            return event
 
     def _raise_stream_failure(self) -> None:
         if self._stream_error is not None:
@@ -550,7 +605,8 @@ class AgentSession:
                 self._dispatch_event(event)
         except Exception as exc:
             with self._condition:
-                self._stream_error = exc
+                if self._stream_error is None:
+                    self._stream_error = exc
                 self._condition.notify_all()
         finally:
             with self._condition:
@@ -560,8 +616,9 @@ class AgentSession:
     def _dispatch_event(self, event: RuntimeEvent) -> None:
         with self._condition:
             tracker = self._active
-            if tracker is not None and _matches(tracker.handle, event):
-                tracker.consume(event)
+            if tracker is not None and _matches(tracker.handle, event, self._session.workspace_id):
+                if not self._buffer_event(tracker, event):
+                    return
                 if event.kind in TERMINAL_EVENT_KINDS:
                     self._active = None
                 self._condition.notify_all()
@@ -572,6 +629,17 @@ class AgentSession:
             except Exception:
                 continue
 
+    def _buffer_event(self, tracker: _TurnTracker, event: RuntimeEvent) -> bool:
+        size = len(event.to_jsonl().encode("utf-8")) if tracker.streaming and not tracker.discarded else 0
+        while (not self._closed and tracker.streaming and not tracker.discarded
+               and (len(tracker.events) >= STREAM_EVENT_LIMIT
+                    or tracker.queued_bytes + size > STREAM_EVENT_BYTES)):
+            self._condition.wait()
+        if self._closed:
+            return False
+        tracker.consume(event, size)
+        return True
+
     def _ensure_open(self) -> None:
         if self._closed:
             raise RuntimeError("agent session is closed")
@@ -580,6 +648,8 @@ class AgentSession:
         """Idempotently stop the runtime and wake all blocked consumers."""
         with self._operation_lock, self._condition:
             if self._closed:
+                if isinstance(self._stream_error, OwnedRuntimeCleanupFailed):
+                    raise self._stream_error
                 return
             self._closed = True
             self._listeners.clear()
@@ -725,10 +795,21 @@ def _checked_session(value: Any) -> RuntimeSession:
     return value
 
 
-def _matches(handle: TurnHandle, event: RuntimeEvent) -> bool:
+def _checked_turn_handle(value: Any, session_id: str) -> TurnHandle:
+    names = ("session_id", "run_id", "turn_id", "actor_id")
+    if (not isinstance(value, TurnHandle)
+            or any(not isinstance(getattr(value, name), str)
+                   or not getattr(value, name).strip() for name in names)
+            or value.session_id != session_id):
+        raise InvalidRuntimeTurnIdentity("runtime.start_turn returned invalid turn identity")
+    return value
+
+
+def _matches(handle: TurnHandle, event: RuntimeEvent, workspace_id: str) -> bool:
     return (event.session_id == handle.session_id
             and event.run_id == handle.run_id
-            and event.turn_id == handle.turn_id)
+            and event.turn_id == handle.turn_id
+            and event.workspace_id == workspace_id)
 
 
 def _deadline(timeout: Optional[float]) -> Optional[float]:

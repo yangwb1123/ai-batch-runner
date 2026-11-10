@@ -6,7 +6,7 @@
 ## 1. 产品定位与取舍
 
 `abr` 是面向 CLI coding agent 的本地优先交互工作台与受治理执行内核。
-发行包名和主命令均为 `abr`（`pi-batch` 为兼容别名）；支持 Pi、Claude、Codex、Gemini、
+发行包名为 `ai-batch-runner`，主命令为 `abr`（`pi-batch` 为兼容别名）；支持 Pi、Claude、Codex、Gemini、
 OpenCode 等适配器，不绑定单一模型供应商。
 
 核心闭环：**明确目标 → 选择最小流程 → 隔离执行 → 验证裁决 → 交付证据 → 知识回流**。

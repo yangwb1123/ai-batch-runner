@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "abr"
+name = "ai-batch-runner"
 version = "0.3.0"
 description = "Interactive TUI and governed batch/pipeline runtime for CLI coding agents"
 readme = "README.md"
@@ -67,7 +67,7 @@ include = ["pbatch*"]
 # pbatch/classifier.py (task_keywords.yaml). Explicit list on purpose:
 # a glob would silently ship (or, on a wrong key, silently miss) future
 # files; see tests/test_packaging.py (loader-audit invariant). Keyed to the
-# import name `pbatch`, not the distribution name `abr`.
+# import name `pbatch`, not the distribution name `ai-batch-runner`.
 [tool.setuptools.package-data]
 # `pwa_assets/` holds the static PWA shell served by pbatch/pwa_shell.py
 # (manifest, service worker, icons; see docs/PWA_SHELL.md). Named explicitly
@@ -81,6 +81,12 @@ pbatch = [
     "pwa_assets/sw.js",
     "pwa_assets/icon-192.png",
     "pwa_assets/icon-512.png",
+    "hub_web_assets/index.html",
+    "hub_web_assets/app.js",
+    "hub_web_assets/app.css",
+    "hub_web_assets/assets.json",
+    "hub_web_assets/iris.LICENSE",
+    "hub_web_assets/third-party.LICENSE",
 ]
 
 # Runtime assets required by an installation outside the source checkout:
@@ -88,13 +94,13 @@ pbatch = [
 # evals and governance specs. Declared as glob patterns mirrored by
 # MANIFEST.in so sdist and wheel carry the same surface; a deliberately
 # added directory must enter both.
-# Keep the asset layout stable; distribution metadata and the public CLI use abr.
+# Keep the asset layout stable; ai-batch-runner installs the public abr CLI.
 [tool.setuptools.data-files]
 "share/ai-batch-runner" = ["pi-batch.py", "pi-batch.yaml", "quality.py"]
 "share/ai-batch-runner/scripts" = ["scripts/*.py", "scripts/*.sh"]
 "share/ai-batch-runner/evals" = ["evals/*.yaml"]
 "share/ai-batch-runner/examples" = ["examples/*.yaml", "examples/*.md", "examples/*.json"]
-"share/ai-batch-runner/docs/agent-hub" = ["docs/agent-hub/WEB_LOGIN.md"]
+"share/ai-batch-runner/docs/agent-hub" = ["docs/agent-hub/WEB_TASKS.md", "docs/agent-hub/WEB_LOGIN.md", "docs/agent-hub/WEB_FRONTEND.md", "docs/agent-hub/WEB_RELEASE.md", "docs/agent-hub/READ_ONLY_ONRAMP.md", "docs/agent-hub/MACHINE_AUTH.md", "docs/agent-hub/LIFECYCLE.md"]
 "share/ai-batch-runner/examples/sdlc-inputs" = ["examples/sdlc-inputs/*.md"]
 "share/ai-batch-runner/examples/schemas" = ["examples/schemas/*.json"]
 "share/ai-batch-runner/agent-engineering" = ["agent-engineering/*.yaml"]

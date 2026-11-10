@@ -3,9 +3,19 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 
 from .hub_client import HubError
 from .hub_gateway_protocol import field, is_fencing_error, nested_text
+
+
+@dataclass(frozen=True)
+class DeliveryResult:
+    """Local batch progress; blocked work must retain the normal retry cadence."""
+
+    advanced: int = 0
+    budget_exhausted: bool = False
+    blocked: bool = False
 
 
 def _rejected_event(gateway, row, error):
@@ -55,16 +65,19 @@ def post_running_ack(gateway, row):
     return response if _acknowledge_event(gateway, row, response) else None
 
 
-def flush_outbox(gateway):
+def flush_outbox(gateway) -> DeliveryResult:
     deadline = time.monotonic() + 0.5
+    advanced = 0
     with gateway._session_lock:
         if gateway._stop.is_set():
-            return
+            return DeliveryResult()
         rows = gateway._store.pending_events(limit=32)
     for row in rows:
         with gateway._session_lock:
-            if gateway._stop.is_set() or time.monotonic() >= deadline:
-                return
+            if gateway._stop.is_set():
+                return DeliveryResult(advanced)
+            if time.monotonic() >= deadline:
+                return DeliveryResult(advanced, budget_exhausted=True)
             event = row["body"]
             if event.get("kind") == "turn.running" and field(event, "turn_id") in gateway._pending_starts:
                 continue
@@ -73,7 +86,10 @@ def flush_outbox(gateway):
                                                  generation=int(row["generation"]))
         except HubError as error:
             if _rejected_event(gateway, row, error) == "obsolete":
+                advanced += 1
                 continue
-            return
+            return DeliveryResult(advanced, blocked=True)
         if not _acknowledge_event(gateway, row, response):
-            return
+            return DeliveryResult(advanced)
+        advanced += 1
+    return DeliveryResult(advanced, budget_exhausted=len(rows) == 32)

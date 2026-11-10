@@ -97,6 +97,8 @@ def test_tui_core_loop_with_real_codex_two_turns(tmp_path: Path):
             _assert_codex_succeeded(backend)
             source = app.query_one("#conversation", Markdown).source
             assert "GOT_IT" in app._runtime_view.assistant_text, source[-400:]
+            provider_thread = backend.provider_thread_id
+            assert provider_thread, "first turn did not capture a provider resume handle"
             # structured path engaged: the immutable runtime snapshot holds
             # typed command/file/usage cards from the real codex run
             timeline_kinds = [
@@ -118,6 +120,8 @@ def test_tui_core_loop_with_real_codex_two_turns(tmp_path: Path):
             assert "KAPPA_7" in app._runtime_view.assistant_text, \
                 f"turn2 recall failed; source={source2[-400:]}"
             assert backend.snapshot()["turn"] == 2
+            assert backend.provider_thread_id == provider_thread, \
+                "second turn unexpectedly changed the provider thread"
 
     _run(scenario())
 

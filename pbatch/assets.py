@@ -20,7 +20,7 @@ def _distribution_asset_root() -> Optional[Path]:
     if (adjacent / "pi-batch.yaml").is_file():
         return adjacent
     try:
-        dist = distribution("abr")
+        dist = distribution("ai-batch-runner")
         files = dist.files or ()
     except PackageNotFoundError:
         return None

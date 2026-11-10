@@ -15,9 +15,10 @@ P3 增加 Aero ID 成员资格门禁、Aero IM 状态通知、Audit 账本回执
 CLI/TUI 用户可通过 Snaplink 设备授权登录并共享私有短期会话，使用方式见
 [USER_AUTH.md](agent-hub/USER_AUTH.md)；Gateway 自动续签见
 [MACHINE_AUTH.md](agent-hub/MACHINE_AUTH.md)。
-可选的 Hub 同源 Web 首页使用官方 Snaplink Python SDK 托管登录，当前仅提供
-实例/会话只读窗口；Cookie 不授权原 Bearer API，配置与边界见
-[WEB_LOGIN.md](agent-hub/WEB_LOGIN.md)。
+可选的 Hub 同源 Web 首页使用官方 Snaplink Python SDK 托管登录，默认提供
+实例/会话只读窗口；显式控制配置和本人精确授权后可创建任务会话、发送指令、读取事件及
+取消/关闭，使用流程见 [WEB_TASKS.md](agent-hub/WEB_TASKS.md)。Cookie 不授权原 Bearer API，
+登录配置与边界见 [WEB_LOGIN.md](agent-hub/WEB_LOGIN.md)。
 CLI/TUI/Console 可关闭空闲会话并在确认后释放容量，保留只读历史，见
 [SESSION_CLOSE.md](agent-hub/SESSION_CLOSE.md)。
 CLI/TUI/Console 也可选择在线实例按需新建会话：请求先持久化，Gateway 在固定
@@ -25,6 +26,10 @@ CLI/TUI/Console 也可选择在线实例按需新建会话：请求先持久化�
 [SESSION_CREATION.md](agent-hub/SESSION_CREATION.md)。
 创建与关闭请求可在不同客户端重新查询，按实例查看最近记录、刷新结果并显式打开
 会话，见[会话请求记录](agent-hub/SESSION_OPERATIONS.md)。
+只读接入提供`fleet serve --check-config --json`离线预检及`fleet agent --observe-only`
+观察模式（仅登记/心跳，不创建Agent或轮询命令），见[只读接入](agent-hub/READ_ONLY_ONRAMP.md)。
+这两项不自动注册身份、写grant或完成生产验收。
+
 实现采用一个 Hub 服务、SQLite WAL 和主动出站的实例 Gateway。
 会话运行时继续属于 Gateway 所在设备，数据库默认位于用户级 runtime。
 Hub/Gateway 当前使用 POSIX 文件锁，本轮运行验证在 Linux 完成。
@@ -69,6 +74,9 @@ Hub 在事务内创建命令、检查幂等键、推进状态并记录事件；S
 FULL synchronous 和私有文件权限。文件锁限制一个 Hub 进程拥有该库，
 因此这不是多副本或跨地域数据库方案。列表使用有界分页，prompt 和事件大小
 受限；事件历史在本机磁盘保存，目前没有自动归档/清理策略，运维需监控容量。
+启动先接纳文件族与写锁，再只读检查版本，最后事务化初始化核心表；未知版本不先改库，
+运行连接也不会因路径消失重建空库。路径/平台要求、失败保留与现有连接所有权见
+[Hub 生命周期](agent-hub/LIFECYCLE.md)，不等于备份、恢复或生产切换批准。
 
 Gateway 心跳过期后，UI 显示实例离线，会话不再可控。新的进程只能在旧实例
 离线后接管；generation 递增，旧执行变为 lost、旧会话变为只读。
@@ -237,6 +245,13 @@ delta 文本，后续块继续追加，并显式显示截断标记。单事件�
 32 KiB，内置 Gateway 客户端对完整事件请求体执行同一上限。
 Gateway 事件回执还带当前 `turn_state`；重放同一 event_id 时该状态仍反映
 当前 turn，可用于确认开始许可是否已被取消。
+
+Gateway 主循环在事件积压时连续处理有界批次：每批最多 32 条，在请求之间检查
+0.5 秒预算。只有已确认或已标记 obsolete 的事件实际推进、达到批次预算，且本轮
+没有失败、未决启动确认或文件上传重试时，才省去批次间的固定等待。下一批仍先检查
+心跳和命令，遵守各自原有间隔；空闲与失败保持原等待，事件 ID、正文和上传资格不变。
+该时间预算不能中断正在进行的同步 HTTP 请求，不能据此承诺取消延迟小于 0.5 秒。
+Gateway 已停止后，迟到的心跳拒绝不再改写停止状态；运行中的 fencing 拒绝仍立即阻断执行。
 
 验收覆盖：两个实例拥有相同 local_session_id 仍不串会话；授权列表过滤；
 读/写/取消/重调度分别授权；重复 prompt 幂等；错误 tenant/instance 被拒绝；

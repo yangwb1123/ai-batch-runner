@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import contextlib
-from . import file_lock as fcntl
 import math
-import os
 import sqlite3
 import time
 import uuid
@@ -41,6 +39,8 @@ from .hub_session_close_models import SCHEMA as _SESSION_CLOSE_SCHEMA
 from .hub_session_close_store import SessionCloseStore
 from .hub_instance_registry import register_instance as _register_instance
 from .hub_session_operations_store import SCHEMA as _OPERATIONS_SCHEMA, list_operations
+from .hub_store_lifecycle import StoreConnections
+from .hub_store_path import HubStorageOwner, checked_path
 
 
 class HubStore:
@@ -55,65 +55,46 @@ class HubStore:
         raw_path = str(path or "").strip()
         if not raw_path or raw_path == ":memory:":
             raise ValueError("HubStore requires a durable SQLite file path")
-        self.path = Path(raw_path).expanduser().absolute()
+        requested = checked_path(Path(raw_path).expanduser().absolute())
+        self.path = requested.parent.resolve() / requested.name
         self.clock = clock
         self.offline_after = float(offline_after)
-        self._closed = False
-        self._lock_fd = None
+        self._owner = HubStorageOwner(self.path)
+        self._connections = StoreConnections(self._release_lock, self._owner.validate)
         self._session_creation = SessionRequestStore(self)
         self._session_closing = SessionCloseStore(self)
-        self._prepare_path()
         try:
+            self._prepare_path()
             self._initialize()
-        except Exception:
-            self._release_lock()
+        except BaseException:
+            self.close()
             raise
 
     def _prepare_path(self) -> None:
-        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        if self.path.is_symlink():
-            raise ValueError("HubStore database must not be a symlink")
-        if self.path.exists() and not self.path.is_file():
-            raise ValueError("HubStore database must be a regular file")
-        if not self.path.exists():
-            descriptor = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            os.close(descriptor)
-        os.chmod(self.path, 0o600)
-        lock_path = Path(str(self.path) + ".lock")
-        if lock_path.is_symlink():
-            raise ValueError("HubStore lock must not be a symlink")
-        self._lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-        os.chmod(lock_path, 0o600)
-        try:
-            fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            self._release_lock()
-            raise HubStoreError("store_in_use", "another HubStore owns this database") from exc
+        self._owner.acquire()
 
     def _connect(self) -> sqlite3.Connection:
-        if self._closed:
-            raise HubStoreError("store_closed", "HubStore is closed", 503)
-        conn = sqlite3.connect(str(self.path), timeout=5.0, isolation_level=None)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA busy_timeout = 5000")
-        conn.execute("PRAGMA synchronous = FULL")
-        return conn
+        return self._connections.connect(self.path)
 
     def _initialize(self) -> None:
+        # Read-only admission precedes chmod, journal-mode changes and all DDL.
+        with self._connections.connect(self.path, readonly=True) as probe:
+            version = probe.execute("PRAGMA user_version").fetchone()[0]
+            if version not in (0, 1):
+                raise ValueError("unsupported HubStore schema version")
+        self._owner.secure()
         conn = self._connect()
         try:
             conn.execute("PRAGMA journal_mode = WAL")
-            conn.executescript(_SCHEMA)
-            conn.executescript(_SESSION_REQUEST_SCHEMA)
-            conn.executescript(_SESSION_CLOSE_SCHEMA)
-            conn.executescript(_OPERATIONS_SCHEMA)
             from .hub_compute_models import AUTH_SCHEMA
-            conn.executescript(AUTH_SCHEMA)
-            version = conn.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1):
-                raise ValueError("unsupported HubStore schema version")
-            conn.execute("PRAGMA user_version = 1")
+            from .hub_file_snapshot_store import STORE_SCHEMA
+            schema = "\n".join((_SCHEMA, _SESSION_REQUEST_SCHEMA, _SESSION_CLOSE_SCHEMA,
+                                _OPERATIONS_SCHEMA, AUTH_SCHEMA, STORE_SCHEMA))
+            conn.executescript("BEGIN IMMEDIATE;\n" + schema + "\nPRAGMA user_version = 1;\nCOMMIT;")
+        except BaseException:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -132,16 +113,15 @@ class HubStore:
             conn.close()
 
     def close(self) -> None:
-        """Prevent new operations; each transaction already owns its connection."""
-        self._closed = True
-        self._release_lock()
+        """Reject new operations; admitted connections retain the writer lock until closed."""
+        self._connections.close()
+
+    def require_drained(self) -> None:
+        """Do not report a completed shutdown while admitted database work remains."""
+        self._connections.require_drained()
 
     def _release_lock(self) -> None:
-        if self._lock_fd is None:
-            return
-        fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
-        os.close(self._lock_fd)
-        self._lock_fd = None
+        self._owner.close()
 
     def register_instance(self, tenant: str, instance: str,
                           body: dict) -> dict:
@@ -475,18 +455,30 @@ class HubStore:
         _append_internal_event(conn, tenant, row, event_id,
                                "turn.cancel_requested", {"actor": actor}, now)
 
+    def turn_history(self, tenant, session_id, *, before="", limit=20, q="", state="all", turn_id="", authority=""):
+        from .hub_turn_history import list_turns
+        return list_turns(self, tenant, session_id, before=before, limit=limit,
+                          q=q, state=state, turn_id=turn_id, authority=authority)
+
     def events(self, tenant: str, session_id: str, after: int = 0,
-               limit: int = 100) -> list[dict]:
+               limit: int = 100, *, turn_id: str = "") -> list[dict]:
         tenant = _identifier(tenant, "tenant")
         session_id = _identifier(session_id, "session_id")
         after = _nonnegative_int(after, "after")
         limit = _limit(limit, MAX_EVENT_PAGE)
+        turn_id = _text(turn_id, "turn_id", 256)
         conn = self._connect()
         try:
             _get_session(conn, tenant, session_id)
+            query = "SELECT * FROM hub_events WHERE tenant=? AND session_id=? AND cursor>?"
+            values = [tenant, session_id, after]
+            if turn_id:
+                turn_id = _identifier(turn_id, "turn_id")
+                _get_turn_for_session(conn, tenant, turn_id, session_id)
+                query += " AND turn_id=?"
+                values.append(turn_id)
             rows = conn.execute(
-                "SELECT * FROM hub_events WHERE tenant=? AND session_id=? AND cursor>? "
-                "ORDER BY cursor LIMIT ?", (tenant, session_id, after, limit)).fetchall()
+                query + " ORDER BY cursor LIMIT ?", [*values, limit]).fetchall()
             return [_event_record(row) for row in rows]
         finally:
             conn.close()

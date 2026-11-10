@@ -52,6 +52,12 @@ class HubService:
             raise HubAccessError("forbidden", "user access required")
         if self.identity is not None:
             self.identity.check(principal)
+        return self._user_dispatch(method, parts, query, body, principal, idempotency_key)
+
+    def _user_dispatch(self, method, parts, query, body, principal, idempotency_key):
+        from .hub_file_snapshot_api import is_route as file_route, dispatch as file_dispatch
+        if file_route(parts):
+            return file_dispatch(self, method, parts, query, body, principal)
         from .hub_session_operations_api import is_route as operations_route, dispatch as operations_dispatch
         if operations_route(parts):
             return operations_dispatch(self, method, query, body, principal)
@@ -68,7 +74,7 @@ class HubService:
         if compute_route(parts):
             return self.compute_api.dispatch(method, parts, query, body, principal, idempotency_key)
         if method == "GET":
-            return 200, self._get(parts, query, principal)
+            return 200, self._get(parts, query, principal, body)
         if method == "POST":
             return 202, {"data": self._post(parts, body, principal, idempotency_key)}
         raise HubAccessError("method_not_allowed", "method not allowed", 405)
@@ -85,12 +91,21 @@ class HubService:
         self._session(principal, turn["session_id"], scope)
         return turn
 
-    def _get(self, parts: list, query: dict, principal: HubPrincipal) -> dict:
+    def _get(self, parts: list, query: dict, principal: HubPrincipal, body=None) -> dict:
+        if parts == ["task-sessions"]:
+            from .hub_task_sessions import dispatch as task_sessions
+            return task_sessions(self, "GET", query, {} if body is None else body, principal)[1]
         if parts in (["task-center"], ["compute-task-center"], ["compute-task-center", "source-sessions"]):
             from .hub_task_center_api import dispatch
             return dispatch(self, "GET", query, principal, compute=parts[0] == "compute-task-center",
                             source_sessions=parts == ["compute-task-center", "source-sessions"])[1]
-        if set(query) - {"instance_id", "after", "limit"}:
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "turns":
+            from .hub_turn_history import history_page
+            return history_page(self, principal, parts[1], query)
+        allowed = {"instance_id", "after", "limit"}
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "events":
+            allowed.add("turn_id")
+        if set(query) - allowed:
             raise ValueError("unsupported query parameter")
         if parts == ["instances"]:
             principal.require("agent.instances:read")
@@ -116,7 +131,11 @@ class HubService:
         if len(parts) == 2:
             return {"data": session}
         if len(parts) == 3 and parts[2] == "events":
-            rows = self.store.events(principal.tenant_id, parts[1], **_page(query, events=True))
+            turn = query.get("turn_id", "")
+            if "turn_id" in query:
+                from .hub_store_helpers import identifier
+                identifier(turn, "turn_id")
+            rows = self.store.events(principal.tenant_id, parts[1], turn_id=turn, **_page(query, events=True))
             return self._list(rows, "cursor", default=int(query.get("after", "0")))
         raise HubAccessError("not_found", "route not found", 404)
 
@@ -126,8 +145,8 @@ class HubService:
 
     def _post(self, parts: list, body: dict, principal: HubPrincipal, key: str) -> dict:
         from .hub_task_center_api import is_route
-        if is_route(parts, include_views=True):
-            raise HubAccessError("method_not_allowed", "task-center is read-only", 405)
+        if parts == ["task-sessions"] or is_route(parts, include_views=True):
+            raise HubAccessError("method_not_allowed", "task view is read-only", 405)
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "turns":
             self._session(principal, parts[1], "agent.sessions:write")
             _only(body, {"prompt"})
@@ -145,6 +164,9 @@ class HubService:
         if principal.kind != "gateway":
             raise HubAccessError("forbidden", "gateway access required")
         principal.require(GATEWAY_SCOPE)
+        if parts == ["file-snapshots"]:
+            from .hub_file_snapshot_api import gateway
+            return gateway(self, method, query, body, principal)
         if parts == ["session-close-requests"] and method not in {"GET", "POST"}:
             raise HubAccessError("method_not_allowed", "method not allowed", 405)
         values = query if method == "GET" else body
@@ -195,8 +217,8 @@ class HubService:
             return self.store.upsert_session(tenant, instance, generation, body)
         if route == "events":
             _only(body, common | {"event_id", "session_id", "turn_id", "kind", "payload"})
-            if body.get("kind") not in {"turn.running", "turn.completed", "turn.failed",
-                                         "turn.interrupted", "message.delta", "message.completed"}:
+            from .hub_gateway_protocol import VISIBLE_EVENTS
+            if body.get("kind") not in (VISIBLE_EVENTS - {"turn.started"}) | {"turn.running"}:
                 raise ValueError("unsupported Gateway event kind")
             from .memory_records import redact_content
             body = dict(body, payload=redact_content(body.get("payload", {})))

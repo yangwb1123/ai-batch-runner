@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from pbatch import (campaign_analysis, campaign_analysis_phase, campaign_analysis_retry,
-                    campaign_budget, campaign_exec)
+                    campaign_budget, campaign_exec, runner)
 from pbatch.campaign_models import CampaignSettings
 from pbatch.campaign_state import StateStore
 from pbatch.models import Task, TaskResult
@@ -20,10 +20,13 @@ CUTOFF = 1893456000.0
 
 def _clock(monkeypatch, epoch, mono=10_000.0):
     clock = SimpleNamespace(epoch=epoch, mono=mono)
-    namespace = SimpleNamespace(time=lambda: clock.epoch,
-                                monotonic=lambda: clock.mono)
-    monkeypatch.setattr(campaign_budget, "time", namespace)
-    monkeypatch.setattr(campaign_analysis_retry, "time", namespace)
+    # Replace module references, never the shared stdlib time object used by waits.
+    namespace = SimpleNamespace(**vars(time))
+    namespace.time, namespace.monotonic = lambda: clock.epoch, lambda: clock.mono
+    for module in (campaign_budget, campaign_analysis_retry, campaign_analysis_phase,
+                   campaign_analysis, campaign_exec, runner):
+        monkeypatch.setattr(module, "time", namespace)
+    monkeypatch.setattr(campaign_budget, "monotonic", namespace.monotonic)
     return clock
 
 
@@ -182,7 +185,7 @@ def test_pre_spawn_admission_refuses_after_bounded_rate_wait(monkeypatch, tmp_pa
     from pbatch import runner
 
     clock = _clock(monkeypatch, CUTOFF - 5)
-    deadline = campaign_budget.ExecutionDeadline(CUTOFF, time.monotonic() + 5)
+    deadline = campaign_budget.ExecutionDeadline(CUTOFF, clock.mono + 5)
     base = campaign_analysis_retry.deadline_admission(deadline)
     seen = []
 
@@ -421,3 +424,19 @@ def test_run_campaign_returns_terminal_budget_when_analysis_stops(monkeypatch, t
     assert row["status"] == "CAMPAIGN_BUDGET_EXHAUSTED"
     assert "during analysis" in row["reason"]
     assert context.store.latest_event(module, "__analysis__")["status"] == "BUDGET_BLOCKED"
+
+
+@pytest.mark.parametrize("mono", [1000.0, 10_000.0, 50_000.0])
+def test_analysis_clock_freezes_exact_window_independent_of_host(monkeypatch, tmp_path, mono):
+    clock = _clock(monkeypatch, CUTOFF - 5, mono)
+    context = _context(tmp_path, deadline_at=DEADLINE)
+    deadline = _frozen(context, tmp_path)._execution_deadline
+    task = campaign_analysis.build_analysis_task(tmp_path, context.settings, "mod-a")
+
+    assert deadline.monotonic == mono + 5
+    assert campaign_budget.bound_task_timeout(task, deadline, clock.mono)
+    assert task.timeout == 5
+    assert campaign_analysis.time.sleep is time.sleep
+    assert campaign_budget.time is not time
+    clock.mono += 5  # wall clock remains before cutoff; monotonic budget still ends.
+    assert not campaign_budget.bound_task_timeout(task, deadline, mono)

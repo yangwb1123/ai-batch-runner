@@ -1,0 +1,111 @@
+/* Product task workspace. Shared controls and colors use the native Iris theme. */
+.task-console { gap: 16px; }
+.task-toolbar, .task-toolbar > div { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.task-toolbar { justify-content: space-between; padding-block: 8px; }
+.task-toolbar strong { font-size: 12px; font-weight: 500; }
+.live-indicator, .activity-dot { inline-size: 8px; block-size: 8px; border-radius: 50%; background: var(--iris-muted); flex-shrink: 0; }
+.live-indicator.connected, .activity-dot { background: var(--iris-primary); }
+.task-layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 20px; align-items: start; }
+.task-list-panel, .task-detail-panel, .task-create-panel { background: var(--iris-background); border: 1px solid var(--iris-border); border-radius: 12px; min-inline-size: 0; }
+.task-list-panel { padding: 20px 16px 12px; }
+.task-list-heading { display: flex; gap: 12px; align-items: center; justify-content: space-between; margin-block-end: 20px; }
+.task-list-heading h2 { margin: 0; font-size: 16px; font-weight: 600; }
+.task-list-panel .task-field { font-size: 12px; font-weight: 500; }
+.task-list-panel select { padding: 8px; }
+.task-search { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--iris-border); border-radius: 8px; margin-block: 16px; color: var(--iris-muted); }
+.task-search input { background: transparent; border: 0; min-inline-size: 0; inline-size: 100%; color: var(--iris-foreground); font-size: 12px; }
+.task-filters { display: flex; gap: 4px; padding: 4px; background: var(--iris-surface); border-radius: 8px; }
+.task-filters button { border: none; border-radius: 4px; background: transparent; color: var(--iris-muted); font-size: 12px; padding: 8px; flex: 1; }
+.task-filters button.chosen { color: var(--iris-primary); background: var(--iris-background); font-weight: 600; }
+.task-session-list { padding: 0; margin: 16px 0; list-style: none; max-block-size: 680px; overflow: auto; }
+.task-session-list li + li { margin-block-start: 8px; }
+.task-session-list button, .turn-history li button { display: block; text-align: start; inline-size: 100%; border: 1px solid transparent; background: transparent; color: var(--iris-foreground); border-radius: 8px; padding: 12px; overflow-wrap: anywhere; }
+.task-session-list button:hover, .turn-history li button:hover { background: var(--iris-surface); }
+.task-session-list button.selected { border-color: color-mix(in srgb, var(--iris-primary) 36%, var(--iris-border)); background: color-mix(in srgb, var(--iris-primary) 6%, var(--iris-background)); }
+.session-row-top { display: flex; justify-content: space-between; align-items: start; flex-wrap: wrap; gap: 8px; }
+.session-row-top strong { font-size: 14px; font-weight: 550; min-inline-size: 0; }
+.session-status { display: inline-flex; align-items: center; padding: 4px 8px; border-radius: 4px; background: var(--iris-surface); color: var(--iris-muted); font-size: 12px; white-space: nowrap; }
+.session-status[data-state="running"], .session-status[data-state="queued"] { color: var(--iris-primary); background: color-mix(in srgb, var(--iris-primary) 10%, var(--iris-background)); }
+.session-status[data-state="failed"], .session-status[data-state="lost"] { font-weight: 650; border: 1px solid currentColor; }
+.task-list-id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; opacity: .7; }
+.task-list-footnote { margin: 0; padding-block-start: 12px; border-block-start: 1px solid var(--iris-border); color: var(--iris-muted); font-size: 12px; }
+.task-list-empty { display: grid; justify-items: center; gap: 12px; padding: 32px 12px; color: var(--iris-muted); text-align: center; }
+.task-list-empty strong { color: var(--iris-foreground); font-size: 14px; }
+.task-list-empty p { margin: 0; font-size: 12px; line-height: 1.8; }
+.task-detail-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 24px; border-block-end: 1px solid var(--iris-border); }
+.task-detail-heading > div { min-inline-size: 0; overflow-wrap: anywhere; }
+.task-detail-heading h2 { font-size: 20px; font-weight: 600; margin: 8px 0 0; }
+.task-tabs { display: flex; flex-wrap: wrap; column-gap: 20px; padding-inline: 24px; border-block-end: 1px solid var(--iris-border); }
+.task-tabs button { color: var(--iris-muted); background: transparent; border: 0; border-block-end: 2px solid transparent; padding: 16px 0; font-size: 12px; }
+.task-tabs button[aria-selected="true"] { color: var(--iris-primary); border-block-end-color: var(--iris-primary); font-weight: 600; }
+.task-conversation, .turn-history, .event-inspector { padding: 24px; min-block-size: 280px; max-block-size: 640px; overflow: auto; overflow-wrap: anywhere; }
+.turn-context { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--iris-muted); font-size: 12px; margin-block-end: 24px; }
+.conversation-message { padding: 20px; border-radius: 8px; margin-block-end: 24px; }
+.user-message { background: var(--iris-surface); border: 1px solid var(--iris-border); }
+.agent-message { padding-inline: 0; }
+.message-author { display: flex; justify-content: space-between; align-items: center; color: var(--iris-muted); font-size: 12px; font-weight: 600; margin-block-end: 12px; }
+.task-conversation pre, .event-inspector pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.9; tab-size: 2; }
+.conversation-empty { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding-block: 32px; color: var(--iris-muted); }
+.conversation-empty strong { display: block; font-size: 20px; color: var(--iris-foreground); }
+.conversation-empty p { margin: 0; }
+.task-evidence, .result-evidence { border: 1px solid var(--iris-border); border-radius: 8px; padding: 16px; margin-block: 16px; }
+.task-evidence summary, .request-history > summary, .task-controls > summary { cursor: pointer; font-size: 12px; font-weight: 500; }
+.task-evidence p { font-size: 12px; }
+.result-evidence { color: var(--iris-muted); font-size: 12px; }
+.result-evidence strong { color: var(--iris-foreground); font-weight: 500; }
+.result-evidence p { margin: 8px 0 0; line-height: 1.8; }
+.copy-feedback { color: var(--iris-primary); font-size: 12px; }
+.conversation-follow { display: flex; justify-content: flex-end; padding: 12px 24px 0; }
+.conversation-follow button { background: transparent; border: 0; color: var(--iris-primary); padding: 4px; font-size: 12px; }
+.task-composer { border-block-start: 1px solid var(--iris-border); padding: 24px; background: color-mix(in srgb, var(--iris-surface) 36%, var(--iris-background)); }
+.task-composer .task-field { font-size: 12px; }
+.task-composer textarea { min-block-size: 120px; background: var(--iris-background); font-size: 14px; font-weight: 400; line-height: 1.7; }
+.task-composer .task-actions { margin-block-end: 0; }
+.composer-reason { color: var(--iris-muted); font-size: 12px; margin-block: 12px 0; }
+.task-controls { border-block-start: 1px solid var(--iris-border); padding: 16px 24px; }
+.task-controls > summary { display: flex; align-items: center; gap: 8px; color: var(--iris-muted); }
+.confirm-operation { display: flex; align-items: start; gap: 8px; font-size: 12px; }
+.task-controls .task-actions { justify-content: flex-start; }
+.task-welcome { min-block-size: 480px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 48px 32px; color: var(--iris-muted); }
+.task-welcome > svg { color: var(--iris-primary); margin-block-end: 24px; }
+.task-welcome h2 { color: var(--iris-foreground); font-size: 24px; font-weight: 600; margin: 0 0 16px; }
+.task-welcome p { max-inline-size: 420px; line-height: 1.9; margin: 0; }
+.welcome-steps { display: flex; flex-wrap: wrap; justify-content: center; gap: 16px; margin-block-start: 32px; font-size: 12px; }
+.task-create-panel { padding: 24px; }
+.task-create-panel > p { color: var(--iris-muted); font-size: 12px; }
+.task-create-panel .task-create { margin-block-end: 0; }
+.task-create-panel .task-field { font-size: 12px; }
+.task-access-note { border: 1px solid var(--iris-border); padding: 20px; border-radius: 8px; background: var(--iris-background); }
+.task-access-note p { color: var(--iris-muted); margin-block-end: 0; }
+.task-access-label { color: var(--iris-muted); font-size: 12px; }
+.task-receipt { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 12px 16px; background: var(--iris-background); border: 1px solid var(--iris-border); border-radius: 8px; font-size: 12px; color: var(--iris-muted); }
+.task-receipt > svg { color: var(--iris-primary); }
+.task-receipt details { margin-inline-start: auto; overflow-wrap: anywhere; }
+.uncertain-request details { margin-block: 12px; overflow-wrap: anywhere; }
+.task-console .task-notice { margin-block: 0; }
+.task-conversation .task-notice { margin-block: 16px; }
+.turn-history ul { list-style: none; padding: 0; margin: 0 0 16px; }
+.turn-history li { border-block-end: 1px solid var(--iris-border); }
+.turn-history li button { padding: 16px; }
+.turn-history h3 { font-size: 14px; margin: 0; }
+.request-history { border-block-start: 1px solid var(--iris-border); padding-block-start: 20px; }
+.request-history > summary { color: var(--iris-muted); margin-block-end: 16px; }
+@media (max-width: 1100px) { .task-layout { grid-template-columns: 240px minmax(0, 1fr); gap: 16px; } }
+@media (max-width: 900px) { .task-layout { grid-template-columns: minmax(0, 1fr); } .task-session-list { max-block-size: 240px; } .task-list-panel { padding: 16px; } .task-welcome { min-block-size: 320px; } }
+@media (max-width: 600px) {
+  .task-console { gap: 12px; }
+  .task-toolbar { align-items: flex-start; }
+  .task-toolbar > div { gap: 8px; max-inline-size: 180px; }
+  .task-toolbar > div .secondary-copy { inline-size: 100%; }
+  .task-detail-heading, .task-conversation, .turn-history, .event-inspector, .task-composer, .task-create-panel { padding: 20px 16px; }
+  .task-detail-heading h2 { font-size: 16px; }
+  .task-tabs { padding-inline: 16px; }
+  .conversation-message { padding: 16px; }
+  .agent-message { padding-inline: 0; }
+  .task-controls { padding: 16px; }
+  .task-welcome { padding: 32px 20px; }
+  .task-welcome h2 { font-size: 20px; }
+  .task-create-panel .task-create { margin-block-start: 16px; }
+  .task-receipt details { margin-inline-start: 0; }
+  .task-conversation { max-block-size: 560px; }
+}

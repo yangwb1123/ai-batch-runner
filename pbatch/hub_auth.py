@@ -17,9 +17,10 @@ from .hub_compute_models import COMPUTE_SCOPES
 from .hub_integration_models import SCOPES as INTEGRATION_SCOPES
 
 
+WEB_READ_SCOPES = ("agent.instances:read", "agent.sessions:read")
 USER_SCOPES = frozenset({
-    "agent.instances:read", "agent.sessions:read", "agent.sessions:write",
-    "agent.turns:cancel",
+    *WEB_READ_SCOPES, "agent.sessions:write",
+    "agent.turns:cancel", "agent.artifacts:read",
 }) | COMPUTE_SCOPES | INTEGRATION_SCOPES
 GATEWAY_SCOPE = "agent.gateway:connect"
 
@@ -90,14 +91,39 @@ def _grant(row: Any) -> HubPrincipal:
         if "compute_instances" in row else None)
 
 
+def _web_read_grants(settings: dict) -> dict:
+    rows = settings.get("web_read_grants", [])
+    if not isinstance(rows, list) or len(rows) > 1000:
+        raise ValueError("auth.web_read_grants must be a list of at most 1000 grants")
+    if rows and settings.get("mode", "jwt") != "jwt":
+        raise ValueError("Web read grants require jwt authentication")
+    result = {}
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {"tenant_id", "client_id", "instances"}:
+            raise ValueError("Web read grants require only tenant_id, client_id and instances")
+        key = (_text(row["tenant_id"], "tenant_id"), _text(row["client_id"], "client_id"))
+        if any("*" in value or any(char.isspace() for char in value) for value in key):
+            raise ValueError("Web read grants require exact tenant and client identifiers")
+        if key in result:
+            raise ValueError("duplicate Web read grant binding")
+        instances = _strings(row["instances"], "instances")
+        if "*" in instances:
+            raise ValueError("Web read grants require explicit instances, not a wildcard")
+        result[key] = instances
+    return result
+
+
 class HubAuth:
     """Intersect signed token scopes with operator-configured instance grants."""
 
     def __init__(self, settings: dict, *, verifier=None):
         self.mode = settings.get("mode", "jwt")
         rows = settings.get("grants", [])
-        if not isinstance(rows, list) or not 1 <= len(rows) <= 1000:
-            raise ValueError("auth.grants must contain 1..1000 grants")
+        if not isinstance(rows, list) or len(rows) > 1000:
+            raise ValueError("auth.grants must contain at most 1000 grants")
+        self.web_read_grants = _web_read_grants(settings)
+        if not 1 <= len(rows) + len(self.web_read_grants) <= 1000:
+            raise ValueError("auth.grants and auth.web_read_grants must contain 1..1000 grants")
         self.grants = [_grant(row) for row in rows]
         self._development = self._dev_credentials(rows)
         self._verifier = verifier
@@ -124,7 +150,8 @@ class HubAuth:
             raise ValueError("duplicate development credential digest")
         return result
 
-    def authenticate(self, header: str) -> HubPrincipal:
+    def authenticate(self, header: str, *, web_read: bool = False) -> HubPrincipal:
+        """Only the Web facade opts into tenant readers; bearer routes never do."""
         if not isinstance(header, str) or not header.startswith("Bearer "):
             raise HubAccessError("unauthorized", "Bearer access token required", 401)
         token = header[7:]
@@ -136,12 +163,26 @@ class HubAuth:
                 if hmac.compare_digest(digest, expected):
                     return grant
             raise HubAccessError("unauthorized", "invalid access token", 401)
-        return self._principal(self._verifier.verify(token))
+        return self._principal(self._verifier.verify(token), web_read=web_read)
 
-    def _principal(self, claims: dict) -> HubPrincipal:
+    def _web_reader(self, claims: dict) -> HubPrincipal | None:
+        try:
+            tenant, subject, client = (_text(claims.get(key), key)
+                                       for key in ("tenant_id", "sub", "client_id"))
+        except ValueError as exc:
+            raise HubAccessError("unauthorized", "invalid Web reader identity", 401) from exc
+        instances = self.web_read_grants.get((tenant, client))
+        if instances is None or subject == client:
+            return None
+        return HubPrincipal(tenant, subject, client, "user", instances,
+                            frozenset(WEB_READ_SCOPES), frozenset())
+
+    def _principal(self, claims: dict, *, web_read: bool = False) -> HubPrincipal:
         key = (claims.get("tenant_id"), claims.get("sub"), claims.get("client_id"))
         grant = next((g for g in self.grants
                       if (g.tenant_id, g.subject, g.client_id) == key), None)
+        if grant is None and web_read:
+            grant = self._web_reader(claims)
         if grant is None:
             raise HubAccessError("forbidden", "principal has no Agent Hub grant")
         raw_scopes = claims.get("scope", "")

@@ -1,0 +1,21 @@
+.task-recap { padding: 24px; overflow-wrap: anywhere; }
+.recap-heading, .recap-page-heading, .recap-round-heading { display: flex; align-items: start; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.recap-heading h3 { margin: 0 0 8px; font-size: 16px; }
+.recap-heading p, .recap-empty p, .recap-no-reply { font-size: 13px; line-height: 1.8; color: var(--iris-muted); }
+.recap-heading p { margin: 0; }
+.recap-page-heading { align-items: center; margin-block: 16px; }
+.recap-rounds.task-conversation { padding: 0; min-block-size: 120px; max-block-size: 720px; scrollbar-gutter: stable; }
+.recap-round { padding: 20px; margin-block-end: 20px; border: 1px solid var(--iris-border); border-radius: 10px; background: var(--iris-background); }
+.recap-round-heading { margin-block-end: 20px; }
+.recap-round-heading > div { min-inline-size: 0; flex: 1; }
+.recap-round-heading .record-meta { display: block; margin-block-start: 8px; overflow-wrap: anywhere; }
+.recap-round .conversation-message { margin-block-end: 16px; padding: 16px; }
+.recap-round .agent-message { padding-inline: 0; }
+.recap-round .task-notice { font-size: 12px; line-height: 1.8; }
+.recap-navigation { display: flex; flex-wrap: wrap; gap: 12px; padding-block-start: 16px; }
+.recap-empty { padding-block: 32px; text-align: center; }
+@media (max-width: 600px) {
+  .task-recap { padding: 20px 16px; }
+  .recap-round { padding: 16px 12px; }
+  .recap-rounds.task-conversation { max-block-size: 600px; }
+}

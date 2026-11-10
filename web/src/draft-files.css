@@ -1,0 +1,9 @@
+.draft-files { margin-block-start: 16px; border-block-start: 1px solid var(--iris-border); padding-block-start: 12px; }
+.draft-files summary { cursor: pointer; font-size: 12px; font-weight: 600; }
+.draft-file-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.draft-file-actions .task-field { flex: 1 1 240px; min-inline-size: 0; margin: 0; }
+.draft-file-actions input { width: 100%; min-inline-size: 0; max-inline-size: 100%; }
+.draft-file-preview { margin-block-start: 16px; }
+.draft-file-preview h4 { margin: 0; font-size: 13px; }
+.draft-file-preview p { overflow-wrap: anywhere; }
+.draft-file-preview pre { max-block-size: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--iris-background); border: 1px solid var(--iris-border); border-radius: 8px; padding: 12px; font: 12px/1.8 ui-monospace, monospace; }

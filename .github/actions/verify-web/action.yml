@@ -1,0 +1,30 @@
+name: Verify packaged ABR Web
+description: Pinned Iris/Bun rebuild and local synthetic-issuer browser checks; never deploys
+runs:
+  using: composite
+  steps:
+    - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      with:
+        bun-version: '1.4.2'
+    - name: Install locked frontend tools without package scripts
+      shell: bash
+      run: cd web && bun install --frozen-lockfile --ignore-scripts
+    - name: Read-only reviewed Iris source
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      with:
+        repository: yangwb1123/iris-ui-kit
+        ref: 16862132864ff3b802d1dbf5626733b8aab0b301
+        path: web/node_modules/.iris-source
+        fetch-depth: 1
+        persist-credentials: false
+    - name: Rebuild and compare shipping assets without updating them
+      shell: bash
+      env:
+        IRIS_UI_DIR: ${{ github.workspace }}/web/node_modules/.iris-source
+      run: make web-check
+    - name: Install explicit browser test driver
+      shell: bash
+      run: python -m pip install playwright==1.63.0
+    - name: Real local Chrome and synthetic issuer
+      shell: bash
+      run: make web-browser

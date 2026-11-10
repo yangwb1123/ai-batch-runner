@@ -10,6 +10,7 @@ recursive-include evolution-specs *.md *.yaml
 recursive-include ui-specs *.md *.yaml *.json
 recursive-include backend-specs *.md *.yaml
 recursive-include pbatch/pwa_assets *.webmanifest *.js *.png
+recursive-include pbatch/hub_web_assets *.html *.js *.css *.json *.LICENSE
 include docs/ENGINEERING_PHILOSOPHY.md docs/MIGRATION_ENGINE.md docs/PROJECT_STUDIO.md docs/CAMPAIGN_SELF_REPAIR.md
 include docs/LLM_ACCOUNT_POOL.md docs/MODEL_DELEGATION.md
-include docs/agent-hub/WEB_LOGIN.md
+include docs/agent-hub/WEB_TASKS.md docs/agent-hub/WEB_LOGIN.md docs/agent-hub/WEB_FRONTEND.md docs/agent-hub/WEB_RELEASE.md docs/agent-hub/READ_ONLY_ONRAMP.md docs/agent-hub/MACHINE_AUTH.md docs/agent-hub/LIFECYCLE.md

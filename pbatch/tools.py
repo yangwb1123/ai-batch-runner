@@ -21,7 +21,7 @@ from .launcher import cli_argv
 # 子命令 → 一行描述（与 pbatch/cli.py _SUBCOMMANDS 同步维护）。
 DESCRIPTIONS = {
     "tui": "交互式终端工作台（任务输入/流式输出/运行控制）",
-    "fleet": "跨端 Agent 会话浏览、发送与 Gateway",
+    "fleet": "跨端 Agent 会话、Gateway/仅观察模式与离线配置预检",
     "config": "配置来源/版本/最终解析值检查（explain/check）",
     "pool": "LLM 账号池（Go 配额切换/本地网关/只读 MCP）",
     "memory": "渐进式 message memory（ingest/recent/find/read）",

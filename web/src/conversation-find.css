@@ -1,0 +1,15 @@
+.conversation-find { padding: 16px 24px; border-block-end: 1px solid var(--iris-border); }
+.conversation-find-query, .conversation-find-actions { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
+.conversation-find-query label { display: grid; flex: 1 1 200px; min-inline-size: 0; gap: 8px; font-size: 12px; font-weight: 600; }
+.conversation-find-query input { inline-size: 100%; min-inline-size: 0; box-sizing: border-box; padding: 8px 12px; border: 1px solid var(--iris-border); border-radius: 6px; background: var(--iris-background); color: var(--iris-foreground); font: inherit; }
+.conversation-find-query input:focus-visible { outline: 2px solid var(--iris-primary); outline-offset: 2px; }
+.conversation-find-actions { margin-block-start: 12px; align-items: center; }
+.conversation-find-count { font-size: 12px; overflow-wrap: anywhere; }
+.conversation-find .secondary-copy { margin-block: 8px 0; }
+.task-conversation mark { background: color-mix(in srgb, var(--iris-primary) 20%, var(--iris-background)); color: var(--iris-foreground); border-radius: 2px; scroll-margin-block: 32px; }
+.task-conversation mark.find-current { background: var(--iris-primary); color: var(--iris-primary-foreground); outline: 2px solid var(--iris-foreground); outline-offset: 2px; }
+@media (max-width: 600px) {
+  .conversation-find { padding: 16px; }
+  .conversation-find-query label { flex-basis: 100%; }
+  .conversation-find-count { flex-basis: 100%; }
+}

@@ -1,7 +1,7 @@
 """Opt-in, single-process browser sessions using the official Snaplink SDK.
 
 The SDK owns PKCE/state/code exchange. A browser session is never authority:
-every read reuses HubAuth, then HubService's tenant/resource/membership gates.
+every request reuses HubAuth, then HubService's tenant/resource/membership gates.
 """
 
 from __future__ import annotations
@@ -13,20 +13,32 @@ import time
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
+from .hub_auth import WEB_READ_SCOPES as READ_SCOPES
 from .hub_errors import HubAccessError
+from .hub_file_snapshot_models import READ_SCOPE as FILE_READ_SCOPE
 from .hub_jwks import _https_url
 
-READ_SCOPES = ("agent.instances:read", "agent.sessions:read")
 PENDING_TTL = 600
 SESSION_TTL = 1800
 MAX_SESSIONS = 256
+CONTROL_SCOPES = (*READ_SCOPES, "agent.sessions:write", "agent.turns:cancel")
+
+
+def _feature_flags(config):
+    for flag in ("control", "file_snapshots"):
+        if not isinstance(config.get(flag, False), bool):
+            raise ValueError(f"web.{flag} must be boolean")
+    if config.get("file_snapshots", False) and not config.get("control", False):
+        raise ValueError("web.file_snapshots requires web.control")
 
 
 def _configuration(settings, auth):
     config = settings["web"]
-    if not isinstance(config, dict) or set(config) != {"public_origin", "client_id", "tenant_id"}:
-        raise ValueError("web requires only public_origin, client_id and tenant_id")
-    for value in config.values():
+    required = {"public_origin", "client_id", "tenant_id"}
+    if not isinstance(config, dict) or not required <= set(config) or set(config) - required - {"control", "file_snapshots"}:
+        raise ValueError("web requires public_origin, client_id, tenant_id and optional control/file_snapshots")
+    _feature_flags(config)
+    for value in (config[name] for name in required):
         if (not isinstance(value, str) or not 1 <= len(value) <= 256
                 or any(ord(char) < 33 or ord(char) == 127 for char in value)):
             raise ValueError("web settings require bounded nonempty text without whitespace")
@@ -54,11 +66,13 @@ class HubWeb:
         try:
             from snaplink_sso import Snaplink, SSOError
         except ImportError as exc:
-            raise ValueError('browser login requires pip install "abr[web]"') from exc
+            raise ValueError('browser login requires pip install "ai-batch-runner[web]"') from exc
         from .hub_web_transport import SDKTransport
         self.origin = config["public_origin"]
         self.host = urlsplit(self.origin).netloc
         self.client_id, self.tenant_id = config["client_id"], config["tenant_id"]
+        self.control = config.get("control", False)
+        self.file_snapshots = config.get("file_snapshots", False)
         self.auth, self._clock = auth, clock
         self._sdk, self._sdk_error = Snaplink, SSOError
         issuer = _https_url(settings["auth"]["issuer"], "web issuer")
@@ -68,7 +82,9 @@ class HubWeb:
         self._transport = transport or SDKTransport(issuer)
         self._options = {"base_url": issuer, "client_id": self.client_id,
                          "redirect_uri": self.origin + "/auth/callback",
-                         "return_to": self.origin + "/", "scope": ["openid", *READ_SCOPES],
+                         "return_to": self.origin + "/",
+                         "scope": ["openid", *(CONTROL_SCOPES if self.control else READ_SCOPES),
+                                   *([FILE_READ_SCOPE] if self.file_snapshots else [])],
                          "resource": [settings["auth"].get("audience", "agent-hub")],
                          "transaction_ttl_seconds": PENDING_TTL}
         self._sessions = {}
@@ -130,11 +146,11 @@ class HubWeb:
             session.sdk.clear()
             raise
 
-    def _principal(self, sdk):
+    def _principal(self, sdk, *, control=False):
         token = sdk.access_token
         if not isinstance(token, str):
             raise HubAccessError("login_required", "login required", 401)
-        principal = self.auth.authenticate("Bearer " + token)
+        principal = self.auth.authenticate("Bearer " + token, web_read=not control)
         if (principal.kind != "user" or principal.tenant_id != self.tenant_id
                 or principal.client_id != self.client_id):
             raise HubAccessError("forbidden", "browser identity binding mismatch")
@@ -142,22 +158,50 @@ class HubWeb:
             principal.require(scope)
         return principal
 
-    def principal(self, key):
+    def principal(self, key, *, control=False):
+        if control and not self.control:
+            raise HubAccessError("web_control_disabled", "browser task control is not enabled")
         with self._lock:
             self._expire()
             session = self._sessions.get(key)
             if session is None or session.pending:
                 raise HubAccessError("login_required", "login required", 401)
         try:
-            principal = self._principal(session.sdk)
+            principal = self._principal(session.sdk, control=control)
             with self._lock:
                 self._expire()
                 if self._sessions.get(key) is not session:
                     raise HubAccessError("login_required", "browser session ended", 401)
             return principal
         except HubAccessError:
-            self.clear(key)
+            # An exact task grant may be absent while metadata-only policy remains valid.
+            if not control:
+                self.clear(key)
             raise
+
+    def access(self, key):
+        self.principal(key)
+        principal = None
+        if self.control:
+            try:
+                principal = self.principal(key, control=True)
+            except HubAccessError as exc:
+                if exc.status != 403:
+                    raise
+        scopes = (*CONTROL_SCOPES, *([FILE_READ_SCOPE] if self.file_snapshots else []))
+        access = {"mode": "control" if self.control else "read_only",
+                "task_access": principal is not None,
+                "scopes": sorted(principal.scopes.intersection(scopes)) if principal else [],
+                "context": self.context(key)}
+        if self.file_snapshots:
+            access["file_snapshots"] = bool(principal and FILE_READ_SCOPE in principal.scopes)
+        return access
+
+    @staticmethod
+    def context(key):
+        """Non-authorizing binding: a delayed write cannot adopt another login's Cookie."""
+        import hashlib
+        return hashlib.sha256(key.encode("ascii")).hexdigest()
 
     def clear(self, key):
         with self._lock:

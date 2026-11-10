@@ -4,6 +4,10 @@ Gateway 可以使用 Snaplink 的 `client_credentials` 获取短期机器 access
 并在后续 Hub 请求前自动续签。心跳、命令轮询和活跃 turn 的计算代理共用同一个
 进程内凭据缓存；续签不创建新的 Gateway generation 或 AgentSession。
 
+首批只读接入可使用`fleet agent --observe-only`，仅登记固定项目实例与心跳，既不创建Agent
+也不轮询命令；这不同于仍支持动态创建的`--sessions 0`。完整边界与离线Hub预检见
+[READ_ONLY_ONRAMP.md](READ_ONLY_ONRAMP.md)。该模式不免除机器客户端和实例授权。
+
 ## 配置与启动
 
 在 Snaplink 预先登记专用 confidential client：

@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS hub_turns(
   created_at REAL NOT NULL, updated_at REAL NOT NULL,
   UNIQUE(tenant,actor,idempotency_key));
 CREATE INDEX IF NOT EXISTS hub_turns_active ON hub_turns(tenant,session_id,status);
+CREATE INDEX IF NOT EXISTS hub_turns_history
+  ON hub_turns(tenant,session_id,created_at DESC,turn_id DESC);
 CREATE TABLE IF NOT EXISTS hub_commands(
   command_id TEXT NOT NULL PRIMARY KEY, tenant TEXT NOT NULL, instance_id TEXT NOT NULL,
   generation INTEGER NOT NULL, session_id TEXT NOT NULL, turn_id TEXT NOT NULL,
@@ -56,6 +58,8 @@ CREATE TABLE IF NOT EXISTS hub_events(
   PRIMARY KEY(tenant,cursor), UNIQUE(tenant,event_id));
 CREATE INDEX IF NOT EXISTS hub_events_session_cursor
   ON hub_events(tenant,session_id,cursor);
+CREATE INDEX IF NOT EXISTS hub_events_turn_cursor
+  ON hub_events(tenant,session_id,turn_id,cursor);
 """
 
 

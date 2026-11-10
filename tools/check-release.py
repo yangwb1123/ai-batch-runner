@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
-EXPECTED_DISTRIBUTION = "abr"
+EXPECTED_DISTRIBUTION = "ai-batch-runner"
 EXPECTED_ENTRY_POINT = "pbatch.cli:main"
 STABLE_VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 UNCLEARED_LICENSE = "must be re-checked for compatibility before further distribution"

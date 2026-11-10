@@ -1,0 +1,9 @@
+.turn-search-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(120px, 160px) auto; align-items: end; gap: 12px; margin-block: 16px; }
+.turn-search-form .task-field { min-inline-size: 0; margin: 0; }
+.turn-page-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-block-start: 12px; }
+.turn-link-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.turn-link-actions .copy-feedback { flex-basis: 100%; margin: 0; }
+@media (max-width: 600px) {
+  .turn-search-form { grid-template-columns: minmax(0, 1fr); }
+  .turn-search-form button, .turn-page-actions button { min-block-size: 40px; }
+}

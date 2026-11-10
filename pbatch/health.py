@@ -1,4 +1,4 @@
-"""Read-only project health report for ``pi-batch health``."""
+"""Read-only project health or scoped installation diagnostics for ``abr health``."""
 
 from __future__ import annotations
 
@@ -12,16 +12,12 @@ from typing import Optional
 
 from . import config
 from .launcher import package_source_dir, script_argv
+from .health_installation import REQUIRED_ASSETS
 
 ROOT = Path(config.TOOL_ROOT)
 ASSET_ROOT = Path(config.TOOL_ROOT)
 SKIP = ".git,.dart_tool,test,build,vendor,checks"
-REQUIRED_ASSETS = (
-    "quality.py", "scripts/check-ui-spec.py", "scripts/check-frontend-quality.py",
-    "ui-specs/rules.yaml", "backend-specs/rules.yaml", "product-specs/rules.yaml",
-    "evolution-specs/rules.yaml", "examples/frontend-implementation-pipeline.yaml",
-    "examples/backend-implementation-pipeline.yaml",
-)
+
 
 
 def _resolved_root(root: Optional[Path]) -> Path:
@@ -242,10 +238,15 @@ def _render(report: dict) -> str:
 def health_main(argv: list | None = None) -> int:
     parser = argparse.ArgumentParser(prog="abr health", description=__doc__)
     parser.add_argument("--json", action="store_true", help="machine-readable report")
-    parser.add_argument("--dir", default="", help="project root (default: tool root)")
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument("--dir", default=None, help="assess a project root, including test presence")
+    scope.add_argument("--installation", action="store_true", help="check package availability, not project tests")
     args = parser.parse_args(argv)
-    report = health_report(Path(args.dir) if args.dir else None)
-    print(json.dumps(report, indent=2) if args.json else _render(report))
+    from .health_installation import installation_kind, installation_report, render_installation
+    installation = args.installation or (args.dir is None and installation_kind() != "source")
+    report = installation_report(ASSET_ROOT) if installation else health_report(Path(args.dir) if args.dir is not None else None)
+    render = render_installation if installation else _render
+    print(json.dumps(report, indent=2) if args.json else render(report))
     return 0 if report["healthy"] else 1
 
 

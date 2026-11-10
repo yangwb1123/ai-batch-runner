@@ -9,7 +9,7 @@ or configure `agent.argument_flags` for another argv contract. The built-in adap
 
 ## 快速开始（产品 CLI）
 
-PyPI 发行名和主命令统一为 **`abr`**。旧命令 `pi-batch` 保留为兼容别名，
+PyPI 发行包名为 **`ai-batch-runner`**，主命令为 **`abr`**。旧命令 `pi-batch` 保留为兼容别名，
 本文及历史文档中的旧命令仍可使用。Python 包 `pbatch`、源码入口 `pi-batch.py`、
 项目配置 `pi-batch.yaml`、`PBATCH_*` 环境变量和已有用户数据目录保持不变；
 GitHub 仓库地址也不因发行改名而改变。
@@ -18,7 +18,7 @@ GitHub 仓库地址也不因发行改名而改变。
 
 ```bash
 pipx install .                     # 推荐：隔离安装当前源码
-# 首次公开发行后：pipx install abr
+# 首次公开发行后：pipx install ai-batch-runner
 abr                      # 默认产品入口：交互式 TUI（真实终端）
 abr doctor               # 环境诊断：安装/目录/配置/agent/密钥/锁
 abr init                 # 创建用户级工作目录骨架
@@ -73,8 +73,16 @@ NVIDIA 物理 GPU 支持按卡数和每卡空闲显存选机、分配展示与�
 [`docs/AGENT_HUB.md`](docs/AGENT_HUB.md)。Aero ID 成员门禁、IM 通知、Audit 入账回执与
 `fleet integrations` 运维入口见 [生态集成](docs/agent-hub/ECOSYSTEM.md)。
 可选 `web` extra 与 Hub `web` 配置使用官方 Snaplink Python SDK 提供浏览器登录，
-首个切片仅查看授权实例/会话，不开放网页执行；配置、安全边界与部署验收见
-[SDK Web 登录](docs/agent-hub/WEB_LOGIN.md)。
+默认查看授权实例/会话；显式 `web.control: true`、本人精确授权和执行型Gateway就绪后，
+可创建任务会话、发送指令、查看事件及取消/关闭，见 [Web任务流程](docs/agent-hub/WEB_TASKS.md)。
+结果检查支持命令输出、轮次记录导出，以及显式授权的文件快照预览、原始字节下载和跨轮次逐行对比；执行成功与目标验收分别显示。
+历史轮次可按脱敏指令、轮次 ID 和状态搜索，精确链接可重新打开旧轮次；文件对比复用历史搜索定位基准。
+任务级链接自动跟随当前活动或最新轮次；精确轮次链接保持固定查看，可保留草稿和历史筛选回到任务现场。
+多轮回顾按每页五轮对照指令与回复，显式翻页或刷新快照，并可打开其中一轮继续检查证据；不自动执行或摘要历史。
+结果工作区可筛选、搜索和分页定位执行记录，将选中证据起草为后续指令，编辑后追加到原草稿，再由用户显式发送。
+编辑框支持显式保存草稿文本、预览本地 UTF-8 文件并加入当前草稿，便于离开页面后继续整理；不会自动上传或发送。
+登录配置与部署边界见 [SDK Web 登录](docs/agent-hub/WEB_LOGIN.md)。浏览器工作台使用本地 Iris UI 组件、Svelte 5 与 Bun 构建，
+源码、构建及验收边界见 [Web 前端](docs/agent-hub/WEB_FRONTEND.md)。
 
 构建 wheel 安装时会同时携带规则注册表、验证脚本、默认流水线、角色模板和
 评估集；`pi-batch health --json` 会检查分发资产是否完整。
@@ -294,9 +302,13 @@ Regular wheel installs also carry the default pipelines, role prompts, rule
 registries, eval suites and checker scripts. Project-local assets take
 precedence; installed assets are the fallback, so `pi-batch rules`, `eval`,
 `check`, `campaign`, and classifier routing work outside this checkout.
-`pi-batch health` is also runnable from a wheel, but its default self-check
-honestly reports unhealthy when the wheel has no source tests (tests are not
-shipped); use `pi-batch health --dir /path/to/project` to assess a target project.
+`abr health` defaults to installation diagnostics in a verified wheel installation
+or frozen binary: required imports, entry points, packaged assets and deterministic
+checker probes must succeed. `abr health --installation --json` selects this scope
+explicitly. Source/editable installs retain the project-health default;
+`abr health --dir /path/to/project` always assesses the specified project and retains
+its test-evidence requirement. Installation health does not claim that project tests,
+optional SSO/provider integration or release acceptance have run.
 
 Configuration sections are type-checked at startup. Malformed section/value
 types are reported and replaced with bounded built-in defaults, so a typo does
@@ -312,7 +324,7 @@ python pi-batch.py tasks.yaml --agent-bin codex  --mode serial
 ```bash
 # Install as a global CLI command (like pi/codex), then use it anywhere:
 pipx install .             # from the current source checkout
-# After the first public release: pipx install abr
+# After the first public release: pipx install ai-batch-runner
 abr                        # interactive TUI on a real terminal
 abr tui                    # explicit TUI entry
 abr -p "analyze this project" -o output.md

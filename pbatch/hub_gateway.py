@@ -8,6 +8,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .agent_session import AgentSession, create_agent_session
@@ -20,10 +21,12 @@ from .hub_gateway_protocol import (EVENT_NAMESPACE, TERMINAL,
                                    project_event_payload, running_event_id,
                                    truth)
 from .hub_gateway_config import HubGatewayConfig, normalize_config, session_options
+from .hub_gateway_observation import bind_observation, require_execution
 from .hub_gateway_creation import SessionCreation
 from .hub_gateway_closing import SessionClosing
 from .hub_gateway_turns import launch_turn, run_turn
-from .hub_gateway_delivery import flush_outbox, post_running_ack
+from .hub_gateway_delivery import DeliveryResult, flush_outbox, post_running_ack
+from .hub_gateway_files import GatewayFiles
 from .memory_records import redact_content
 from .tui_protocol import RuntimeEvent
 
@@ -39,7 +42,8 @@ class _ManagedSession:
     active_turn: str = ""
     closing: bool = False
     close_started: bool = False
-    runtime_turns: dict[str, str] | None = None
+    terminal_event_id: str = ""
+    cancel_requested: bool = False
 
 
 class HubGateway:
@@ -50,14 +54,20 @@ class HubGateway:
         self.options = normalize_config(options)
         self.client = client or HubClient.from_env(self.options.hub_url)
         self._factory = session_factory or create_agent_session
-        self._store = GatewayStore(self.options.state_dir)
-        self._state_lock = StateDirectoryLock(self._store.directory)
+        self._store = None
+        self._state_lock = StateDirectoryLock(Path(self.options.state_dir))
         try:
             self._state_lock.acquire()
+            self._store = GatewayStore(self.options.state_dir)
+            bind_observation(self._store, self.options, self.client)
             self._bind_instance_id()
+            self._files = GatewayFiles(self)
         except Exception:
-            self._state_lock.close()
-            self._store.close()
+            try:
+                if self._store is not None:
+                    self._store.close()
+            finally:
+                self._state_lock.close()
             raise
         self._stop = threading.Event()
         self._sessions: dict[str, _ManagedSession] = {}
@@ -72,6 +82,7 @@ class HubGateway:
         self._store.set_metadata("candidate_boot_id", self._boot_id)
         self._last_heartbeat = 0.0
         self._last_poll = 0.0
+        self._continue_delivery = False
         self._started = False
         self._closed = False
         self._fatal: Optional[BaseException] = None
@@ -109,6 +120,9 @@ class HubGateway:
             return
         if self._stop.is_set():
             raise RuntimeError("Hub Gateway is stopped")
+        if self.options.observe_only:
+            self._started = True
+            return
         try:
             for index in range(self.options.sessions):
                 name = f"{self.options.name}-{index + 1}"
@@ -136,8 +150,10 @@ class HubGateway:
         self._generation = generation
         self._store.activate_generation(generation, boot_id=self._boot_id,
                                        previous_boot_id=self._previous_boot_id)
+        self._files.queue.activate_generation(generation)
 
     def _create_session(self, name: str) -> _ManagedSession:
+        require_execution(self.options)
         session = self._factory(session_options(self.options, name))
         try:
             self._ensure_running()
@@ -163,31 +179,45 @@ class HubGateway:
             raise RuntimeError("Hub Gateway is stopped")
 
     def _adopt_session(self, session, local_id: str, hub_id: str, name: str) -> _ManagedSession:
-        managed = _ManagedSession(local_id, hub_id, name, session, runtime_turns={})
+        managed = _ManagedSession(local_id, hub_id, name, session)
         self._store.add_session(local_session_id=local_id, hub_session_id=hub_id,
                                 name=name, project_id=self.options.project_id)
-        session.subscribe(lambda event: self._on_event(managed, event))
         self._sessions[local_id] = managed
         managed.closing = self._closing.pending(local_id)
         return managed
 
     def run_once(self) -> None:
+        self._continue_delivery = False
         self._raise_if_fatal()
-        for operation in (self._maybe_heartbeat, self._maybe_poll_commands,
-                          self._retry_pending_start, self._flush_outbox):
+        self._ensure_running()
+        continuing, blocked = False, False
+        operations = ((self._maybe_heartbeat,) if self.options.observe_only else
+                      (self._maybe_heartbeat, self._maybe_poll_commands,
+                       self._retry_pending_start, self._flush_outbox, self._files.flush))
+        for operation in operations:
+            if self._stop.is_set():
+                break
             try:
-                operation()
+                result = operation()
+                if isinstance(result, DeliveryResult):
+                    continuing |= result.advanced > 0 and result.budget_exhausted
+                    blocked |= result.blocked
             except HubError as exc:
+                blocked = True
                 self._handle_hub_error(exc)
                 if self._fatal is not None:
                     break
         self._raise_if_fatal()
+        with self._session_lock:
+            self._continue_delivery = (continuing and not blocked
+                                       and not self._pending_starts and not self._stop.is_set())
 
     def run_forever(self) -> None:
         self.start()
         while not self._stop.is_set():
             self.run_once()
-            self._stop.wait(min(self.options.poll_interval, 1.0))
+            if not self._continue_delivery:
+                self._stop.wait(min(self.options.poll_interval, 1.0))
         self._raise_if_fatal()
 
     def _maybe_heartbeat(self) -> None:
@@ -210,6 +240,7 @@ class HubGateway:
                 break
 
     def _dispatch_command(self, command: dict[str, Any]) -> bool:
+        require_execution(self.options)
         turn_id = field(command, "turn_id")
         local_id = field(command, "local_session_id")
         if not turn_id or not local_id:
@@ -314,23 +345,21 @@ class HubGateway:
     def _run_turn(self, turn_id: str, prompt: str, managed: _ManagedSession) -> None:
         run_turn(self, turn_id, prompt, managed)
 
-    def _on_event(self, managed: _ManagedSession, event: RuntimeEvent) -> None:
+    def _on_event(self, managed: _ManagedSession, event: RuntimeEvent, turn_id: str) -> bool:
+        """Publish only the exact prompt_events stream owned by this Hub turn."""
         with self._session_lock:
             if self._stop.is_set():
-                return
+                return False
             if not isinstance(event, RuntimeEvent) or event.kind not in VISIBLE_EVENTS:
-                return
-            runtime_id = event.turn_id
-            if event.kind == "turn.started" and managed.active_turn:
-                if managed.runtime_turns is not None and runtime_id:
-                    managed.runtime_turns[runtime_id] = managed.active_turn
-                self._store.set_turn(managed.active_turn, "executing", runtime_id)
-                return
-            turn_id = (managed.runtime_turns or {}).get(runtime_id, "")
-            turn_id = turn_id or managed.active_turn
-            if not turn_id:
-                return
-            for index, payload in enumerate(project_event_payload(event)):
+                return False
+            if (not turn_id or turn_id != managed.active_turn
+                    or event.session_id != managed.local_id or not event.run_id or not event.turn_id):
+                raise ValueError("runtime event does not match the owned Hub turn")
+            if event.kind == "turn.started":
+                self._store.set_turn(turn_id, "executing", event.turn_id)
+                return True
+            for index, payload in enumerate(project_event_payload(
+                    event, publish_command_output=self.options.publish_command_output)):
                 event_id = str(uuid.uuid5(
                     EVENT_NAMESPACE,
                     f"{self.instance_id}:{managed.local_id}:{event.event_id}:{index}"))
@@ -340,14 +369,15 @@ class HubGateway:
                 self._store.enqueue_event(event_id=event_id, event=body,
                                           generation=self.generation)
             if event.kind in TERMINAL:
-                self._store.set_turn(turn_id, TERMINAL[event.kind], runtime_id)
-                if managed.runtime_turns is not None:
-                    managed.runtime_turns.pop(runtime_id, None)
+                self._store.set_turn(turn_id, TERMINAL[event.kind], event.turn_id)
+                managed.terminal_event_id = event_id
+            return True
 
     def _cancel_command(self, command: dict[str, Any],
                         managed: _ManagedSession) -> None:
         turn_id = field(command, "turn_id")
         if managed.active_turn == turn_id:
+            managed.cancel_requested = True
             try:
                 managed.session.abort()
             except Exception as exc:
@@ -376,25 +406,29 @@ class HubGateway:
             self._store.enqueue_event(event_id=event_id, event=body,
                                       generation=self.generation)
             self._store.set_turn(turn_id, TERMINAL.get(kind, "failed"))
+            self._files.synthetic(turn_id, session_id, event_id)
 
-    def _flush_outbox(self) -> None:
-        flush_outbox(self)
+    def _flush_outbox(self) -> DeliveryResult:
+        return flush_outbox(self)
 
     def _handle_hub_error(self, error: HubError) -> None:
+        if self._stop.is_set():
+            return
         if is_fencing_error(error):
             self._fence_and_stop(error)
-            log.error("Hub Gateway fenced; stopping command execution")
+            if self._fatal is not None:
+                log.error("Hub Gateway fenced; stopping command execution")
         elif error.status in {401, 403}:
             log.error("Hub Gateway authorization rejected (%s)", error.code)
         else:
             log.warning("Hub Gateway request unavailable (%s)", error.code)
 
     def _fence_and_stop(self, error: HubError) -> None:
-        if self._fatal is not None:
-            return
-        self._fatal = error
-        self._stop.set()
         with self._session_lock:
+            if self._fatal is not None or self._stop.is_set():
+                return
+            self._fatal = error
+            self._stop.set()
             sessions = tuple(item.session for item in self._sessions.values()
                              if not item.close_started)
         for session in sessions:
@@ -431,8 +465,10 @@ class HubGateway:
         for thread in tuple(self._turn_threads.values()):
             thread.join(timeout=1.0)
         with self._session_lock:
-            self._state_lock.close()
-            self._store.close()
+            try:
+                self._store.close()
+            finally:
+                self._state_lock.close()
 
     def __enter__(self) -> "HubGateway":
         self.start()

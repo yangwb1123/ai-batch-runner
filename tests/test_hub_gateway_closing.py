@@ -220,15 +220,14 @@ def test_close_waits_for_creation_report_ack_and_local_adoption(tmp_path):
 def test_close_waits_for_terminal_turn_thread_to_finish_unwinding(closing, monkeypatch):
     gateway, client, factory, probe, local_id = closing
     entered, release = threading.Event(), threading.Event()
-    prompt = factory.sessions[0].prompt
+    prompt_events = factory.sessions[0].prompt_events
 
     def unwinding(value):
-        result = prompt(value)
+        yield from prompt_events(value)
         entered.set()
         assert release.wait(5)
-        return result
 
-    monkeypatch.setattr(factory.sessions[0], "prompt", unwinding)
+    monkeypatch.setattr(factory.sessions[0], "prompt_events", unwinding)
     command = {"turn_id": "last-turn", "local_session_id": local_id,
                "session_id": "hub-" + local_id, "prompt": "finish"}
     try:

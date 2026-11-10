@@ -1,0 +1,34 @@
+# Explicit task control, not an authorization or deployment instruction.
+# Replace every identity with an approved, verified binding. No wildcard grants.
+# See docs/agent-hub/WEB_TASKS.md; the existing read-only example stays read-only.
+auth:
+  mode: jwt
+  issuer: https://sso.ywbsd.site
+  jwks_url: https://sso.ywbsd.site/.well-known/jwks.json
+  audience: https://abr.ywbsd.site/api/v1/agent
+  algorithms: [EdDSA, RS256, ES256]
+  grants:
+    - tenant_id: REPLACE_TENANT
+      subject: REPLACE_CONFIRMED_WEB_PAIRWISE_SUBJECT
+      client_id: REPLACE_APPROVED_WEB_CLIENT
+      kind: user
+      instances: [abr-local]
+      scopes: [agent.instances:read, agent.sessions:read, agent.sessions:write, agent.turns:cancel]
+    - tenant_id: REPLACE_TENANT
+      subject: REPLACE_APPROVED_GATEWAY_CLIENT
+      client_id: REPLACE_APPROVED_GATEWAY_CLIENT
+      kind: gateway
+      instances: [abr-local]
+      scopes: [agent.gateway:connect]
+allowed_origins:
+  - https://abr.ywbsd.site
+web:
+  public_origin: https://abr.ywbsd.site
+  client_id: REPLACE_APPROVED_WEB_CLIENT
+  tenant_id: REPLACE_TENANT
+  control: true
+  # Optional file inspection stays off. Enabling also requires an approved
+  # agent.artifacts:read token + exact user grant and Gateway --share-file paths.
+  file_snapshots: false
+identity: []
+integrations: []  # No audit delivery is claimed until explicitly configured and verified.

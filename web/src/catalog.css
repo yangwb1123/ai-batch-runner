@@ -1,0 +1,14 @@
+.catalog-search-form { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-block: 16px; }
+.catalog-search-form .task-search { flex-basis: 100%; min-inline-size: 0; margin: 0; }
+.catalog-search-hint { flex-basis: 100%; margin: 0; color: var(--iris-muted); font-size: 12px; line-height: 1.8; }
+.catalog-panel .catalog-filters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.catalog-filters button { min-block-size: 40px; min-inline-size: 0; }
+.catalog-scope { color: var(--iris-muted); font-size: 12px; line-height: 1.8; margin: 12px 0 0; }
+.catalog-outcome { display: block; margin-block-start: 8px; color: var(--iris-muted); font-size: 12px; line-height: 1.8; }
+.catalog-outcome[data-state="failed"], .catalog-outcome[data-state="lost"], .catalog-outcome[data-state="interrupted"] { color: var(--iris-foreground); font-weight: 600; }
+.catalog-updated { margin-block-start: 4px; }
+.catalog-open-task { padding: 12px; margin-block: 16px; border: 1px solid var(--iris-border); border-radius: 8px; }
+.catalog-open-task p { margin: 0 0 8px; color: var(--iris-muted); font-size: 12px; line-height: 1.8; }
+.catalog-pagination { display: grid; gap: 12px; }
+.catalog-page-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.catalog-page-actions > button { flex: 1; }

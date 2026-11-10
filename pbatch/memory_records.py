@@ -16,7 +16,7 @@ _SECRET_NAME = (r"(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|"
 _SECRET_KEY_RE = re.compile(rf"(?i)^{_SECRET_NAME}$")
 _SECRET_RE = re.compile(
     rf"(?i)[\"']?(?P<key>{_SECRET_NAME})[\"']?\s*[:=]\s*"
-    r"(?:[\"'][^\"'\r\n]*[\"']|[^\s,;}\]]+)")
+    r"(?:[\"'][^\"'\r\n]*[\"']|\[REDACTED\][^\s,;}\]]*|[^\s,;}\]]+)")
 _AUTH_SCHEME_RE = re.compile(r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+")
 _KNOWN_SECRET_RE = re.compile(
     r"\b(?:sk-(?:proj-)?[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{20,}|"

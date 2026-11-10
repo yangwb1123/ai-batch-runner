@@ -16,6 +16,7 @@ def validate_read_headers(path, headers):
     parts = [unquote(part) for part in path[len(PREFIX) + 1:].split("/")]
     names = {"session-requests", "session-close-requests"}
     if not (parts == ["session-operations"] or (len(parts) == 2 and parts[0] in names)
+            or (len(parts) == 3 and parts[0] == "sessions" and parts[2] == "turns")
             or (len(parts) == 2 and parts[0] == "gateway" and parts[1] in names)):
         return
     lengths = headers.get_all("Content-Length", [])

@@ -1,6 +1,7 @@
 """Public abr identity must not rename existing configuration or runtime data."""
 
 import ast
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,7 +23,7 @@ def test_public_parser_and_version_use_abr(capsys):
     assert product_cli.PRODUCT == "abr"
 
 
-def test_installed_version_queries_abr_metadata(monkeypatch):
+def test_installed_version_queries_distribution_metadata(monkeypatch):
     queried = []
 
     def metadata(name):
@@ -31,10 +32,10 @@ def test_installed_version_queries_abr_metadata(monkeypatch):
 
     monkeypatch.setattr(version, "metadata_version", metadata)
     assert version._package_version() == "1.2.3"
-    assert queried == ["abr"]
+    assert queried == ["ai-batch-runner"]
 
 
-def test_asset_metadata_uses_abr_without_migrating_asset_paths(tmp_path, monkeypatch):
+def test_asset_metadata_uses_distribution_without_migrating_asset_paths(tmp_path, monkeypatch):
     queried = []
 
     def distribution(name):
@@ -44,7 +45,26 @@ def test_asset_metadata_uses_abr_without_migrating_asset_paths(tmp_path, monkeyp
     monkeypatch.setattr(assets, "__file__", str(tmp_path / "pbatch/assets.py"))
     monkeypatch.setattr(assets, "distribution", distribution)
     assert assets._distribution_asset_root() is None
-    assert queried == ["abr"]
+    assert queried == ["ai-batch-runner"]
+
+
+@pytest.mark.parametrize("module, extra", [("jwt", "hub"), ("snaplink_sso", "web")])
+def test_optional_dependency_errors_name_installable_distribution(monkeypatch, module, extra):
+    from pbatch.hub_jwks import SnaplinkVerifier
+    from pbatch.hub_web import HubWeb
+
+    settings = {
+        "web": {"public_origin": "https://abr.test", "client_id": "browser", "tenant_id": "tenant"},
+        "allowed_origins": ["https://abr.test"],
+        "auth": {"mode": "jwt", "issuer": "https://issuer.test", "jwks_url": "https://issuer.test/jwks"},
+    }
+    monkeypatch.setitem(sys.modules, module, None)
+    with pytest.raises(ValueError) as result:
+        if extra == "hub":
+            SnaplinkVerifier(settings["auth"])
+        else:
+            HubWeb(settings, SimpleNamespace(mode="jwt"))
+    assert f'pip install "ai-batch-runner[{extra}]"' in str(result.value)
 
 
 @pytest.mark.parametrize("shell, registration", [

@@ -278,6 +278,11 @@ class HubClient:
     def get_turn(self, turn_id: str) -> dict[str, Any]:
         return _as_object(self._request("GET", f"/turns/{_quote(turn_id)}"), "turn")
 
+    def publish_file_snapshots(self, body: dict[str, Any]) -> dict[str, Any]:
+        from .hub_file_snapshot_models import validate_upload
+        return _as_object(self._request("POST", "/gateway/file-snapshots",
+                                       validate_upload(body)), "file snapshot set")
+
     def cancel_turn(self, turn_id: str) -> dict[str, Any]:
         result = self._request("POST", f"/turns/{_quote(turn_id)}/cancel", {},
                                accepted=(202,))

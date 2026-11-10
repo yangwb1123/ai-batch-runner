@@ -11,6 +11,25 @@ on:
     branches: [main]
 
 jobs:
+  web:
+    name: Web rebuild and browser contracts
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.11'
+      - name: Install product test dependencies
+        run: python -m pip install ".[dev]"
+      - name: Verify packaged Web candidate
+        timeout-minutes: 8
+        uses: ./.github/actions/verify-web
+
   cli-compatibility:
     name: CLI/TUI Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
@@ -53,6 +72,9 @@ jobs:
 
       - name: Release metadata contract
         run: make release-check
+
+      - name: Frontend source and shipping asset consistency
+        run: make web-assets-check
 
       - name: Gate G1 — filesize
         run: make check-filesize

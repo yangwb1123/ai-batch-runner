@@ -1,0 +1,32 @@
+.result-review { margin-block: 24px; padding: 16px; border: 1px solid var(--iris-border); border-radius: 8px; }
+.result-review h4 { margin: 0; font-size: 14px; }
+.review-search { display: grid; grid-template-columns: minmax(0, 1fr) minmax(128px, 180px) auto; align-items: end; gap: 12px; }
+.review-search .task-field { margin: 0; }
+.review-rows { list-style: none; padding: 0; border: 1px solid var(--iris-border); border-radius: 8px; overflow: hidden; }
+.review-rows li + li { border-block-start: 1px solid var(--iris-border); }
+.review-rows button { display: block; width: 100%; padding: 12px; background: transparent; border: 0; color: inherit; text-align: start; font: inherit; cursor: pointer; }
+.review-rows button[aria-pressed="true"] { background: var(--iris-surface); outline: 1px solid var(--iris-primary); outline-offset: -1px; }
+.review-rows button:focus-visible { outline: 2px solid var(--iris-primary); outline-offset: -2px; }
+.review-rows .result-empty { padding: 12px; }
+.review-row-top { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: 8px; font-size: 12px; }
+.review-row-top strong { min-inline-size: 0; overflow-wrap: anywhere; }
+.review-row-top > span { color: var(--iris-muted); }
+.review-page-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.review-record { margin-block: 16px; padding: 16px; background: var(--iris-surface); border: 1px solid var(--iris-border); border-radius: 8px; }
+.review-record h5 { margin: 0; font-size: 14px; }
+.review-record .command-output pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.review-record-text { margin-block: 12px; max-block-size: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.8 ui-monospace, monospace; }
+.review-metadata { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 8px; font-size: 12px; }
+.review-metadata dt { color: var(--iris-muted); }
+.review-metadata dd { margin: 0; overflow-wrap: anywhere; }
+.review-paths { padding-inline-start: 16px; font-size: 12px; overflow-wrap: anywhere; }
+.review-source-events { margin-block: 12px; font-size: 12px; overflow-wrap: anywhere; }
+.review-source-events summary { cursor: pointer; }
+.review-source-events ul { padding-inline-start: 16px; }
+.review-source-events li { margin-block: 8px; }
+.review-draft { margin-block-start: 16px; border-block-start: 1px solid var(--iris-border); padding-block-start: 16px; }
+.review-draft textarea { font: 12px/1.8 ui-monospace, monospace; }
+@media (max-width: 900px) {
+  .review-search { grid-template-columns: minmax(0, 1fr); }
+  .review-search > button { width: 100%; }
+}

@@ -67,6 +67,8 @@ EXPECTED_RUNTIME_ASSETS = (
     "examples/llm-pool.yaml", "docs/LLM_ACCOUNT_POOL.md",
     "docs/MODEL_DELEGATION.md",
     "pi-batch.yaml", "quality.py", "scripts/check-ui-spec.py",
+    "scripts/check-installation.py",
+    "scripts/capture-web-files.py",
     "scripts/check-frontend-quality.py", "scripts/check-evidence.py",
     "scripts/check-completion-report.py", "ui-specs/rules.yaml",
     "backend-specs/rules.yaml", "product-specs/rules.yaml",
@@ -74,6 +76,8 @@ EXPECTED_RUNTIME_ASSETS = (
     "examples/agent-hub-gateway-oauth.json",
     "examples/agent-hub-user-auth.json",
     "examples/agent-hub-web.yaml", "docs/agent-hub/WEB_LOGIN.md",
+    "examples/agent-hub-web-control.yaml", "docs/agent-hub/WEB_TASKS.md",
+    "docs/agent-hub/READ_ONLY_ONRAMP.md", "docs/agent-hub/LIFECYCLE.md",
     "examples/sdlc-inputs/oidc-logout-frontchannel.md",
     "prompts/architect.md", "agent-engineering/requirement.yaml",
 )
@@ -97,15 +101,23 @@ _BUILD_WHEEL_SCRIPT = (
 _INSTALLED_RUNTIME_PROBE = r"""
 from importlib.metadata import distribution
 from pathlib import Path
+import json
 import os
 import subprocess
+import sys
 
 from pbatch import assets, config, health
 from pbatch.version import VERSION
 
-dist = distribution("abr")
-assert dist.metadata["Name"] == "abr"
+dist = distribution("ai-batch-runner")
+assert dist.metadata["Name"] == "ai-batch-runner"
 assert VERSION == dist.version
+from pbatch.hub_web_page import page, security_policy
+from pbatch.hub_web_assets import asset
+assert "/web/assets/app.js" in page()
+script, content_type = asset("app.js")
+assert script and content_type == "text/javascript; charset=utf-8"
+assert "unsafe-inline" not in security_policy("https://identity.test")
 entries = {item.name: item.value for item in dist.entry_points if item.group == "console_scripts"}
 assert entries["abr"] == entries["pi-batch"] == "pbatch.cli:main"
 scripts = Path(assets.__file__).resolve().parents[1] / ("Scripts" if os.name == "nt" else "bin")
@@ -121,6 +133,21 @@ from pbatch.cmd_expand import expand_cmd
 asset_root = Path(assets.TOOL_ROOT)
 assert asset_root.as_posix().endswith("share/ai-batch-runner"), asset_root
 assert health._asset_status()["healthy"]
+result = subprocess.run([sys.executable, "-m", "pbatch", "health", "--json"],
+                        capture_output=True, text=True, timeout=45)
+assert result.returncode == 0, (result.stdout, result.stderr)
+installed_health = json.loads(result.stdout)
+assert installed_health["schema_version"] == "abr.installation-health.v1"
+assert installed_health["scope"] == "installation" and installed_health["healthy"] is True
+assert installed_health["package"]["kind"] == "wheel"
+assert "tests" not in installed_health and "score" not in installed_health
+assert all(row["result"] == "passed" for row in installed_health["checks"].values())
+assert all(row["result"] == "not_executed" and row["reason"] for row in installed_health["not_executed"])
+result = subprocess.run([sys.executable, "-m", "pbatch", "health", "--dir", str(Path.cwd()), "--json"],
+                        capture_output=True, text=True, timeout=45)
+assert result.returncode == 1, (result.stdout, result.stderr)
+project_health = json.loads(result.stdout)
+assert project_health["tests"] == 0 and project_health["healthy"] is False
 config_text = (asset_root / "pi-batch.yaml").read_text(encoding="utf-8")
 assert "/home/u1" not in config_text
 assert (asset_root / "examples/sdlc-inputs/oidc-logout-frontchannel.md").is_file()
@@ -138,6 +165,25 @@ for name, artifact in artifacts.items():
     assert str(asset_root / "scripts") in command, (name, command)
     result = subprocess.run(command, shell=True, capture_output=True, text=True)
     assert result.returncode == 0, (name, command, result.stdout, result.stderr)
+
+from types import SimpleNamespace
+from threading import Event
+from pbatch.hub_file_capture import root_identity
+from pbatch.hub_gateway_files import bounded_capture, _capture_script
+import base64
+import hashlib
+
+assert _capture_script() == asset_root / "scripts/capture-web-files.py"
+raw = b"installed snapshot bytes\x00\xff"
+Path("inspection.bin").write_bytes(raw)
+gateway = SimpleNamespace(options=SimpleNamespace(share_files=("inspection.bin",),
+    cwd=str(Path.cwd()), state_dir=str(Path.cwd())), _stop=Event())
+captured = bounded_capture(gateway, root_identity(Path.cwd()))
+assert captured["unavailable"] == [], captured
+assert len(captured["files"]) == 1
+file = captured["files"][0]
+assert base64.b64decode(file["content_b64"]) == raw
+assert file["sha256"] == hashlib.sha256(raw).hexdigest() and file["size_bytes"] == len(raw)
 """
 
 

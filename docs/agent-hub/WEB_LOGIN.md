@@ -1,10 +1,12 @@
-# ABR Web：Snaplink SDK 登录（首个只读切片）
+# ABR Web：Snaplink SDK 登录与授权
 
 ## 范围与验收边界
 
 面向需要浏览器查看授权实例和会话的操作员。可选配置 `web` 后，现有
-`abr fleet serve` 同时提供首页、登录回调和只读 facade；不另建执行或权限内核。
-本切片没有网页创建会话、发送 prompt、取消、文件读取或运维修复按钮。
+`abr fleet serve` 同时提供首页、登录回调和默认只读 facade；不另建执行或权限内核。
+显式开启 `web.control: true` 后可管理任务会话、发送指令、读取事件及取消/关闭，
+但必须具有本人精确 grant 和相应 token scope；流程见 [WEB_TASKS.md](WEB_TASKS.md)。
+默认只读配置不自动升级，不开放任意文件读取或运维修复。
 `ops serve` 的静态 token 模式保持不变，不把它直接穿透为多用户 SSO。
 
 使用官方 **`snaplink-sso==0.3.0`** Python SDK 的 `Snaplink.login()`：托管登录页、
@@ -43,9 +45,9 @@ python -m venv /path/to/abr-venv
 | Web client | `abr-web`，public，绑定明确 tenant |
 | Grant | `authorization_code`，强制 PKCE S256 |
 | Callback | `https://abr.ywbsd.site/auth/callback`，精确匹配 |
-| Scopes | `openid agent.instances:read agent.sessions:read` |
+| Scopes | 默认 `openid agent.instances:read agent.sessions:read`；显式 control 配置另外申请 `agent.sessions:write agent.turns:cancel`，仍须独立批准 |
 | Resource | `https://abr.ywbsd.site/api/v1/agent`，与 Hub `auth.audience` 一致 |
-| Hub grant | 同 tenant、真实 Web pairwise subject、`client_id=abr-web`、明确实例列表 |
+| Hub grant | 默认精确绑定 tenant、Web pairwise subject、client 和实例；租户全员只读须显式配置下述 Web policy |
 
 开启全局 scope registry 的 Snaplink 还须注册 scope；仅写客户端 allowlist 不够。
 SDK 使用 issuer 下的现有 Console `/login/`，登录 UI 应与部署版本匹配。
@@ -53,6 +55,39 @@ SDK 使用 issuer 下的现有 Console `/login/`，登录 UI 应与部署版本�
 Gateway 使用独立 confidential client，仅绑定一个固定工作区和实例，配置见
 [MACHINE_AUTH.md](MACHINE_AUTH.md)。没有在线 Gateway/登记会话时，授权窗口可能为空，
 不能把这个空窗口当作目标项目已经接入。
+
+## 可选：当前租户全员只读
+
+仅在操作者明确允许整个租户访问时，使用
+[`agent-hub-web-tenant-read.yaml`](../../examples/agent-hub-web-tenant-read.yaml)：
+
+```yaml
+auth:
+  mode: jwt
+  # issuer / jwks_url / audience 与普通 Web 配置一致
+  grants: []
+  web_read_grants:
+    - tenant_id: REPLACE_TENANT
+      client_id: abr-web
+      instances: [abr-local]
+```
+
+`web_read_grants` 每项只接受这三个字段。tenant/client 必须精确且不可含通配或空白，
+实例列表须显式声明且不得包含 `*`；不自动扫描工作区、登记 Gateway 或接入已有会话。
+它只在 Web facade 的认证调用中启用，保留每个 JWT 的真实 subject；原 Bearer API
+仍要求精确 principal grant，不能用这个 policy 获得读取、写入、文件或计算权限。
+没有 policy 时默认行为不变；旧 `subject: "*"` 仍是字面值，不是全员授权。
+
+Web policy 固定仅允许 `agent.instances:read` 和 `agent.sessions:read`，再与签名
+Token scope 求交集；不允许配置额外 scope、subject、kind、静态凭据或计算范围。
+使用专用的 authorization-code-only public client，不能使用机器 client；subject
+等于 client_id 的机器身份也拒绝。issuer/audience/有效期、tenant/client、sender proof
+与委托限制、实例过滤及可选 membership gate 继续执行。
+
+精确 principal grant 优先，不与 Web policy 合并或扩大原有实例/权限。每次 Web
+读取仍重新授权；政策撤销后的旧会话不能继续读取。两种 grant 合计仍最多1000项，
+重复 tenant/client policy、未知字段、无任何 grant 或 development 模式的 Web policy
+均拒绝启动。该选项不授予管理员权限，也不创建 Snaplink 用户、角色或商业许可。
 
 ## 路由与浏览器安全边界
 
@@ -65,8 +100,9 @@ Gateway 使用独立 confidential client，仅绑定一个固定工作区和实�
 | `GET /web/api/instances` | 每请求重新鉴权，复用 HubService 实例过滤 |
 | `GET /web/api/sessions` | 每请求重新鉴权，复用 HubService 会话过滤 |
 
-facade 只允许上述读取；原 `/api/v1/agent/*` **仍只接受 Bearer**，Cookie 不成为
-原有写 API 的凭据。Web 不接受混合 Authorization/Cookie 身份，不接受任意代理 URL。
+默认 facade 只允许上述元数据读取及 `GET /web/api/access` 能力投影；显式 control 的
+任务白名单、JSON/幂等/账号切换边界见 [WEB_TASKS.md](WEB_TASKS.md)。原 `/api/v1/agent/*`
+**仍只接受 Bearer**，Cookie 不成为原有写 API 的凭据。Web 不接受混合 Authorization/Cookie 身份，不接受任意代理 URL。
 Host 必须与固定 public origin 一致，不信任用户提交的 `Forwarded`/`X-Forwarded-*`。
 POST 缺失 Origin、Origin 为 null 或跨源均拒绝。授权码只在回调 query 中短暂出现；
 303 返回固定 `/`，无开放重定向；回调 query 重复/未知字段、URL 超限均拒绝。
@@ -89,8 +125,9 @@ SDK transport 复用 Hub 的 32 KiB JSON 响应/5 秒读取期限限制，禁重
 
 ## `abr.ywbsd.site` 分阶段部署
 
-1. 注册 Web/Gateway client、核对真实 pairwise subject、明确允许用户和工作区；保管机器
-   secret 的私有文件不入 Git/argv/日志。不得为了取得 subject 给 Web 发放 admin scope。
+1. 注册 Web/Gateway client、明确允许用户和实例。默认精确授权须核对真实 pairwise
+   subject；租户全员只读须明确启用上述 Web policy。保管机器 secret 的私有文件不入
+   Git/argv/日志。不得为了取得 subject 给 Web 发放 admin scope。
 2. 独立 Hub 数据库与运行目录；先启动 loopback listener，反代保留正确 Host。
    HTTPS 在可信边缘终止，FRP 链路须核验认证、加密和服务器身份；不得暴露可绕过边缘的端口。
 3. 配置域名证书及专属 FRP 路由。现场 `/opt/frp/frpc.toml` 为共享服务，修改前保存私有备份、
@@ -102,4 +139,4 @@ SDK transport 复用 Hub 的 32 KiB JSON 响应/5 秒读取期限限制，禁重
 
 既有 Hub 审计只覆盖其已支持的持久生命周期事实，本切片**未新增登录失败、授权拒绝和
 本地退出审计事件**；审计也不是执行前同步门禁。启用审计、事件覆盖或要求故障阻断执行
-需要独立确认。后续网页控制仍须显式授权、幂等、副作用确认和现有 Hub 门禁，不由登录隐式开启。
+需要独立确认。网页控制仍须显式授权、幂等、副作用确认和现有 Hub 门禁，不由登录隐式开启。

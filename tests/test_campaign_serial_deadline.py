@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from pbatch import (campaign_budget, campaign_execution_guard, campaign_pipeline,
+                    campaign_deadline, campaign_isolated_outcome, campaign_serial,
                     pipeline, pipeline_native, runner)
 from pbatch.campaign_models import CampaignSettings, Direction
 from pbatch.models import Task, TaskResult
@@ -23,9 +24,13 @@ CUTOFF = 1893456000.0
 
 def _clock(monkeypatch, epoch, mono=10_000.0):
     clock = SimpleNamespace(epoch=epoch, mono=mono)
-    namespace = SimpleNamespace(time=lambda: clock.epoch, monotonic=lambda: clock.mono)
-    monkeypatch.setattr(campaign_budget, "time", namespace)
-    monkeypatch.setattr(campaign_execution_guard, "time", namespace)
+    # Keep actual test waits/polls on stdlib time; all deadline consumers share this clock.
+    namespace = SimpleNamespace(**vars(time))
+    namespace.time, namespace.monotonic = lambda: clock.epoch, lambda: clock.mono
+    for module in (campaign_budget, campaign_execution_guard, campaign_pipeline,
+                   campaign_serial, campaign_deadline, campaign_isolated_outcome):
+        monkeypatch.setattr(module, "time", namespace)
+    monkeypatch.setattr(campaign_budget, "monotonic", namespace.monotonic)
     return clock
 
 
@@ -577,3 +582,17 @@ def test_exited_unreaped_observes_exit_without_reaping():
     finally:
         if proc.returncode is None:
             proc.wait(timeout=2)
+
+
+@pytest.mark.parametrize("mono", [1000.0, 10_000.0, 50_000.0])
+def test_serial_clock_freezes_exact_window_independent_of_host(monkeypatch, tmp_path, mono):
+    clock = _clock(monkeypatch, CUTOFF - 60, mono)
+    settings = _frozen(tmp_path)
+    deadline = settings._execution_deadline
+
+    assert deadline.monotonic == mono + 60
+    assert campaign_budget.gate(settings, tmp_path)()
+    assert campaign_execution_guard.time.sleep is time.sleep
+    assert campaign_budget.time is not time
+    clock.mono += 60  # real test wait/poll clocks and the wall cutoff have not changed.
+    assert not campaign_budget.gate(settings, tmp_path)()

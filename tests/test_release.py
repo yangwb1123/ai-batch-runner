@@ -27,6 +27,9 @@ ACTION_PINS = {
     "actions/download-artifact": (
         "018cc2cf5baa6db3ef3c5f8a56943fffe632ef53", "v6.0.0"
     ),
+    "oven-sh/setup-bun": (
+        "0c5077e51419868618aeaa5fe8019c62421857d6", "v2"
+    ),
     "pypa/gh-action-pypi-publish": (
         "dc37677b2e1c63e2034f94d8a5b11f265b73ba33", "v1.14.2"
     ),
@@ -50,7 +53,7 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
 def _release_fixture(root: Path, license_text: str) -> None:
     (root / "pyproject.toml").write_text(
         """[project]
-name = "abr"
+name = "ai-batch-runner"
 version = "1.2.3"
 
 [project.scripts]
@@ -68,7 +71,7 @@ def test_release_metadata_is_consistent() -> None:
     version = _version()
     result = _run()
     assert result.returncode == 0, result.stderr
-    assert f"abr {version} -> abr" in result.stdout
+    assert f"ai-batch-runner {version} -> abr" in result.stdout
 
 
 def test_tagged_release_fails_closed_for_unresolved_license(tmp_path: Path) -> None:
@@ -161,7 +164,7 @@ def test_release_workflow_uses_oidc_and_a_protected_environment() -> None:
         encoding="utf-8")
     assert "tags:" in workflow and "v[0-9]+.[0-9]+.[0-9]+" in workflow
     assert "environment:" in workflow and "name: pypi" in workflow
-    assert "https://pypi.org/p/abr" in workflow
+    assert "https://pypi.org/p/ai-batch-runner" in workflow
     assert "/bin/abr --version" in workflow
     assert "id-token: write" in workflow
     assert "password:" not in workflow and "api-token" not in workflow
@@ -172,11 +175,15 @@ def test_release_workflow_pins_every_action_to_a_commit() -> None:
     workflow = "\n".join(
         (ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
         for name in ("release.yml", "binary-verify.yml", "release-binary.yml"))
+    workflow += "\n" + (ROOT / ".github/actions/verify-web/action.yml").read_text(encoding="utf-8")
     raw_uses = re.findall(r"^\s*-?\s*uses:\s+(.+?)\s*$", workflow, re.M)
     uses = []
     for raw in raw_uses:
         if raw == "./.github/workflows/binary-verify.yml":
             assert (ROOT / raw).is_file()
+            continue
+        if raw == "./.github/actions/verify-web":
+            assert (ROOT / raw / "action.yml").is_file()  # its transitive pins are checked above
             continue
         match = re.fullmatch(
             r"([^@\s]+)@([0-9a-f]{40})\s+#\s+(\S+)", raw)

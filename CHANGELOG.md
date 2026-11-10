@@ -7,7 +7,7 @@
 
 ### 变更
 
-- PyPI 发行名和主命令统一为 `abr`；帮助、版本输出、TUI、shell 补全、
+- PyPI 发行包名为 `ai-batch-runner`，主命令为 `abr`；帮助、版本输出、TUI、shell 补全、
   能力入口及发布二进制名称同步更新。`pi-batch` 保留为兼容命令别名。
   内部 `pbatch` 包、`pi-batch.py`/`pi-batch.yaml`、`PBATCH_*` 环境变量、
   `share/ai-batch-runner` 资产布局及用户数据路径不迁移；许可证发布门禁保持不变。

@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import signal
 import subprocess
 import uuid
@@ -18,10 +19,16 @@ from typing import Any
 from .tui_protocol import RUNTIME_PROTOCOL_VERSION
 from .tui_runtime import RuntimeCapabilities, RuntimeInfo
 from .provider_env import provider_child_env
+from .memory_records import redact
 
 CODEX_EXEC_RUNTIME_NAME = "codex-exec"
 MAX_FIELD_BYTES = 48 * 1024
 TRUNCATION_MARKER = "\n...[truncated]"
+_DIAGNOSTIC_ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))")
+_DIAGNOSTIC_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u206f]")
+_DIAGNOSTIC_URL = re.compile(r"(?i)\b(?:https?|wss?)://[^\s<>\"']+")
+_DIAGNOSTIC_CREDENTIAL = re.compile(
+    r"(?im)\b(cookie|set-cookie|proxy-authorization|x-api-key|code_verifier|code|state)\s*[:=][^\r\n]*")
 
 
 def _runtime_info() -> RuntimeInfo:
@@ -136,6 +143,27 @@ def _text(name: str, value: Any) -> dict[str, Any]:
     if truncated:
         result["original_bytes"] = original
     return result
+
+
+def _diagnostic_text(message: Any) -> dict[str, Any]:
+    """Known error text only: redact before publishing; never retain a raw record."""
+    unusable = {"text": "Codex error record has no usable string message", "truncated": False}
+    omitted = {"text": "Codex provider diagnostic exceeds 48 KiB and was omitted", "truncated": True}
+    if not isinstance(message, str):
+        return unusable
+    if len(message) > MAX_FIELD_BYTES:
+        return omitted
+    try:
+        if len(message.encode("utf-8")) > MAX_FIELD_BYTES:
+            return omitted
+    except UnicodeError:
+        return unusable
+    text = _DIAGNOSTIC_CONTROL.sub("", _DIAGNOSTIC_ANSI.sub("", message)).strip()
+    if not text:
+        return unusable
+    text = _DIAGNOSTIC_URL.sub("[REDACTED URL]", text)
+    text = _DIAGNOSTIC_CREDENTIAL.sub(lambda match: match.group(1) + "=[REDACTED]", text)
+    return _text("text", redact(text))
 
 
 def _bounded_changes(value: Any) -> tuple[list[dict[str, str]], bool]:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import stat
 import threading
 import time
 from pathlib import Path
@@ -19,13 +20,29 @@ class GatewayStore:
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(self.directory, 0o700)
         self.path = self.directory / "hub-gateway.sqlite3"
+        self._check_database_files()
         self._lock = threading.RLock()
         self._db = sqlite3.connect(str(self.path), timeout=10, check_same_thread=False)
-        os.chmod(self.path, 0o600)
-        self._db.row_factory = sqlite3.Row
-        self._initialize()
-        self._initialize_creations()
-        self._initialize_closures()
+        try:
+            os.chmod(self.path, 0o600)
+            self._db.row_factory = sqlite3.Row
+            self._initialize()
+            self._initialize_creations()
+            self._initialize_closures()
+        except BaseException:
+            self._db.close()
+            raise
+
+    def _check_database_files(self):
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            path = Path(str(self.path) + suffix)
+            try:
+                info = path.lstat()
+            except FileNotFoundError:
+                continue
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                    or info.st_uid != os.getuid() or info.st_mode & 0o077):
+                raise ValueError("Gateway database files must be private owned regular files")
 
     def _initialize_creations(self) -> None:
         with self._lock, self._db:
@@ -103,6 +120,14 @@ class GatewayStore:
             self._db.execute("INSERT INTO metadata(key,value) VALUES(?,?) "
                               "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                               (key, str(value)))
+
+    def has_execution_state(self) -> bool:
+        """Bounded existence checks; never load or replay historical prompt/event data."""
+        with self._lock:
+            return bool(self._db.execute("""SELECT
+                EXISTS(SELECT 1 FROM sessions) OR EXISTS(SELECT 1 FROM turns) OR
+                EXISTS(SELECT 1 FROM outbox) OR EXISTS(SELECT 1 FROM session_creations) OR
+                EXISTS(SELECT 1 FROM session_closures)""").fetchone()[0])
 
     def generation(self) -> int:
         try:
@@ -308,16 +333,37 @@ class StateDirectoryLock:
 
     def acquire(self) -> None:
         from . import file_lock as fcntl
-
-        descriptor = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
-        os.chmod(self.path, 0o600)
-        self._file = os.fdopen(descriptor, "a+")
+        if self._file is not None:
+            raise RuntimeError("Gateway state lock is already held by this owner")
+        descriptor = self._open_guard()
         try:
-            fcntl.flock(self._file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as exc:
-            self._file.close()
-            self._file = None
-            raise RuntimeError("another Gateway already uses this state directory") from exc
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if not os.path.samestat(os.fstat(descriptor), self.path.lstat()):
+                raise ValueError("Gateway state lock path changed")
+            self._file = os.fdopen(descriptor, "a+")
+        except BaseException as exc:
+            os.close(descriptor)
+            if isinstance(exc, BlockingIOError):
+                raise RuntimeError("another Gateway already uses this state directory") from exc
+            raise
+
+    def _open_guard(self):
+        if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "getuid"):
+            raise ValueError("Gateway private state locking requires POSIX support")
+        parent = self.path.parent
+        parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        info = parent.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o077):
+            raise ValueError("Gateway state directory must be private and owned")
+        flags = os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
+        descriptor = os.open(self.path, flags, 0o600)
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or info.st_uid != os.getuid() or info.st_mode & 0o077):
+            os.close(descriptor)
+            raise ValueError("Gateway lock must be a private owned regular file")
+        return descriptor
 
     def close(self) -> None:
         if self._file is None:

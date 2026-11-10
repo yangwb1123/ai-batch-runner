@@ -56,6 +56,7 @@ from typing import Optional
 from .config import data_dir, log
 from .launcher import cli_argv
 from .user_dirs import project_runtime_dir
+from .worktree_creation import add_worktree
 from .lock import acquire_lock, release_lock
 from .session_merge import (MERGE_BLOCKED_EXIT, SessionOptions, append_session,
                       merge_session_block, read_sessions, session_id)
@@ -251,7 +252,7 @@ def _create_worktree(root: Path, branch: str, workdir: Path, base: str,
                      opts: Optional[SessionOptions], sess: str,
                      seed_paths: tuple) -> bool:
     """Create an external worktree and materialize the selected dirty slice."""
-    proc = _git(["worktree", "add", str(workdir), "-b", branch, base], root)
+    proc = add_worktree(root, [str(workdir), "-b", branch, base])
     if proc.returncode != 0:
         append_session(root, sess, "ABORTED",
                        reason=f"worktree add failed: {proc.stderr.strip()}")

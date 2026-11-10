@@ -126,10 +126,23 @@ class _CompositionBudget:
             self._composition_depth -= 1
 
 
-def load_yaml_document(text: str, yaml_module):
-    """Check the node graph before SafeLoader can flatten YAML merge aliases."""
+def _unique_mapping_keys(node):
+    seen = set()
+    for key, _ in node.value:
+        if key.tag == _TAG_PREFIX + 'merge':
+            _fail(key, 'merged YAML mappings are not allowed in this configuration')
+        if key.value in seen:
+            _fail(key, 'duplicate YAML mapping key')
+        seen.add(key.value)
+
+
+def load_yaml_document(text: str, yaml_module, *, unique_keys: bool = False):
+    """Bound construction; security profiles may additionally forbid duplicate/merge keys."""
     class BudgetedLoader(_CompositionBudget, yaml_module.SafeLoader):
-        pass
+        def construct_mapping(self, node, deep=False):
+            if unique_keys:
+                _unique_mapping_keys(node)
+            return super().construct_mapping(node, deep=deep)
 
     loader = BudgetedLoader(text)
     try:

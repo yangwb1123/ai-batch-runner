@@ -1,7 +1,6 @@
 import threading
 import time
 import uuid
-from types import SimpleNamespace
 
 import pytest
 
@@ -35,19 +34,19 @@ class _FakeSession:
             session_id=self.local_id, run_id="runtime-run", turn_id=runtime_turn,
             actor_id="agent", kind=kind,
             payload={"text": "answer"} if kind == "message.delta" else {})
-        self.listener(event)
+        if self.listener is not None:
+            self.listener(event)
         return event
 
-    def prompt(self, _prompt):
+    def prompt_events(self, _prompt):
         self.calls += 1
-        self._event("turn.started")
+        yield self._event("turn.started")
         self.started.set()
-        self._event("message.delta")
+        yield self._event("message.delta")
         if self.block:
             self.release.wait(timeout=2)
         kind = "turn.interrupted" if self.aborted else "turn.completed"
-        terminal = self._event(kind)
-        return SimpleNamespace(terminal_event=terminal)
+        yield self._event(kind)
 
     def abort(self):
         self.aborted = True

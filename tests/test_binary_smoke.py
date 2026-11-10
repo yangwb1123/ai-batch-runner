@@ -266,3 +266,52 @@ def test_missing_gofmt_false_success_records_failed_smoke(tmp_path, monkeypatch,
     report_path = tmp_path / "report.json"
     assert SMOKE.run_smoke(Path(sys.executable).resolve(), 5, report_path) == 1
     _assert_failed_check(report_path, "missing gofmt rejects artifact")
+
+
+def _installation_health():
+    names = ("runtime", "distributed_assets", "designintelligence_selfcheck",
+             "knowledge_selfcheck", "backendquality_fixture")
+    checks = {name: {"result": "passed"} for name in names}
+    checks["runtime"].update(modules=["pbatch.cli", "pbatch.models", "pbatch.runner", "pbatch.pipeline", "pbatch.tui"],
+                             package_assets=13)
+    checks["backendquality_fixture"].update(files_scanned=2, rejected_violations=1)
+    omitted = ("project_tests", "project_quality", "provider_execution",
+               "optional_hub_authentication", "release_acceptance")
+    return {"schema_version": "abr.installation-health.v1", "scope": "installation",
+            "healthy": True, "assets": {"healthy": True, "missing": [], "required": 21},
+            "checks": checks, "not_executed": [{"check": name, "result": "not_executed", "reason": "out of scope"}
+                                               for name in omitted]}
+
+
+def test_health_accepts_explicit_installation_probe_contract():
+    SMOKE.check_health(json.dumps(_installation_health()))
+
+
+@pytest.mark.parametrize("failure", ["failed", "missing-check", "false-check", "empty-assets", "bad-schema",
+                                     "bad-scope", "missing-limits", "bad-limit-name", "fake-tests", "zero-files", "bool-total"])
+def test_installation_health_rejects_incomplete_or_mislabeled_evidence(failure):
+    report = _installation_health()
+    if failure == "failed":
+        report["healthy"] = False
+    elif failure == "missing-check":
+        del report["checks"]["runtime"]
+    elif failure == "false-check":
+        report["checks"]["knowledge_selfcheck"]["result"] = "failed"
+    elif failure == "empty-assets":
+        report["assets"]["required"] = 0
+    elif failure == "bad-schema":
+        report["schema_version"] = "unknown"
+    elif failure == "bad-scope":
+        report["scope"] = "project"
+    elif failure == "missing-limits":
+        report["not_executed"] = []
+    elif failure == "bad-limit-name":
+        report["not_executed"][0]["check"] = []
+    elif failure == "fake-tests":
+        report["tests"] = 0
+    elif failure == "zero-files":
+        report["checks"]["backendquality_fixture"]["files_scanned"] = 0
+    else:
+        report["checks"]["backendquality_fixture"]["rejected_violations"] = True
+    with pytest.raises(SMOKE.SmokeFailure, match="health:"):
+        SMOKE.check_health(json.dumps(report))

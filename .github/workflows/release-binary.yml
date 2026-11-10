@@ -72,6 +72,10 @@ jobs:
         timeout-minutes: 30
         run: make ci
 
+      - name: Verify packaged Web candidate
+        timeout-minutes: 8
+        uses: ./.github/actions/verify-web
+
   build-binary:
     name: Verify the Linux release binary
     needs: validate

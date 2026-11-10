@@ -44,6 +44,10 @@ jobs:
       - name: Run engineering gates
         run: make ci
 
+      - name: Verify packaged Web candidate
+        timeout-minutes: 8
+        uses: ./.github/actions/verify-web
+
       - name: Build wheel and source distribution
         run: python -m build
 
@@ -79,7 +83,7 @@ jobs:
     timeout-minutes: 10
     environment:
       name: pypi
-      url: https://pypi.org/p/abr
+      url: https://pypi.org/p/ai-batch-runner
     permissions:
       id-token: write
     steps:
